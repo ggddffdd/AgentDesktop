@@ -1,0 +1,65 @@
+# ===== 运行时数据（含隐私，绝不入库） =====
+sessions.json
+*.db
+*.log
+debug.log
+
+# ===== 个人内容（对话创作/浏览器登录态/知识库索引/生成产物） =====
+rag_data/
+playwright_profile/
+orchestrate/
+视频/
+frames/
+images/
+avatars/
+
+# ===== 构建产物 =====
+build/
+dist/
+dist_tmp_*/
+dist_tmp_v*/
+build_hf15/
+_obsolete_*/
+
+# ===== Python 缓存 =====
+__pycache__/
+*.pyc
+
+# ===== 备份文件（可能含旧密钥） =====
+*.bak
+*.bak_*
+
+# ===== 本地配置（真实密钥在用户文档目录，此处的 config.json 也不入库） =====
+config.json
+
+# ===== 一次性迁移脚本（满屏本地绝对路径） =====
+apply_agnes_migration.py
+
+# ===== 构建辅助脚本（含本地路径） =====
+*.bat
+*.ps1
+*.sh
+
+# ===== 测试 / 校验脚本（含本地路径） =====
+test_*.py
+verify_*.py
+verify_v*.py
+_verify_dbg.py
+
+# ===== 临时 / 无用文件 =====
+nul
+skills_full.txt
+skills_list.txt
+skills_output.txt
+_clean_old.log
+
+# ===== 用户技能目录（可能含个人内容） =====
+skills/
+tests/
+
+# ===== 内部分析文档（含品牌名/过程记录，非项目源码） =====
+重构建议评估.md
+tools_protocol_analysis.md
+
+# ===== 二进制资源（含品牌视觉，无法文本脱敏） =====
+icon.ico
