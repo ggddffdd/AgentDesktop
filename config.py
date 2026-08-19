@@ -23,7 +23,7 @@ else:
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "AgentDesktop", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.97"
+APP_VERSION = "v4.98"
 APP_BUILD_DATE = "2026-08-19"
 # v4.85（2026-08-17）集成版：生视频分辨率选择器（8 预设，实测 Agnes 透传任意 WxH 至 4K）
 # + 数字人分身面板（digital_twin_panel，本人形象库+口播+首帧锁定）

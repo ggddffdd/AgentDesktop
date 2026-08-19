@@ -6345,9 +6345,10 @@ class ChatWindow(QMainWindow):
         self._busy = False
         self.send_btn.setEnabled(True)
         self._on_input_changed()
-    def _route_model(self, messages):
-        """v4.94 模型智能路由：默认主模型，复杂任务升级到 model_routing.complex_model。
-        返回 (base_url, model, api_key)。复杂模型未配置 api_key 时回退主模型。"""
+    def _route_model(self, messages, force_complex=False):
+        """v4.94+v4.98 模型智能路由：默认主模型，复杂任务或工具意图升级到 complex_model。
+        返回 (base_url, model, api_key)。complex_model 未配置 api_key 时回退主模型。
+        force_complex=True 时直接强制走 complex_model（工具意图：杜绝弱模型退化成文字演工具）。"""
         cfg = self.cfg
         base_url = cfg.get("base_url", "")
         model = cfg.get("model", "")
@@ -6355,7 +6356,7 @@ class ChatWindow(QMainWindow):
         routing = cfg.get("model_routing") or {}
         if not routing.get("enabled", True):
             return base_url, model, api_key
-        if not self._is_complex(messages, routing):
+        if not (force_complex or self._is_complex(messages, routing)):
             return base_url, model, api_key
         prof_name = routing.get("complex_model", "")
         prof = (cfg.get("model_profiles") or {}).get(prof_name) or {}
@@ -6377,10 +6378,44 @@ class ChatWindow(QMainWindow):
                 return True
         return total > threshold
 
+    def _needs_tool_intent(self, messages):
+        """v4.98 工具意图检测：用户明显要 Agent 用工具干活（改/写/编辑文件、跑 python、
+        搜索、生图生视频、读取分析文件、调用工具/自动化等）。这类任务弱模型（Agnes）极易
+        退化成"文字演工具"（伪造 [工具]/✅ 已保存/run_python(），直接强制走 complex_model
+        并把 tool_choice 设为 required，从根上杜绝撒谎。命中最后一条用户原话即视为工具意图。"""
+        KEYWORDS = (
+            # 文件读写
+            "写文件", "保存", "导出", "生成文件", "创建文件", "新建文件", "建个文件",
+            "改文件", "编辑文件", "修改文件", "打开文件", "读取文件", "读文件", "写入",
+            # 代码执行
+            "运行", "跑", "执行", "python", "代码", "脚本", "py 脚本",
+            # 搜索
+            "搜索", "查一下", "上网查", "fetch", "爬虫", "爬取",
+            # 生图生视频
+            "生图", "画图", "画一张", "画图片", "生成图片", "生成一张", "一张图片",
+            "一张图", "作图", "生视频", "剪辑", "配音",
+            "重新生成", "再画", "换一张", "重画",
+            # 工具/自动化
+            "调用工具", "用工具", "自动化", "定时", "提醒",
+            # 数据分析
+            "分析", "统计", "报表", "数据处理", "excel", "表格", "csv",
+        )
+        last_user = ""
+        for msg in reversed(messages or []):
+            if msg.get("role") == "user":
+                c = msg.get("content", "")
+                if isinstance(c, str):
+                    last_user = c
+                break
+        if not last_user:
+            return False
+        return any(kw in last_user.lower() for kw in KEYWORDS)
+
     def _agent_call(self, messages, tools, on_delta=None, force_required=False, force_tool=None):
         import urllib.request as urllib_req
         import logging as _logging
-        _base_url, _model, _api_key = self._route_model(messages)
+        _tool_intent = self._needs_tool_intent(messages)
+        _base_url, _model, _api_key = self._route_model(messages, force_complex=_tool_intent)
         url = _base_url.rstrip("/") + "/chat/completions"
         body = {
             "model": _model,
@@ -6404,7 +6439,8 @@ class ChatWindow(QMainWindow):
         # v4.60：强制调用指定工具（如 sys_info），优先级最高
         if force_tool:
             body["tool_choice"] = {"type": "function", "function": {"name": force_tool}}
-        elif force_required or redo:
+        elif force_required or redo or _tool_intent:
+            # v4.98：工具意图任务强制 required，杜绝弱模型退化成"文字演工具"
             body["tool_choice"] = "required"
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
         req = urllib_req.Request(url, data=payload, method="POST")

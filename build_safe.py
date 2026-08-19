@@ -45,7 +45,7 @@ build_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'build', 'A
 if os.path.exists(build_dir):
     shutil.rmtree(build_dir, ignore_errors=True)
 
-# 已为 deepseek-desktop 整个目录加入 Windows Defender 文件夹排除项，
+# 已为本项目目录加入 Windows Defender 文件夹排除项，
 # 实时防护不再锁 dist/ 产物，标准路径可直接覆盖。
 # 注意：distpath 必须是「dist」父目录，不能写成 dist/AgentDesktop——
 # 否则 COLLECT 的 name='AgentDesktop' 会再叠一层变成 dist/AgentDesktop/AgentDesktop/（双层），

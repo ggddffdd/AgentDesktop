@@ -386,7 +386,7 @@ REMEMBER_TOOL_DEFS = [
                 "properties": {
                     "fact": {
                         "type": "string",
-                        "description": "一条值得长期记住的事实，简洁陈述，例如「用户抖音笔名屋檐下的一缕灰」「用户厌恶拉踩竞品」「DeepSeek 是用户付费订阅的主力通道」",
+                        "description": "一条值得长期记住的事实，简洁陈述，例如「用户在某平台的笔名」「用户厌恶拉踩竞品」「DeepSeek 是用户付费订阅的主力通道」",
                     }
                 },
                 "required": ["fact"],

@@ -1601,44 +1601,24 @@ def tool_sys_info(cfg, app_dir, _progress=None):
     lines = ["## AgentDesktop 系统实时状态（权威清单 · 只准复述此清单）",
              f"_查询时间：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_", ""]
 
-    # —— 一、真实工具清单（直接枚举 TOOL_DEFS，禁止编造）——
-    CATS = {
-        "搜索与网页": ("web_search", "web_fetch", "browser_open", "browser_click", "browser_fill", "browser_read"),
-        "文件与命令": ("read_file", "write_file", "run_command", "run_python",
-                       "filesystem(MCP:读写工作区与deepseek-desktop目录)"),
-        "生图 / 生视频 / 识图": ("image_gen", "video_gen", "analyze_image"),
-        "记忆与知识库": ("remember", "search_memory", "rag_index", "rag_search",
-                         "context_compress", "context_summary"),
-        "数据与图表": ("db_query", "db_insert", "db_update", "db_delete", "chart_gen", "log_query"),
-        "系统控制": ("screenshot", "mouse_move", "mouse_click", "mouse_scroll", "keyboard_type",
-                     "keyboard_press", "clipboard_read", "clipboard_write", "window_list",
-                     "window_focus", "window_get_info", "process_list", "process_kill", "process_start"),
-        "应用控制": ("app_launch", "app_kill", "app_focus", "app_window_state", "app_list_controls",
-                     "app_click", "app_type", "app_get_text", "app_wait_for", "app_screenshot"),
-        "技能与工作流": ("use_skill", "skill_search", "skill_install", "create_skill", "run_workflow"),
-        "通知与通信": ("schedule", "send_email", "webhook_start", "webhook_stop", "webhook_events"),
-        "自省": ("sys_info",),
-    }
-    tool_desc = {}
+    # —— 一、真实工具清单（动态枚举 TOOL_DEFS，实时可信，禁止编造）——
+    lines.append(f"### 一、可直接调用的工具（共 {len(TOOL_DEFS)} 个，实时枚举自注册表）")
     for d in TOOL_DEFS:
-        nm = d.get("name") or d.get("function", {}).get("name")
-        ds = d.get("description") or d.get("function", {}).get("description", "")
-        first = ds.split("。")[0].split("\n")[0].strip()
-        tool_desc[nm] = first[:55]
-    tool_desc["filesystem(MCP:读写工作区与deepseek-desktop目录)"] = \
-        "MCP 服务器，读写工作区与 deepseek-desktop 目录"
-    lines.append(f"### 一、可直接调用的工具（共 {len(TOOL_DEFS)} 个，以下为真实注册清单）")
-    for cat, names in CATS.items():
-        lines.append(f"**{cat}**：")
-        for nm in names:
-            lines.append(f"- {nm}：{tool_desc.get(nm, '（见系统提示工具说明）')}")
+        fn = d.get("function", {}) if isinstance(d, dict) else {}
+        nm = fn.get("name", "")
+        if not nm:
+            continue
+        ds = (fn.get("description", "") or "").strip().split("。")[0].split("\n")[0].strip()
+        lines.append(f"- {nm}：{ds[:55]}")
     lines.append("")
 
     # —— 二、未配置 / 未开启项（显式声明，绝不可声称可用）——
     lines.append("### 二、未配置 / 未开启项（严禁声称可用）")
     ov = cfg.get("obsidian_vault_path", "")
-    lines.append(f"- Obsidian Vault：{'未配置' if not ov else ov} → RAG 用的是本地 rag_data 目录"
-                 f"（rag_index/rag_search），**不是 Obsidian 语义检索**")
+    if ov:
+        lines.append(f"- Obsidian Vault：已配置（{ov}，.md 已索引进 RAG；检索走 rag_index/rag_search 本地向量库）")
+    else:
+        lines.append(f"- Obsidian Vault：未配置（RAG 只用本地 rag_data 目录，未接 Obsidian）")
     lines.append(f"- Webhook：{'未开启' if not cfg.get('webhook_enabled') else '已开启'}"
                  f"（webhook_start/stop/events 工具存在，但需先开启 webhook_enabled）")
     sf = cfg.get("siliconflow", {}) or {}
@@ -1647,14 +1627,22 @@ def tool_sys_info(cfg, app_dir, _progress=None):
     lines.append(f"- 语音合成 TTS：edge-tts（免 key，可用，属应用内功能非 agent 工具）")
     lines.append("")
 
-    # —— 三、技能 ——
+    # —— 三、技能（动态统计真实技能数，杜绝硬编码魔数）——
     try:
-        from config import load_dynamic_skills
-        dyn = load_dynamic_skills()
-        dyn_count = dyn.count("name: ") if dyn else 0
-        lines.append(f"### 三、技能（{13 + dyn_count} 个，见系统提示【可用技能】清单）")
+        from config import get_skill_scan_dirs
+        from skill_loader import get_available_skills
+        seen = set()
+        for d in get_skill_scan_dirs():
+            try:
+                for sk in get_available_skills(d):
+                    n = sk.get("name", "")
+                    if n and n not in seen:
+                        seen.add(n)
+            except Exception:
+                pass
+        lines.append(f"### 三、技能（{len(seen)} 个，见系统提示【可用技能】清单）")
     except Exception:
-        lines.append("### 三、技能（13 个核心，见系统提示【可用技能】清单）")
+        lines.append("### 三、技能（见系统提示【可用技能】清单）")
     lines.append("")
 
     # —— 四、本地数据库（SQLite）——

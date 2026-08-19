@@ -30,7 +30,7 @@ AUTO_REMEMBER_PROMPT = """
 只提取这三类，且只提取对话中明确的、可验证的事实与决定。如果对话中没有值得长期记忆的新信息，输出空数组 []。
 
 输出格式（纯 JSON 数组，不要 markdown 包裹）：
-[{"topic":"工作区路径","category":"用户偏好与约定","content":"用户工作区路径为 C:\\Users\\user\\WorkBuddy\\2026-07-11-22-26-49\\deepseek-desktop"}]
+[{"topic":"工作区路径","category":"用户偏好与约定","content":"用户工作区路径为 <PROJECT_DIR>"}]
 """
 
 log = logging.getLogger("dsdesktop")
@@ -224,6 +224,16 @@ class AgentWorker(QThread):
         "若任务确实已全部完成，请直接给出最终成果与产物路径，不要再空头承诺。"
     )
 
+    # v4.98 撒谎检测器配套：模型用文字"演"工具调用（伪造 [工具]/✅ 已保存/run_python(）
+    # 却不真发 tool_call 时，强制它真正调用工具，禁止口头编造结果。
+    _AGENT_FAKE_TOOL_INSTR = (
+        "你刚才并没有真正调用任何工具，只是用文字假装『已运行/已保存/已调用』——这是撒谎，"
+        "任务并没有完成。现在必须立即发出真实的 tool_call 让系统真正执行：写文件用 write_file、"
+        "跑代码用 run_python、搜索用 web_search、生图用 image_gen。"
+        "禁止再用『✅ 已保存』『[工具]』『run_python(...)』『已调用工具』这类文字伪造工具调用，"
+        "直接发出真实的 function call，让系统执行并返回真实结果。"
+    )
+
     # v4.60o：用户要求"记住/保存"真实能力时的内部指令——拿到 sys_info 真实数据后，
     # 用 remember 工具把能力清单写入长期记忆，下次启动自动回填系统提示，不再凭空编。
     _CAP_PERSIST_INSTRUCTION = (
@@ -269,6 +279,30 @@ class AgentWorker(QThread):
         markers = ("需要你", "请告诉", "请给", "请提供", "你的", "提供", "几个",
                    "多少", "什么", "如何", "怎么", "告诉", "补充", "了解", "信息")
         return any(m in t for m in markers)
+
+    def _looks_like_fake_tool_call(self, text):
+        """v4.98 撒谎检测器：模型不真发 tool_call，却用文字"演"工具调用
+        （伪造 [工具] run_python / ✅ 已保存:路径 / run_python( / 伪 tool_call JSON 等）。
+        在无 tool_calls 的纯文本响应里命中这些标记，即视为撒谎，不当最终结果展示。"""
+        t = text or ""
+        if not t:
+            return False
+        markers = (
+            "[工具]", "[工具调用]", "run_python(", "run_python (",
+            "已保存:", "✅ 已保存", "🔄 重新生成", "✏️ 改写问题",
+            "工具调用：", "工具调用:", "调用了工具", "已调用工具",
+            "已写入文件", "代码已保存", "文件已生成", "文件已创建",
+            '"name": "run_python"', '"name": "write_file"', '"name": "web_search"',
+            '"name": "image_gen"', '"name": "run_command"',
+        )
+        if any(m in t for m in markers):
+            return True
+        # 伪 tool_call JSON 结构：含 "function" 且像工具调用
+        low = t.lower()
+        if '"function"' in low and ("run_python" in low or "write_file" in low
+                                    or "web_search" in low or '"name"' in low):
+            return True
+        return False
 
     def _step_tools_all_failed(self):
         """v4.66：检查本轮工具结果是否全部是失败（用于死循环护栏）。
@@ -424,6 +458,8 @@ class AgentWorker(QThread):
         self._nudge_count = 0  # v4.60：nudge 触发次数，独立于 _force_retries
         MAX_DURATION = 180     # v4.60：单次 agent 最长 3 分钟，超时自动停止
         MAX_FAIL_STEPS = 3     # v4.66：连续工具全失败步上限，超出则早停防死循环
+        self._fake_steps = 0   # v4.98：文字伪造工具调用计数（撒谎检测）
+        MAX_FAKE_RETRIES = 3   # v4.98：伪造工具调用最多容忍次数，超出诚实提示并停止
         self._needs_action = self._detect_action_intent(self.messages)
         self._any_tool_executed = False  # 本轮是否已真正执行过工具
         self._force_next = False  # 下一步强制模型调工具
@@ -595,7 +631,29 @@ class AgentWorker(QThread):
                 # v4.59 checkpoint：每步工具执行完增量同步，崩了可从断点恢复
                 self._sync_to_session(mw)
             else:
-                # 模型返回纯文本、无工具调用
+                # v4.98 撒谎检测器：模型用文字"演"工具调用（伪造 [工具]/✅ 已保存/
+                # run_python( 等）却不真发 tool_call，这种内容不能当最终结果展示，
+                # 必须强制它真正调工具。
+                if content and self._looks_like_fake_tool_call(content):
+                    self._fake_steps += 1
+                    log.warning("Agent 检测到文字伪造工具调用（第 %d 次），强制真正执行",
+                                self._fake_steps)
+                    self.status.emit(
+                        f"⚠ 检测到伪造工具调用（第 {self._fake_steps}/{MAX_FAKE_RETRIES} 次），"
+                        "正在强制真正执行…")
+                    self._force_next = True
+                    if self._fake_steps >= MAX_FAKE_RETRIES:
+                        self.stream_commit.emit(
+                            "\n\n⚠️ Agent 多次用文字伪造工具调用（声称『已保存/已运行』"
+                            "实际却未执行任何工具），已停止。这类任务建议切到 DeepSeek 模型——"
+                            "免费模型函数调用能力弱，容易口头编造结果。请明确下达具体操作"
+                            "（如：运行 Python 代码 XX、把内容写入文件 XX）。")
+                        self._sync_to_session(mw)
+                        break
+                    self.messages.append({"role": "user", "content": self._AGENT_FAKE_TOOL_INSTR})
+                    self._idle_steps = 0
+                    continue
+                # 正常纯文本分支：模型确实无工具可调用，给出最终回答
                 if content:
                     self.stream_commit.emit(content)
                 # v4.60 重构：nudge 不再依赖 _any_tool_executed。
