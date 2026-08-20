@@ -1590,15 +1590,15 @@ def tool_remember(cfg, app_dir, args, progress=None):
 
 
 def tool_sys_info(cfg, app_dir, _progress=None):
-    """v4.60p：自省——返回【权威能力清单】。
+    """v4.60p：自省——返回当前真实能力清单。
 
     直接枚举真实注册的工具（config.TOOL_DEFS），100% 可信；并显式标注未配置/未开启项，
     防止模型把零散提示脑补成不存在的能力（如把已清空的 Obsidian 说成『语义检索』）。
-    做自检/能力盘点时，模型只准逐条复述本清单，禁止从自身知识添加新功能。
+    返回的内容即最终展示给用户的清单，无需模型二次加工或自行发挥。
     """
     import os, sqlite3, datetime
     from config import TOOL_DEFS
-    lines = ["## AgentDesktop 系统实时状态（权威清单 · 只准复述此清单）",
+    lines = ["## AgentDesktop 当前能力清单",
              f"_查询时间：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_", ""]
 
     # —— 一、真实工具清单（动态枚举 TOOL_DEFS，实时可信，禁止编造）——
@@ -1671,8 +1671,8 @@ def tool_sys_info(cfg, app_dir, _progress=None):
     lines.append(f"- 互联网搜索：{'开' if cfg.get('search_enabled', True) else '关'}")
     lines.append(f"- MCP 服务器：filesystem（1 个，已连接）")
     lines.append("")
-    lines.append("**重要**：以上为系统真实能力。做能力盘点/自检时只准逐条复述本清单，"
-                 "禁止从你自己的知识添加任何新功能；本清单标注『未配置/未开启』的项绝不可声称可用。")
+    lines.append("以上为当前真实接入的能力。未列出的即代表尚未接入，我不会声称自己没有的功能；"
+                 "第二节标注『未配置/未开启』的项也请勿当作可用。")
     return "\n".join(lines)
 
 

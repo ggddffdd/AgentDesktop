@@ -328,7 +328,7 @@ class OrchestrateWorker(QThread):
             "（悬念/反转/信息差/情绪爆发）；番茄小说节奏快、章末必须留悬念。\n"
             "3. 交付：番茄一稿一投（一次性成稿、不反复折腾）；场景化叙事、show-don't-tell。\n"
             "4. 纯虚构：严禁把作者的真实家庭成员或本人写进角色"
-            "（作者本人、其家人、孩子的名字等私人信息，与小说无关；"
+            "（例如『用户』『用户』『Agent』『宠物』『user』等——这些只是作者的私人信息，与小说无关；"
             "除非作者明确要求，否则不得作为角色名、原型或背景人物出现）。角色、地名、机构一律原创。\n"
             "5. 各司其职：严格按当前流水线环节的要求输出，不越界、不提前做后续环节的事。\n"
             "6. 短篇必须写完整：开头→发展→高潮→结局四段齐备，收尾干净、人物命运有交代，"
@@ -6399,6 +6399,12 @@ class ChatWindow(QMainWindow):
             "调用工具", "用工具", "自动化", "定时", "提醒",
             # 数据分析
             "分析", "统计", "报表", "数据处理", "excel", "表格", "csv",
+            # 自省/能力盘点（命中即强制走 DeepSeek 并 required，确保真调 sys_info 工具，
+            # 避免弱模型退化成吐文本、被循环误判为『没调工具』）
+            "你的能力", "你会什么", "你能做什么", "你会哪些", "能力清单", "功能清单",
+            "有哪些功能", "有哪些工具", "会干啥", "能干什么", "能调用什么",
+            "介绍一下你自己", "介绍你自己", "自我介绍", "列个清单", "清单给我",
+            "你有什么功能", "你能调用",
         )
         last_user = ""
         for msg in reversed(messages or []):
@@ -6411,10 +6417,43 @@ class ChatWindow(QMainWindow):
             return False
         return any(kw in last_user.lower() for kw in KEYWORDS)
 
+    def _user_refuses_tools(self, messages):
+        """v4.100：检测用户是否明确要求『不要调用工具/纯聊天』。
+        若用户说过此类约束，且其后没有下达新的明确工具指令，则本轮禁止调工具
+        （由调用方设 tool_choice=none），尊重用户约束，避免闲聊被 remember 等
+        工具自发调用打断。
+        判断依据：扫描全部消息，取最后一次『拒绝调工具』与最后一次『明确工具动作』
+        的位置——若拒绝在动作之后（或从未有动作），视为当前仍应尊重『不调工具』。"""
+        REFUSE_KW = (
+            "不要调用工具", "不要使用工具", "别调用工具", "别用工具", "不用工具",
+            "不要调工具", "别调工具", "纯聊天", "只是聊", "只是聊天", "光聊天",
+            "不要动工具", "先别用工具", "不要开工具", "不用开工具", "别开工具",
+        )
+        ACTION_KW = (
+            "搜", "写", "生成", "运行", "执行", "python", "创建", "导出", "分析",
+            "读文件", "打开文件", "读一下", "做图", "生图", "生视频", "截图", "下载",
+            "安装", "提醒", "调用工具", "用工具", "查一下", "上网查", "爬", "整理",
+            "发", "监控", "剪辑", "配音", "做视频", "画图",
+        )
+        last_refuse = -1
+        last_action = -1
+        for i, m in enumerate(messages or []):
+            if m.get("role") != "user":
+                continue
+            c = m.get("content", "")
+            if not isinstance(c, str):
+                continue
+            if any(k in c for k in REFUSE_KW):
+                last_refuse = i
+            if any(k in c for k in ACTION_KW):
+                last_action = i
+        return last_refuse >= 0 and last_refuse > last_action
+
     def _agent_call(self, messages, tools, on_delta=None, force_required=False, force_tool=None):
         import urllib.request as urllib_req
         import logging as _logging
         _tool_intent = self._needs_tool_intent(messages)
+        _refuse_tools = self._user_refuses_tools(messages)
         _base_url, _model, _api_key = self._route_model(messages, force_complex=_tool_intent)
         url = _base_url.rstrip("/") + "/chat/completions"
         body = {
@@ -6439,6 +6478,11 @@ class ChatWindow(QMainWindow):
         # v4.60：强制调用指定工具（如 sys_info），优先级最高
         if force_tool:
             body["tool_choice"] = {"type": "function", "function": {"name": force_tool}}
+        elif _refuse_tools:
+            # v4.100：用户明确要求"不调工具/纯聊天"且其后无新工具指令时，
+            # 本轮彻底禁止调工具（即便命中工具意图也尊重用户约束），避免
+            # 闲聊被 remember 等工具自发调用打断。
+            body["tool_choice"] = "none"
         elif force_required or redo or _tool_intent:
             # v4.98：工具意图任务强制 required，杜绝弱模型退化成"文字演工具"
             body["tool_choice"] = "required"

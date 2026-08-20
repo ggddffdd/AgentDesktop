@@ -30,7 +30,7 @@ AUTO_REMEMBER_PROMPT = """
 只提取这三类，且只提取对话中明确的、可验证的事实与决定。如果对话中没有值得长期记忆的新信息，输出空数组 []。
 
 输出格式（纯 JSON 数组，不要 markdown 包裹）：
-[{"topic":"工作区路径","category":"用户偏好与约定","content":"用户工作区路径为 <PROJECT_DIR>"}]
+[{"topic":"工作区路径","category":"用户偏好与约定","content":"用户工作区路径为 C:\\Users\\user\\WorkBuddy\\2026-07-11-22-26-49\\AgentDesktop"}]
 """
 
 log = logging.getLogger("dsdesktop")
@@ -656,6 +656,11 @@ class AgentWorker(QThread):
                 # 正常纯文本分支：模型确实无工具可调用，给出最终回答
                 if content:
                     self.stream_commit.emit(content)
+                # v4.100：若上一轮工具调用被护栏拦截（_guard_blocked 仍为 True，
+                # 纯文本轮不会重置它），说明模型已尝试调工具只是被拦，不应再因
+                # "空回"触发 nudge 死循环，直接结束本轮，让已拦截的提示作为结果。
+                if self._guard_blocked:
+                    break
                 # v4.60 重构：nudge 不再依赖 _any_tool_executed。
                 # 模型连续 2 步空回（不调工具）→ 警告并强制；最多 3 次。
                 self._idle_steps += 1
@@ -963,6 +968,31 @@ class AgentWorker(QThread):
                 "duration_ms": int((time.time() - _t0) * 1000),
             })
             return
+        # v4.100：remember 会话级节流——闲聊或误操作下模型可能反复写记忆刷屏，
+        # 限制单次 Agent 运行内 remember 调用累计不超过 2 次，超出部分直接拦截并提示，
+        # 其余工具正常执行。
+        if not hasattr(self, "_remember_calls"):
+            self._remember_calls = 0
+        _rem_in_batch = sum(1 for tc in tool_calls
+                            if tc.get("function", {}).get("name") == "remember")
+        if _rem_in_batch and self._remember_calls >= 2:
+            _kept, _blocked_rem = [], []
+            for tc in tool_calls:
+                if tc.get("function", {}).get("name") == "remember":
+                    _blocked_rem.append(tc)
+                else:
+                    _kept.append(tc)
+            for tc in _blocked_rem:
+                fn = tc.get("function", {})
+                self.messages.append({
+                    "role": "tool",
+                    "tool_call_id": fn.get("id", ""),
+                    "content": "（系统提示：本次会话已写入足够记忆，为避免刷屏不再重复写入。如需记录请用更精简的事实。）",
+                })
+            self._guard_blocked = True  # 通知主循环：本次工具调用已被拦截
+            tool_calls = _kept
+        elif _rem_in_batch:
+            self._remember_calls += _rem_in_batch
         # 防"同参数疯狂调工具"护栏（v4.57）：同一批 (name, args) 签名与最近已执行的
         # 完全相同 → 判定为死循环空转，整批拦截并塞一条 tool 结果，逼模型出正文而非继续空转。
         if not hasattr(self, "_recent_tool_sigs"):

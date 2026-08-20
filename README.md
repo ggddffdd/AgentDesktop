@@ -1,203 +1,147 @@
 # AgentDesktop
 
-<div align="center">
+一个常驻 Windows 桌面的**本地 AI Agent 工作台**：系统托盘常驻 + 全局快捷键一键呼出 + 多步推理 Agent 循环 + 45+ 内置工具 + 多模型智能路由 + MCP 可扩展。
 
-**一个常驻 Windows 桌面的本地 AI Agent 工作台**
+技术栈：**Python + PySide6 + OpenAI 兼容 API + Chroma 向量库**，配合 pyautogui / pywinauto 做系统与软件自动化。免费可跑、代码可改可练手。
 
-托盘常驻 · 全局快捷键呼出 · 多步推理 Agent 循环 · 61 个内置工具<br>
-多模型智能路由 · 4 档风险权限引擎 · TaskGraph 并行子代理 · MCP 可扩展
-
-*Python + PySide6 · 25,000+ 行 · 无需付费云服务，填好 API Key 即可运行*
-
-**当前版本 v4.99**
-
-</div>
+> 当前版本 **v4.100**。本项目由个人桌面助手迭代而来，经脱敏后开源，供学习参考与二次开发。
 
 ---
 
-## 为什么是 AgentDesktop？
+## 版本更新
 
-大多数 AI 助手停留在「对话框」，AgentDesktop 让 AI **真正操作你的电脑**：搜资料、读写文件、跑代码、控制鼠标键盘、操作软件窗口、定时自动化——每一步都在权限引擎的管控之下，危险操作逐个确认，安全操作自动放行。
-
-它不是演示 Demo，而是一个作者本人**每天都在用的桌面助手**——自学 AI 4 个月、边踩坑边开发的第 1 个月作品，几十次迭代打磨 + 脱敏后开源。
-
-### 三个差异化设计
-
-**1. 权限引擎（不是简单的开关）**
-
-每个工具按副作用归入 4 档风险：`READ`（只读）→ `WRITE_LOCAL`（本地写入）→ `EXEC`（执行/控制）→ `EXTERNAL`（外部操作）。5 种执行模式自由组合：
-
-| 模式 | 行为 |
-|------|------|
-| `discuss` | 仅讨论，不执行任何操作 |
-| `plan` | 只做只读调研，不实际执行 |
-| `interactive` | 默认，危险操作逐个弹窗确认 |
-| `auto` | 全部直接执行（谨慎使用） |
-| `custom` | 仅白名单内免确认 |
-
-外加**路径作用域**（本地写入必须落在允许目录内）、**会话信任**（勾选后本会话免打扰）、**对外动作白名单**（EXTERNAL 类工具必须显式授权）三层安全边界。
-
-**2. TaskGraph 子代理并行**
-
-复杂任务自动拆成任务图：`TaskCreate` 建节点 → `addBlockedBy` 定依赖 → 引擎自动推进就绪节点（ThreadPoolExecutor 并行）。例如「多角度研究」工作流：3 个研究员子代理各自独立搜索，并行执行完毕后归并结果喂回主模型。
-
-**3. 全本地记忆系统**
-
-三层记忆：会话上下文压缩 + 长期记忆（对话后自动提取沉淀，topic 去重覆盖）+ 操作经验库（harness）。数据全部落在本地 `~/Documents/AgentDesktop/`，不出你的机器。
+- **v4.100**（2026-08-20）：修复闲聊场景体验问题——① 尊重「不要调用工具 / 纯聊天」等指令，闲聊不再反复调工具；② 收紧 `remember` 触发，仅用户显式要求才写入记忆，避免随口闲聊被刷屏式记录；③ 修复 `remember` 会话节流与 nudge 护栏误触发导致的「已多次尝试」死循环。
+- **v4.99**（2026-08-19）：防「假装调工具」撒谎双层修复（路由层强制工具意图走 DeepSeek + 主循环撒谎检测器），并盘点累积能力。
+- **v4.98**（2026-08-19）：模型智能路由、长文档分段读取、任务完成通知、敏感文件拦截。
 
 ---
 
-## 核心能力一览
+## 核心能力
 
 ### 🧠 Agent 循环引擎
-- 多步推理：LLM 自主决定工具链，最多 8 步，边想边做
-- 断点续跑：长任务中断后可从轨迹记忆恢复
-- 轨迹日志：每一步决策可追溯
+- 多步推理：LLM 自主决定调用哪条工具链，最多 8 步，边想边做。
+- 权限引擎（5 档风险模式）：危险操作（写文件 / 执行命令 / 系统操控）逐个确认，安全工具自动放行，支持并发执行。
+- 子代理并行（TaskGraph DAG）：`run_workflow` 可将任务拆成多节点并行跑（如多角度研究），结果归并喂回模型。
 
-### 🔧 61 个内置工具
-| 类别 | 数量 | 代表工具 |
-|------|------|----------|
-| 联网 | 2 | `web_search`（多后端自动降级）、`web_fetch`（敏感文件拦截） |
-| 文件/代码 | 4 | `read_file`（长文档分段）、`write_file`、`run_command`、`run_python` |
-| 知识库 | 2 | `rag_index` / `rag_search`（Chroma 本地向量库） |
-| 多模态 | 3 | `image_gen` / `video_gen` / `analyze_image` |
-| 自动化 | 4 | `schedule`、`create/list/delete_automation` |
-| 系统操控 | 14 | 截屏、鼠标、键盘、剪贴板、窗口、进程 |
-| 软件操控 | 10 | 应用启动/强杀/聚焦、控件树枚举、UI 自动化 |
-| 浏览器 | 4 | `browser_open/read/click/fill`（带确认机制） |
-| 其他 | 18 | 邮件、数据库 CRUD、Webhook、图表、记忆、技能… |
+### 🔧 45+ 内置工具
+- **联网**：`web_search`（多后端自动降级）、`web_fetch`（含敏感文件拦截）
+- **文件/代码**：`read_file`（支持长文档分段）、`write_file`、`run_command`、`run_python`
+- **知识库**：`rag_index` / `rag_search`（Chroma 本地向量库）、Obsidian 异步冷启动
+- **多模态**：`image_gen` / `video_gen` / `analyze_image`（生图、生视频、识图）
+- **自动化**：`schedule`、`create/list/delete_automation`（一次性/每日/每周/间隔定时任务）
+- **系统操控**（14 个）：截屏、鼠标、键盘、剪贴板、窗口、进程
+- **软件操控**（10 个）：应用启动/强杀/聚焦、控件树枚举、UI 自动化
+- **浏览器**：`browser_open/read/click/fill`（带确认机制）
+- **其他**：邮件发送、数据库增删改查、Webhook 收发、图表生成、系统信息、上下文压缩/摘要
+- **记忆**：`remember` / `search_memory`（会话级与长期记忆）
+- **技能**：`use_skill` / `create_skill`（技能热插拔 + 待审核队列）
 
-### 🤖 多模型智能路由
-不同任务自动路由到不同模型：日常对话走便宜模型，复杂推理/多模态走旗舰模型，一个配置文件管多个 provider（OpenAI 兼容协议）。
+### 🎛️ 多模型 + 智能路由
+- 内置预设：DeepSeek、Agnes（永久免费）、硅基流动、智谱 GLM、腾讯混元、魔搭 ModelScope，可自定义任意 OpenAI 兼容端点。
+- 智能路由：简单问题走免费模型，命中关键词或消息超长自动升级到复杂模型，复杂模型无 key 自动回退，不中断。
 
-### 🧩 扩展机制
-- **技能热插拔**：`create_skill` 动态生成技能，`use_skill` 直接调用，`skills/` 目录放 Markdown 即可
-- **MCP 接入**：标准 Model Context Protocol 客户端，接第三方工具服务
-- **待审核技能队列**：AI 自己写的技能先进队列，人工确认后才生效
+### 🧬 记忆与自进化
+- 三层记忆：会话记忆 + 操作经验库（harness，支持版本回滚）+ 长任务轨迹记忆（few-shot 注入）。
+- 软自进化：经验库自动沉淀 refine；模型自动创建的技能先进「待审核」目录，人工通过后才生效。
 
-### 🎛️ 多面板工作台
-聊天面板之外还有：导演台（任务编排）、数字人分身（语音交互 + ASR/TTS）、视频流水线面板。
+### ⚙️ 工程韧性
+- 长任务断点续跑 + 心跳 + 自动重试（崩了能续，卡了会换写法重试）。
+- 任务完成通知（托盘弹窗 + 语音），仅长任务/定时任务触发。
+- 启动性能埋点、崩溃日志兜底、记忆文件自愈。
 
----
-
-## 近期重要更新
-
-- **v4.99 — 修复「能力盘点死循环」**：用户问"把你现在的能力列个清单"时，早期版本的系统信息工具会返回带机器人腔的硬编码清单并反复触发拦截。现已改为**实时枚举真实能力**（从工具注册表动态生成，不编造）+ 将"列清单 / 你会什么"等自省类问题**强制路由到支持工具调用的模型**并 `required` 真调系统信息工具，一次给出准确清单。
-- **v4.98 — 防 Agent 撒谎双层机制**：① **路由层**——一旦识别到写文件、运行代码、搜索、生图生视频、调用工具、自动化等意图，强制走支持 function calling 的模型并 `tool_choice=required`，杜绝"文字演工具"；② **主循环结论真实性检测**——拦截"✅已保存""run_python("这类伪造的工具调用结论，强制真正调用工具，最多重试 3 次，超次则诚实告知无法完成，而不是编造结果。
+### 🎤 语音与数字人（进阶）
+- 实时语音对话（ASR / TTS，按住说话）。
+- 数字人分身面板、导演台 + 视频流水线（剧本 → 分镜 → 逐镜生成 → 合成）。
 
 ---
 
 ## 快速开始
 
-### 环境要求
-- Windows 10/11（系统操控依赖 Windows API）
-- Python 3.10+
-- 任一 OpenAI 兼容 API Key（OpenAI / DeepSeek / 智谱 / 本地 Ollama 均可）
+### 1. 环境
+- Windows 11
+- Python 3.10+（加入 PATH）
 
-### 安装
-
+### 2. 安装依赖
 ```bash
-git clone https://github.com/ggddffdd/AgentDesktop.git
-cd AgentDesktop
 pip install -r requirements.txt
+```
+
+### 3. 配置 API Key
+首次运行会在 `~/Documents/AgentDesktop/` 下生成 `config.json`，填入模型密钥即可。默认走 DeepSeek（`https://api.deepseek.com`），也可在界面顶部「模型」下拉里切换预设。
+
+> 想零成本：切换到 **Agnes**（永久免费）或 **硅基流动**（注册送额度）等预设即可，无需改代码。
+
+### 4. 运行
+```bash
 python main.py
 ```
 
-首次运行会在 `~/Documents/AgentDesktop/` 生成 `config.json`，填入你的 API Key 和 base_url 即可。
+### 5. 使用
+| 操作 | 快捷键 |
+|------|--------|
+| 呼出 / 隐藏窗口 | `Ctrl + Alt + X` |
+| 技能管理器 | `Ctrl + Alt + S` |
+| 工作流模板 | `Ctrl + Alt + W` |
+| 发送消息 | `Enter`（`Shift + Enter` 换行） |
 
-### 最小配置示例
+- 关窗口不退出，缩回系统托盘；托盘右键 → 退出 才真正关闭。
+- 对话自动保存到 `~/Documents/AgentDesktop/`，下次打开自动恢复。
 
-```json
-{
-  "api_key": "sk-xxx",
-  "base_url": "https://api.deepseek.com/v1",
-  "model": "deepseek-chat"
-}
+---
+
+## 目录结构
+
+```
+AgentDesktop/
+├── main.py                 # 主入口（托盘/热键/网关自启/新手引导）
+├── ui.py                   # 主界面（对话/流式渲染/多面板导航）
+├── agent.py                # Agent 循环 + 工具调用分发 + 模型路由
+├── config.py               # 配置、模型预设、工具 schema、MCP/RAG 初始化
+├── tools.py                # 34 个核心工具实现与注册
+├── tool_defs.py            # 工具 schema 定义
+├── risk.py                 # 权限引擎（风险分级）
+├── permissions.py          # 权限决策
+├── system_control_tools.py # 系统操控（14 工具）
+├── software_control_tools.py # 软件操控（10 工具）
+├── browser_control_tools.py  # 浏览器自动化
+├── automation.py           # 定时/自动化任务
+├── task_graph.py           # 子代理并行 DAG
+├── harness.py              # 操作经验库
+├── trace_log.py            # 轨迹记忆
+├── task_resume.py          # 断点续跑
+├── memory_store.py         # 记忆存储与自愈
+├── skill_loader.py         # 技能热插拔
+├── rag.py                  # 向量知识库
+├── voice.py                # 语音 ASR/TTS
+├── digital_twin_panel.py   # 数字人分身
+├── director_panel.py       # 导演台
+├── video_pipeline.py       # 视频流水线
+└── ...
 ```
 
-### 打包成 exe（可选）
+---
+
+## 打包成 exe（可选）
+
+仓库提供 `AgentDesktop.spec`（PyInstaller），可打包为免装 Python 的独立程序：
 
 ```bash
 pip install pyinstaller
 pyinstaller AgentDesktop.spec
 ```
 
-产物在 `dist/AgentDesktop/`，免装 Python 独立运行。
-
----
-
-## 架构
-
-<div align="center">
-
-<img src="architecture.png" alt="AgentDesktop 整体架构：用户交互层 → Agent 核心 → 多模型路由 → 权限引擎 → 工具执行层 → 本地数据层" width="860">
-
-</div>
-
-**关键数据流**：用户指令 → AgentWorker（QThread）→ LLM 推理 → 权限引擎 decide() → 工具执行（可并行）→ 结果回流 → 循环直到任务完成。UI 与引擎通过 Qt Signal 解耦，确认弹窗走 `confirm_action` 信号回调。
-
-<details>
-<summary>模块清单（点击展开）</summary>
-
-```
-main.py                    入口
-├── agent.py               Agent 循环引擎（QThread 多线程）
-│   ├── tools.py           核心工具（联网/文件/知识库/多模态/记忆 33 工具）
-│   ├── system_control_tools.py    系统操控（14 工具）
-│   ├── software_control_tools.py  软件操控（10 工具）
-│   └── browser_control_tools.py   浏览器自动化（4 工具）
-├── risk.py                风险分类（4 档，权限引擎的唯一事实来源）
-├── permissions.py         权限引擎（5 模式 + 路径作用域 + 会话信任）
-├── task_graph.py          任务图引擎（DAG + 线程池并行）
-├── memory_store.py        记忆存储（长期记忆 + 自愈）
-├── harness.py             操作经验库
-├── trace_log.py           轨迹记忆
-├── task_resume.py         断点续跑
-├── skill_loader.py        技能热插拔
-├── rag.py                 向量知识库（Chroma）
-├── automation.py          定时/自动化任务
-├── voice.py               语音 ASR/TTS
-├── mcp_client.py          MCP 协议客户端
-├── ui.py                  主界面（多面板工作台）
-├── digital_twin_panel.py  数字人分身面板
-├── director_panel.py      导演台面板
-└── video_pipeline.py      视频流水线
-```
-
-</details>
-
----
-
-## 适用场景
-
-- 📚 **学习 Agent 工程**：完整的多步推理循环、权限设计、记忆系统实现，代码可读可改
-- 🛠️ **二次开发自己的桌面助手**：模块化设计，换 LLM / 加工具 / 改 UI 都有清晰切入点
-- 💻 **日常生产力**：多角度调研、文档处理、定时自动化、批量软件操作
-
-## 不适用场景（诚实说明）
-
-- ❌ macOS / Linux（系统操控层依赖 Windows API，跨平台需自行适配）
-- ❌ 需要企业级多用户/审计合规的场景（这是个人工具，不是平台）
+产物在 `dist/AgentDesktop/`。首次运行会在 `~/Documents/AgentDesktop/` 生成 `config.json`，填好 key 即可用。
 
 ---
 
 ## 安全提醒
 
-- `config.json` 含你的 API Key，**别分享、别上传公网**
-- `~/Documents/AgentDesktop/` 下有聊天记录、记忆、技能等本地数据，注意保护
-- 危险工具（执行命令、系统/软件操控、浏览器点击）默认需要确认；请勿在不受信环境开启 `auto` 模式
-- EXTERNAL 类工具（发邮件、webhook）默认不放行，需在配置里显式加入 `external_allow` 白名单
+- `config.json` 含你的 API Key，**别分享、别上传公网**。
+- `~/Documents/AgentDesktop/` 下有聊天记录、记忆、技能等本地数据，注意保护。
+- 危险工具（执行命令、系统/软件操控、浏览器点击）默认需要确认；请勿在不受信环境开启「免确认」模式。
 
 ---
 
 ## 许可证
 
 本项目仅供学习与个人使用。二次开发与分发请遵守相关法律法规与各模型服务商条款。
-
----
-
-<div align="center">
-
-*如果这个项目对你有帮助，欢迎 Star 支持 ⭐*
-
-</div>
