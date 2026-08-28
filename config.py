@@ -23,8 +23,12 @@ else:
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "AgentDesktop", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.100"
-APP_BUILD_DATE = "2026-08-20"
+APP_VERSION = "v4.102"
+APP_BUILD_DATE = "2026-08-22"
+# v4.102（2026-08-22）图像输入链路：DeepSeek 通道模型换 deepseek-v4-flash-vision-exp，
+# ui.py 支持视觉模型保留 image_url、普通对话/Agent 带图路由视觉模型。
+# v4.101（2026-08-21）停止按钮 + 断点续传：普通 Agent 任务停止→检查点 paused→「▶ 继续上次任务」
+# + 编排取消保留检查点可续跑（task_resume.mark_paused / _resume_agent_task / _scan_agent_resume）。
 # v4.85（2026-08-17）集成版：生视频分辨率选择器（8 预设，实测 Agnes 透传任意 WxH 至 4K）
 # + 数字人分身面板（digital_twin_panel，本人形象库+口播+首帧锁定）
 # + 导演台面板（director_panel + video_pipeline 内核：LLM 剧本/分镜→逐镜生成→尾帧接力→ffmpeg 合成）。
@@ -141,7 +145,7 @@ DEFAULT_CONFIG = {
         }
     ],
     "model_profiles": {
-        "DeepSeek 官方": {"base_url": "https://api.deepseek.com", "model": "deepseek-chat", "api_key": ""},
+        "DeepSeek 官方": {"base_url": "https://api.deepseek.com", "model": "deepseek-v4-flash-vision-exp", "api_key": ""},
         "硅基流动": {"base_url": "https://api.siliconflow.cn/v1", "model": "deepseek-ai/DeepSeek-V3", "api_key": ""},
         "智谱 GLM": {"base_url": "https://open.bigmodel.cn/api/ai/v1", "model": "glm-4-flash", "api_key": ""},
         "腾讯混元": {"base_url": "https://api.hunyuan.cloud.tencent.com/v1", "model": "hunyuan-lite", "api_key": ""},
@@ -432,6 +436,42 @@ AGENT_RESUME_STEPS = 20
 AGENT_RESUME_ROUNDS = 2
 TOOL_READ_LIMIT = 8000
 TOOL_RESULT_LIMIT = 6000
+
+# ---------- v4.102 fix12：Agent 单任务 token 预算熔断 ----------
+# 背景：续跑/步数预算（AGENT_RESUME_*）只约束「轮次」，不约束「token 花销」。
+# DeepSeek 付费路由一旦被大量触发（复杂任务自动升舱），单任务 token 可无上限
+# 累积——这正是 Codex /goal 烧钱的同源风险。Agnes 免费主通道不烧钱，付费通道
+# 必须设红线。阈值默认保守（200K），**设为 0 即完全禁用熔断**（行为回退）。
+AGENT_TOKEN_BUDGET = 200000           # 单任务 token 硬上限（0 = 禁用熔断）
+AGENT_TOKEN_WARN = 0.8                # 达预算该比例时提前告警一次
+AGENT_TOKEN_BUDGET_DEEPSEEK = 150000  # 付费通道单独更紧（0 = 跟随总预算）
+
+
+def get_agent_token_budget(cfg=None):
+    """取当前生效的 token 预算配置：优先 config.json（cfg），回退模块默认。
+
+    返回 (budget, warn_ratio, deepseek_budget)。
+    budget=0 表示禁用熔断；deepseek_budget=0 表示付费通道跟随总预算。
+    """
+    d = cfg if isinstance(cfg, dict) else {}
+    try:
+        budget = int(d.get("agent_token_budget", AGENT_TOKEN_BUDGET))
+    except (TypeError, ValueError):
+        budget = AGENT_TOKEN_BUDGET
+    try:
+        warn = float(d.get("agent_token_warn", AGENT_TOKEN_WARN))
+    except (TypeError, ValueError):
+        warn = AGENT_TOKEN_WARN
+    try:
+        ds = int(d.get("agent_token_budget_deepseek",
+                       AGENT_TOKEN_BUDGET_DEEPSEEK))
+    except (TypeError, ValueError):
+        ds = AGENT_TOKEN_BUDGET_DEEPSEEK
+    if budget < 0:
+        budget = 0
+    if not 0 < warn <= 1:
+        warn = AGENT_TOKEN_WARN
+    return budget, warn, ds
 
 
 # ---------- 技能库（v4.5，DEFAULT_SKILLS 仅作工具栏技能兜底常量，不再落盘 skills.json）----------

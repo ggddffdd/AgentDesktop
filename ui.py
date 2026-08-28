@@ -253,6 +253,7 @@ class OrchestrateWorker(QThread):
         self.task_id = task_id or task_resume.new_task_id()
         self.start_stage = max(0, int(start_stage))
         self._stop_requested = False
+        self._cancelled = False  # v4.101：用户取消编排（保留检查点可续跑）
         # 续写时：长篇章节号 +1，短篇仍视为第 1 段（扩写）；断点恢复(start_stage>0)则沿用原章节号
         if prev_state and self.length_type == "长篇":
             self.chapter = prev_state.get("chapter", 0) + (1 if self.start_stage == 0 else 0)
@@ -1262,12 +1263,186 @@ def _flatten_text_content(content_list):
     return "\n".join(texts).strip()
 
 
-def _sanitize_msg_for_api(m):
+def _sanitize_filename(name):
+    """v4.102 hotfix：清洗 Windows 文件名非法字符（\\ / : * ? " < > |），
+    并裁掉首尾空格/点。返回清洗后的安全文件名；空结果回退为 'file'。"""
+    if not name:
+        return "file"
+    safe = re.sub(r'[\\/:*?"<>|]', "_", name)
+    safe = safe.strip().strip(".")
+    return safe or "file"
+
+
+def _vision_debug(msg):
+    """v4.102 fix5：写视觉链路调试日志到 ~/Documents/AgentDesktop/vision_debug.log，
+    用户/我们都能找得到（之前写 APP_DIR，源码与 exe 路径不同导致用户找不到）。"""
+    try:
+        from datetime import datetime
+        log_dir = os.path.expanduser("~/Documents/AgentDesktop")
+        os.makedirs(log_dir, exist_ok=True)
+        p = os.path.join(log_dir, "vision_debug.log")
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
+
+
+def _compress_image_for_api(path, max_dim=1568, quality=85):
+    """v4.102 fix4+5：图片预处理。
+    fix4：避免真实截图多张发图时 payload 超 DeepSeek 视觉模型单请求体限制（>10MB 返 400）。
+    fix5：**无论大小先强制 convertToFormat(RGB888) 标准化**，防止 CMYK/灰度/索引色/异常
+    PNG 被 DeepSeek 拒为 unsupported image（实测纯 RGB/ARGB 都接受，唯独某些剪贴板格式被拒）。
+
+    策略：读图后立即 RGB888 标准化 → 若宽/高>max_dim 等比缩放 → 转 JPEG 条件：
+    原>200KB 或需缩放 或 含 alpha（带透明的图转 JPEG 走 alpha 展平到白底）。
+    失败时返 None（send 走直接读 PNG 的 fallback）。"""
+    try:
+        from PySide6.QtGui import QImage, QPainter
+        from PySide6.QtCore import Qt, QBuffer, QIODevice
+        import base64 as _b64
+        orig_kb = os.path.getsize(path) // 1024
+        img = QImage(path)
+        if img.isNull():
+            _vision_debug(f"compress: QImage.isNull for {os.path.basename(path)}")
+            return None
+        # 关键：强制 RGB888 标准化，消除 CMYK/灰度/索引色等不被 DeepSeek 接受的格式
+        fmt_rgb = getattr(getattr(QImage, "Format", QImage), "Format_RGB888", None) or getattr(QImage, "Format_RGB888", None)
+        if fmt_rgb and img.format() != fmt_rgb:
+            src_fmt = str(img.format())
+            img = img.convertToFormat(fmt_rgb)
+            _vision_debug(f"compress: format convert {src_fmt} -> RGB888 for {os.path.basename(path)}")
+        w, h = img.width(), img.height()
+        need_resize = max(w, h) > max_dim
+        if need_resize:
+            img = img.scaled(max_dim, max_dim, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        # 转 JPEG 条件：原 >200KB 或需缩放 或 含 alpha（小但异常格式也强制 JPEG 更稳）
+        use_jpeg = orig_kb > 200 or need_resize or img.hasAlphaChannel()
+        buf = QBuffer()
+        buf.open(QIODevice.WriteOnly)
+        if use_jpeg and img.hasAlphaChannel():
+            # alpha 展平到白底，避免 JPEG 出现黑边
+            bg = QImage(img.size(), fmt_rgb)
+            bg.fill(0xFFFFFFFF)
+            p = QPainter(bg)
+            p.drawImage(0, 0, img)
+            p.end()
+            img = bg
+        if use_jpeg:
+            img.save(buf, "JPEG", quality)
+            mime = "image/jpeg"
+        else:
+            img.save(buf, "PNG")
+            mime = "image/png"
+        raw = bytes(buf.data())
+        if len(raw) < 100:  # 太小怀疑输出损坏
+            _vision_debug(f"compress: output too small ({len(raw)}B) for {path}")
+            return None
+        final_kb = len(raw) // 1024
+        b64 = _b64.b64encode(raw).decode()
+        url = f"data:{mime};base64,{b64}"
+        _vision_debug(f"compress OK: {os.path.basename(path)} | {w}x{h} | {orig_kb}KB->{final_kb}KB | mime={mime}")
+        return (url, mime, orig_kb, final_kb, need_resize or use_jpeg)
+    except Exception as e:
+        _vision_debug(f"compress EXC for {os.path.basename(path)}: {type(e).__name__}: {e}")
+        return None
+
+
+def _normalize_image_dataurl(url):
+    """v4.102 fix6：把任意 image data URL 重编码为 DeepSeek 视觉模型稳接受的 RGB JPEG。
+    作为「最后一道关卡」覆盖所有发图来源（贴图/附件/历史消息/兜底回退）——只要进 API
+    前统一过一遍，即可规避特殊格式/超大图被拒（HTTP 400 无正文）的情况。无法解码则原样返回。"""
+    if not isinstance(url, str) or not url.startswith("data:image/"):
+        return url
+    try:
+        import base64 as _b64
+        from PySide6.QtGui import QImage
+        from PySide6.QtCore import Qt, QBuffer, QIODevice
+        header, _, b64 = url.partition(",")
+        if "base64" not in header:
+            return url
+        raw = _b64.b64decode(b64)
+        img = QImage.fromData(raw)
+        if img.isNull():
+            return url
+        fmt_rgb = QImage.Format.Format_RGB888
+        if img.format() != fmt_rgb:
+            img = img.convertToFormat(fmt_rgb)
+        buf = QBuffer(); buf.open(QIODevice.WriteOnly)
+        img.save(buf, "JPEG", 85)
+        out = bytes(buf.data())
+        return f"data:image/jpeg;base64,{_b64.b64encode(out).decode()}"
+    except Exception as e:
+        _vision_debug(f"_normalize_image_dataurl EXC: {e}")
+        return url
+
+
+def _model_supports_vision(model):
+    """模块级：判断模型是否支持图像输入（多模态视觉）。仅这些模型才在
+    _sanitize_msg_for_api 中保留 image_url；其余模型图像被归一化为纯文本标签，
+    避免把 list content 原样发给不支持视觉的接口导致 400。"""
+    if not model:
+        return False
+    m = str(model).lower()
+    return any(k in m for k in (
+        "vision", "vl", "gpt-4o", "gpt-4v", "gpt-4.1", "qwen-vl", "qwen2-vl",
+        "qwen2.5-vl", "qwen2_5-vl", "glm-4v", "glm-4v-plus", "yi-vl",
+        "internvl", "minicpm-v", "deepseek-vl", "step-1v", "moondream",
+        "cogvlm", "fuyu", "idefics", "kosmos",
+    ))
+
+
+def _extract_file_image_parts(text, app_dir):
+    """v4.102 hotfix：从文本中的 [文件: path] / [file: path] 标记提取图片，
+    转为 OpenAI 兼容的 image_url content parts。
+
+    返回 (clean_text, image_parts)。只处理真实存在的图片文件；不存在或非图片文件
+    会在原处保留提示文本，避免模型误解。clean_text 已去掉被成功加载图片的标记。
+    """
+    import base64, mimetypes
+    pattern = re.compile(r"\[(?:\u6587\u4ef6|file):\s*([^\]\n]+)\]")
+    image_parts = []
+
+    def _replace(m):
+        rel = m.group(1).strip()
+        # 相对路径以 app_dir 为基准解析；incoming/xxx 即可定位
+        path = os.path.join(app_dir, rel) if not os.path.isabs(rel) else rel
+        path = os.path.normpath(path)
+        if not os.path.isfile(path):
+            return f"\n[文件不存在: {rel}]\n"
+        ext = os.path.splitext(path)[1].lower().lstrip(".")
+        mime = mimetypes.guess_type(path)[0] or ("image/png" if ext == "png" else "image/jpeg")
+        if not mime.startswith("image/"):
+            return f"\n[非图片文件: {rel}]\n"
+        try:
+            # v4.102 fix6：附件图片也走 _compress_image_for_api，强制 RGB888 标准化 +
+            # JPEG 体积控制，与贴图路径统一，避免特殊格式/超大图被 DeepSeek 视觉模型拒（HTTP 400）。
+            comp = _compress_image_for_api(path)
+            if comp:
+                image_parts.append({"type": "image_url", "image_url": {"url": comp[0]}})
+                _vision_debug(f"attach 图片压缩 OK: {os.path.basename(path)} -> {comp[1]} {comp[3]}KB")
+            else:
+                # 压缩失败回退原始读取（保证不阻断发送）
+                with open(path, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode()
+                image_parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+            return ""  # 成功加载的图片标记从文本中移除
+        except Exception as e:
+            return f"\n[图片加载失败: {rel} ({e})]\n"
+
+    clean_text = pattern.sub(_replace, text)
+    return clean_text.strip(), image_parts
+
+
+def _sanitize_msg_for_api(m, vision_ok=False):
     """把一条 session 消息清洗为 OpenAI 兼容接口可接受的 {"role","content"}；不可接受返回 None。
 
     v4.79 hotfix：session.messages 里混有 UI 展示用的 tool / tool_log 角色、
     content=None、以及多模态 list content——直接发给 DeepSeek 等接口会 400
     （unknown variant `tool_log` / invalid content）。历史消息必须经此过滤。
+
+    vision_ok=True（目标模型支持视觉，如 deepseek-v4-flash-vision-exp）时，若
+    content 是含 image_url 的 list，则保留 list 结构（仅 text + image_url 两种合法
+    part）原样发视觉模型，让模型真正"看图"；否则仍归一化为纯文本（兼容旧逻辑）。
     """
     if not isinstance(m, dict):
         return None
@@ -1277,6 +1452,23 @@ def _sanitize_msg_for_api(m):
     c = m.get("content")
     if isinstance(c, list):
         has_img = any(isinstance(p, dict) and p.get("type") == "image_url" for p in c)
+        if has_img and vision_ok:
+            # 视觉模型：保留 list 结构，只留 text / image_url 两种合法 part
+            cleaned = []
+            for p in c:
+                if not isinstance(p, dict):
+                    continue
+                t = p.get("type")
+                if t == "text":
+                    if p.get("text", "").strip():
+                        cleaned.append(p)
+                elif t == "image_url":
+                    # v4.102 fix6：统一重编码图片为 RGB JPEG（兜底所有来源）
+                    u = (p.get("image_url") or {}).get("url", "")
+                    cleaned.append({"type": "image_url", "image_url": {"url": _normalize_image_dataurl(u)}})
+            if cleaned:
+                return {"role": role, "content": cleaned}
+        # 非视觉（默认或视觉模型但无图）：归一化为纯文本
         c = _flatten_text_content(c)
         if has_img:
             c = (c + "\n[图片]") if c else "[图片]"
@@ -1565,6 +1757,7 @@ class ChatWindow(QMainWindow):
         self._refresh_deliverables()
         self._refresh_session_combo()
         self.input_box.setFocus()
+        self._scan_agent_resume()  # v4.101：启动时检测本会话是否有暂停的 Agent 任务可继续
 
         # ===== 模块1：剪贴板自动监听 =====
         from clipboard_monitor import ClipboardMonitor
@@ -1918,6 +2111,18 @@ class ChatWindow(QMainWindow):
             f"QPushButton:disabled{{background:{THEME['border']};color:{THEME['faint']};}}")
         self.stop_btn.clicked.connect(self._request_agent_stop)
         ifl.addWidget(self.stop_btn, 0, Qt.AlignBottom)
+
+        # v4.101：任务暂停后「继续上次任务」入口（普通 Agent 断点续传）
+        self.resume_agent_btn = QPushButton("▶ 继续上次任务")
+        self.resume_agent_btn.setFixedHeight(34)
+        self.resume_agent_btn.setFixedWidth(120)
+        self.resume_agent_btn.setVisible(False)
+        self.resume_agent_btn.setStyleSheet(
+            f"QPushButton{{background:{THEME['accent']};color:#FFFFFF;"
+            f"border:none;border-radius:6px;font-size:13px;font-weight:600;}}"
+            f"QPushButton:hover{{background:{THEME['accent_hover']};}}")
+        self.resume_agent_btn.clicked.connect(self._resume_agent_task)
+        ifl.addWidget(self.resume_agent_btn, 0, Qt.AlignBottom)
 
         ia_lay.addWidget(input_frame)
 
@@ -2400,11 +2605,16 @@ class ChatWindow(QMainWindow):
             self.orch_continue_btn.setEnabled(True)
             self.orch_continue_btn.setText(
                 "续写下一章" if st["length_type"] == "长篇" else "续写/扩写")
-        # 干净退出（完成或取消）→ 删除断点检查点；仅崩溃/强杀才留恢复项
+        # v4.101 断点续传：正常完成 → 删除检查点；用户取消 → 标记 paused 保留（可继续）
         try:
             tid = getattr(self._orch_worker, "task_id", None)
             if tid:
-                task_resume.mark_done(self.cfg, tid)
+                if getattr(self._orch_worker, "_cancelled", False):
+                    task_resume.mark_paused(self.cfg, tid)
+                    self.orch_log.insertPlainText(
+                        "⏸ 已取消（检查点已保留，重开 APP 或再次进入本页可继续，也可在横幅里丢弃）\n")
+                else:
+                    task_resume.mark_done(self.cfg, tid)
         except Exception:
             pass
         # D 项（轨迹记忆）：成功跑通则记录轨迹；并按配置（默认关）保守自动提炼经验库
@@ -2469,7 +2679,8 @@ class ChatWindow(QMainWindow):
         否则：弹「继续/丢弃」横幅等用户确认。
         """
         try:
-            active = task_resume.list_active(self.cfg)
+            active = [c for c in task_resume.list_active(self.cfg)
+                      if c.get("task_type") in (None, "orchestrate")]
         except Exception:
             return
         if not active:
@@ -2553,8 +2764,10 @@ class ChatWindow(QMainWindow):
             self._orch_resume_banner = None
 
     def _cancel_orchestrate(self):
-        """取消编排：唤醒所有挂起等待并请求 worker 停止。"""
+        """取消编排：唤醒所有挂起等待并请求 worker 停止。
+        v4.101：取消 ≠ 丢弃——保留检查点（标记 paused），重开 APP/进编排页可继续。"""
         if getattr(self, "_orch_worker", None):
+            self._orch_worker._cancelled = True
             self._orch_worker.release_locks()
         self.orch_pause_btn.setEnabled(False)
         self.orch_choice_box.setVisible(False)
@@ -3713,13 +3926,27 @@ class ChatWindow(QMainWindow):
                 # v4.66：把附件复制进工作区 incoming/ 目录，并把相对路径写进消息，
                 # 这样 read_file 能按相对路径直接找到它。否则只剩文件名，模型会去
                 # dist 目录瞎找 → "文件不存在"，进而用 run_command 反复搜、刷屏。
+                # v4.102 hotfix：Windows 文件名禁止 \ / : * ? " < > | 等字符，用户原
+                # 文件名（如「涉密岗用AI | 一定要死守的3道脱敏底线✅.png」含竖线）会
+                # 导致 shutil.copy2 抛非法字符异常、复制失败、图根本没进 incoming，
+                # 标记指向不存在的文件 → 视觉模型收不到图、静默无响应。复制前先清洗
+                # 非法字符，并重名去重避免覆盖；标记里用清洗后的名字，保证能对应上。
                 inc_dir = os.path.join(APP_DIR, "incoming")
                 try:
                     os.makedirs(inc_dir, exist_ok=True)
                 except Exception:
                     pass
-                base = os.path.basename(p)
+                raw_base = os.path.basename(p)
+                base = _sanitize_filename(raw_base) or "file"
                 dst = os.path.join(inc_dir, base)
+                # 重名去重：避免不同原文件清洗后同名互相覆盖
+                if os.path.exists(dst):
+                    stem, sufx = os.path.splitext(base)
+                    i = 1
+                    while os.path.exists(dst):
+                        dst = os.path.join(inc_dir, f"{stem}_{i}{sufx}")
+                        i += 1
+                    base = os.path.basename(dst)
                 try:
                     import shutil
                     shutil.copy2(p, dst)
@@ -3782,6 +4009,7 @@ class ChatWindow(QMainWindow):
         self.main_stack.setCurrentIndex(1)
         self._update_nav_styles(0)
         self.input_box.setFocus()
+        self._scan_agent_resume()  # v4.101：切到有暂停任务的会话时提示「继续」
 
     def _new_session(self):
         self.store.new_session()
@@ -5948,70 +6176,100 @@ class ChatWindow(QMainWindow):
             self.send_btn.setEnabled(has_text or has_images)
 
     def send(self):
+        # v4.102 fix7：_busy 检查提到最前——上一条任务未结束时，直接提示并保留输入，
+        # 不做图片压缩/文件解析等无效工作（之前压缩日志写了消息却被丢弃，用户以为卡死）。
+        if self._busy:
+            self.status_label.setText("上一条还在处理，请稍候再发（本条已保留在输入框）")
+            return
         text = self.input_box.toPlainText().strip()
         # Strip image placeholder markers from text
         text = re.sub(r"\[\u56fe\u7247\u5df2\u7c98\u8d34 \d+\]", "", text).strip()
+        # v4.102 hotfix：把 [文件: incoming/xxx.png] / [file: ...] 这类文件标记也解析成
+        # 真实的 image_url content parts，避免附件只以纯文本路径发给模型、导致「看图」失效。
+        clean_text, file_image_parts = _extract_file_image_parts(text, APP_DIR)
         images = self.input_box.get_images()
-        if not text and not images:
+        has_images = bool(images or file_image_parts)
+        if not clean_text and not has_images:
             return
         if not self.cfg["api_key"]:
             self.status_label.setText("还没填 API Key，请在设置中输入后回车")
             return
-        if self._busy:
-            self.status_label.setText("上一条还在处理，稍等…")
-            return
+
+        # v4.101：发出新消息即隐藏「继续上次任务」入口（若本消息开启新 Agent 任务，
+        # _agent_run 会清理旧暂停检查点；普通消息则直接让入口消失）
+        try:
+            self.resume_agent_btn.setVisible(False)
+        except Exception:
+            pass
 
         session = self.store.active()
         edit_idx = getattr(self, "_edit_target_idx", None)
         if edit_idx is not None:
             # v4.75 改写问题模式：替换目标 user 消息内容并丢弃其后所有消息（重开分支）
             self._edit_target_idx = None
-            if images:
-                import base64
-                content = [{"type": "text", "text": text}]
+            if has_images:
+                content = [{"type": "text", "text": clean_text}]
+                total_orig = 0; total_final = 0
                 for img_path in images:
-                    try:
-                        with open(img_path, "rb") as f:
-                            b64 = base64.b64encode(f.read()).decode()
-                        content.append({
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/png;base64,{b64}"}
-                        })
-                    except Exception as e:
-                        content.append({"type": "text", "text": f"\n[图片加载失败: {e}]"})
+                    comp = _compress_image_for_api(img_path)
+                    if comp:
+                        url, mime, orig_kb, final_kb, _ = comp
+                        content.append({"type": "image_url", "image_url": {"url": url}})
+                        total_orig += orig_kb; total_final += final_kb
+                    else:
+                        try:
+                            import base64
+                            with open(img_path, "rb") as f:
+                                b64 = base64.b64encode(f.read()).decode()
+                            content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
+                        except Exception as e:
+                            content.append({"type": "text", "text": f"\n[图片加载失败: {e}]"})
+                content.extend(file_image_parts)
+                if total_orig > total_final > 0:
+                    _vision_debug(f"send(edit): 图片压缩 {total_orig}KB→{total_final}KB ({len(images)}张)")
                 session.messages[edit_idx]["content"] = content
                 self.input_box.clear_images()
             else:
-                session.messages[edit_idx]["content"] = text
+                session.messages[edit_idx]["content"] = clean_text
             del session.messages[edit_idx + 1:]
             self._track_context("user", session.messages[edit_idx]["content"])
             self.store.save()
             self.input_box.clear()
             self._rendered_msg_count = 0
             self._render_messages()
-        elif images:
-            import base64
-            content = [{"type": "text", "text": text}]
+        elif has_images:
+            content = [{"type": "text", "text": clean_text}]
+            total_orig = 0; total_final = 0
             for img_path in images:
-                try:
-                    with open(img_path, "rb") as f:
-                        b64 = base64.b64encode(f.read()).decode()
-                    content.append({
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{b64}"}
-                    })
-                except Exception as e:
-                    content.append({"type": "text", "text": f"\n[图片加载失败: {e}]"})
+                # v4.102 fix4：先走 _compress_image_for_api（缩放+JPEG），
+                # 避免真实截图多张发图时 payload 超 DeepSeek 视觉模型限制。
+                comp = _compress_image_for_api(img_path)
+                if comp:
+                    url, mime, orig_kb, final_kb, _ = comp
+                    content.append({"type": "image_url", "image_url": {"url": url}})
+                    total_orig += orig_kb; total_final += final_kb
+                else:
+                    # 压缩失败回退直接读（保证不阻断发送）
+                    try:
+                        import base64
+                        with open(img_path, "rb") as f:
+                            b64 = base64.b64encode(f.read()).decode()
+                        content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
+                    except Exception as e:
+                        content.append({"type": "text", "text": f"\n[图片加载失败: {e}]"})
+            content.extend(file_image_parts)
+            if total_orig > total_final > 0:
+                _vision_debug(f"send: 图片压缩 {total_orig}KB→{total_final}KB ({len(images)}张)")
             session.messages.append({"role": "user", "content": content})
             self._track_context("user", content)
             self.input_box.clear_images()
         else:
-            session.messages.append({"role": "user", "content": text})
-            self._track_context("user", text)
+            session.messages.append({"role": "user", "content": clean_text})
+            self._track_context("user", clean_text)
 
         if session.title in ("", "???", "新会话"):
             # 自动用首条消息命名（方便按项目名查找）
-            seed = text or ""
+            seed = clean_text or ""
             if not seed and session.messages:
                 last = session.messages[-1].get("content", "")
                 if isinstance(last, list):
@@ -6025,7 +6283,7 @@ class ChatWindow(QMainWindow):
 
         # 记录本会话最初目标（首条 user 消息原话），用于长对话中防止模型「中途忘了要干什么」
         if not session.goal:
-            seed = (text or "").strip()
+            seed = (clean_text or "").strip()
             if not seed and session.messages:
                 last = session.messages[-1].get("content", "")
                 if isinstance(last, list):
@@ -6043,17 +6301,18 @@ class ChatWindow(QMainWindow):
         # 普通模式根本干不了（没工具、一次性回答）。检测到执行意图时自动走 Agent 真正执行。
         # v4.56 新增：纯"列方向/选题/盘点"型需求不联网不走 Agent——直接 LLM 裸出，避免
         # 「给我列几个方向」被误判为「去搜实时榜单」导致调一堆无意义搜索。
-        use_agent = self.agent_mode or self._message_needs_agent(text)
+        # v4.102 hotfix：含图片附件/贴图的消息优先走普通对话 + 视觉模型，不进 Agent 空转调工具。
+        use_agent = (self.agent_mode or self._message_needs_agent(clean_text)) and not has_images
         # v4.61：纯咨询 / 问意见类（如「给点自媒体平台方面的意见」）——即使开了 Agent 执行模式，
         # 也降级为普通对话直答，不进 Agent。否则 content-gap-analysis 等技能的「Stop and ask」
         # 会让模型反复追问、刷出十几个问问题气泡。
-        advice_only = self._message_is_advice_only(text)
+        advice_only = self._message_is_advice_only(clean_text)
         if use_agent and advice_only:
             use_agent = False
-        topic_only = self._message_is_topic_only(text)
+        topic_only = self._message_is_topic_only(clean_text)
         # v4.57：纯陈述 / 感慨（如「现在好多平台反应太严了」）即使 agent_mode 开着也走普通对话，
         # 不进 Agent 空转搜、不刷空气泡
-        statement_only = self._message_is_statement_only(text)
+        statement_only = self._message_is_statement_only(clean_text)
         if use_agent and not statement_only:
             self._busy = True
             self.send_btn.setEnabled(False)
@@ -6074,31 +6333,31 @@ class ChatWindow(QMainWindow):
             self.send_btn.setEnabled(False)
             self._busy_timeout.start(120000)
             self.status_label.setText("（日常闲聊）")
-            self._start_stream(text, None)
+            self._start_stream(clean_text, None)
         elif advice_only:
             # v4.61：纯咨询 / 问意见 → 普通对话（LLM 直接给建议），不进 Agent、不联网搜、不刷屏
             self._busy = True
             self.send_btn.setEnabled(False)
             self._busy_timeout.start(120000)
             self.status_label.setText("（给建议中…）")
-            self._start_stream(text, None)
-        elif images:
-            self._start_stream(text, None)
+            self._start_stream(clean_text, None)
+        elif has_images:
+            self._start_stream(clean_text, None)
         elif topic_only:
             # v4.56: 纯选题/盘点型需求 → 跳过联网搜，直接 LLM 裸出
             self._busy = True
             self.send_btn.setEnabled(False)
             self._busy_timeout.start(120000)
             self.status_label.setText("选题生成中…（用 AI 常识列方向）")
-            self._start_stream(text, None)
+            self._start_stream(clean_text, None)
         elif self.cfg.get("search_enabled", True):
             self._busy = True
             self.send_btn.setEnabled(False)
             self._busy_timeout.start(120000)
             self.status_label.setText("搜索中…")
-            self._do_search(text)
+            self._do_search(clean_text)
         else:
-            self._start_stream(text, None)
+            self._start_stream(clean_text, None)
     def _do_search(self, text):
         chain = search_mod.provider_chain(self.cfg.get("search_provider", "auto"))
         self._search_text = text
@@ -6134,19 +6393,34 @@ class ChatWindow(QMainWindow):
             self._search_step(text, chain, idx + 1)
 
     # ============ Agent 模式 ============
-    def _agent_run(self):
+    def _agent_run(self, resume=False, resume_task_id=None):
+        # v4.101：开启新任务前，清理本会话残留的「已暂停」Agent 检查点（用户放弃旧任务、开启新任务）
+        if not resume:
+            self._cleanup_paused_agent_checkpoints()
         self._agent_active = True  # 本次实际走 Agent 管线，提示词按 Agent 模式构建
         session = self.store.active()
         self._streaming = False
         self._streaming_text = ""
         sys_msg = {"role": "system",
                    "content": self._build_system_prompt()}
-        # Deep copy messages, converting multimodal (list) content to plain text for API
-        # v4.79 hotfix：统一走 _sanitize_msg_for_api——滤掉 tool/tool_log/None，
-        # 并把多模态 list 归一化为纯文本（list 原样发 DeepSeek 会 400）。
+        # v4.102 图像输入链路：agent 任务若带图（含 image_url）或命中工具意图，路由会
+        # 升级到视觉模型（deepseek-v4-flash-vision-exp）。预判路由结果是否视觉，是则
+        # 保留图像 content，让 AgentWorker 真正"看图"干活；非视觉仍归一化纯文本。
+        _msgs = [m for m in session.messages if isinstance(m, dict)]
+        _ti = self._needs_tool_intent(_msgs)
+        _has_img = any(
+            isinstance(m.get("content"), list)
+            and any(isinstance(p, dict) and p.get("type") == "image_url"
+                    for p in m["content"])
+            for m in _msgs
+        )
+        _, _m, _ = self._route_model(_msgs, force_complex=(_ti or _has_img))
+        _vision_ok = _model_supports_vision(_m)
+        # 统一走 _sanitize_msg_for_api——滤掉 tool/tool_log/None；视觉模型保留多模态
+        # list（含图像），非视觉归一化为纯文本（list 原样发接口会 400）。
         hist = []
         for m in session.messages:
-            sm = _sanitize_msg_for_api(m)
+            sm = _sanitize_msg_for_api(m, vision_ok=_vision_ok)
             if sm:
                 hist.append(sm)
         if len(hist) > self.cfg["max_history"]:
@@ -6154,7 +6428,8 @@ class ChatWindow(QMainWindow):
         messages = [sys_msg] + hist
 
         all_tools = config.get_all_tools(self.cfg)
-        w = AgentWorker(self, messages, all_tools, config.mcp_clients)
+        w = AgentWorker(self, messages, all_tools, config.mcp_clients,
+                        task_id=resume_task_id, resume=resume)
         self._agent_worker = w
         w.status.connect(self.status_label.setText)
         w.render.connect(self._render_throttled)
@@ -6320,7 +6595,20 @@ class ChatWindow(QMainWindow):
         self._reset_busy()
         self.stop_btn.setVisible(False)
         self.stop_btn.setEnabled(True)
-        self.status_label.setText("Agent 完成")
+        self.resume_agent_btn.setVisible(False)
+        w = self._agent_worker
+        stopped = getattr(w, "stopped_by_user", False)
+        if stopped:
+            # v4.101：用户暂停 → 检查点已标记 paused，显示「继续上次任务」入口
+            tid = getattr(w, "task_id", None)
+            if tid and task_resume.load_checkpoint(self.cfg, tid):
+                self._agent_resume_task_id = tid
+                self.resume_agent_btn.setVisible(True)
+                self.status_label.setText("⏸ 任务已暂停（可点「继续上次任务」接着干）")
+            else:
+                self.status_label.setText("Agent 完成")
+        else:
+            self.status_label.setText("Agent 完成")
         self._do_save()  # v4.58：agent 结束做一次最终落盘
         self._flush_render()  # v4.60o：冲刷待渲染定时器，避免末条消息重复插入
         self.input_box.setFocus()
@@ -6329,6 +6617,60 @@ class ChatWindow(QMainWindow):
         if _pending:
             self._pending_done_notify = None
             self._notify_task_done("任务完成", f"自动化任务「{_pending}」已完成")
+
+    # ---- v4.101：普通 Agent 断点续传 ----
+    def _resume_agent_task(self):
+        """「继续上次任务」：复用同一检查点 task_id 重建 worker，从会话断点接着跑。"""
+        if getattr(self, "_agent_active", False):
+            return
+        tid = getattr(self, "_agent_resume_task_id", None)
+        if not tid:
+            return
+        self.resume_agent_btn.setVisible(False)
+        self._agent_run(resume=True, resume_task_id=tid)
+
+    def _cleanup_paused_agent_checkpoints(self, except_tid=None):
+        """开启新 Agent 任务前，清理本会话残留的「已暂停」检查点（用户放弃旧任务）。
+        except_tid：续传时跳过正在恢复的那个检查点。"""
+        try:
+            sess = self.store.active()
+            sid = sess.sid if sess else None
+        except Exception:
+            sid = None
+        try:
+            for cp in task_resume.list_active(self.cfg):
+                if cp.get("task_type") != "agent":
+                    continue
+                if cp.get("sid") != sid:
+                    continue
+                if cp.get("_task_id") == except_tid:
+                    continue
+                task_resume.mark_done(self.cfg, cp["_task_id"])
+        except Exception:
+            pass
+
+    def _scan_agent_resume(self):
+        """切换会话/启动时扫描本会话是否有已暂停的 Agent 任务，有则提示「继续」。"""
+        try:
+            sess = self.store.active()
+            sid = sess.sid if sess else None
+        except Exception:
+            sid = None
+        if getattr(self, "_agent_active", False):
+            return
+        btn = getattr(self, "resume_agent_btn", None)
+        if btn is None:
+            return
+        try:
+            for cp in task_resume.list_active(self.cfg):
+                if cp.get("task_type") == "agent" and cp.get("sid") == sid:
+                    self._agent_resume_task_id = cp.get("_task_id")
+                    btn.setVisible(True)
+                    self.status_label.setText("⏸ 检测到上次暂停的 Agent 任务，可点「继续上次任务」")
+                    return
+        except Exception:
+            pass
+        btn.setVisible(False)
 
     def _reset_busy(self):
         """重置忙碌状态（可由超时触发，防止永久卡住）。
@@ -6393,7 +6735,8 @@ class ChatWindow(QMainWindow):
             "搜索", "查一下", "上网查", "fetch", "爬虫", "爬取",
             # 生图生视频
             "生图", "画图", "画一张", "画图片", "生成图片", "生成一张", "一张图片",
-            "一张图", "作图", "生视频", "剪辑", "配音",
+            "一张图", "作图", "生视频", "生成视频", "做视频", "口播视频",
+            "数字人视频", "数字人口播", "剪辑", "配音", "旁白", "做成视频", "做口播",
             "重新生成", "再画", "换一张", "重画",
             # 工具/自动化
             "调用工具", "用工具", "自动化", "定时", "提醒",
@@ -6415,7 +6758,16 @@ class ChatWindow(QMainWindow):
                 break
         if not last_user:
             return False
-        return any(kw in last_user.lower() for kw in KEYWORDS)
+        # v4.102 fix11：咨询问句豁免——「配音怎么学 / 剪辑怎么入门 / 数字人是什么」这类
+        # 纯咨询不该被当成工具意图升舱，否则误走 DeepSeek + required 空转。
+        # 命中这些非工具意图问句特征直接返回 False（交由普通对话直答）。
+        if self._looks_like_learning_question(last_user):
+            return False
+        if any(kw in last_user.lower() for kw in KEYWORDS):
+            return True
+        # v4.102 fix11：媒体生成组合判定兜底——"生成口播视频 / 做个数字人"这类
+        # 分开写的表述连写词表会漏判，用「对象词×动作词」同现识别。
+        return self._is_media_gen_request(last_user)
 
     def _user_refuses_tools(self, messages):
         """v4.100：检测用户是否明确要求『不要调用工具/纯聊天』。
@@ -6449,12 +6801,58 @@ class ChatWindow(QMainWindow):
                 last_action = i
         return last_refuse >= 0 and last_refuse > last_action
 
+    def _looks_like_learning_question(self, text):
+        """v4.102 fix11：判断是否为「学习/科普/了解的纯咨询」问句。
+        『配音怎么学』『剪辑怎么入门』『数字人是什么』『AI视频怎么做的』这类句子里
+        虽含「配音/剪辑/视频」等词，但用户是在**询问知识**而非**让我执行制作**，
+        不应视为工具意图（否则误升舱 DeepSeek + 强制 required 空转）。
+        命中返回 True → 上层不做工具意图判定。"""
+        if not text:
+            return False
+        t = text.lower()
+        # 咨询/学习问句特征：怎么学 / 怎么入门 / 是什么 / 什么意思 / 如何 / 会不会 /
+        # 了解下 / 介绍一下 / 原理 / 教程 / 怎么弄出来的
+        if any(k in t for k in ("怎么学", "怎么入门", "如何学", "如何入门", "怎么开始",
+                                "是什么", "什么意思", "啥意思", "了解一下", "了解下",
+                                "介绍下", "介绍一下", "怎么弄的", "怎么做出来",
+                                "原理", "教程", "怎么来的", "会不会", "能不能学",
+                                "学习路径", "从哪学", "选哪个", "推荐学习")):
+            return True
+        return False
+
+    def _is_reasoning_model(self, model, base_url=""):
+        """v4.102 fix10：判断当前模型是否为「思考/推理模式」模型。
+        DeepSeek 官方推理模型（例如 deepseek-v4-flash-vision-exp）不支持 tool_choice="required"
+        ——一旦工具意图命中（如用户说「执行任务」「运行」）被 v4.98 强制设 required，
+        API 直接返回 400：`Thinking mode does not support this tool_choice`，
+        异常又被 _agent_call 的 except 吞掉 → 空 content → 界面「Agent 完成」但无任何输出。
+        判断依据：DeepSeek 官方 base_url + 模型含推理/v4 特征；模型名含 think/reason/r1 等。
+        命中时上层不再强制 required，改为让模型自由决定（默认/auto）。
+        """
+        m = (model or "").lower()
+        b = (base_url or "").lower()
+        # 明确推理/思考特征
+        if any(k in m for k in ("think", "reason", "-r1", "reasoning", "thinking")):
+            return True
+        # DeepSeek 官方通道（api.deepseek.com）当前推理模型均为思考模式
+        if "api.deepseek.com" in b:
+            return True
+        return False
+
     def _agent_call(self, messages, tools, on_delta=None, force_required=False, force_tool=None):
         import urllib.request as urllib_req
         import logging as _logging
         _tool_intent = self._needs_tool_intent(messages)
+        # v4.102：消息含图 → 强制走视觉模型通道（复杂/工具意图路径），让模型真正"看图"
+        _has_img_call = any(
+            isinstance(m.get("content"), list)
+            and any(isinstance(p, dict) and p.get("type") == "image_url" for p in m.get("content", []))
+            for m in messages
+        )
+        # 路由：工具意图或含图都升舱到 complex_model（视觉模型）
+        _route_force = _tool_intent or _has_img_call
         _refuse_tools = self._user_refuses_tools(messages)
-        _base_url, _model, _api_key = self._route_model(messages, force_complex=_tool_intent)
+        _base_url, _model, _api_key = self._route_model(messages, force_complex=_route_force)
         url = _base_url.rstrip("/") + "/chat/completions"
         body = {
             "model": _model,
@@ -6475,27 +6873,59 @@ class ChatWindow(QMainWindow):
                 if isinstance(last_user, str) and any(kw in last_user for kw in _REDO_KEYWORDS):
                     redo = True
                 break
-        # v4.60：强制调用指定工具（如 sys_info），优先级最高
+        # v4.60：强制调用指定工具（如 sys_info / video_gen），优先级最高
         if force_tool:
-            body["tool_choice"] = {"type": "function", "function": {"name": force_tool}}
+            if self._is_reasoning_model(_model, _base_url):
+                # v4.102 fix11：DeepSeek 思考模式不支持任何 tool_choice 自定义——
+                # 连指定函数 {"function":{"name":force_tool}} 也返回 400
+                # 「Thinking mode does not support this tool_choice」（fix10 只豁免了
+                # "required"，这里连 force_tool 也要豁免，否则视频/生图首步直接 400 → 空响应）。
+                # 改为在消息尾部注入强制指令，让思考模型自然决定调用指定工具，
+                # 不设 tool_choice（思考模式默认行为）。
+                _ft_instr = (
+                    f"当前任务必须通过调用工具 {force_tool} 完成。"
+                    f"请直接调用 {force_tool} 工具：把用户请求的全部必要信息整理为它的参数"
+                    f"（如 prompt / duration / aspect / dialogue 等），一次调用它并生成结果。"
+                    f"不要调用其他无关工具，也不要只描述计划，必须真实调用 {force_tool}。"
+                )
+                body["messages"] = list(messages) + [
+                    {"role": "user", "content": _ft_instr, "_internal": True},
+                ]
+            else:
+                body["tool_choice"] = {"type": "function", "function": {"name": force_tool}}
         elif _refuse_tools:
             # v4.100：用户明确要求"不调工具/纯聊天"且其后无新工具指令时，
             # 本轮彻底禁止调工具（即便命中工具意图也尊重用户约束），避免
             # 闲聊被 remember 等工具自发调用打断。
             body["tool_choice"] = "none"
-        elif force_required or redo or _tool_intent:
+        elif (force_required or redo or _tool_intent) and not self._is_reasoning_model(_model, _base_url):
             # v4.98：工具意图任务强制 required，杜绝弱模型退化成"文字演工具"
+            # v4.102 hotfix：仅因含图进入视觉模型时，不强制 required，让模型自由描述图片。
+            # v4.102 fix10：思考/推理模式模型（DeepSeek 官方）不支持 required——
+            # 命中时降级为不设 tool_choice（默认/auto），让模型自然决定输出文本或调工具，
+            # 否则 API 返回 400「Thinking mode does not support this tool_choice」→ 空 content。
             body["tool_choice"] = "required"
+        # v4.102 fix12：请求 usage 统计——多数 OpenAI 兼容通道在末个 chunk 返回 usage。
+        # 少数通道不认识该参数会返回 400，下方 _stream_once 会自动去掉参数重试一次，
+        # 因此新增参数永远不会让原本能跑通的调用失败。
+        body["stream_options"] = {"include_usage": True}
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        req = urllib_req.Request(url, data=payload, method="POST")
-        req.add_header("Content-Type", "application/json")
-        req.add_header("Authorization", f"Bearer {_api_key}")
-        req.add_header("Accept", "text/event-stream")
 
         full_content = ""
         tool_acc = {}  # index -> {"id", "function": {"name", "arguments"}}
-        try:
-            with urllib_req.urlopen(req, timeout=90) as resp:
+        _usage = {}
+
+        def _stream_once(_body):
+            """发一次流式请求，返回 (content, tool_acc, usage)；失败时向外抛异常。"""
+            _payload = json.dumps(_body, ensure_ascii=False).encode("utf-8")
+            _req = urllib_req.Request(url, data=_payload, method="POST")
+            _req.add_header("Content-Type", "application/json")
+            _req.add_header("Authorization", f"Bearer {_api_key}")
+            _req.add_header("Accept", "text/event-stream")
+            _content = ""
+            _acc = {}
+            _u = {}
+            with urllib_req.urlopen(_req, timeout=90) as resp:
                 buf = ""
                 for raw in resp:
                     buf += raw.decode("utf-8", "ignore")
@@ -6514,15 +6944,18 @@ class ChatWindow(QMainWindow):
                             evt = json.loads(data)
                         except Exception:
                             continue
+                        # v4.102 fix12：末个 chunk 携带 usage（prompt/completion tokens）
+                        if evt.get("usage"):
+                            _u = evt["usage"]
                         choice = (evt.get("choices") or [{}])[0]
                         delta = choice.get("delta") or {}
                         if delta.get("content") is not None:
-                            full_content += delta["content"]
+                            _content += delta["content"]
                             if on_delta:
-                                on_delta(full_content)
+                                on_delta(_content)
                         for tc in (delta.get("tool_calls") or []):
                             idx = tc.get("index", 0)
-                            acc = tool_acc.setdefault(idx, {"id": "", "function": {"name": "", "arguments": ""}})
+                            acc = _acc.setdefault(idx, {"id": "", "function": {"name": "", "arguments": ""}})
                             if tc.get("id"):
                                 acc["id"] = tc["id"]
                             fn = tc.get("function") or {}
@@ -6530,8 +6963,22 @@ class ChatWindow(QMainWindow):
                                 acc["function"]["name"] += fn["name"]
                             if fn.get("arguments"):
                                 acc["function"]["arguments"] += fn["arguments"]
+            return _content, _acc, _u
+
+        try:
+            full_content, tool_acc, _usage = _stream_once(body)
         except Exception as e:
-            _logging.getLogger("dsdesktop").error("Agent 流式调用失败: %s", e)
+            # v4.102 fix12：通道不认识 stream_options 时（多为 HTTP 400），
+            # 去掉该参数重试一次——保持 fix12 之前的行为，绝不因新参数导致调用失败。
+            _code = getattr(e, "code", None)
+            if _code in (400, 404) or "stream_options" in str(e):
+                try:
+                    body.pop("stream_options", None)
+                    full_content, tool_acc, _usage = _stream_once(body)
+                except Exception as e2:
+                    _logging.getLogger("dsdesktop").error("Agent 流式调用失败: %s", e2)
+            else:
+                _logging.getLogger("dsdesktop").error("Agent 流式调用失败: %s", e)
 
         tool_calls = []
         for idx in sorted(tool_acc):
@@ -6548,7 +6995,36 @@ class ChatWindow(QMainWindow):
                     "arguments": json.dumps(args, ensure_ascii=False),
                 },
             })
-        return {"content": full_content, "tool_calls": tool_calls}
+        # v4.102 fix12：token 用量回传，供 agent.py 做预算熔断统计。
+        # API 未返回 usage 时用字符数**保守估算**（宁可高估，防烧钱）：
+        # 中文约 1.5 字符/token、英文约 4 字符/token，统一按 2 字符/token 估。
+        try:
+            _pt = int(_usage.get("prompt_tokens") or 0)
+            _ct = int(_usage.get("completion_tokens") or 0)
+        except (TypeError, ValueError):
+            _pt = _ct = 0
+        if not (_pt or _ct):
+            _est_in = 0
+            for _m in messages:
+                _c = _m.get("content")
+                if isinstance(_c, str):
+                    _est_in += len(_c)
+                elif isinstance(_c, list):
+                    _est_in += sum(len(str(p.get("text", "")))
+                                   for p in _c if isinstance(p, dict))
+            _est_out = len(full_content) + sum(
+                len(str(tc.get("function", {}).get("arguments", "")))
+                for tc in tool_calls)
+            _pt = _est_in // 2
+            _ct = max(_est_out // 2, 1)
+        return {
+            "content": full_content,
+            "tool_calls": tool_calls,
+            "usage": {"prompt_tokens": _pt, "completion_tokens": _ct,
+                      "total_tokens": _pt + _ct},
+            "model": _model,
+            "channel": "deepseek" if "deepseek" in (_base_url or "").lower() else "other",
+        }
 
     def _on_schedule_reminder(self, delay_ms, message, repeat_secs=0):
         if repeat_secs <= 0:
@@ -6578,11 +7054,32 @@ class ChatWindow(QMainWindow):
 
         session = self.store.active()
         sys_msg = {"role": "system", "content": self._build_system_prompt()}
+
+        # v4.102 图像输入链路：用户发图时，强制路由到视觉模型（complex_model profile，
+        # 现指向 deepseek-v4-flash-vision-exp），并保留图像 content 让模型真正"看图"；
+        # 非视觉模型（如 Agnes）仍把图归一化为纯文本，避免 list 原样发送导致 400。
+        last_msg = session.messages[-1] if session.messages else None
+        _has_img = bool(
+            last_msg and isinstance(last_msg.get("content"), list)
+            and any(isinstance(p, dict) and p.get("type") == "image_url"
+                    for p in last_msg["content"])
+        )
+        if _has_img:
+            # 带图 → 走视觉模型通道（复杂/工具意图路径，强制 complex）
+            _bu, _m, _k = self._route_model(session.messages, force_complex=True)
+            # v4.102：视觉模型思考阶段会先吐 reasoning_content（content 为空，可能持续
+            # 10-30秒），给用户明确反馈避免误以为「卡死无回复」。
+            self.status_label.setText("看图中…（视觉模型思考中，请稍候 10-30 秒）")
+        else:
+            _bu, _m, _k = self.cfg["base_url"], self.cfg["model"], self.cfg["api_key"]
+        _vision_ok = _model_supports_vision(_m)
+
         # v4.79 hotfix：历史必须经 _sanitize_msg_for_api 清洗——session 里混有
-        # tool/tool_log/None/list 内容（UI 展示用），直接发 DeepSeek 会 400。
+        # tool/tool_log/None/list 内容（UI 展示用），直接发接口会 400。
+        # 视觉模型保留图像列表，非视觉归一化为纯文本。
         others = []
         for m in session.messages[:-1]:
-            sm = _sanitize_msg_for_api(m)
+            sm = _sanitize_msg_for_api(m, vision_ok=_vision_ok)
             if sm:
                 others.append(sm)
         if len(others) > self.cfg["max_history"]:
@@ -6590,27 +7087,35 @@ class ChatWindow(QMainWindow):
         api_messages = [sys_msg] + others
         if search_context:
             api_messages.append({"role": "system", "content": search_context})
-        # Use original message content (supports multimodal from session)
-        last_msg = session.messages[-1] if session.messages else None
+
+        # 最后一条用户消息：视觉模型保留图，非视觉归一化纯文本
         if last_msg and isinstance(last_msg.get("content"), list):
             lc = last_msg["content"]
-            if any(isinstance(p, dict) and p.get("type") == "image_url" for p in lc):
-                # 真·多模态（含图片）：保留原样发给当前模型（视觉模型路径）
-                api_messages.append({"role": "user", "content": lc})
+            if _has_img and _vision_ok:
+                # 真·多模态（含图片）：保留原样发给视觉模型，但图片统一重编码为 RGB JPEG
+                # v4.102 fix6：兜底各种来源（贴图/附件/历史），避免特殊格式/超大图被拒
+                norm_lc = []
+                for _part in lc:
+                    if isinstance(_part, dict) and _part.get("type") == "image_url":
+                        _u = (_part.get("image_url") or {}).get("url", "")
+                        norm_lc.append({"type": "image_url", "image_url": {"url": _normalize_image_dataurl(_u)}})
+                    else:
+                        norm_lc.append(_part)
+                api_messages.append({"role": "user", "content": norm_lc})
             else:
-                # 纯文本 list（语音/粘贴等路径产物）→ 归一化为字符串，避免文本模型 400
+                # 纯文本 list（语音/粘贴等）或非视觉模型 → 归一化为字符串
                 api_messages.append({"role": "user", "content": _flatten_text_content(lc) or text})
         else:
             api_messages.append({"role": "user", "content": text})
 
-        url = QUrl(self.cfg["base_url"].rstrip("/") + "/chat/completions")
+        url = QUrl(_bu.rstrip("/") + "/chat/completions")
         req = QNetworkRequest(url)
         req.setHeader(QNetworkRequest.ContentTypeHeader, "application/json")
-        req.setRawHeader(b"Authorization", f"Bearer {self.cfg['api_key']}".encode("utf-8"))
+        req.setRawHeader(b"Authorization", f"Bearer {_k}".encode("utf-8"))
         req.setRawHeader(b"Accept", b"text/event-stream")
         req.setRawHeader(b"Cache-Control", b"no-cache")
         payload = json.dumps({
-            "model": self.cfg["model"],
+            "model": _m,
             "messages": api_messages,
             "stream": True,
             "temperature": 0.7,
@@ -6619,9 +7124,30 @@ class ChatWindow(QMainWindow):
         self._streaming = True
         self._streaming_text = ""
         self._sse_buf = ""
-        reply = self.manager.post(req, QByteArray(payload))
-        reply.readyRead.connect(lambda: self._on_stream_ready(reply))
-        reply.finished.connect(lambda: self._on_stream_finished(reply))
+        self._streaming_error = ""
+        _img_n = 0; _img_b = 0
+        for _am in api_messages:  # v4.102 fix7：循环变量改名，勿覆盖模型名变量 _m
+            _c = _am.get("content")
+            if isinstance(_c, list):
+                for _p in _c:
+                    if isinstance(_p, dict) and _p.get("type") == "image_url":
+                        _img_n += 1
+                        _u = (_p.get("image_url") or {}).get("url", "")
+                        if _u.startswith("data:"):
+                            _img_b += len(_u)
+        _vision_debug(f"_start_stream post: model={_m} has_img={_has_img} vision_ok={_vision_ok} msgs={len(api_messages)} imgs={_img_n} img_bytes={_img_b}B payload={len(payload)}B url={url.toString()}")
+        try:
+            reply = self.manager.post(req, QByteArray(payload))
+            self._reply = reply  # v4.102: 存到实例，让 _reset_busy 超时能 abort 流式请求
+            reply.readyRead.connect(lambda: self._on_stream_ready(reply))
+            reply.finished.connect(lambda: self._on_stream_finished(reply))
+        except Exception as e:
+            _vision_debug(f"_start_stream post RAISED: {type(e).__name__}: {e}")
+            self._streaming = False
+            self._streaming_text = ""
+            self._streaming_error = str(e)
+            self._reset_busy()
+            self.status_label.setText(f"发送失败：{e}")
 
     def _on_stream_ready(self, reply):
         chunk = bytes(reply.readAll()).decode("utf-8", "ignore")
@@ -6645,24 +7171,111 @@ class ChatWindow(QMainWindow):
                     obj = json.loads(data)
                 except Exception:
                     continue
+                # v4.102 hotfix：捕获 API 返回的错误事件（如图片不支持/超限/
+                # 模型临时不可用），否则会被当成「成功但空内容」静默吞掉。
+                if isinstance(obj, dict):
+                    err = obj.get("error")
+                    if err and isinstance(err, dict) and err.get("message"):
+                        self._streaming_error = (self._streaming_error + " " + err["message"]).strip()
+                        continue
+                    if err and isinstance(err, str):
+                        self._streaming_error = (self._streaming_error + " " + err).strip()
+                        continue
                 try:
-                    delta = obj["choices"][0]["delta"].get("content", "")
+                    delta_obj = obj["choices"][0]["delta"]
                 except Exception:
                     continue
+                # v4.102：视觉模型（deepseek-v4-flash-vision-exp）会先吐 reasoning_content
+                # （思考阶段，content 为空/null），可能持续很多秒。期间给用户反馈，避免
+                # 误以为「发图后无回复卡死」。
+                rc = delta_obj.get("reasoning_content")
+                if rc and not delta_obj.get("content"):
+                    cur = self.status_label.text()
+                    if "思考中" not in cur:
+                        self.status_label.setText("思考中…（视觉模型分析图片，请稍候）")
+                delta = delta_obj.get("content") or ""
                 if delta:
                     self._streaming_text += delta
             self._render_messages()
 
+    def _extract_api_error(self, buf):
+        """v4.102 hotfix：从 SSE/原始缓冲里提取 API 返回的错误信息
+        （data:{"error":{...}} 或 data:{"error":"..."}）。无则返回空串。"""
+        if not buf:
+            return ""
+        for raw_event in buf.split("\n\n"):
+            for line in raw_event.split("\n"):
+                line = line.strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                try:
+                    obj = json.loads(data)
+                except Exception:
+                    continue
+                if isinstance(obj, dict):
+                    err = obj.get("error")
+                    if isinstance(err, dict) and err.get("message"):
+                        return err["message"]
+                    if isinstance(err, str):
+                        return err
+        return ""
+
     def _on_stream_finished(self, reply):
+        try:
+            self._on_stream_finished_impl(reply)
+        except Exception as e:
+            _vision_debug(f"_on_stream_finished RAISED: {type(e).__name__}: {e}")
+            log.error("_on_stream_finished 异常: %s", e)
+            try:
+                self._streaming = False
+                self._streaming_text = ""
+                self._reset_busy()
+                self.status_label.setText(f"回复处理异常：{e}")
+            except Exception:
+                pass
+            try:
+                reply.deleteLater()
+            except Exception:
+                pass
+
+    def _on_stream_finished_impl(self, reply):
+        status_code = reply.attribute(QNetworkRequest.HttpStatusCodeAttribute)
         tail = bytes(reply.readAll()).decode("utf-8", "ignore")
         if tail:
             self._sse_buf += tail
             self._drain_sse()
 
-        if reply.error() != QNetworkReply.NoError:
-            # v4.58：复用 tail，readAll() 第一次调用后缓冲已空
-            log.error("流式请求错误: %s", reply.errorString())
-            self.status_label.setText(f"网络错误：{reply.errorString()} {tail[:200]}")
+        # v4.102 hotfix：Qt 对 HTTP 4xx/5xx 默认把 reply.error() 报成 NoError，
+        # 单靠 error() 判断会把这些错误当成「成功但空内容」→ 用户看到「什么都不显示」。
+        # 这里同时用状态码 + SSE 错误事件 + 尾部 JSON 判断，任何失败都明确展示。
+        api_err = getattr(self, "_streaming_error", "")
+        net_err = reply.error()
+        err_str = reply.errorString() or ""
+        _vision_debug(f"_on_stream_finished: http={status_code} net_err={net_err} err='{err_str}' api_err={api_err[:80]!r} text_len={len(self._streaming_text)} tail_len={len(tail)} tail={tail[:240]!r}")
+        if net_err != QNetworkReply.NoError or (status_code and status_code >= 400) or api_err:
+            err_str = reply.errorString() or ""
+            # 优先 SSE 错误事件；否则整段 _sse_buf 当 JSON 解析（v4.102 fix4：HTTP 错误
+            # 响应可能是 plain JSON 非 SSE，扫 data: 行拿不到），最后回退 Qt 错误串
+            msg = api_err or self._extract_api_error(self._sse_buf) or self._extract_api_error(tail) or err_str
+            if not msg or msg == err_str:
+                for src in (self._sse_buf, tail):
+                    if not src: continue
+                    try:
+                        ej = json.loads(src)
+                        if isinstance(ej, dict):
+                            err = ej.get("error") or {}
+                            m = err.get("message") if isinstance(err, dict) else (err if isinstance(err, str) else "")
+                            if m:
+                                msg = m
+                                break
+                    except Exception:
+                        continue
+            log.error("流式请求失败 HTTP=%s err=%s msg=%s", status_code, err_str, msg)
+            if not msg:
+                # 服务器无错误正文（如连接被重置 / 协议层错误）时，给出可读提示并指向调试日志
+                msg = err_str or f"HTTP {status_code}（无错误详情，详见 vision_debug.log）"
+            self.status_label.setText(f"接口错误（HTTP {status_code}）：{msg[:280]}")
         else:
             text = self._streaming_text
             if text:
@@ -6672,9 +7285,14 @@ class ChatWindow(QMainWindow):
                 self.store.save()
                 self._speak(text)
                 self.status_label.clear()
+            elif not api_err:
+                # 成功状态但模型返回空（极少见）：给个提示，避免「发图后毫无反应」
+                self.status_label.setText("（模型返回为空，请重试）")
 
         self._streaming = False
         self._streaming_text = ""
+        self._streaming_error = ""
+        self._reply = None  # v4.102: reply 已结束，清掉引用
         self._reset_busy()
         # v4.96：强制全量重建，清除流式气泡残留
         self._rendered_msg_count = 0
@@ -6699,7 +7317,7 @@ class ChatWindow(QMainWindow):
         "运行", "执行", "命令", "脚本", "python", "代码", "计算", "数据处理", "爬取",
         "数据分析", "数据报告", "分析报告",
         "生成图", "画图", "配图", "海报", "插画", "生图", "做图", "生成图片", "生成一张",
-        "生成视频", "做视频", "剪视频",
+        "生成视频", "做视频", "剪视频", "口播视频", "数字人视频", "做口播",
         "定时", "提醒", "闹钟", "倒计时",
         "截图", "截屏",
         "图表", "柱状图", "折线图", "饼图", "散点图", "可视化",
@@ -6769,7 +7387,42 @@ class ChatWindow(QMainWindow):
         # v4.57：纯陈述 / 感慨不当成执行任务，回到普通对话
         if self._message_is_statement_only(text):
             return False
+        # v4.102 fix11：媒体生成组合判定——用户说"生成口播视频 / 做个数字人 / 生成视频"
+        # 时，"生成/做"与"视频/口播/数字人"常分开写，_ACTION_HINTS 的连写词（生成视频/做视频）
+        # 会漏判 → 普通模式不自动进 Agent。组合判定兜底命中这类表述。
+        if self._is_media_gen_request(text):
+            return True
         return any(h.lower() in t for h in self._ACTION_HINTS)
+
+    # v4.102 fix11：媒体生成组合词表——"生成/做/制作/创建 视频/口播/数字人/图"常被用户
+    # 分开写（如「生成口播视频」「做个数字人」「生成一段视频」），连写词表
+    # （生成视频/做视频/生视频）会漏判。这里用「媒体对象词 × 媒体动作词」同现判定。
+    # 注意：动作词收敛为明确的「生成/制作/做一段/做一个/来一段/出一段/合成/剪/拍」等，
+    # 刻意不放单字「做/出/配」——否则「视频号好难做」「我写了口播文案」这类纯陈述/分享
+    # 会被误判为媒体生成。媒体对象词也排除宽泛的「配音」单列（单用「配音」由连写词表管）。
+    _MEDIA_OBJ_KW = ("视频", "短视频", "口播", "数字人", "数字分身", "旁白",
+                     "图片", "海报", "插画", "头像", "混剪", "微电影", "短片",
+                     "配音", "字幕")
+    _MEDIA_VERB_KW = ("生成", "制作", "做一个", "做一段", "做个", "做一条", "做几",
+                      "来一段", "来一个", "出一段", "出一个", "合成", "剪一个", "剪一段",
+                      "拍一段", "录一段", "创作一段", "帮我做", "帮我生成", "给我做",
+                      "给我生成", "配一个", "配一段")
+
+    def _is_media_gen_request(self, text):
+        """是否「媒体生成/制作类」请求：命中一个媒体对象词 与 一个媒体动作词 同现即 True。
+        覆盖：生成口播视频 / 帮我按文案做视频 / 做个数字人 / 生成一段视频 / 出一段短片。
+        排除：单字「做/出/配」的宽泛使用（视频号好难做 / 我写了口播文案都不是生成）。"""
+        if not text:
+            return False
+        t = text.lower()
+        has_obj = any(k in t for k in self._MEDIA_OBJ_KW)
+        has_verb = any(v in t for v in self._MEDIA_VERB_KW)
+        if not (has_obj and has_verb):
+            return False
+        # 排除纯陈述/感慨：如「视频号最近好难做」——命中陈述词则不当媒体生成
+        if self._message_is_statement_only(text):
+            return False
+        return True
 
     def _message_is_topic_only(self, text):
         """v4.56：用户消息是否属于"列方向/选题/盘点"型需求，且**不**含执行意图。

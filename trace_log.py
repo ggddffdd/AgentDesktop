@@ -191,3 +191,138 @@ def prune(cfg, max_keep=None):
                 json.dump({"version": 1, "traces": traces}, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
+
+
+# ==================== v4.102 fix12：Agent 任务级轨迹写回 ====================
+# 与 harness refine 的边界（互补，不重叠）：
+#   harness refine    → 技能级经验「这个技能该怎么改」，进待审核队列，人工通过才生效
+#   任务轨迹（本节）  → 任务级经验「这类任务怎么跑 / 踩过什么坑」，直接落盘可检索
+# 一句话：refine 优化「工具」，trajectory 优化「决策」。
+#
+# 存储刻意用**独立文件 agent_traces.json**，不与小说编排的 task_traces.json 共享
+# 200 条配额——否则日常 agent 对话会迅速把小说编排的成功轨迹挤掉。
+
+AGENT_TRACES_FILE = "agent_traces.json"
+AGENT_TRACE_MAX = 200
+
+
+def _agent_path(cfg):
+    return os.path.join(_dir(cfg), AGENT_TRACES_FILE)
+
+
+def load_agent_traces(cfg):
+    """读取 Agent 任务轨迹；文件缺失/损坏返回空列表（绝不抛异常）。"""
+    p = _agent_path(cfg)
+    try:
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            if isinstance(d, dict) and isinstance(d.get("traces"), list):
+                return d["traces"]
+    except Exception:
+        pass
+    return []
+
+
+def append_task_trajectory(cfg, task, outcome="success", pattern=None, pitfall=None,
+                           tools=None, tokens=None, steps=None, duration_s=None,
+                           model=None, max_keep=None):
+    """Agent 任务退出时统一写回一条「任务级」轨迹。
+
+    由 agent.py 在所有退出路径（正常完成 / token 熔断 / 用户停止 / 超时 / 步数耗尽）
+    统一调用，实现「踩过的坑下次不再踩」的闭环。
+
+    入参：
+      task       : 任务目标（goal 摘要）
+      outcome    : success | token_budget | stopped | timeout | max_steps | error
+      pattern    : 成功模式（值得复用的做法）
+      pitfall    : 踩坑（下次规避）
+      tools      : 本轮实际调用过的工具名列表
+      tokens     : 本轮累计 token
+      steps      : 本轮步数
+      duration_s : 本轮耗时（秒）
+      model      : 实际使用的模型名
+    返回：写入的 trace id（失败返回 ""）。
+    """
+    if not isinstance(cfg, dict):
+        cfg = {}
+    max_keep = max_keep or cfg.get("agent_trace_max", AGENT_TRACE_MAX)
+    _ensure_dir(cfg)
+    traces = load_agent_traces(cfg)
+    rec = {
+        "id": (datetime.datetime.now().strftime("%Y%m%d_%H%M%S_")
+               + uuid.uuid4().hex[:8]),
+        "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+        "task": str(task or "")[:200],
+        "outcome": outcome,
+        "success_pattern": (str(pattern)[:400] if pattern else "") or None,
+        "pitfall": (str(pitfall)[:400] if pitfall else "") or None,
+        "tools_used": [str(t) for t in (tools or [])][:30],
+        "tokens": int(tokens or 0),
+        "steps": int(steps or 0),
+        "duration_s": round(float(duration_s or 0), 1),
+        "model": str(model or ""),
+        "source": "agent_task",
+    }
+    traces.append(rec)
+    if max_keep and len(traces) > max_keep:
+        traces = traces[-max_keep:]
+    try:
+        with open(_agent_path(cfg), "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "traces": traces}, f,
+                      ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    return rec.get("id")
+
+
+def retrieve_agent_traces(cfg, task="", top_n=2, outcomes=None):
+    """按任务关键词相似度检索同类 Agent 任务轨迹（复用 _kw 的 bigram 打分）。
+
+    outcomes：限定结局（如 ["success", "token_budget"]），为空则不限。
+    返回 Top-N 轨迹列表（最新优先）。
+    """
+    traces = load_agent_traces(cfg)
+    if not traces:
+        return []
+    if outcomes:
+        traces = [t for t in traces if t.get("outcome") in outcomes]
+    qkw = _kw(task)
+    scored = []
+    for t in traces:
+        tkw = _kw(t.get("task", ""))
+        score = 0
+        if qkw and tkw:
+            overlap = len(qkw & tkw)
+            # ≥2 个 shared bigram 才算同类（单词命中视为噪音，避免误注入）
+            if overlap >= 2:
+                score += min(overlap, 5)
+        if score <= 0:
+            continue
+        scored.append((score, t))
+    scored.sort(key=lambda x: (x[0], x[1].get("ts", "")), reverse=True)
+    return [t for _, t in scored[:top_n]]
+
+
+def build_agent_fewshot(cfg, task, top_n=2, max_chars=600):
+    """把同类 Agent 任务经验拼成可注入系统提示的「避坑提醒」。
+
+    只取 pitfall / success_pattern 的简短摘要，控制长度避免反向烧 token。
+    无相似轨迹或无可提炼经验时返回空串（调用方可安全无条件拼接）。
+    """
+    sim = retrieve_agent_traces(cfg, task, top_n=top_n,
+                                outcomes=["success", "token_budget", "max_steps"])
+    if not sim:
+        return ""
+    lines = ["【同类任务历史经验（仅供避坑参考，不要照搬结论）】"]
+    for idx, t in enumerate(sim, 1):
+        bits = [f"任务「{t.get('task', '')[:40]}」（{t.get('outcome', '')}）"]
+        pf = (t.get("pitfall") or "").strip()
+        sp = (t.get("success_pattern") or "").strip()
+        if pf:
+            bits.append(f"踩坑：{pf[:150]}")
+        if sp:
+            bits.append(f"有效做法：{sp[:150]}")
+        lines.append(f"{idx}. " + "；".join(bits))
+    out = "\n".join(lines)
+    return out[:max_chars]

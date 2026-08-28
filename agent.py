@@ -3,12 +3,15 @@
 
 import time
 import json
+import datetime
 import threading
 import logging
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from PySide6.QtCore import QThread, Signal
+
+import task_resume  # v4.101：断点续传检查点
 
 from config import MAX_AGENT_STEPS, TOOL_RESULT_LIMIT, get_all_tools
 import tools
@@ -106,18 +109,18 @@ class AgentWorker(QThread):
             out_key = out_field = None
 
         else:
-            self.status.emit(f"未知工作流: {workflow_type}")
+            self._emit_status(f"未知工作流: {workflow_type}")
             return ""
 
-        self.status.emit(f"🔄 任务图启动：{workflow_type}")
+        self._emit_status(f"🔄 任务图启动：{workflow_type}")
         # 打印任务清单
         for t in tg.task_list():
-            self.status.emit(f"  └ {t['subject']} [{t['status']}]")
+            self._emit_status(f"  └ {t['subject']} [{t['status']}]")
 
         try:
             state = tg.run({"task": task, "query": task})
         except Exception as e:
-            self.status.emit(f"任务图执行失败: {e}")
+            self._emit_status(f"任务图执行失败: {e}")
             return f"任务图执行失败：{e}"
 
         # 归并结果
@@ -133,16 +136,20 @@ class AgentWorker(QThread):
             node_out = state.get(out_key, {})
             output = node_out.get(out_field, "") if isinstance(node_out, dict) else ""
 
-        self.status.emit("✅ 任务图完成")
+        self._emit_status("✅ 任务图完成")
         return output
 
     # ---- 主循环 ----
 
-    def __init__(self, mw, messages, tool_defs, mcp_clients=None):
+    def __init__(self, mw, messages, tool_defs, mcp_clients=None, task_id=None, resume=False):
         super().__init__()
         self.mw = mw
         self.messages = messages
         self.tool_defs = tool_defs
+        # v4.101：断点续传——每个 Agent 任务带唯一 task_id，停止时标记 paused、正常完成删除。
+        self.task_id = task_id or task_resume.new_task_id()
+        self.resume = bool(resume)
+        self.stopped_by_user = False  # 结束时回填：是否因用户停止而终止（供 UI 决定是否显示「继续」）
         # ④ 防御性：给 baseline（sys_msg + 清洗后的历史）打 _seq=0 哨兵，标记「已存在于
         # session、禁止回写」；运行内新生成的消息单调递增 _seq（种子取 session 已有最大
         # _seq 之上，避免跨运行 _seq 撞号）。_sync_to_session 据此按序号对齐回写，
@@ -163,6 +170,13 @@ class AgentWorker(QThread):
         self._confirm_event = threading.Event()
         self._confirm_val = False
         self._stop_requested = False
+        self._last_status_ts = 0  # v4.102 fix7：最近具体状态时间戳，供心跳判断是否抢话
+        self._last_status_text = ""  # v4.102 fix7：最近一条具体状态文字，心跳兜底时带上
+        # v4.102 fix9：_guard_blocked 必须 __init__ 初始化——纯文本分支（模型首步就输出
+        # 回答、无 tool_calls）会在 750 行读取它。此前只在工具执行路径赋值，导致纯咨询
+        # 问题（fix8 nudge 门槛后纯文本分支命中）直接 AttributeError 崩溃 → run() 抛异常
+        # → done.emit() 不触发 → UI 卡死。用户实证：回答已渲染但状态栏常驻「工作中」。
+        self._guard_blocked = False
         # 技能清单由 ui.py 的 _build_system_prompt() 统一通过 config.load_dynamic_skills() 注入，
         # 此处不再重复加载，避免双份/不一致。
 
@@ -170,14 +184,30 @@ class AgentWorker(QThread):
         """主线程调用，请求停止 Agent 循环（下一轮/下一工具前生效）。"""
         self._stop_requested = True
 
+    def _emit_status(self, text):
+        """v4.102 fix7：统一状态出口——记录最近一次具体状态的时间戳与文字，
+        供心跳线程判断「是否已有更具体的进度展示，避免被笼统的『工作中』覆盖」；
+        心跳兜底时也带上最近一条具体状态，长工具调用期间用户仍能看到在干嘛。"""
+        self._last_status_ts = time.time()
+        self._last_status_text = str(text)
+        self.status.emit(text)
+
     def _start_heartbeat(self):
-        """v4.58：后台心跳线程，每 2 秒 emit 一次 status，防长时间工具调用期间 UI 假死。"""
+        """v4.58：后台心跳线程，每 2 秒 emit 一次 status，防长时间工具调用期间 UI 假死。
+        v4.102 fix7：仅当最近 4 秒内没有更具体的状态（思考中第 N 步/执行工具 XX）时，
+        才发笼统的『Agent 工作中…』——否则会覆盖掉具体进度，用户不知道模型在干嘛。
+        兜底时带上最近一条具体状态，例如「⏳ Agent 工作中…（执行工具：web_search）」。"""
         self._heartbeat_alive = True
         def _beat():
             while getattr(self, "_heartbeat_alive", False):
                 time.sleep(2)
-                if getattr(self, "_heartbeat_alive", False):
-                    self.status.emit("⏳ Agent 工作中…")
+                if not getattr(self, "_heartbeat_alive", False):
+                    return
+                # 最近 4 秒内有具体状态（思考中/执行工具/错误提示）→ 心跳不抢话
+                if time.time() - getattr(self, "_last_status_ts", 0) < 4:
+                    continue
+                _hint = getattr(self, "_last_status_text", "") or ""
+                self.status.emit(f"⏳ Agent 工作中…（{_hint}）" if _hint else "⏳ Agent 工作中…")
         threading.Thread(target=_beat, daemon=True).start()
 
     def _stop_heartbeat(self):
@@ -326,6 +356,41 @@ class AgentWorker(QThread):
                 return False
         return True
 
+    # v4.102 fix10：纯内容创作豁免——区分「写文字内容」（不需工具）vs「写文件/产物」（需工具）。
+    # _CREATE_VERB_KW：内容创作动词（产出是文字/文本内容）
+    _CREATE_VERB_KW = (
+        "写文案", "写一篇", "写一段", "写个", "写点", "写一下", "写文章", "写小说",
+        "写故事", "写个故事", "写剧本", "写脚本", "写大纲", "写总结", "写回答",
+        "写内容", "写文字", "写标题", "写简介", "写介绍", "写个介绍", "帮我写",
+        "给我写", "写嘛", "写个嘛", "写个什么", "写点什么", "写一篇什么",
+        "创作", "编个", "编个故事", "编文案", "生成文案", "生成文章", "生成内容",
+        "生成一段", "生成一篇", "生成大纲", "生成脚本", "生成故事", "生成标题",
+        "生成回答", "生成介绍", "生成摘要", "生成总结", "写作文", "写作业",
+        "拟个", "拟一个", "拟定", "起草", "改写", "润色", "扩写", "起个标题", "起标题",
+    )
+    # _ARTIFACT_KW：需要真实落盘/产物的词——命中即不豁免（应走工具）。
+    # 注意：不放宽泛的「图片/视频」（会误伤「口播视频的文案」这类内容创作场景词），
+    # 只放真正指「文件/表格/文档类产物」的明确词。
+    _ARTIFACT_KW = (
+        "写文件", "写入文件", "保存", "保存到", "导出", "导出文件", "导出到",
+        "存到", "存文件", "存盘", "落盘", "生成文件", "创建文件", "新建文件",
+        "建个文件", "生成excel", "生成表格", "生成csv", "生成ppt", "生成word",
+        "生成pdf", "生成报告文件", "生成一个文件", "制作表格", "表格文件",
+        "做成表格", "整理成表格", "统计成表", "做成word", "做成pdf", "做成ppt",
+        "生成报表", "输出文件", "输出为", "保存为",
+    )
+    # _REAL_TOOL_KW：明确工具操作/数据动作——命中即不豁免（应走工具/数据动作）。
+    _REAL_TOOL_KW = (
+        "搜索", "搜一下", "查一下", "上网查", "爬取", "爬虫", "数据分析", "数据处理",
+        "运行", "python", "代码", "脚本", "执行", "计算", "统计分析", "报表",
+        "打开文件", "读取文件", "读文件", "提取", "解析", "爬", "抓取",
+        "做张表", "整理", "批量", "翻译", "总结文档", "分析文档",
+        # 明确的多媒体/产物生成（走 image_gen / video_gen 工具）：
+        "生成图片", "生成一张图片", "生图", "画一张", "画图片", "配个图", "做张图",
+        "出图", "生成视频", "生成一段视频", "生成个视频", "做视频", "做一段视频",
+        "做个视频", "剪辑", "配音", "生成一张", "做一段视频", "生成一个小视频",
+    )
+
     # 任务意图关键词：命中即认为本次需要执行操作（搜索/写文件/分析等），
     # 用于循环护栏——还没真正动手时强制模型调用工具，避免「说要搜却不动」。
     _ACTION_KEYWORDS = (
@@ -416,6 +481,40 @@ class AgentWorker(QThread):
                 return "image_gen"
         return None
 
+    def _content_creation_only(self, text):
+        """v4.102 fix10：判断是否为「纯内容创作」——用户要的是文本产出（文案/文章/内容/
+        大纲/脚本/总结/回答等），不需要调用任何工具。这类任务强制 tool_choice=required 只会
+        让模型（尤其 Agnes）「必须调工具但不知道该调啥」→ 返回 0 内容 + 0 工具（用户实证：
+        『帮我写一段口播文案』→ content 空、界面『Agent 完成』但无文案输出）。
+        区分依据：命中内容创作动词（写/生成/做/创建/编/改），且产出对象是文本级内容，
+        且【不含】需要真实落盘/产物的工具词（文件/保存/导出/写入/打开/表格/SQL/图片/视频/
+        截图/爬取/运行/代码/数据分析等）。
+        """
+        if not text:
+            return False
+        t = text.lower()
+        # 纯内容创作动词（写/创作/编/拟/起草/润色等）——命中即大概率是文字产出
+        has_create = any(k in text for k in self._CREATE_VERB_KW)
+        if not has_create:
+            return False
+        # 产物生成意图：同时命中「产物对象」（视频/图片/文件/表格/PDF/PPT/Word/Excel/截图）
+        # 和「产物动词」（做/生成/制作/创建/出/画/剪辑/配音）→ 明确要产物，不豁免。
+        # 注意：匹配对象词时不看它前面是否紧贴动词，只做「同句共现」判断——
+        # 「写一段口播视频的文案」：视频是场景词，但句中无产物动词 → 豁免；
+        # 「生成一段口播视频」：句中有「生成」+「视频」→ 不豁免。
+        _obj = ("视频", "图片", "图片", "文件", "表格", "ppt", "pdf", "word", "excel", "截图",
+                "csv", "海报", "插画", "配音")
+        _verb = ("做", "生成", "制作", "创建", "出", "画", "剪辑", "配音")
+        if any(o in text for o in _obj) and any(v in t for v in _verb):
+            return False
+        # 命中「真实落盘/产物」工具词（文件/保存/导出/搜索/运行等）→ 不是纯内容创作
+        if any(k in text for k in self._ARTIFACT_KW):
+            return False
+        if any(k in text for k in self._REAL_TOOL_KW):
+            return False
+        # 未被以上排除，且命中文本产出对象提示 → 视为纯内容创作
+        return True
+
     def _detect_action_intent(self, messages):
         """从最后一条用户消息判断本次是否需要执行操作。"""
         text = ""
@@ -437,7 +536,115 @@ class AgentWorker(QThread):
                 is_topic = True
         if is_topic and not any(k in text for k in self._ACTION_KEYWORDS):
             return False
+        # v4.102 fix10：纯内容创作（写文案/写文章/生成一段内容）优先豁免——即便文中
+        # 提到「视频/图片」作为场景（如「口播视频的文案」），只要产出是文字内容就不强制
+        # 工具，否则弱模型「必须调工具但不知道该调啥」→ 空 content，无回复气泡。
+        if self._content_creation_only(text):
+            return False
+        # v4.102 fix10：明确要求生成图片/视频（产物是多媒体文件）→ 必须走工具
+        if any(k in text for k in self._IMAGE_GEN_KW) or any(k in text for k in self._VIDEO_GEN_KW):
+            return True
         return any(k in text for k in self._ACTION_KEYWORDS)
+
+    # ---------- v4.102 fix12：token 预算熔断 ----------
+    def _collect_step_tools(self, resp):
+        """累计本步调用过的工具名（去重），供任务轨迹写回使用。"""
+        try:
+            for _tc in (resp or {}).get("tool_calls") or []:
+                _n = (_tc.get("function") or {}).get("name", "")
+                if _n and _n not in self._tools_used:
+                    self._tools_used.append(_n)
+        except Exception:
+            pass
+
+    def _tick_token_budget(self, resp):
+        """累加本步 token 用量并按预算告警/熔断。返回 False 表示已熔断，应停止循环。
+
+        设计要点：
+        - 预算为 0（config 里禁用）时直接放行，行为**完全回退**到 fix12 之前，不伤现有体验；
+        - 达告警比例（默认 80%）提前提示一次，让用户有机会主动收手；
+        - 达硬上限则熔断：输出已完成的阶段性结果 + 明确告知如何调高预算；
+        - 付费通道（DeepSeek）可单独设更紧的预算，防烧钱。
+        """
+        if not getattr(self, "_token_budget", 0):
+            return True
+        try:
+            usage = (resp or {}).get("usage") or {}
+            step_tokens = int(usage.get("total_tokens") or 0)
+        except (TypeError, ValueError):
+            step_tokens = 0
+        self._used_tokens += step_tokens
+        if (resp or {}).get("model"):
+            self._last_model = str(resp.get("model"))
+        if str((resp or {}).get("channel") or "") == "deepseek":
+            self._used_tokens_ds += step_tokens
+        # 付费通道单独预算（0 = 跟随总预算），两者取更紧的那个
+        _limit = self._token_budget
+        if self._token_budget_ds and self._used_tokens_ds:
+            _limit = min(self._token_budget, self._token_budget_ds)
+        if (not self._token_warned
+                and self._used_tokens >= self._token_budget * self._token_warn_ratio):
+            self._token_warned = True
+            self._emit_status(
+                f"⚠️ 已用 {self._used_tokens} tokens（预算 {self._token_budget} 的 "
+                f"{int(self._token_warn_ratio * 100)}%），接近上限将自动停止")
+        if self._used_tokens >= _limit:
+            self._token_budget_hit = True
+            self.stream_commit.emit(
+                f"\n\n🛑 已触达 token 预算上限（{self._used_tokens}/{_limit}），已自动停止，"
+                f"以上为已完成的阶段性结果。\n如需继续：把设置里的 `agent_token_budget`"
+                f"（当前 {self._token_budget}）调高，或把任务拆小后重发。")
+            self._emit_status(
+                f"🛑 触达 token 预算（{self._used_tokens}/{_limit}），已停止")
+            return False
+        return True
+
+    # ---------- v4.102 fix12：任务退出统一写回轨迹 ----------
+    def _persist_task_memory(self, mw, duration_s=0, steps=0):
+        """长任务退出时写回一条「任务级」轨迹，实现「踩过的坑下次不再踩」。
+
+        只在确属长任务（执行过工具或步数 > 2）时写，避免普通问答把轨迹库灌水。
+        与 harness refine 互补：refine 沉淀技能级经验（待审核），本函数沉淀任务级
+        经验（直接落盘可检索）。全程 try 包裹，写失败绝不影响任务正常收尾。
+        """
+        try:
+            if not (getattr(self, "_tools_used", None) or steps > 2):
+                return
+            import trace_log
+            # 结局推断：熔断 > 用户停止 > 超时 > 步数耗尽 > 成功
+            if self._token_budget_hit:
+                outcome = "token_budget"
+            elif self._stop_requested:
+                outcome = "stopped"
+            elif duration_s and duration_s > 180:
+                outcome = "timeout"
+            elif steps and steps >= MAX_AGENT_STEPS:
+                outcome = "max_steps"
+            else:
+                outcome = "success"
+            pitfall = None
+            if outcome == "token_budget":
+                pitfall = ("任务 token 超预算被熔断；下次先拆分任务或限制工具轮次，"
+                           "避免大量升舱 DeepSeek 付费通道")
+            elif outcome == "max_steps":
+                pitfall = "步数耗尽仍未收敛，可能卡在工具循环；下次先明确产出物再开工"
+            elif outcome == "stopped":
+                pitfall = "被用户中途停止，可能方向不符；下次先确认目标再执行"
+            trace_log.append_task_trajectory(
+                getattr(mw, "cfg", None) or {},
+                task=self._goal_hint()[:200],
+                outcome=outcome,
+                pattern=("调用过的工具：" + "、".join(self._tools_used[:10])
+                         if self._tools_used else None),
+                pitfall=pitfall,
+                tools=self._tools_used,
+                tokens=getattr(self, "_used_tokens", 0),
+                steps=steps,
+                duration_s=duration_s,
+                model=getattr(self, "_last_model", ""),
+            )
+        except Exception as e:
+            log.error("Agent 任务轨迹写回失败（已忽略）: %s", e)
 
     def run(self):
         mw = self.mw
@@ -460,7 +667,18 @@ class AgentWorker(QThread):
         MAX_FAIL_STEPS = 3     # v4.66：连续工具全失败步上限，超出则早停防死循环
         self._fake_steps = 0   # v4.98：文字伪造工具调用计数（撒谎检测）
         MAX_FAKE_RETRIES = 3   # v4.98：伪造工具调用最多容忍次数，超出诚实提示并停止
+        self._last_step_sig = None  # v4.102 fix8：上一步 (content, tool_calls) 签名
+        self._repeat_steps = 0      # v4.102 fix8：连续重复步计数（防弱模型复读打转）
         self._needs_action = self._detect_action_intent(self.messages)
+        # v4.102 fix12：token 预算熔断状态。budget=0 即完全禁用（行为回退到 fix12 前）。
+        (self._token_budget, self._token_warn_ratio,
+         self._token_budget_ds) = config.get_agent_token_budget(getattr(mw, "cfg", None))
+        self._used_tokens = 0        # 本轮累计 token
+        self._used_tokens_ds = 0     # 付费（DeepSeek）通道单独累计
+        self._token_warned = False   # 80% 告警只提示一次
+        self._token_budget_hit = False
+        self._tools_used = []        # 本轮实际调用过的工具名（写轨迹用）
+        self._last_model = ""
         self._any_tool_executed = False  # 本轮是否已真正执行过工具
         self._force_next = False  # 下一步强制模型调工具
         self._force_retries = 0
@@ -472,6 +690,40 @@ class AgentWorker(QThread):
         # 续跑单轮步数上限（独立可调，见 config.AGENT_RESUME_STEPS）
         self._max_resume_steps = getattr(config, "AGENT_RESUME_STEPS", MAX_AGENT_STEPS)
         self._start_heartbeat()  # v4.58：防长时间工具调用期间 UI 假死
+
+        # v4.101：断点续传——任务开始即写「运行中」检查点（崩溃/强杀遗留可据此恢复）；
+        # 用户主动停止时改写为 paused 保留，正常完成/自动停止则删除。
+        try:
+            _sid = getattr(mw.store.active(), "sid", None)
+        except Exception:
+            _sid = None
+        try:
+            task_resume.save_checkpoint(mw.cfg, {
+                "task_id": self.task_id,
+                "task_type": "agent",
+                "status": "running",
+                "sid": _sid,
+                "task": self._goal_hint()[:200],
+                "created": datetime.datetime.now().isoformat(timespec="seconds"),
+            })
+        except Exception:
+            pass
+        # 续传模式：注入「继续上次任务」提示，强制模型从断点接着干。
+        # 注意 _seq=-1 哨兵：_sync_to_session 不会把它回写进会话（system 角色本就不该持久化）。
+        if self.resume:
+            _goal = self._goal_hint() or "（未知原始目标）"
+            if len(_goal) > 400:
+                _goal = _goal[:400] + "…"
+            self.messages.append({
+                "role": "system",
+                "content": (
+                    f"【继续上次任务】你之前被用户暂停，已完成的工作都在历史消息中"
+                    f"（含工具调用与结果）。请直接阅读历史，从断点接着干原始目标"
+                    f"（{_goal}），禁止再说「我来/我开始」之类的空话，必须调用真实工具推进。"
+                ),
+                "_seq": -1,
+            })
+            self._force_next = True
 
         # v4.60：自检请求检测——强制先调 sys_info 拿真实数据，防模型瞎编
         _SELF_CHECK_KW = ("自检", "能力盘点", "能力报告", "你能做什么", "你的功能",
@@ -512,13 +764,13 @@ class AgentWorker(QThread):
             # v4.60：超时保护——超过 3 分钟自动停止，防止慢模型无响应
             elapsed = time.time() - _t0
             if elapsed > MAX_DURATION:
-                self.status.emit(f"⏰ Agent 超时（{int(elapsed)}s），已自动停止。建议切回 DeepSeek 获得更快响应。")
+                self._emit_status(f"⏰ Agent 超时（{int(elapsed)}s），已自动停止。建议切回 DeepSeek 获得更快响应。")
                 self.stream_commit.emit(f"\n\n⏰ 执行超时（{int(elapsed)}秒），已自动停止。Agnes 免费模型速度较慢，建议切回 DeepSeek。")
                 break
             if self._stop_requested:
-                self.status.emit("⏹ 已停止（用户请求）")
+                self._emit_status("⏹ 已停止（用户请求）")
                 break
-            self.status.emit(f"Agent 思考中（第 {step} 步）…")
+            self._emit_status(f"Agent 思考中（第 {step} 步）…")
             self.stream_begin.emit()
             # 强制调用工具：①本次需要执行且尚未动手时，首步强制；②中途模型空谈时重试强制
             force_required = (self._force_next
@@ -549,13 +801,40 @@ class AgentWorker(QThread):
                 self.tool_log.emit({"name": "错误", "args": "", "result": str(e)})
                 break
 
+            # v4.102 fix12：累计工具名 + token 预算熔断（超预算即停，保留阶段性结果）
+            self._collect_step_tools(resp)
+            if not self._tick_token_budget(resp):
+                break
+
             # v4.62：步内超时检查（单次模型调用最长 90s，避免下一轮开头才拦导致大幅超额）
             if time.time() - _t0 > MAX_DURATION:
-                self.status.emit(f"⏰ Agent 超时（{int(time.time() - _t0)}s），已自动停止。")
+                self._emit_status(f"⏰ Agent 超时（{int(time.time() - _t0)}s），已自动停止。")
                 self.stream_commit.emit(
                     f"\n\n⏰ 执行超时（{int(time.time() - _t0)}秒），已自动停止。")
                 break
             content = resp.get("content") or ""
+            # v4.102 fix8：复读/原地打转护栏——模型连续 N 步输出完全相同的内容（或调用
+            # 完全相同工具），说明弱模型在工具循环里原地复读、没有推进（用户实证：
+            # 同一句话和最终结论反复出现两遍，还「聊完莫名其妙继续调工具」）。
+            # 连续 2 次相同 → 判定打转，强制收敛：注入收敛指令并停止本轮。
+            _sig = (content, tuple(
+                (tc.get("function", {}).get("name", ""),
+                 str(tc.get("function", {}).get("arguments", ""))[:200])
+                for tc in (resp.get("tool_calls") or [])))
+            if _sig == getattr(self, "_last_step_sig", None):
+                self._repeat_steps = getattr(self, "_repeat_steps", 0) + 1
+            else:
+                self._repeat_steps = 0
+            self._last_step_sig = _sig
+            if self._repeat_steps >= 2:
+                _emit_status = self._emit_status
+                _emit_status("⚠️ 检测到重复输出（模型原地打转），已强制收敛…")
+                self.stream_commit.emit(
+                    "\n\n⚠️ 检测到刚才的内容和工具调用重复出现，已停止循环。"
+                    "请基于已有信息直接给出最终回答。")
+                self._force_next = False
+                self._force_retries = 0
+                break
             # v4.61：追问护栏——模型连续 K 步都在向用户追问而非推进任务（即便夹杂轻量工具调用），
             # 直接早停并提示补充信息，避免 content-gap-analysis 等技能带偏刷十几个问问题气泡。
             if content and self._looks_like_question(content):
@@ -569,7 +848,7 @@ class AgentWorker(QThread):
                     "\n\n⚠️ 已连续多次只追问、未推进任务，已自动停止。"
                     "请补充关键信息（如平台 / 数据 / 目标 / 竞品）后重新发送，"
                     "或直接切普通模式获取建议。")
-                self.status.emit("⚠️ 追问过多，已自动停止")
+                self._emit_status("⚠️ 追问过多，已自动停止")
                 break
             asst = {"role": "assistant", "content": content}
             # v4.59 追踪：模型决策
@@ -584,6 +863,11 @@ class AgentWorker(QThread):
             if resp.get("tool_calls"):
                 self._any_tool_executed = True  # 已真正动手，后续允许出最终文本
                 self._idle_steps = 0            # v4.60：调了工具 → 清空空步计数
+                # v4.102 fix8：强制调工具的目的一旦达成（本轮真调了工具），立即复位
+                # _force_next——否则 tool_choice=required 永久卡死，模型永远无法输出
+                # 纯文本最终结论（用户实证：给出结论后还被迫继续调工具）。
+                self._force_next = False
+                self._force_retries = 0
                 _total_tools += len(resp["tool_calls"])
                 _tracer.trace(step, "tool_call",
                               tools=[tc.get("function", {}).get("name", "") for tc in resp["tool_calls"]])
@@ -593,7 +877,7 @@ class AgentWorker(QThread):
                 self._exec_tool_calls(resp["tool_calls"], mw, APP_DIR)
                 # v4.62：工具执行（如 web_search）可能很久，执行后再次检查超时，避免久等
                 if time.time() - _t0 > MAX_DURATION:
-                    self.status.emit(f"⏰ Agent 超时（{int(time.time() - _t0)}s），已自动停止。")
+                    self._emit_status(f"⏰ Agent 超时（{int(time.time() - _t0)}s），已自动停止。")
                     self.stream_commit.emit(
                         f"\n\n⏰ 执行超时（{int(time.time() - _t0)}秒），已自动停止。")
                     break
@@ -604,7 +888,7 @@ class AgentWorker(QThread):
                 else:
                     self._fail_steps = 0
                 if self._fail_steps >= MAX_FAIL_STEPS:
-                    self.status.emit("⏹ 工具连续失败，已自动停止。请检查路径/命令。")
+                    self._emit_status("⏹ 工具连续失败，已自动停止。请检查路径/命令。")
                     self.stream_commit.emit(
                         "\n\n⏹ 检测到工具连续多次执行失败（如文件找不到或命令报错），"
                         "已自动停止以避免空转。请确认：聊天附件是否发送成功、命令是否用了 "
@@ -638,7 +922,7 @@ class AgentWorker(QThread):
                     self._fake_steps += 1
                     log.warning("Agent 检测到文字伪造工具调用（第 %d 次），强制真正执行",
                                 self._fake_steps)
-                    self.status.emit(
+                    self._emit_status(
                         f"⚠ 检测到伪造工具调用（第 {self._fake_steps}/{MAX_FAKE_RETRIES} 次），"
                         "正在强制真正执行…")
                     self._force_next = True
@@ -663,11 +947,15 @@ class AgentWorker(QThread):
                     break
                 # v4.60 重构：nudge 不再依赖 _any_tool_executed。
                 # 模型连续 2 步空回（不调工具）→ 警告并强制；最多 3 次。
+                # v4.102 fix8：仅当任务确实需要执行（_needs_action）时才 nudge 强制调工具。
+                # 纯咨询/纯问答（如「QWen 能不能离线用」）模型直接回答就够，不该被
+                # 强制调工具——否则会出现「给出结论后还莫名其妙继续调工具」的体验。
                 self._idle_steps += 1
-                if self._idle_steps >= 2 and self._nudge_count < MAX_FORCE_RETRIES:
+                if (self._needs_action and self._idle_steps >= 2
+                        and self._nudge_count < MAX_FORCE_RETRIES):
                     self._nudge_count += 1
                     self._force_next = True
-                    self.status.emit(f"⚠ 模型连续 {self._idle_steps} 步未调工具，第 {self._nudge_count}/{MAX_FORCE_RETRIES} 次强制…")
+                    self._emit_status(f"⚠ 模型连续 {self._idle_steps} 步未调工具，第 {self._nudge_count}/{MAX_FORCE_RETRIES} 次强制…")
                     if not self._nudged:
                         self._nudged = True
                         _tracer.trace(step, "nudge", reason="模型空回不调工具", idle_steps=self._idle_steps)
@@ -681,7 +969,7 @@ class AgentWorker(QThread):
             self._sync_to_session(mw)
             if self._resume_budget > 0:
                 self._resume_budget -= 1
-                self.status.emit("⏳ 单轮步数已用尽，正在从断点自动续跑…")
+                self._emit_status("⏳ 单轮步数已用尽，正在从断点自动续跑…")
                 # 续跑截断日志：每次触发记一条，便于跑几天观察频率以决定调参
                 log.warning("Agent 续跑截断触发：单轮步数耗尽，自动续跑（resume_budget 剩余 %d，续跑上限步数 %d）",
                             self._resume_budget, self._max_resume_steps)
@@ -704,9 +992,9 @@ class AgentWorker(QThread):
                 resume_steps = range(1, self._max_resume_steps + 1)
                 for rstep in resume_steps:
                     if self._stop_requested:
-                        self.status.emit("⏹ 已停止（用户请求）")
+                        self._emit_status("⏹ 已停止（用户请求）")
                         break
-                    self.status.emit(f"Agent 续跑（第 {rstep} 步）…")
+                    self._emit_status(f"Agent 续跑（第 {rstep} 步）…")
                     force_required = self._force_next or (rstep == 1 and self._needs_action
                                                           and not self._any_tool_executed)
                     try:
@@ -718,6 +1006,10 @@ class AgentWorker(QThread):
                     except Exception as e:
                         log.error("Agent 续跑调用失败: %s", e)
                         self.tool_log.emit({"name": "错误", "args": "", "result": str(e)})
+                        break
+                    # v4.102 fix12：续跑是烧 token 重灾区，同样累加工具名并做预算熔断
+                    self._collect_step_tools(resp)
+                    if not self._tick_token_budget(resp):
                         break
                     content = resp.get("content") or ""
                     asst = {"role": "assistant", "content": content}
@@ -743,7 +1035,7 @@ class AgentWorker(QThread):
                         if self._idle_steps >= 2 and self._nudge_count < MAX_FORCE_RETRIES:
                             self._nudge_count += 1
                             self._force_next = True
-                            self.status.emit(f"⚠ 续跑中模型连续 {self._idle_steps} 步未调工具，第 {self._nudge_count}/{MAX_FORCE_RETRIES} 次强制…")
+                            self._emit_status(f"⚠ 续跑中模型连续 {self._idle_steps} 步未调工具，第 {self._nudge_count}/{MAX_FORCE_RETRIES} 次强制…")
                             if not self._nudged:
                                 self._nudged = True
                                 self.messages.append({"role": "user", "content": self._AGENT_NUDGE})
@@ -766,15 +1058,41 @@ class AgentWorker(QThread):
                 })
 
         # --- 自动记忆提取（对话结束后的归档步骤）---
-        self._sync_to_session(mw)
-        if not self._stop_requested:
-            self._auto_remember(mw)
-
-        self.render.emit()
-        self._stop_heartbeat()  # v4.58：心跳线程随 agent 结束关闭
-        _duration = round(time.time() - _t0, 1)
-        _tracer.done(total_steps=step, total_duration_s=_duration)
-        self.done.emit()
+        # v4.102 fix9：收尾段必须保证 done.emit() 必定触发（否则 UI 侧 _on_agent_done →
+        # _reset_busy() 永不执行 → _busy 卡 True → 输入框永久锁死、状态栏一直「工作中」）。
+        # 用户实证：内容已出（stream_commit 执行过）但 _sync_to_session / _auto_remember /
+        # render 任一抛异常都会跳过 done.emit()，造成「回答完还在显示工作中、不能继续聊」。
+        # 故将 done.emit() 与 _stop_heartbeat() 放入 finally 兜底。
+        try:
+            self._sync_to_session(mw)
+            # v4.101：断点续传收尾——用户主动停止 → 标记 paused（保留检查点供「继续」）；
+            # 正常完成/自动停止（超时·追问过多·工具连败）→ 删除检查点，不留「继续」入口。
+            self.stopped_by_user = self._stop_requested
+            try:
+                if self._stop_requested:
+                    task_resume.mark_paused(mw.cfg, self.task_id)
+                else:
+                    task_resume.mark_done(mw.cfg, self.task_id)
+            except Exception:
+                pass
+            if not self._stop_requested:
+                self._auto_remember(mw)
+            # v4.102 fix12：所有退出路径（正常完成/熔断/停止/超时/步数耗尽）都在此汇流，
+            # 统一写回一条任务级轨迹，实现「踩过的坑下次不再踩」。
+            self._persist_task_memory(mw, duration_s=round(time.time() - _t0, 1),
+                                      steps=step)
+            self.render.emit()
+        except Exception as e:
+            # 收尾归档失败不影响本轮收尾，绝不吞掉 done.emit()
+            log.error("Agent 收尾归档异常（已忽略，仍会正常结束）: %s", e)
+        finally:
+            self._stop_heartbeat()  # v4.58：心跳线程随 agent 结束关闭
+            _duration = round(time.time() - _t0, 1)
+            try:
+                _tracer.done(total_steps=step, total_duration_s=_duration)
+            except Exception:
+                pass
+            self.done.emit()
 
     def _run_serial(self, tool_calls, mw, APP_DIR):
         """串行执行工具调用（含危险操作确认），统一走权限引擎决策。"""
@@ -788,13 +1106,13 @@ class AgentWorker(QThread):
             except Exception:
                 args = {}
             if self._stop_requested:
-                self.status.emit("⏹ 已停止（用户请求）")
+                self._emit_status("⏹ 已停止（用户请求）")
                 result_str = "⏹ 已停止（用户请求）"
                 deliverables = []
                 schedule = None
                 self._handle_tool_result(tc, name, fn, result_str, deliverables, schedule)
                 continue
-            self.status.emit(f"执行工具：{name}")
+            self._emit_status(f"执行工具：{name}")
 
             # 发射工具开始信号
             self.tool_started.emit({
@@ -894,7 +1212,7 @@ class AgentWorker(QThread):
         """并发执行工具调用（所有 tools 无数据依赖）"""
         max_workers = min(len(tool_calls), 5)
         total = len(tool_calls)
-        self.status.emit(f"并发执行 {total} 个工具（{max_workers} 线程）…")
+        self._emit_status(f"并发执行 {total} 个工具（{max_workers} 线程）…")
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {}
@@ -907,7 +1225,7 @@ class AgentWorker(QThread):
                     args = {}
 
                 if self._stop_requested:
-                    self.status.emit("⏹ 已停止（用户请求）")
+                    self._emit_status("⏹ 已停止（用户请求）")
                     break
                 # 发射工具开始信号
                 self.tool_started.emit({
@@ -952,7 +1270,7 @@ class AgentWorker(QThread):
             _args = self._safe_args(_wf_tc)
             _wf_type = _args.get("type", "research_write")
             _task = _args.get("task", "")
-            self.status.emit(f"🔄 触发子代理工作流：{_wf_type}")
+            self._emit_status(f"🔄 触发子代理工作流：{_wf_type}")
             _t0 = time.time()
             _out = self._run_workflow(_wf_type, _task)
             self.messages.append({
@@ -1085,9 +1403,23 @@ class AgentWorker(QThread):
                 if isinstance(m, dict) and isinstance(m.get("_seq"), int) and m["_seq"] > 0]
         if seqs:
             max_seq = max(seqs)
+            # v4.102 fix8：按 (role, content, tool_call_id) 指纹去重——stream_commit 已在
+            # ui 侧把同一 assistant 文本追加进 session（无 _seq），此处若再原样追加会
+            # 导致每条回复/工具结果渲染两遍（用户实证：结论重复两次、工具卡片重复）。
+            _exist_sigs = set()
+            for _em in existing:
+                if isinstance(_em, dict):
+                    _exist_sigs.add((_em.get("role"), str(_em.get("content")),
+                                     str(_em.get("tool_call_id", ""))))
             for m in self.messages:
-                if isinstance(m, dict) and isinstance(m.get("_seq"), int) and m["_seq"] > max_seq:
-                    existing.append(dict(m))
+                if not (isinstance(m, dict) and isinstance(m.get("_seq"), int)
+                        and m["_seq"] > max_seq):
+                    continue
+                _sig = (m.get("role"), str(m.get("content")), str(m.get("tool_call_id", "")))
+                if _sig in _exist_sigs:
+                    continue
+                _exist_sigs.add(_sig)
+                existing.append(dict(m))
             return
 
         # 兜底：session 尚无 _seq（首批/旧会话），内容指纹反向扫描定位历史边界
@@ -1101,14 +1433,29 @@ class AgentWorker(QThread):
                     and m.get("role") != "system"):
                 start_idx = i + 1
                 break
+        # v4.102 fix8：兜底追加也按指纹去重——stream_commit 已写入的同 content
+        # assistant 不再重复追加（否则每条回复渲染两遍）
+        _exist_sigs = set()
+        for _em in existing:
+            if isinstance(_em, dict):
+                _exist_sigs.add((_em.get("role"), str(_em.get("content")),
+                                 str(_em.get("tool_call_id", ""))))
         if start_idx is None:
             # 无法对齐（例如结构变化），保守追加尾部增量
             for m in self.messages[-1:]:
                 if isinstance(m, dict) and (m.get("role") in ("assistant", "tool") or m.get("tool_calls")):
+                    _sig = (m.get("role"), str(m.get("content")), str(m.get("tool_call_id", "")))
+                    if _sig in _exist_sigs:
+                        continue
+                    _exist_sigs.add(_sig)
                     existing.append(dict(m))
             return
         for m in self.messages[start_idx:]:
             if isinstance(m, dict) and (m.get("role") in ("assistant", "tool") or m.get("tool_calls")):
+                _sig = (m.get("role"), str(m.get("content")), str(m.get("tool_call_id", "")))
+                if _sig in _exist_sigs:
+                    continue
+                _exist_sigs.add(_sig)
                 existing.append(dict(m))
 
     def _handle_tool_result(self, tc, name, fn, result_str, deliverables, schedule):
@@ -1149,7 +1496,7 @@ class AgentWorker(QThread):
         if not has_tool_msg:
             return
 
-        self.status.emit("正在提取长期记忆…")
+        self._emit_status("正在提取长期记忆…")
 
         # 构造提取请求：复用已有对话历史 + 追加归档指令
         extraction_msgs = list(self.messages)
@@ -1191,7 +1538,7 @@ class AgentWorker(QThread):
                 log.warning("自动记忆写入失败: %s", e)
 
         if count:
-            self.status.emit(f"已自动记录 {count} 条进化记忆到 MEMORY.md")
+            self._emit_status(f"已自动记录 {count} 条进化记忆到 MEMORY.md")
 
     @staticmethod
     def _parse_remember_facts(raw):

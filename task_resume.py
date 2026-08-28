@@ -58,7 +58,13 @@ def load_checkpoint(cfg, task_id):
 
 
 def list_active(cfg):
-    """列出未完成（无 done 标记）的检查点，按最后活跃时间倒序。返回带 _task_id 的列表。"""
+    """列出未完成（status 非 done/completed）的检查点，按最后活跃时间倒序。返回带 _task_id 的列表。
+
+    v4.101：引入 status 字段区分 running / paused / done。
+    - running：任务进行中（含崩溃/强杀残留）。
+    - paused：用户主动暂停/取消，保留检查点供「继续」入口复用。
+    - done / completed：已结束，不列为可恢复项（兼容旧 done 字段）。
+    """
     d = _dir(cfg)
     if not os.path.isdir(d):
         return []
@@ -69,7 +75,9 @@ def list_active(cfg):
         try:
             with open(os.path.join(d, fn), "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if data.get("done"):
+            if data.get("status") in ("done", "completed"):
+                continue
+            if data.get("done"):  # 兼容旧字段
                 continue
             data["_task_id"] = fn[:-5]
             out.append(data)
@@ -80,11 +88,31 @@ def list_active(cfg):
 
 
 def mark_done(cfg, task_id):
-    """干净退出：删除检查点（正常完成 / 用户取消都不留恢复项）。"""
+    """干净退出：删除检查点（正常完成不留恢复项）。"""
     try:
         p = _path(cfg, task_id)
         if os.path.exists(p):
             os.remove(p)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def mark_paused(cfg, task_id):
+    """主动暂停/用户取消：保留检查点，仅把状态改为 paused（供「继续」入口复用）。
+
+    相比 mark_done（删除文件），paused 保留断点状态，下次扫描可提示用户继续。
+    """
+    try:
+        p = _path(cfg, task_id)
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data["status"] = "paused"
+            data["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
             return True
     except Exception:
         pass
