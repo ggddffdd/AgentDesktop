@@ -1030,7 +1030,7 @@ def tool_image_gen(cfg, app_dir, prompt, size=None, progress=None):
     if provider == "gateway":
         return _gen_gateway(cfg, app_dir, prompt, model, size)
     elif provider == "agnes":
-        return _gen_agnes_image(cfg, app_dir, prompt, size)
+        return _gen_agnes_image(cfg, app_dir, prompt, size, progress=progress)
     elif provider == "deepseek":
         return _gen_siliconflow(cfg, app_dir, prompt, size)
     elif provider == "local_stability":
@@ -1182,20 +1182,97 @@ def _agnes_creds(cfg):
     return base.rstrip("/"), key
 
 
-def _gen_agnes_image(cfg, app_dir, prompt, size=None):
+_AGNES_TIERS = ((3400, "4K"), (2500, "3K"), (1700, "2K"))
+_AGNES_RATIOS = {
+    "1:1": 1.0, "4:3": 4 / 3, "3:4": 3 / 4, "16:9": 16 / 9,
+    "9:16": 9 / 16, "3:2": 3 / 2, "2:3": 2 / 3,
+}
+# 用户主动要文字时不加防加字约束
+_WANT_TEXT_RE = re.compile(
+    r"文字|字体|标题|文案|标语|写着|写上|写有|字幕|水印|logo|LOGO|slogan|caption|text|title",
+    re.I,
+)
+_ANTI_TEXT_SUFFIX = (
+    "。（强制约束：除非用户明确要求，否则画面中绝对不要出现任何文字、字母、数字、"
+    "标题、水印、标语或乱码，保持纯视觉画面）"
+)
+
+
+def _size_to_tier_ratio(w, h):
+    """把精确像素尺寸映射为 Agnes 2.5 支持的 (档位, 比例)。
+
+    2.5 系列只认 size 档位（1K/2K/3K/4K）+ ratio（16:9 等），
+    传精确像素会掉画质甚至报错。档位按最长边取，比例取最接近的常用值。
+    """
+    try:
+        w, h = int(w), int(h)
+    except (TypeError, ValueError):
+        return "2K", "16:9"
+    if w <= 0 or h <= 0:
+        return "2K", "16:9"
+    longest = max(w, h)
+    tier = "1K"
+    for thr, name in _AGNES_TIERS:
+        if longest >= thr:
+            tier = name
+            break
+    target = w / float(h)
+    ratio = min(_AGNES_RATIOS.items(), key=lambda kv: abs(kv[1] - target))[0]
+    return tier, ratio
+
+
+def _letterbox_to_size(fpath, w, h):
+    """把生成图对齐到用户要求的精确像素尺寸。
+
+    比例差 <0.01 直接等比缩放（画面锐、不补边）；比例差较大才按「填满后居中裁切」
+    处理，避免出现黑边。原地覆盖，失败不抛。
+    """
+    from PIL import Image
+    with Image.open(fpath) as im:
+        im = im.convert("RGB")
+        sw, sh = im.size
+        if (sw, sh) == (w, h):
+            return (sw, sh)
+        if abs(sw / float(sh) - w / float(h)) < 0.01:
+            out = im.resize((w, h), Image.LANCZOS)
+        else:
+            scale = max(w / float(sw), h / float(sh))
+            tmp = im.resize((max(1, int(sw * scale)), max(1, int(sh * scale))), Image.LANCZOS)
+            left = max(0, (tmp.size[0] - w) // 2)
+            top = max(0, (tmp.size[1] - h) // 2)
+            out = tmp.crop((left, top, left + w, top + h))
+        out.save(fpath)
+    return (w, h)
+
+
+def _gen_agnes_image(cfg, app_dir, prompt, size=None, progress=None):
     """agnes 模式：直连 Agnes 图像生成接口，不经过本地网关。"""
     base, key = _agnes_creds(cfg)
-    model = cfg.get("image_gen_model", "agnes-image-2.1-flash")
+    model = cfg.get("image_gen_model", "agnes-image-2.5-flash")
     if model == "agnes":  # 兼容旧值
-        model = "agnes-image-2.1-flash"
+        model = "agnes-image-2.5-flash"
     if size is None:
         size = cfg.get("image_gen_size", "1024x768")
+    is_25 = "2.5" in model
+    # 2.5 爱自作主张往画面里加字，用户没主动要字就强约束
+    if is_25 and prompt and not _WANT_TEXT_RE.search(prompt):
+        prompt = prompt.rstrip("。.") + _ANTI_TEXT_SUFFIX
     url = base + "/images/generations"
-    payload = json.dumps({
-        "model": model,
-        "prompt": prompt,
-        "size": size,
-    }, ensure_ascii=False).encode("utf-8")
+    body = {"model": model, "prompt": prompt, "size": size}
+    want_wh = None
+    if is_25 and isinstance(size, str) and "x" in size:
+        try:
+            _w, _h = (int(x) for x in size.lower().split("x", 1))
+            tier, ratio = _size_to_tier_ratio(_w, _h)
+            body["size"], body["ratio"] = tier, ratio
+            want_wh = (_w, _h)
+            if progress:
+                progress(f"🖼 Agnes {model} 生成中…（{tier} / {ratio} → {_w}x{_h}）")
+        except ValueError:
+            pass
+    if progress and want_wh is None:
+        progress(f"🖼 Agnes {model} 生成中…（{size}）")
+    payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=payload, method="POST")
     req.add_header("Content-Type", "application/json")
     if key:
@@ -1216,10 +1293,19 @@ def _gen_agnes_image(cfg, app_dir, prompt, size=None):
             img_url = content
     if not img_url:
         return f"生图失败：{data}"
+    if progress:
+        progress("⬇ 下载并保存图片…")
     try:
-        return _save_gen_image(app_dir, img_url)
+        res = _save_gen_image(app_dir, img_url)
     except Exception as e:
         return f"保存图片失败：{e}（原始返回：{data}）"
+    # 档位出图与用户要求的精确像素可能不同，落盘后对齐一次
+    if want_wh and isinstance(res, tuple) and res:
+        try:
+            _letterbox_to_size(os.path.join(app_dir, res[0]), want_wh[0], want_wh[1])
+        except Exception as e:
+            log.warning("生图尺寸对齐跳过: %s", e)
+    return res
 
 
 def _save_gen_video(app_dir, url):
