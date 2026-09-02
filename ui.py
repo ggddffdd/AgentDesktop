@@ -74,6 +74,7 @@ from permissions import PermissionEngine, MODES
 import voice as voice_mod
 from agent import AgentWorker
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+import chat_web  # v4.104：WebEngine 聊天渲染引擎
 
 log = logging.getLogger("dsdesktop")
 
@@ -1222,8 +1223,12 @@ class _EdgeResizeFilter(QAbstractNativeEventFilter):
             try:
                 msg = ctypes.cast(message, ctypes.POINTER(ctypes.wintypes.MSG)).contents
                 if msg.message == _WM_NCHITTEST and not self._win.isMaximized():
-                    x = msg.lParam & 0xFFFF
-                    y = (msg.lParam >> 16) & 0xFFFF
+                    # v4.108 H-11：lParam 的屏幕坐标是【物理像素】，而 win.x()/width()
+                    # 是【逻辑坐标】——高分屏（125%/150% 缩放）直接相减导致热区偏移、
+                    # 边缘缩放失灵。先按 devicePixelRatio 把物理坐标归一为逻辑坐标。
+                    dpr = float(self._win.devicePixelRatioF() or 1.0)
+                    x = (msg.lParam & 0xFFFF) / dpr
+                    y = ((msg.lParam >> 16) & 0xFFFF) / dpr
                     wx = x - self._win.x()
                     wy = y - self._win.y()
                     w = self._win.width()
@@ -1234,9 +1239,9 @@ class _EdgeResizeFilter(QAbstractNativeEventFilter):
                     if wx >= w - m and wy <= m:
                         return True, ctypes.wintypes.LPARAM(_HTTOPRIGHT)
                     if wx <= m and wy >= h - m:
-                        return True, ctypes.wintypes.LPARAM(_HTBOTTOMLEFT)
+                        return True, ctypes.wintypes.LPARAM(_HT_BOTTOMLEFT)
                     if wx >= w - m and wy >= h - m:
-                        return True, ctypes.wintypes.LPARAM(_HTBOTTOMRIGHT)
+                        return True, ctypes.wintypes.LPARAM(_HT_BOTTOMRIGHT)
                     if wx <= m:
                         return True, ctypes.wintypes.LPARAM(_HTLEFT)
                     if wx >= w - m:
@@ -1520,6 +1525,12 @@ class ChatWindow(QMainWindow):
         self._streaming = False
         self._streaming_text = ""
         self._sse_buf = ""
+        # v4.108 M-25：live 工具卡台账（只在 DOM 中、不进 messages）。
+        # agent_index（worker 内配对键）→ 卡片信息；UI 用自增 _live_seq 生成唯一
+        # DOM id，彻底避开「agent 每批 index 从 0 起」导致的跨轮/跨任务 id 撞车。
+        # 台账同时让「全量重建（会话切换/页面自愈）」能按序恢复进行中的工具卡。
+        self._live_tools = {}
+        self._live_seq = 0
         self.agent_mode = self.cfg.get("agent_mode", False)
         self.agent_skip_confirm = self.cfg.get("agent_skip_confirm", False)
         # ---- 权限引擎（v4.50，借鉴 andrewyng/openworker 的 permissions.py）----
@@ -1959,32 +1970,13 @@ class ChatWindow(QMainWindow):
 
         cc_lay.addWidget(header)
 
-        # 聊天视图
-        self.chat_view = QTextBrowser()
-        self.chat_view.setReadOnly(True)
-        self.chat_view.setOpenExternalLinks(True)
-        # v4.75：对话内搜索跳转 + 单条「重新生成 / 改写问题」链接
-        self.chat_view.anchorClicked.connect(self._on_anchor_clicked)
-        # v4.60：强制滚动条始终可见，防止 setHtml 时视口宽度变化导致文字回流→窗口跳
-        self.chat_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
-        self.chat_view.setStyleSheet(
-            f"QTextBrowser{{background:{THEME['bg']};border:none;"
-            f"padding:6px 16px;font-size:13px;line-height:1.6;color:{THEME['text']};}}"
-            f"a{{color:{THEME['link']};text-decoration:underline;}}")
-        self.chat_view.document().setDefaultStyleSheet(f"""
-            .tool-card {{ background: {THEME['elev']}; border: none; border-radius: 8px;
-                          padding: 6px 12px; margin: 4px 0; font-size: 12px; display: inline-block; }}
-            .tool-dot {{ display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-                         margin-right: 6px; }}
-            .tool-dot.running {{ background: {THEME['tool_running']}; }}
-            .tool-dot.done {{ background: {THEME['tool_done']}; }}
-            .tool-name {{ font-weight: bold; color: {THEME['text']}; }}
-            .tool-args {{ color: {THEME['faint']}; margin-left: 8px; }}
-            .tool-result {{ color: {THEME['dim']}; margin-left: 8px; font-style: italic; }}
-        """)
+        # 聊天视图（v4.104：QWebEngineView 真浏览器渲染——圆角/Markdown/流式局部更新）
+        self.chat_view = chat_web.ChatWebView(THEME)
+        # v4.75：对话内搜索跳转 + 单条「重新生成 / 改写问题」链接（app:// 协议拦截）
+        self.chat_view.anchorActivated.connect(self._on_anchor_clicked)
+        # v4.104：页面意外重载（DOM 清空）→ 全量重渲染自愈
+        self.chat_view.pageReloaded.connect(self._on_chat_page_reloaded)
         cc_lay.addWidget(self.chat_view, 1)
-        # 用户主动滚动时更新粘性跟随标志（解耦自 setHtml 抢滚动条）
-        self.chat_view.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
 
         # 输入区
         cc_lay.addWidget(self._build_input_area())
@@ -2356,6 +2348,28 @@ class ChatWindow(QMainWindow):
                 f"border-radius:8px;padding:0 16px;font-size:13px;font-weight:500;color:{THEME['dim']};}}"
                 f"QPushButton:hover{{background:{THEME['panel2']};color:{THEME['text']};"
                 f"border-color:{THEME['border_highlight']};}}")
+
+    # ============ 浏览器扩展辅助 ============
+    def _copy_ext_token(self):
+        tok = self.cfg.get("browser_bridge_token", "")
+        if not tok:
+            self.status_label.setText("配对码为空，请重启Agent以生成")
+            return
+        try:
+            from PySide6.QtWidgets import QApplication
+            QApplication.clipboard().setText(tok)
+            self.status_label.setText("✅ 配对码已复制到剪贴板")
+        except Exception as e:
+            self.status_label.setText("复制失败：" + str(e))
+
+    def _open_path(self, path):
+        """用系统默认程序打开文件/目录。"""
+        import subprocess
+        try:
+            os.startfile(path) if os.name == "nt" else subprocess.run(
+                ["open" if os.uname().sysname == "Darwin" else "xdg-open", path])
+        except Exception as e:
+            self.status_label.setText("打开失败：" + str(e))
 
     # ============ 编排页（小说一条龙）============
     def _build_orchestrate_page(self):
@@ -2948,7 +2962,7 @@ class ChatWindow(QMainWindow):
 
         self.video_prompt = QTextEdit()
         self.video_prompt.setFixedHeight(90)
-        self.video_prompt.setPlaceholderText("描述视频画面与镜头…（台词建议加「(用中文说)」前缀）")
+        self.video_prompt.setPlaceholderText("描述视频画面与镜头…（口播台词请填下方「台词/口播」框，不要写这里）")
         self.video_prompt.setStyleSheet(
             f"QTextEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
             f"border-radius:10px;padding:10px 12px;font-size:13px;color:{THEME['text']};}}"
@@ -2958,7 +2972,9 @@ class ChatWindow(QMainWindow):
         # ---- 选项行：时长 / 横竖 / 生成 ----
         opt = QHBoxLayout()
         self.video_duration = QSpinBox()
-        self.video_duration.setRange(4, 16)
+        # 新版 agnes-video-2.5-flash 时长合法范围 4~12 秒（旧版可到 16s），
+        # UI 上限同步收窄，避免用户选了 13~16 却被静默钳到 12 而困惑。
+        self.video_duration.setRange(4, 12)
         self.video_duration.setValue(6)
         self.video_duration.setSuffix(" 秒")
         self.video_duration.setFixedHeight(34)
@@ -3279,19 +3295,21 @@ class ChatWindow(QMainWindow):
     # ============ 设置页 ============
     def _build_settings_page(self):
         page = self.settings_page
+        page.setFont(QFont("Microsoft YaHei", 13))
         lay = QVBoxLayout(page)
         lay.setContentsMargins(32, 24, 32, 24)
         lay.setSpacing(16)
         head = QLabel("设置")
-        head.setStyleSheet(f"font-size:20px;font-weight:700;color:{THEME['text']};")
+        head.setStyleSheet(f"font-size:20px;font-weight:700;color:{THEME['text']};background:transparent;")
         lay.addWidget(head)
         sub = QLabel("当前配置摘要；点击按钮打开详细设置弹层。")
-        sub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+        sub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};background:transparent;")
         lay.addWidget(sub)
 
         info = QWidget()
-        info.setStyleSheet(f"background:{THEME['card']};border:1px solid {THEME['border']};"
-                           f"border-radius:10px;padding:16px;")
+        info.setObjectName("settingsInfoCard")
+        info.setStyleSheet(f"QWidget#settingsInfoCard{{background:{THEME['card']};border:1px solid {THEME['border']};"
+                           f"border-radius:10px;padding:16px;}}")
         il = QVBoxLayout(info)
         il.setSpacing(8)
         prof = self.cfg.get("model_profiles", {})
@@ -3328,17 +3346,18 @@ class ChatWindow(QMainWindow):
 
         # ===== 我的记忆（跨对话长期记忆）=====
         mem_card = QWidget()
-        mem_card.setStyleSheet(f"background:{THEME['card']};border:1px solid {THEME['border']};"
-                               f"border-radius:10px;padding:16px;")
+        mem_card.setObjectName("settingsMemCard")
+        mem_card.setStyleSheet(f"QWidget#settingsMemCard{{background:{THEME['card']};border:1px solid {THEME['border']};"
+                               f"border-radius:10px;padding:16px;}}")
         ml = QVBoxLayout(mem_card)
         ml.setSpacing(10)
         mhead = QLabel("我的记忆（跨对话长期记忆）")
-        mhead.setStyleSheet(f"font-size:15px;font-weight:600;color:{THEME['text']};")
+        mhead.setStyleSheet(f"font-size:15px;font-weight:600;color:{THEME['text']};background:transparent;")
         ml.addWidget(mhead)
         msub = QLabel("Agent会在对话中自动记住你的稳定偏好、约定与身份，并在新对话里沿用。"
                       "可在此查看；清空会删除全部记忆（不可恢复）。")
         msub.setWordWrap(True)
-        msub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+        msub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};background:transparent;")
         ml.addWidget(msub)
         self.mem_view = QTextEdit()
         self.mem_view.setReadOnly(True)
@@ -3364,6 +3383,63 @@ class ChatWindow(QMainWindow):
         lay.addWidget(mem_card)
         self._refresh_memory_view()
 
+        # ===== 浏览器扩展（v4.103：抓取网页进对话）=====
+        ext_card = QWidget()
+        ext_card.setObjectName("settingsExtCard")
+        ext_card.setStyleSheet(f"QWidget#settingsExtCard{{background:{THEME['card']};border:1px solid {THEME['border']};"
+                               f"border-radius:10px;padding:16px;}}")
+        el = QVBoxLayout(ext_card)
+        el.setSpacing(10)
+        ehead = QLabel("浏览器扩展（抓网页进对话）")
+        ehead.setStyleSheet(f"font-size:15px;font-weight:600;color:{THEME['text']};background:transparent;")
+        el.addWidget(ehead)
+        esub = QLabel("装好「Agent抓网页」扩展后，在任意网页一键把正文/选中文字发到Agent，"
+                      "让 AI 帮你总结、提取、分析。配对码只需复制一次到扩展里。")
+        esub.setWordWrap(True)
+        esub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};background:transparent;")
+        el.addWidget(esub)
+        etok_row = QHBoxLayout()
+        etok_lbl = QLabel("配对码：")
+        etok_lbl.setStyleSheet(f"font-size:12px;color:{THEME['text']};background:transparent;")
+        etok_row.addWidget(etok_lbl)
+        tok_val = self.cfg.get("browser_bridge_token", "")
+        self.ext_token_edit = QLineEdit(tok_val)
+        self.ext_token_edit.setReadOnly(True)
+        self.ext_token_edit.setStyleSheet(f"background:{THEME['bg']};border:1px solid {THEME['border']};"
+                                          f"border-radius:8px;padding:6px 8px;font-size:13px;"
+                                          f"color:{THEME['text']};font-family:'Microsoft YaHei','ui-monospace','Menlo','Consolas',monospace;")
+        etok_row.addWidget(self.ext_token_edit, 1)
+        ecopy = QPushButton("复制")
+        ecopy.setFixedHeight(32)
+        ecopy.setStyleSheet(self._secondary_btn_style())
+        ecopy.clicked.connect(self._copy_ext_token)
+        etok_row.addWidget(ecopy)
+        el.addLayout(etok_row)
+        estatus = QLabel("桥接服务：本机 127.0.0.1:9100（已自动启动）")
+        estatus.setStyleSheet(f"font-size:12px;color:{THEME['dim']};background:transparent;")
+        el.addWidget(estatus)
+        einstall = QPushButton("打开扩展安装说明")
+        einstall.setFixedHeight(34)
+        einstall.setStyleSheet(self._secondary_btn_style())
+        # v4.108 M-27：优先运行目录（用户自装/自改），缺失时回退到 exe 随附的
+        # 扩展副本——PyInstaller 6.x onedir 的 datas 落 _internal/ 下，开发态在仓库根。
+        install_path = os.path.join(
+            os.path.expanduser("~"), "Documents", "AgentDesktop", "browser_extension", "README.md")
+        if not os.path.exists(install_path):
+            try:
+                _exe_dir = os.path.dirname(sys.executable)
+                for _cand in (os.path.join(_exe_dir, "_internal", "browser_extension",
+                                           "README.md"),
+                              os.path.join(_exe_dir, "browser_extension", "README.md")):
+                    if os.path.exists(_cand):
+                        install_path = _cand
+                        break
+            except Exception:
+                pass
+        einstall.clicked.connect(lambda: self._open_path(install_path))
+        el.addWidget(einstall)
+        lay.addWidget(ext_card)
+
         lay.addStretch(1)
 
     def _kv(self, k, v):
@@ -3371,9 +3447,9 @@ class ChatWindow(QMainWindow):
         hl = QHBoxLayout(w)
         hl.setContentsMargins(0, 0, 0, 0)
         k_l = QLabel(k)
-        k_l.setStyleSheet(f"font-size:13px;color:{THEME['dim']};")
+        k_l.setStyleSheet(f"font-size:13px;color:{THEME['dim']};background:transparent;")
         v_l = QLabel(str(v))
-        v_l.setStyleSheet(f"font-size:13px;color:{THEME['text']};font-weight:500;")
+        v_l.setStyleSheet(f"font-size:13px;color:{THEME['text']};font-weight:500;background:transparent;")
         hl.addWidget(k_l)
         hl.addStretch(1)
         hl.addWidget(v_l)
@@ -4116,73 +4192,45 @@ class ChatWindow(QMainWindow):
 
     # ============ 聊天气泡渲染 ============
     def _fmt_bubble(self, role, text, idx=None):
-        """方向性圆角气泡：AI 左对齐（左16px/右4px），User 右对齐（左4px/右16px）。
-        idx：消息序号，assistant 气泡在 idx 给定时附带「重新生成/改写问题」操作锚点。"""
-        esc = html_mod.escape(text).replace("\n", "<br>")
-        esc = re.sub(r'(https?://[^\s\u4e00-\u9fff，。、；：！？（）()【】<>"]+)',
-                     r'<a href="\1">\1</a>', esc)
-        esc = self._hl(esc)  # v4.75：对话内搜索高亮
-        if not esc.strip():
-            esc = "…"
-
+        """v4.104：flex 布局气泡（Chromium 渲染，圆角/阴影/动画真实生效）。
+        assistant 正文走 data-md 通道，由页面内 marked.js 渲染 Markdown（代码块/列表/表格）。
+        idx：消息序号，assistant 气泡附带「重新生成/改写问题」操作链接（app:// 协议）。"""
         if role == "user":
+            esc = html_mod.escape(text).replace("\n", "<br>")
+            esc = re.sub(r'(https?://[^\s\u4e00-\u9fff，。、；：！？（）()【】<>"]+)',
+                         r'<a href="\1" target="_blank">\1</a>', esc)
+            if not esc.strip():
+                esc = "…"
             return (
-                '<table width="100%" cellpadding="0" cellspacing="0" style="margin:10px 0;">'
-                '<tr>'
-                '<td width="15%"></td>'
-                '<td style="vertical-align:top;text-align:right;">'
-                f'<div style="font-size:12px;font-weight:500;color:{THEME["dim"]};'
-                f'margin-bottom:6px;padding-right:4px;">You</div>'
-                f'<div style="display:inline-block;background:{THEME["user_bg"]};'
-                f'border:none;'
-                f'border-radius:16px 16px 4px 16px;'
-                f'padding:8px 14px;color:{THEME["user_text"]};'
-                f'font-size:13px;line-height:1.6;text-align:left;max-width:75%;margin:6px 0 6px auto;">'
-                f'{esc}</div>'
-                '</td>'
-                f'<td width="36" style="vertical-align:top;padding-left:8px;">'
+                '<div class="msg-row user">'
+                '<div class="col"><div class="who">You</div>'
+                f'<div class="bubble">{esc}</div></div>'
                 f'{self._avatar_img_html("user")}'
-                '</td>'
-                '</tr></table>'
+                '</div>'
             )
-        else:
-            actions = ""
-            if idx is not None:
-                actions = (
-                    '<div style="margin:2px 0 4px 44px;">'
-                    f'<a href="regen:{idx}" style="color:{THEME["link"]};'
-                    f'font-size:11px;text-decoration:none;margin-right:14px;">🔄 重新生成</a>'
-                    f'<a href="edit:{idx}" style="color:{THEME["link"]};'
-                    f'font-size:11px;text-decoration:none;margin-right:14px;">✏️ 改写问题</a>'
-                    f'<span style="color:{THEME["faint"]};font-size:11px;margin-right:8px;">|</span>'
-                    f'<a href="fb_up:{idx}" style="color:{THEME["dim"]};'
-                    f'font-size:12px;text-decoration:none;margin-right:6px;">👍</a>'
-                    f'<a href="fb_down:{idx}" style="color:{THEME["dim"]};'
-                    f'font-size:12px;text-decoration:none;">👎</a>'
-                    '</div>'
-                )
-            return (
-                '<table width="100%" cellpadding="0" cellspacing="0" style="margin:10px 0;">'
-                '<tr>'
-                f'<td width="36" style="vertical-align:top;padding-right:8px;">'
-                f'{self._avatar_img_html("ai")}'
-                '</td>'
-                '<td style="vertical-align:top;">'
-                f'<div style="display:inline-block;width:auto;min-width:48px;max-width:160px;'
-                f'font-size:12px;background:{THEME["panel2"]};color:{THEME["dim"]};'
-                f'border-radius:4px;padding:2px 10px;text-align:center;'
-                f'margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Agent</div>'
-                f'<div style="display:inline-block;background:{THEME["asst_bg"]};'
-                f'border:none;'
-                f'border-radius:4px 16px 16px 16px;'
-                f'padding:10px 16px;color:{THEME["asst_text"]};'
-                f'font-size:13px;line-height:1.7;max-width:85%;margin:6px auto 6px 0;">'
-                f'{esc}</div>'
-                f'{actions}'
-                '</td>'
-                '<td width="15%"></td>'
-                '</tr></table>'
+        # assistant：Markdown 交给页面内 marked.js 渲染（HTML 属性转义即可，
+        # 浏览器 getAttribute 解码回原文；属性内合法保留换行）
+        raw = text if (text and str(text).strip()) else "…"
+        md_attr = html_mod.escape(raw, quote=True)
+        actions = ""
+        if idx is not None:
+            actions = (
+                '<div class="actions">'
+                f'<a href="app://regen/{idx}">🔄 重新生成</a>'
+                f'<a href="app://edit/{idx}">✏️ 改写问题</a>'
+                f'<span class="sep">|</span>'
+                f'<a href="app://fb_up/{idx}">👍</a>'
+                f'<a href="app://fb_down/{idx}">👎</a>'
+                '</div>'
             )
+        return (
+            '<div class="msg-row ai">'
+            f'{self._avatar_img_html("ai")}'
+            '<div class="col"><div class="who">Agent</div>'
+            f'<div class="bubble"><div class="md" data-md="{md_attr}"></div></div>'
+            f'{actions}'
+            '</div></div>'
+        )
 
     def _hl(self, escaped):
         """v4.75：对话内搜索高亮——在转义后的 HTML 文本中，对标签外可见文本做大小写不敏感
@@ -4223,8 +4271,10 @@ class ChatWindow(QMainWindow):
         return ""
 
     def _on_anchor_clicked(self, url):
-        """v4.75：处理气泡内的 regen:/edit: 链接；其余（http 等）交给系统浏览器。"""
-        s = url.toString()
+        """v4.75：处理气泡内的 regen:/edit: 链接；其余（http 等）交给系统浏览器。
+        v4.108 H-06 修复：QWebEngineView 的链接信号传 str（QTextBrowser 时代是 QUrl），
+        统一按 str 处理，恢复「重新生成/改写/👍/👎」四个气泡按钮。"""
+        s = url if isinstance(url, str) else url.toString()
         if s.startswith("regen:"):
             try:
                 self._regen_message(int(s[len("regen:"):]))
@@ -4249,7 +4299,7 @@ class ChatWindow(QMainWindow):
             except Exception:
                 pass
             return
-        QDesktopServices.openUrl(url)
+        QDesktopServices.openUrl(QUrl(s) if isinstance(s, str) else url)
 
     def _regen_message(self, idx):
         """v4.75：重新生成 idx 处的 assistant 回复。截断该条及之后所有消息，按原上文路由重跑。"""
@@ -4390,11 +4440,12 @@ class ChatWindow(QMainWindow):
             self._start_stream(trigger, None)
 
     def _search_in_chat(self):
-        """v4.75：对话内搜索——高亮全部匹配并跳到首个。"""
+        """v4.75：对话内搜索——高亮全部匹配并跳到首个。
+        v4.104：高亮由页面内 JS 完成（jsHighlight 遍历文本节点包 <mark>），
+        无需再重渲染整个对话。"""
         q = self.search_box.text().strip()
         self._search_query = q
-        self._rendered_msg_count = 0
-        self._render_messages()  # 重渲染以套用/清除高亮
+        self.chat_view.highlight(q)  # JS 侧高亮/清除，不重建 DOM
         if not q:
             self._search_matches = []
             self._search_pos = -1
@@ -4417,7 +4468,7 @@ class ChatWindow(QMainWindow):
         n = len(self._search_matches)
         pos %= n
         self._search_pos = pos
-        self.chat_view.scrollToAnchor(f"msg_{self._search_matches[pos]}")
+        self.chat_view.scroll_to(self._search_matches[pos])
         self.status_label.setText(
             f"找到 {n} 处匹配（{pos + 1}/{n}）")
 
@@ -4650,36 +4701,21 @@ class ChatWindow(QMainWindow):
                 'style="vertical-align:top;border-radius:13px;display:block;">')
 
     def _on_scroll_changed(self, _value):
-        """用户主动滚动时更新粘性跟随标志。setHtml/insertHtml 重置滚动条、setValue 滚底也会
-        异步触发此信号，用时间戳哨兵屏蔽窗口期（0.4s）内的程序改动，避免把「程序重置滚动条」
-        误判为「用户上滑」而关闭跟随（这是「一说话就跳上去」的根因）。"""
-        if time.time() - self._last_view_change < 0.4:
-            return
-        sb = self.chat_view.verticalScrollBar()
-        self._follow_bottom = (sb.maximum() <= 0) or (sb.value() >= sb.maximum() - 40)
+        """v4.104：滚动跟随已迁移到页面内 JS（scroll 监听 + 粘性 stick），
+        此方法保留为空实现以防旧引用；Python 侧不再维护滚动条哨兵。"""
+        pass
+
+    def _on_chat_page_reloaded(self):
+        """v4.104：聊天页意外重载后 DOM 已清空 → 重置计数全量重渲染。"""
+        self._rendered_msg_count = 0
+        self._render_messages()
 
     def _request_scroll_bottom(self):
-        """多次延迟滚底（v4.46 修复 Qt 异步 layout）：setHtml 触发 3 次 layout pass
-        （文字/表格/图片），每次都扩大 max。如果只在 setHtml 同步段 setValue(maximum)，
-        设的是旧 max；layout 完成后 max 变大，value 没跟着走 → 视觉永远在旧位置。
-        用 0/30/120/250ms 四次重试（均落在 0.4s 哨兵窗口内，setValue 触发的 valueChanged
-        被忽略），覆盖全部 layout pass。
-        关键：_follow_bottom 是【用户意图】，程序只读不写。用户上滑置 False 后本次直接放弃，
-        绝不强行拉回——否则上滑看历史会被瞬间拽回底部（v4.46a 修）。"""
+        """v4.104：滚底走 JS（jsForceBottom：置跟随 + 滚底一次到位），
+        Chromium 布局同步完成，不再需要 Qt 异步 layout 的四次重试。"""
         if not self._follow_bottom:
             return
-        self._scroll_seq += 1
-        seq = self._scroll_seq
-        for d in (0, 30, 120, 250):
-            QTimer.singleShot(d, lambda s=seq: self._do_scroll_bottom(s))
-
-    def _do_scroll_bottom(self, seq):
-        # 已被更新的渲染取代（新 chunk 来了），或用户已上滑 → 放弃本次滚底，绝不强行拉回
-        if seq != self._scroll_seq or not self._follow_bottom:
-            return
-        sb = self.chat_view.verticalScrollBar()
-        # 取实时 max（每次 layout 后 max 都不同，必须重新读）
-        sb.setValue(sb.maximum())
+        self.chat_view.force_bottom()
 
     def _render_throttled(self, force_bottom=False):
         """v4.58：节流版渲染——50ms 内多次调用合并为一次，防工具调用/流式渲染风暴。"""
@@ -4729,67 +4765,91 @@ class ChatWindow(QMainWindow):
         elif not has_content and self.main_stack.currentIndex() != 0:
             self.main_stack.setCurrentIndex(0)
 
-        # v4.60：增量渲染——首次 setHtml()，后续只 insertHtml() 追加新气泡
-        # 避免 setHtml 全量重建导致的滚动条"飞"到顶再滚回来的视觉跳动
+        # v4.104：WebEngine 增量渲染——新消息 insertAdjacentHTML 追加（零重排），
+        # 流式只替换 #stream-bubble 的 innerHTML；全量重建仅在会话切换/重生成时发生。
         msgs = session.messages
         rendered = getattr(self, "_rendered_msg_count", 0)
-        if rendered == 0 or not msgs or not self.chat_view.toPlainText().strip():
-            # 首次渲染或页面为空 → 全量 setHtml
+        if rendered == 0 or not msgs or rendered > len(msgs):
+            # 首次渲染 / 会话切换 / 重生成 → 全量重建
             parts = self._build_parts(msgs)
-            self._last_view_change = time.time()
-            self.chat_view.setHtml("".join(parts))
+            # v4.104 fix：全量重建也要带上流式内容，否则流式首帧（count=0 时）
+            # 不显示，等第一帧文本来了才冒出来，观感突兀。
+            if self._streaming and self._streaming_text:
+                # v4.108 M-25：流式部件带 #stream-bubble id（与 jsStream 创建结构一致），
+                # commit 后 end_stream 能移除——否则无 id 残留与增量 append 正文形成
+                # 同段双气泡（pageReloaded 自愈路径曾触发）。
+                parts.append(
+                    '<div class="msg-row ai" id="stream-bubble">'
+                    + self._fmt_bubble("assistant", self._streaming_text)
+                    + '</div>')
+            self.chat_view.render_all("".join(parts))
             self._rendered_msg_count = len(msgs)
+            # v4.108 M-25：jsRenderAll 清空了 DOM，live 工具卡（不进 messages）随之消失。
+            # Agent 仍运行（页面自愈/切换回会话的全量重建）时按台账恢复 running/done 卡，
+            # 否则 replace_live 找不到目标、工具过程在界面上直接蒸发。
+            if (getattr(self, "_agent_active", False)
+                    and getattr(self, "_live_tools", None)):
+                for _rec in sorted(self._live_tools.values(),
+                                   key=lambda r: r.get("ui_seq", 0)):
+                    if _rec.get("status") == "done":
+                        self.chat_view.append(self._tool_card_html(
+                            _rec["ui_seq"], _rec.get("display_name", ""),
+                            done=True, result_preview=_rec.get("result", "")))
+                    else:
+                        self.chat_view.append(self._tool_card_html(
+                            _rec["ui_seq"], _rec.get("display_name", ""),
+                            _rec.get("args_preview", "")))
         else:
             # 增量追加：只渲染渲染计数之后的新消息
             new_msgs = msgs[rendered:]
             if new_msgs:
-                cursor = self.chat_view.textCursor()
-                cursor.movePosition(QTextCursor.End)
+                agent_live = getattr(self, "_agent_active", False)
                 for i, m in enumerate(new_msgs, start=rendered):
+                    # Agent 运行期间 tool_log 不从消息管线渲染——实时 running/done 卡
+                    # 由 _on_tool_started/_on_tool_finished 直接注入（带动画），
+                    # 避免同一工具调用出现 2~3 张重复卡（旧 UI 的视觉噪音来源之一）。
+                    if agent_live and m.get("role") == "tool_log":
+                        continue
                     bubble = self._fmt_single_message(m, i)
                     if bubble:
-                        cursor.insertHtml(bubble)
+                        self.chat_view.append(bubble)
                 self._rendered_msg_count = len(msgs)
-            # 流式文本也增量更新
+            # 流式文本：只更新流式气泡
             if self._streaming:
-                # 移除上一个流式气泡（如果有），追加新的
                 self._replace_last_streaming()
+            else:
+                # v4.104 fix：增量路径必须清残留流式气泡——否则「流式结束走早退分支
+                # / agent 收尾 flush」等 count 未重置场景下，最终回答气泡 + #stream-bubble
+                # 残留 = 同一段话重复 2 个气泡。
+                self.chat_view.end_stream()
 
         if force_bottom:
             self._follow_bottom = True
         if self._follow_bottom:
             self._request_scroll_bottom()
 
+    def _render_director_redirect(self, text):
+        """v4.107：主对话框里的导演指令不进主控 Agent、不写主会话（零交集），
+        只在聊天区渲染一条引导气泡，提示去导演台底部「导演对话」条下指令。
+        该气泡不入库——下次渲染主会话会从 session 重建，引导自然消失（一次性提示）。"""
+        bubble = self._fmt_bubble(
+            "assistant",
+            "🎬 这条像给导演台的指令（「%s」）。导演台已独立出来，请在"
+            "**导演台底部「导演对话」条**里直接下指令；主对话框不处理导演相关操作。"
+            % text)
+        if self.main_stack.currentIndex() != 1:
+            self.main_stack.setCurrentIndex(1)
+        self.chat_view.append(bubble)
+        self._request_scroll_bottom()
+
     def _replace_last_streaming(self):
-        """v4.96：修正流式气泡替换逻辑，根治多气泡碎片问题。
-
-        根因：原实现用 QTextCursor.StartOfBlock 试图选中并替换最后一个 block，
-        但气泡是 <table> 结构，StartOfBlock 只能选中 table 内的文本块，无法选中
-        整个 table。结果每次 chunk 都在 table 后面追加新气泡，形成碎片。
-
-        修复：改用 setHtml 全量重建已渲染消息 + 流式气泡，保留 scroll 比例防跳动。
-        """
+        """v4.104：流式更新——只替换 #stream-bubble 的 innerHTML（页面内局部重排），
+        其余消息 DOM 不动。旧 QTextBrowser 时代需 setHtml 全量重建 + 滚动比例恢复，
+        是「越聊越卡 + 滚动条跳动」的根因，现已根治。"""
         if not self._streaming_text:
             return
         bubble = self._fmt_bubble("assistant", self._streaming_text)
-        msgs = self.store.active().messages[:self._rendered_msg_count]
-        parts = self._build_parts(msgs)
-        parts.append(bubble)
-
-        # 保留滚动位置比例，防止 setHtml 导致视图跳动
-        sb = self.chat_view.verticalScrollBar()
-        ratio = sb.value() / max(sb.maximum(), 1) if sb.maximum() > 0 else 0
-
-        self.chat_view.setHtml("".join(parts))
-        self._last_view_change = time.time()
-
-        # 异步恢复滚动位置（等 layout 完成后）
-        def _restore():
-            if self._follow_bottom:
-                self._request_scroll_bottom()
-            elif sb.maximum() > 0:
-                sb.setValue(int(ratio * sb.maximum()))
-        QTimer.singleShot(0, _restore)
+        self.chat_view.update_stream(bubble)
 
     def _build_parts(self, msgs):
         """构建完整 HTML 片段列表（仅 setHtml 时使用）。"""
@@ -4813,7 +4873,7 @@ class ChatWindow(QMainWindow):
                 img_abs = os.path.join(APP_DIR, result).replace("/", os.sep)
                 if os.path.isfile(img_abs):
                     bubble = (
-                        f'<div style="margin:10px 52px;">'
+                        '<div class="tool-wrap">'
                         f'<img src="file:///{img_abs.replace(os.sep, "/")}" '
                         f'style="max-width:320px;border-radius:10px;"/>'
                         f'<div style="font-size:11px;color:{THEME["faint"]};margin-top:4px;">'
@@ -4821,15 +4881,12 @@ class ChatWindow(QMainWindow):
                     )
                     return self._wrap_msg(bubble, idx)
             card = tools_mod.card_html(name, m.get("args", ""), result)
-            bubble = (
-                '<div style="margin:10px 52px;border-left:3px solid '
-                f'{THEME["tool_done"]};'
-                f'background:{THEME["elev"]};padding:8px 10px;border-radius:6px;">'
-                + card + '</div>')
+            bubble = f'<div class="tool-wrap">{card}</div>'
             return self._wrap_msg(bubble, idx)
         else:
             raw = m.get("content", "")
             if isinstance(raw, list):
+                # v4.104：多模态（文本+图片）——flex 标记，文本部分同旧逻辑转义+换行
                 mm_parts = []
                 for part in raw:
                     if isinstance(part, dict) and part.get("type") == "text":
@@ -4846,30 +4903,19 @@ class ChatWindow(QMainWindow):
                 inner = "".join(mm_parts) if mm_parts else "[图片消息]"
                 if m.get("role") == "user":
                     bubble = (
-                        '<table width="100%" cellpadding="0" cellspacing="0" style="margin:10px 0;">'
-                        '<tr><td width="15%"></td>'
-                        '<td style="vertical-align:top;text-align:right;">'
-                        '<div style="font-size:12px;font-weight:500;color:' + THEME["dim"] + ';'
-                        'margin-bottom:6px;padding-right:4px;">You</div>'
-                        '<div style="display:inline-block;background:' + THEME["user_bg"] + ';border:none;'
-                        'border-radius:16px 16px 4px 16px;padding:8px 14px;color:' + THEME["user_text"] + ';'
-                        'font-size:13px;line-height:1.6;text-align:left;max-width:75%;margin:6px 0 6px auto;">'
-                        + inner + '</div></td>'
-                        '<td width="36" style="vertical-align:top;padding-left:8px;">'
-                        + self._avatar_img_html("user") +
-                        '</td></tr></table>'
+                        '<div class="msg-row user">'
+                        '<div class="col"><div class="who">You</div>'
+                        f'<div class="bubble">{inner}</div></div>'
+                        f'{self._avatar_img_html("user")}'
+                        '</div>'
                     )
                 else:
                     bubble = (
-                        '<table width="100%" cellpadding="0" cellspacing="0" style="margin:10px 0;">'
-                        '<tr><td width="36" style="vertical-align:top;padding-right:8px;">'
-                        + self._avatar_img_html("ai") +
-                        '</td><td style="vertical-align:top;">'
-                        '<div style="display:inline-block;background:' + THEME["asst_bg"] + ';border:none;'
-                        'border-radius:4px 16px 16px 16px;padding:10px 16px;color:' + THEME["asst_text"] + ';'
-                        'font-size:13px;line-height:1.7;max-width:85%;margin:6px auto 6px 0;">'
-                        + inner + '</div></td>'
-                        '<td width="15%"></td></tr></table>'
+                        '<div class="msg-row ai">'
+                        f'{self._avatar_img_html("ai")}'
+                        '<div class="col"><div class="who">Agent</div>'
+                        f'<div class="bubble">{inner}</div></div>'
+                        '</div>'
                     )
                 return self._wrap_msg(bubble, idx)
             # v4.57：空正文幽灵跳过
@@ -6191,6 +6237,13 @@ class ChatWindow(QMainWindow):
         has_images = bool(images or file_image_parts)
         if not clean_text and not has_images:
             return
+        # v4.107：导演指令拦截——主对话框输入「改第3镜关键帧 / 主角换发型 / 合成成片 /
+        # 导演台进度」等，不进主控 Agent、不写主会话（与主对话模块零交集）。
+        # 改为在聊天区渲染一条引导，提示去导演台底部「导演对话」条下指令。
+        if clean_text and self._is_director_command(clean_text):
+            self.input_box.clear()
+            self._render_director_redirect(clean_text)
+            return
         if not self.cfg["api_key"]:
             self.status_label.setText("还没填 API Key，请在设置中输入后回车")
             return
@@ -6448,11 +6501,17 @@ class ChatWindow(QMainWindow):
         w.start()
 
     def _on_tool_log(self, entry):
+        # v4.108 M-22：tool_log 的 args/result 截断存储——web_search/read_file 等
+        # 全文可达数 KB，全量入库导致 sessions.json 无限膨胀（实测 1.3MB+），
+        # 每次落盘/加载都拖慢。保留前段 + 省略号即可回溯工具干了什么。
+        def _clip(s, n=500):
+            s = str(s or "")
+            return s if len(s) <= n else s[:n] + "…(截断)"
         self.store.active().messages.append({
             "role": "tool_log",
             "name": entry.get("name", ""),
-            "args": entry.get("args", ""),
-            "result": entry.get("result", ""),
+            "args": _clip(entry.get("args", ""), 300),
+            "result": _clip(entry.get("result", ""), 500),
         })
         self._save_throttled()  # v4.58：批量保存，避免每个工具一次磁盘 IO
         self._render_throttled()  # v4.58：节流渲染，避免信号洪水
@@ -6467,10 +6526,30 @@ class ChatWindow(QMainWindow):
         "remember": "写入长期记忆",
     }
 
+    def _tool_card_html(self, ui_seq, display_name, args_preview="", done=False,
+                        result_preview=""):
+        """v4.108 M-25：统一生成 live 工具卡 HTML（running/done 两态共用）。"""
+        if done:
+            return (
+                f'<div class="tool-card" id="live-tool-{ui_seq}" '
+                f'style="margin-left: 20px;">'
+                f'<span class="tool-dot done"></span>'
+                f'<span class="tool-name">{display_name} ✓</span>'
+                f'<span class="tool-result">{result_preview}</span>'
+                f'</div>'
+            )
+        return (
+            f'<div class="tool-card" id="live-tool-{ui_seq}">'
+            f'<span class="tool-dot running"></span>'
+            f'<span class="tool-name">{display_name}</span>'
+            f'<span class="tool-args">{args_preview}</span>'
+            f'</div>'
+        )
+
     def _on_tool_started(self, data):
         name = data.get("name", "")
         args = data.get("args", {})
-        index = data.get("index", 0)
+        agent_index = data.get("index", 0)
 
         display_name = self._TOOL_NAME_MAP.get(name, name)
         args_preview = ""
@@ -6478,39 +6557,40 @@ class ChatWindow(QMainWindow):
             vals = [str(v) for v in args.values() if v]
             if vals:
                 args_preview = html_mod.escape(vals[0][:30])
-
-        html = (
-            f'<div class="tool-card" id="tool-{index}">'
-            f'<span class="tool-dot running"></span>'
-            f'<span class="tool-name">{display_name}</span>'
-            f'<span class="tool-args">{args_preview}</span>'
-            f'</div>'
-        )
-        self._last_view_change = time.time()
-        cursor = self.chat_view.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertHtml(html)
-        if self._follow_bottom:
-            self._request_scroll_bottom()
+        # v4.108 M-25：UI 自管唯一 DOM id（agent index 只做 started↔finished 配对键）
+        self._live_seq += 1
+        ui_seq = self._live_seq
+        self._live_tools[agent_index] = {
+            "ui_seq": ui_seq, "name": name, "display_name": display_name,
+            "args_preview": args_preview, "status": "running", "result": "",
+        }
+        self.chat_view.append(
+            self._tool_card_html(ui_seq, display_name, args_preview))
 
     def _on_tool_finished(self, data):
         name = data.get("name", "")
-        result_preview = html_mod.escape(str(data.get("result_preview", ""))[:100])
         display_name = self._TOOL_NAME_MAP.get(name, name)
+        result_preview = html_mod.escape(str(data.get("result_preview", ""))[:100])
+        agent_index = data.get("index", 0)
 
-        html = (
-            f'<div class="tool-card done" style="margin-left: 20px;">'
-            f'<span class="tool-dot done"></span>'
-            f'<span class="tool-name">{display_name} ✓</span>'
-            f'<span class="tool-result">{result_preview}</span>'
-            f'</div>'
-        )
-        self._last_view_change = time.time()
-        cursor = self.chat_view.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertHtml(html)
-        if self._follow_bottom:
-            self._request_scroll_bottom()
+        rec = self._live_tools.get(agent_index)
+        if rec is not None and rec.get("name") == name:
+            ui_seq = rec["ui_seq"]
+            rec["status"] = "done"
+            rec["result"] = result_preview
+        else:
+            # 找不到 started（历史/直发 finished）：兜底追加一张 done 卡，不丢信息
+            self._live_seq += 1
+            ui_seq = self._live_seq
+            self._live_tools[agent_index] = {
+                "ui_seq": ui_seq, "name": name, "display_name": display_name,
+                "args_preview": "", "status": "done", "result": result_preview,
+            }
+        # 原位替换 running 卡 → done 卡（同一 id，不追加新 DOM，零重复）
+        self.chat_view.replace_live(
+            f"live-tool-{ui_seq}",
+            self._tool_card_html(ui_seq, display_name, done=True,
+                                 result_preview=result_preview))
 
         # v4.84：模型刚提交了一个待审核技能，刷新徽标并提示
         if name == "create_skill":
@@ -6573,14 +6653,17 @@ class ChatWindow(QMainWindow):
         # v4.60o：末条防重——渲染竞态或循环重提同一句时，避免重复气泡
         if (msgs and msgs[-1].get("role") == "assistant"
                 and msgs[-1].get("content") == text):
+            self.chat_view.end_stream()  # v4.104 fix：先清流式残留再重渲染
             self._render_throttled()
             self._speak(text)
             return
         msgs.append({"role": "assistant", "content": text})
         self._track_context("assistant", text)
         self._save_throttled()  # v4.58：批量保存
-        # v4.96：强制全量重建，清除流式气泡残留，根治碎片
-        self._rendered_msg_count = 0
+        # v4.108 M-25：不再强制全量重建（旧 v4.96 方案）——jsRenderAll 会清空 DOM，
+        # 把只活在 DOM 里的 live 工具卡（running/done）一并抹掉，随后 replace_live
+        # 找不到目标静默丢弃。增量渲染计数不变 → 只 append 本句 + end_stream 清流式
+        # 残留（v4.104 增量路径已覆盖清理），工具卡 DOM 原样保留。
         self._render_throttled()  # v4.58：节流渲染
         self._speak(text)
 
@@ -6767,7 +6850,10 @@ class ChatWindow(QMainWindow):
             return True
         # v4.102 fix11：媒体生成组合判定兜底——"生成口播视频 / 做个数字人"这类
         # 分开写的表述连写词表会漏判，用「对象词×动作词」同现识别。
-        return self._is_media_gen_request(last_user)
+        if self._is_media_gen_request(last_user):
+            return True
+        # v4.107：导演指令已从主路由摘除（统一在导演台底部对话条处理），不再升舱。
+        return False
 
     def _user_refuses_tools(self, messages):
         """v4.100：检测用户是否明确要求『不要调用工具/纯聊天』。
@@ -6839,7 +6925,7 @@ class ChatWindow(QMainWindow):
             return True
         return False
 
-    def _agent_call(self, messages, tools, on_delta=None, force_required=False, force_tool=None):
+    def _agent_call(self, messages, tools, on_delta=None, force_required=False, force_tool=None, force_complex=False):
         import urllib.request as urllib_req
         import logging as _logging
         _tool_intent = self._needs_tool_intent(messages)
@@ -6850,7 +6936,7 @@ class ChatWindow(QMainWindow):
             for m in messages
         )
         # 路由：工具意图或含图都升舱到 complex_model（视觉模型）
-        _route_force = _tool_intent or _has_img_call
+        _route_force = _tool_intent or _has_img_call or force_complex
         _refuse_tools = self._user_refuses_tools(messages)
         _base_url, _model, _api_key = self._route_model(messages, force_complex=_route_force)
         url = _base_url.rstrip("/") + "/chat/completions"
@@ -6959,8 +7045,10 @@ class ChatWindow(QMainWindow):
                             if tc.get("id"):
                                 acc["id"] = tc["id"]
                             fn = tc.get("function") or {}
-                            if fn.get("name"):
-                                acc["function"]["name"] += fn["name"]
+                            # v4.108 M-18：兼容网关会多 chunk 重复发 function.name，
+                            # 只取首次，禁止 += 拼接（否则聚合出 "web_sweb_search"）。
+                            if fn.get("name") and not acc["function"].get("name"):
+                                acc["function"]["name"] = fn["name"]
                             if fn.get("arguments"):
                                 acc["function"]["arguments"] += fn["arguments"]
             return _content, _acc, _u
@@ -6976,9 +7064,27 @@ class ChatWindow(QMainWindow):
                     body.pop("stream_options", None)
                     full_content, tool_acc, _usage = _stream_once(body)
                 except Exception as e2:
+                    # v4.108 H-04：失败必须上抛交给 agent.py 兜底弹错，不能吞掉装"成功"。
                     _logging.getLogger("dsdesktop").error("Agent 流式调用失败: %s", e2)
+                    raise
+            elif _code in (429, 500, 502, 503, 504):
+                # v4.108 H-04：限流/网关抖动 → 退避重试 2 次（2s/4s），仍失败则上抛。
+                _last = e
+                for _attempt in range(2):
+                    time.sleep(2 * (_attempt + 1))
+                    try:
+                        full_content, tool_acc, _usage = _stream_once(body)
+                        _last = None
+                        break
+                    except Exception as e3:
+                        _last = e3
+                if _last is not None:
+                    _logging.getLogger("dsdesktop").error("Agent 流式调用重试仍失败: %s", _last)
+                    raise
             else:
+                # v4.108 H-04：其余失败（超时/断流等）同样上抛，禁止静默返回空响应。
                 _logging.getLogger("dsdesktop").error("Agent 流式调用失败: %s", e)
+                raise
 
         tool_calls = []
         for idx in sorted(tool_acc):
@@ -7392,6 +7498,8 @@ class ChatWindow(QMainWindow):
         # 会漏判 → 普通模式不自动进 Agent。组合判定兜底命中这类表述。
         if self._is_media_gen_request(text):
             return True
+        # v4.107：导演指令已从主路由摘除——统一在导演台底部「导演对话」条处理，
+        # 主对话框不再进 Agent。故此处不再识别 _is_director_command。
         return any(h.lower() in t for h in self._ACTION_HINTS)
 
     # v4.102 fix11：媒体生成组合词表——"生成/做/制作/创建 视频/口播/数字人/图"常被用户
@@ -7423,6 +7531,37 @@ class ChatWindow(QMainWindow):
         if self._message_is_statement_only(text):
             return False
         return True
+
+    # v4.106：导演台对话指令词表——对象词收窄到导演台特有名词（分镜/关键帧/三视图/
+    # 成片/导演台/主角/角色），避免「换个头像」「改改文章」这类普通编辑误进 Agent。
+    # 单字「镜」只覆盖「第3镜/这镜/下一镜」写法；误伤面小（含"镜"且带明确改动的句子
+    # 基本都在聊镜头）。
+    _DIRECTOR_OBJ_KW = ("导演台", "分镜", "关键帧", "三视图", "成片",
+                        "主角", "角色", "这镜", "这一镜", "下一镜", "末镜", "镜")
+    _DIRECTOR_VERB_KW = ("重生成", "重新生成", "改成", "换成", "换回", "修改", "改一下",
+                         "改改", "重做", "合成", "再来一版", "补一镜", "加一镜", "删掉",
+                         "去掉", "调亮", "调暗")
+    _DIRECTOR_STATUS_KW = ("导演台", "分镜", "关键帧", "三视图", "成片",
+                           "第几镜", "哪几镜", "几镜")
+    _DIRECTOR_STATUS_Q = ("进度", "状态", "怎么样", "好了吗", "好了没", "跑到哪",
+                          "生成到哪", "到哪一步", "卡在哪", "到哪了", "停在哪",
+                          "还没", "没生成", "没好", "没出", "没跑")
+
+    def _is_director_command(self, text):
+        """v4.106：是否导演台对话指令（查进度 / 改分镜 / 重生成关键帧·三视图 / 合成）。
+        命中 → 普通模式自动进 Agent，且升舱 DeepSeek（director_* 工具意图）。"""
+        if not text:
+            return False
+        t = text.lower()
+        if self._message_is_statement_only(text):
+            return False
+        # 进度查询：「导演台进度怎么样 / 分镜跑到哪了」
+        if any(o in t for o in self._DIRECTOR_STATUS_KW) and \
+                any(q in t for q in self._DIRECTOR_STATUS_Q):
+            return True
+        # 修改指令：「把第3镜的关键帧改成夜晚 / 主角换成短发 / 合成成片」
+        return any(o in t for o in self._DIRECTOR_OBJ_KW) and \
+            any(v in t for v in self._DIRECTOR_VERB_KW)
 
     def _message_is_topic_only(self, text):
         """v4.56：用户消息是否属于"列方向/选题/盘点"型需求，且**不**含执行意图。
@@ -7542,6 +7681,16 @@ class ChatWindow(QMainWindow):
     def closeEvent(self, event):
         # v4.47: 点×彻底退出（之前是 event.ignore()+hide 缩到托盘，导致多实例/僵尸累积）
         event.accept()
+        try:
+            # v4.108 M-20：关窗前终止 Agent worker——request_stop 会唤醒阻塞中的
+            # 危险操作确认（_confirm_event.set），wait(3s) 给子线程收尾，避免
+            # 「QThread: Destroyed while thread is still running」崩溃与确认弹窗挂死。
+            w = self._agent_worker
+            if w is not None and w.isRunning():
+                w.request_stop()
+                w.wait(3000)
+        except Exception:
+            pass
         try:
             self._clear_ghost()
         except Exception:

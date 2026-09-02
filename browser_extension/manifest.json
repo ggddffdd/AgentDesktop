@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Agent抓网页",
+  "version": "1.0",
+  "description": "一键把当前网页正文/选中文字发到「AgentDesktop」桌面端，让 AI 帮你总结、提取、分析。",
+  "action": {
+    "default_title": "Agent抓网页",
+    "default_popup": "popup.html"
+  },
+  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "48": "icon.png",
+    "128": "icon.png"
+  }
+}

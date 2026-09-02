@@ -23,8 +23,8 @@ else:
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "AgentDesktop", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.102"
-APP_BUILD_DATE = "2026-08-22"
+APP_VERSION = "v4.108"
+APP_BUILD_DATE = "2026-09-03"
 # v4.102（2026-08-22）图像输入链路：DeepSeek 通道模型换 deepseek-v4-flash-vision-exp，
 # ui.py 支持视觉模型保留 image_url、普通对话/Agent 带图路由视觉模型。
 # v4.101（2026-08-21）停止按钮 + 断点续传：普通 Agent 任务停止→检查点 paused→「▶ 继续上次任务」
@@ -119,8 +119,8 @@ DEFAULT_CONFIG = {
     "agent_skip_confirm": False,
     "onboarded": False,       # v4.79：新手引导是否已看过（看过则不再弹）
     "image_gen_provider": "agnes",
-    "image_gen_model": "agnes-image-2.1-flash",
-    "image_gen_size": "1024x768",
+    "image_gen_model": "agnes-image-2.5-flash",
+    "image_gen_size": "1920x1080",
     "sd_webui_url": "http://127.0.0.1:7860",
     "gateway_url": "http://127.0.0.1:8000",
     "gateway_autostart": True,   # v4.79：识图后端(free-api-gateway)随 APP 自动拉起
@@ -182,7 +182,10 @@ DEFAULT_CONFIG = {
     # Webhook / 事件驱动（模块6）
     "webhook_enabled": False,      # 默认关闭，避免未经意开启端口；可用 webhook_start 工具或设为 true 自动启动
     "webhook_port": 9000,
-    "webhook_host": "0.0.0.0",
+    # v4.108 M-28：默认回环绑定 + 共享 token（启动时若为空会自动生成持久化）。
+    # 原先 0.0.0.0 裸奔，局域网任何人可 POST /api/trigger 伪造事件。
+    "webhook_host": "127.0.0.1",
+    "webhook_token": "",
     # 技能管理器（模块7）：已启用技能清单
     "enabled_skills": [],
     # v4.76：OS 级自动备份（Windows 任务计划程序）
@@ -262,6 +265,14 @@ TOPIC_IDEA_TEMPLATE = """
 
 # ---------- Agent 模式（v4）：工具定义 + 系统提示 ----------
 AGENT_SYS_APPEND = (
+    "\n## 执行风格铁律（v4.104 新增，违反即失败）\n"
+    "- 能一步做完绝不两步：优先选用「一次调用就能直接达成目标」的工具，"
+    "不要先探测再操作、不要「先看看再动手」、不要做多余的前置调用。\n"
+    "- 只调真正必要的工具：回答能直接给的就不调工具；一个工具能拿到的结果不要拆成两个。\n"
+    "- 禁止自问自答、禁止复述步骤、禁止「我先做 X 然后做 Y 然后…」式的计划播报，"
+    "直接执行并汇报结果。\n"
+    "- 调工具前想清楚：这一步调用后能否离目标更近？不能就不调。\n"
+    "- 最终回答只给结论和必要信息（产物路径/关键数字），不要重复工具过程。\n"
     "\n## 工具调用补充规则\n"
     "【重要】你运行在 Windows 系统上（PowerShell），不是 Linux / macOS。"
     "禁止使用 cat / grep / ls / head / tail / sed / awk 等 Unix 命令，"
@@ -269,7 +280,7 @@ AGENT_SYS_APPEND = (
     "读取文件内容请用 read_file 工具，脚本请用 run_python，批量操作请用 PowerShell。\n"
     "run_command 在 Windows 走 PowerShell：列文件用 Get-ChildItem -Recurse，错误重定向用 2>$null"
     "（不是 2>nul），文本搜索用 Select-String（不是 findstr），否则命令会报错浪费次数。\n"
-    "- 最多连续调 20 轮工具；复杂任务分批执行（每批 ≤5 项），接近上限优先落盘\n"
+    "- 最多连续调 12 轮工具；复杂任务分批执行（每批 ≤5 项），接近上限优先落盘\n"
     "- 文件路径用相对于程序目录的相对路径（如 notes/todo.txt）\n"
     "- write_file / run_command / run_python / browser 类操作执行前弹确认框\n"
     "- image_gen 返回的图片路径直接在对话中显示\n"
@@ -429,22 +440,52 @@ from tool_defs import TOOL_DEFS  # 工具定义见 tool_defs.py（已从 config.
 
 MAX_AGENT_STEPS = 20
 # 续跑单轮步数上限（独立于 MAX_AGENT_STEPS，便于单独调参防空转烧 token）。
-# 默认与 MAX_AGENT_STEPS 一致；观察「续跑截断」日志频率后再决定是否下调。
 AGENT_RESUME_STEPS = 20
 # Agent 单轮步数耗尽后自动续跑的轮数（每轮再给 MAX_AGENT_STEPS 步，封顶防无限循环）
 # 总预算 = (1 + AGENT_RESUME_ROUNDS) * MAX_AGENT_STEPS 步。设为 0 则回到旧的硬停行为。
+# v4.104.1（2026-08-31）：v4.104 曾收紧到 24 步（12/12/1），实测复杂任务不够用、
+# 「任务随时断」。现放宽回总 60 步（20/20/2）。
+# 断的根因交给 token 预算管（见下方 AGENT_TOKEN_BUDGET），步数只防死循环，不防花钱。
 AGENT_RESUME_ROUNDS = 2
 TOOL_READ_LIMIT = 8000
 TOOL_RESULT_LIMIT = 6000
+
+
+def get_agent_step_budget(cfg=None):
+    """取当前生效的步数预算：优先 config.json（cfg），回退模块默认。
+
+    返回 (max_steps, resume_steps, resume_rounds)。
+    v4.104.1：步数此前写死在代码里，调一次要重打包 8 分钟；改为可配置后
+    改 config.json 重启即生效。非法值（非正数/非数字）一律回退模块默认。
+    """
+    d = cfg if isinstance(cfg, dict) else {}
+    out = []
+    for key, default in (("agent_max_steps", MAX_AGENT_STEPS),
+                         ("agent_resume_steps", AGENT_RESUME_STEPS),
+                         ("agent_resume_rounds", AGENT_RESUME_ROUNDS)):
+        try:
+            v = int(d.get(key, default))
+        except (TypeError, ValueError):
+            v = default
+        if v < 0:
+            v = default
+        out.append(v)
+    return tuple(out)
 
 # ---------- v4.102 fix12：Agent 单任务 token 预算熔断 ----------
 # 背景：续跑/步数预算（AGENT_RESUME_*）只约束「轮次」，不约束「token 花销」。
 # DeepSeek 付费路由一旦被大量触发（复杂任务自动升舱），单任务 token 可无上限
 # 累积——这正是 Codex /goal 烧钱的同源风险。Agnes 免费主通道不烧钱，付费通道
-# 必须设红线。阈值默认保守（200K），**设为 0 即完全禁用熔断**（行为回退）。
-AGENT_TOKEN_BUDGET = 200000           # 单任务 token 硬上限（0 = 禁用熔断）
+# 必须设红线。**设为 0 即完全禁用熔断**（行为回退）。
+# v4.104.1（2026-08-31）：用户反馈「任务随时断」→ 总预算 200K → 400K。
+# 同日再提：用户要求「400000+」→ 400K → 500K，留足复杂任务余量。
+# 同时付费档 150K → 0（跟随总预算）。原因：熔断取的是
+#   _limit = min(总预算, 付费档预算)   # 只要任务触发过一次 DeepSeek 就生效
+# 付费档 150K 会先把 limit 从 200K 拉到 150K，等于总预算形同虚设，
+# 这才是「怎么老断」的真凶。改 0 后单一真相源，只调 agent_token_budget 一个数。
+AGENT_TOKEN_BUDGET = 500000           # 单任务 token 硬上限（0 = 禁用熔断）
 AGENT_TOKEN_WARN = 0.8                # 达预算该比例时提前告警一次
-AGENT_TOKEN_BUDGET_DEEPSEEK = 150000  # 付费通道单独更紧（0 = 跟随总预算）
+AGENT_TOKEN_BUDGET_DEEPSEEK = 0       # 付费通道单独更紧（0 = 跟随总预算）
 
 
 def get_agent_token_budget(cfg=None):
@@ -635,13 +676,25 @@ def save_config(cfg):
     """将配置字典写回 config.json（自动创建父目录）。
 
     技能管理器启用/禁用技能后调用，确保状态重启不丢失。
+    v4.108 M-24：改为 tmp + os.replace 原子写——原 open("w") 写入途中崩溃会留下
+    截断的损坏配置，下次启动加载失败直接丢全部设置。
     """
+    import tempfile
     try:
         parent = os.path.dirname(CONFIG_PATH)
         if parent and not os.path.isdir(parent):
             os.makedirs(parent, exist_ok=True)
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        fd, tmp = tempfile.mkstemp(dir=parent or ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, CONFIG_PATH)
+        except Exception:
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+            raise
         log.info("配置已保存到 %s", CONFIG_PATH)
     except Exception as e:
         log.error("保存 config.json 失败: %s", e)

@@ -20,6 +20,8 @@ import re
 import shutil
 import logging
 import sqlite3
+import threading
+import functools
 from datetime import datetime
 
 log = logging.getLogger(__name__)
@@ -55,6 +57,19 @@ def _configure(base_dir):
 # 明文文件不落地；口令经 PBKDF2 派生密钥，salt 存于 MEMORY_DIR/memory.salt。
 _cipher = None
 _SALT_PATH = None  # 延迟按 MEMORY_DIR 计算
+
+# v4.108 M-21：跨线程互斥锁——Agent worker 线程与 UI 线程并发 append/trim/_with_db，
+# 无锁时 tmp 文件互踩、加密 DB 竞态丢数据。RLock 可重入，允许同线程嵌套调用。
+_LOCK = threading.RLock()
+
+
+def _sync(fn):
+    """把写函数包进全局互斥锁。"""
+    @functools.wraps(fn)
+    def _wrapper(*args, **kwargs):
+        with _LOCK:
+            return fn(*args, **kwargs)
+    return _wrapper
 
 
 def _salt_path():
@@ -309,6 +324,7 @@ def _create_tables(conn):
     conn.commit()
 
 
+@_sync  # v4.108 M-21：DB 解密→执行→加密整段临界区加锁
 def _with_db(fn):
     """解密 db→执行 fn(conn)→关闭并重新加密 db（加密模式）。fn 内需 commit。
 
@@ -450,36 +466,7 @@ def _trim_oldest(max_entries):
         log.warning("淘汰写入失败: %s", e)
 
 
-def append_memory(fact):
-    """追加一条长期记忆，返回确认文案。fact 为单条事实描述。
-
-    - 去重：与已有条目重复则跳过
-    - 滚动淘汰：超 MAX_ENTRIES 条则删最老的
-    """
-    fact = (fact or "").strip()
-    if not fact:
-        return "记忆内容为空，未写入"
-    ensure_dir()
-    # 去重检查
-    existing = load_memory()
-    if _is_duplicate(fact, existing):
-        return "记忆已存在，跳过"
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-    block = f"\n## {ts}\n{fact}\n"
-    try:
-        with open(MEMORY_PATH, "a", encoding="utf-8") as f:
-            f.write(block)
-        # v4.59：双写到 SQLite FTS5
-        _db_append(fact, ts)
-    except Exception as e:
-        log.warning("写入记忆失败: %s", e)
-        return f"写入记忆失败：{e}"
-    # 滚动淘汰
-    _trim_oldest(MAX_ENTRIES)
-    preview = fact if len(fact) <= 60 else fact[:60] + "…"
-    return f"已写入长期记忆：{preview}"
-
-
+@_sync  # v4.108 M-21：跨线程写加锁
 def clear_memory():
     """清空全部长期记忆，返回是否成功。清空前先快照（可回滚）。"""
     ensure_dir()
@@ -512,6 +499,7 @@ def load_pinned():
     return _read_text_file(PINNED_PATH).strip()
 
 
+@_sync  # v4.108 M-21：跨线程写加锁
 def append_pinned(fact, type=None, tags=None):
     """追加一条钉住核心画像（写入 memory_core.md，去重，永远注入）。"""
     fact = (fact or "").strip()
@@ -622,6 +610,7 @@ def recall_memory(query, limit=8, max_chars=4000):
     return out
 
 
+@_sync  # v4.108 M-21：跨线程写加锁
 def _write_memory(text):
     """原子写回整份 memory.md（加密感知）。"""
     _write_text_file(MEMORY_PATH, text)
@@ -684,6 +673,7 @@ def _db_replace_by_topic(topic, fact):
         pass
 
 
+@_sync  # v4.108 M-21：跨线程写加锁
 def append_memory(fact, type=None, topic=None, tags=None, pinned=False):
     """v4.73：追加/更新一条长期记忆。
 

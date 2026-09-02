@@ -3,6 +3,7 @@
 
 import os
 import json
+import uuid
 import logging
 from datetime import datetime
 
@@ -82,7 +83,12 @@ class SessionStore:
         return self.sessions.get(self.active_sid) or self.new_session()
 
     def new_session(self, title=None, goal=None):
-        sid = datetime.now().strftime("%Y%m%d%H%M%S") + str(len(self.sessions))
+        # v4.108 M-23：sid 加毫秒+随机后缀，杜绝同秒/同会话数下新建覆盖丢档
+        # （原「秒级时间戳+len(sessions)」在快速双击新建或删除后再建时可能撞号，
+        # 后写覆盖先写导致历史会话被静默顶掉）。
+        _ts = datetime.now().strftime("%Y%m%d%H%M%S%f")[:17]
+        _uniq = uuid.uuid4().hex[:6]
+        sid = f"{_ts}_{_uniq}"
         s = Session(sid, title=title or "新会话", goal=goal or "")
         self.sessions[sid] = s
         self.active_sid = sid

@@ -10,6 +10,7 @@
 """
 import os
 import json
+import tempfile
 import datetime
 import uuid
 
@@ -32,6 +33,27 @@ def new_task_id():
     return datetime.datetime.now().strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8]
 
 
+def _atomic_write(path, data):
+    """v4.108 M-15：tmp + os.replace 原子写。
+
+    原实现 open("w")+json.dump 非原子——写入途中崩溃/强杀会留下截断的损坏文件，
+    而 load 端 except: pass 静默吞掉，等于检查点静默失效。tmp 文件写完再 os.replace
+    是同一文件系统内的原子重命名，任何时刻读到的都是完整旧文件或完整新文件。
+    """
+    d = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        raise
+
+
 def save_checkpoint(cfg, state):
     """写入/覆盖一个检查点。state 至少含 task_id；其余字段自由。"""
     try:
@@ -39,8 +61,7 @@ def save_checkpoint(cfg, state):
         os.makedirs(d, exist_ok=True)
         state = dict(state)
         state["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
-        with open(_path(cfg, state["task_id"]), "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
+        _atomic_write(_path(cfg, state["task_id"]), state)
         return True
     except Exception:
         return False
@@ -111,8 +132,7 @@ def mark_paused(cfg, task_id):
                 data = json.load(f)
             data["status"] = "paused"
             data["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
-            with open(p, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            _atomic_write(p, data)  # v4.108 M-15：原子写
             return True
     except Exception:
         pass
@@ -127,8 +147,7 @@ def update_heartbeat(cfg, task_id):
             with open(p, "r", encoding="utf-8") as f:
                 data = json.load(f)
             data["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
-            with open(p, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            _atomic_write(p, data)  # v4.108 M-15：原子写
             return True
     except Exception:
         pass

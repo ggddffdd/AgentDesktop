@@ -9,7 +9,7 @@ import ctypes
 from datetime import datetime
 
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import QThread, Signal, QAbstractNativeEventFilter
+from PySide6.QtCore import QThread, Signal, QObject, QAbstractNativeEventFilter, Qt
 from ui import ChatWindow, TrayApp, THEME
 
 log = logging.getLogger("dsdesktop")
@@ -61,6 +61,7 @@ class ObsidianInitWorker(QThread):
 
     def run(self):
         try:
+            import config  # 本模块顶层未 import config，缺这行会 NameError（沉默吞掉知识库索引）
             result = config.init_obsidian(self.cfg, self.store, timeout=self.timeout)
         except Exception as e:
             result = "Obsidian 初始化异常: %s" % e
@@ -76,7 +77,9 @@ class GlobalHotkeyFilter(QAbstractNativeEventFilter):
         self._cb = callback
 
     def nativeEventFilter(self, eventType, message):
-        if eventType == "windows_generic_MSG":
+        # v4.108 M-19：eventType 是 QByteArray，须用 bytes 比较（str 比较恒 False，
+        # 热键 Ctrl+Alt+X 静默失效）。与 ui.py:1222 写法保持一致。
+        if eventType == b"windows_generic_MSG":
             try:
                 class MSG(ctypes.Structure):
                     _fields_ = [
@@ -93,6 +96,34 @@ class GlobalHotkeyFilter(QAbstractNativeEventFilter):
             except Exception:
                 pass
         return False, 0
+
+
+class UiBridge(QObject):
+    """跨线程投递桥（v4.108 H-08 修复）：HTTP/工作线程 emit，GUI 线程执行。
+
+    背景：browser_bridge 的 HTTP server 线程回调里直接 QTimer.singleShot(0, fn)
+    不触发（QTimer 依赖创建线程的事件循环）。标准做法是 signal 跨线程 queued 投递：
+    本对象在 GUI 线程创建并 connect，任意线程 post() 都会排到 GUI 事件循环执行。
+    """
+
+    _go = Signal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._go.connect(self._run)
+
+    def post(self, fn):
+        """任意线程调用：把 fn 排到 GUI 线程执行。"""
+        try:
+            self._go.emit(fn)
+        except Exception:
+            logging.getLogger("dsdesktop").warning("UI 桥投递异常", exc_info=True)
+
+    def _run(self, fn):
+        try:
+            fn()
+        except Exception:
+            logging.getLogger("dsdesktop").warning("UI 桥执行异常", exc_info=True)
 
 
 def _register_global_hotkey(app, window, hotkey_id=1):
@@ -254,6 +285,16 @@ def main():
         log.info("Obsidian 已禁用（obsidian_enabled=false），跳过初始化")
     perf_baseline.mark("obsidian")
 
+    # v4.104：QtWebEngine 硬性要求——必须在 QApplication 实例化之前设置，
+    # 否则 Chromium 渲染进程共享上下文创建失败（聊天区白屏）。
+    QApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
+    # v4.105：导演台预览区 localres:// scheme——必须在 QApplication 前注册（Qt 硬性要求），
+    # 否则自定义 scheme 不生效，分镜/关键帧/合成预览的图片/视频无法加载（被 CORS 拦）。
+    try:
+        from director_web import register_localres_scheme
+        register_localres_scheme()
+    except Exception:
+        pass
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     perf_baseline.mark("qapp")
@@ -302,6 +343,15 @@ def main():
         set_event_callback(_wh_cb)
 
         if cfg.get("webhook_enabled", False):
+            # v4.108 M-28：无 token 时自动生成并持久化（存量 config 无该字段）
+            if not cfg.get("webhook_token"):
+                import uuid
+                cfg["webhook_token"] = uuid.uuid4().hex[:16]
+                try:
+                    from config import save_config
+                    save_config(cfg)
+                except Exception:
+                    pass
             srv = get_webhook_server(cfg)
             ok = srv.start()
             if ok is True:
@@ -310,6 +360,67 @@ def main():
                 log.warning("Webhook 自动启动失败: %s", ok)
     except Exception as e:
         log.warning("Webhook 集成失败（不影响主程序）: %s", e)
+
+    # 浏览器扩展桥接服务（v4.103：抓网页进对话）
+    # 仅本机 127.0.0.1:9100，带 token 校验，安全无外部暴露。
+    try:
+        from browser_bridge import (browser_bridge_start, browser_bridge_stop,
+                                    set_event_callback as _bridge_set_cb)
+        _ui_bridge = UiBridge()  # GUI 线程创建；HTTP 线程 post() 排到 GUI 执行
+
+        def _bridge_cb(kind, payload):
+            if kind != "browser_page":
+                return
+            try:
+                def _inject():
+                    try:
+                        p = payload
+                        title = p.get("title", "")
+                        url = p.get("url", "")
+                        text = p.get("text", "")
+                        sel = p.get("selection", "")
+                        note = p.get("note", "")
+                        body = sel if sel else text
+                        if not body:
+                            return
+                        block = "请帮我处理这个网页内容"
+                        if note:
+                            block += "（要求：" + note + "）"
+                        block += "\n\n"
+                        block += "标题：" + title + "\n链接：" + url + "\n\n"
+                        block += "---\n" + body + "\n---"
+                        window.input_box.setPlainText(block)
+                        window.input_box.setFocus()
+                        if getattr(window, "tray_app", None):
+                            from PySide6.QtGui import QSystemTrayIcon
+                            window.tray_app.tray.showMessage(
+                                "AgentDesktop · 浏览器扩展",
+                                "已收到网页：" + (title[:30] or "（无标题）")
+                                + "（按 Enter 让 AI 处理）",
+                                QSystemTrayIcon.Information, 4000)
+                    except Exception as e:
+                        log.warning("浏览器扩展注入失败: %s", e)
+
+                # 跨线程（HTTP server 线程）→ 主线程执行 UI 操作（H-08：信号 queued 投递，
+                # 替代 QTimer.singleShot——QTimer 依赖创建线程事件循环，HTTP 线程里不触发）
+                _ui_bridge.post(_inject)
+            except Exception as e:
+                log.warning("浏览器扩展回调异常: %s", e)
+
+        _bridge_set_cb(_bridge_cb)
+        tok = browser_bridge_start(cfg)
+        if isinstance(tok, str) and tok:
+            cfg["browser_bridge_token"] = tok
+            try:
+                from config import save_config
+                save_config(cfg)
+            except Exception:
+                pass
+            log.info("浏览器扩展桥接已启动（配对码已生成并持久化）")
+        else:
+            log.warning("浏览器扩展桥接启动失败: %s", tok)
+    except Exception as e:
+        log.warning("浏览器扩展桥接集成失败（不影响主程序）: %s", e)
 
     # 识图后端（free-api-gateway）随 APP 自动拉起（联网识图不再需手动启动）
     try:
