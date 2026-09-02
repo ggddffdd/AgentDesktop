@@ -575,3 +575,79 @@ AUTOMATION_TOOL_DEFS = [
     },
 ]
 TOOL_DEFS = TOOL_DEFS + AUTOMATION_TOOL_DEFS
+
+# ---------- v4.106 对话框导演工具（Agent 指挥导演台 · 最小闭环） ----------
+DIRECTOR_TOOL_DEFS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "director_status",
+            "description": "查询导演台当前视频项目状态：进行到第几步、每个分镜的中文描述/关键帧/片段状态、角色列表（含序号）。用户在对话里提到「分镜」「关键帧」「三视图」「成片」等导演台相关操作时，先调本工具掌握现状再动手。",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "director_revise_clip",
+            "description": "按修改意见重生成导演台项目的某一个分镜视频片段（等价于导演台「修改这镜」按钮）。idx 从 1 数（导演台界面显示的镜号）。用户说「把第2镜改成…」「第3镜重新生成，xxx」时用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "idx": {"type": "integer", "description": "分镜号，从 1 开始"},
+                    "note": {"type": "string", "description": "修改意见（中文，如：主体换成小孩、镜头拉远、画面调亮）。留空=按原提示词直接重生成"},
+                    "replace": {"type": "boolean", "description": "内容审核被拦（content_policy_violation/400）时置 true：note 会整段替换该镜英文提示词而不是追加"},
+                    "timeout": {"type": "integer", "description": "等待完成秒数，默认 1500"},
+                },
+                "required": ["idx"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "director_revise_keyframe",
+            "description": "按修改意见只重生成导演台项目某一个分镜的关键帧图片（其他镜与场景图不动）。用户说「把第3镜的关键帧改成夜晚」时用。改完后该镜片段如需同步更新，再调 director_revise_clip。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "idx": {"type": "integer", "description": "分镜号，从 1 开始"},
+                    "note": {"type": "string", "description": "修改意见（中文，如：改成夜晚、人物表情更惊讶）。留空=按原提示词直接重生成"},
+                    "timeout": {"type": "integer", "description": "等待完成秒数，默认 600"},
+                },
+                "required": ["idx"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "director_revise_character",
+            "description": "按修改意见只重生成导演台项目某一个角色的三视图，并同步刷新角色锁定描述（后续分镜自动跟新形象一致）。用户说「把主角换成短发」时用。idx 是角色序号（先调 director_status 查看）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "idx": {"type": "integer", "description": "角色序号，从 1 开始（见 director_status 的 characters 列表）"},
+                    "note": {"type": "string", "description": "外观修改意见（中文，如：换成红衣服、短发）。留空=按原描述直接重生成"},
+                    "timeout": {"type": "integer", "description": "等待完成秒数，默认 600"},
+                },
+                "required": ["idx"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "director_merge",
+            "description": "把导演台项目已生成的分镜片段合成为成片（等价于导演台「合成成片」按钮）。需至少一个片段已生成；用户说「合成」「出成片」时用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "timeout": {"type": "integer", "description": "等待完成秒数，默认 1500"},
+                },
+                "required": [],
+            },
+        },
+    },
+]
+TOOL_DEFS = TOOL_DEFS + DIRECTOR_TOOL_DEFS

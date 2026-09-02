@@ -1811,3 +1811,12 @@ def tool_create_skill(cfg, app_dir, args, _progress=None):
         return skill_review.submit_skill(cfg, name, description, prompt, emoji, category)
     except Exception as e:
         return f"技能提交失败：{e}"
+
+
+# v4.106：对话框导演工具（director_status / revise_clip / revise_keyframe /
+# revise_character / merge）。放文件末尾 import，避免循环导入；
+# Qt-free，必须在启动时注册进 TOOL_REGISTRY（否则 get_all_tools 一致性校验告警）。
+try:
+    import director_agent_tools  # noqa: F401  (注册副作用)
+except Exception as _e:
+    log.warning("导演对话框工具注册失败: %s", _e)

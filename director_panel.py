@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QInputDialog, QDialog,
 )
 from PySide6.QtGui import QPixmap, QIcon, QDesktopServices
-from PySide6.QtCore import Qt, QSize, QThread, Signal, QUrl
+from PySide6.QtCore import Qt, QSize, QThread, Signal, QUrl, QObject
 
 from ui import THEME
 from config import APP_DIR
@@ -193,6 +193,20 @@ class DirectorThread(QThread):
                     self.clip_failed.emit(self.idx, p.last_errors.get(self.idx, "生成失败（未返回视频）"))
                 ok = sum(1 for x in p.clip_paths if x)
                 self.clips_done.emit(ok, len(p.shots), "单镜重生成完成")
+            elif self.task == "keyframe_one":
+                # v4.106 对话框指令：只重生成第 idx 镜的关键帧
+                path = p.regenerate_keyframe(self.idx, feedback=self.feedback)
+                if path:
+                    self.keyframes_ready.emit(p.keyframes)
+                else:
+                    self.error.emit(f"镜{self.idx + 1} 关键帧重生成失败")
+            elif self.task == "character_one":
+                # v4.106 对话框指令：只重生成第 idx 个角色的三视图
+                name, views = p.regenerate_character(self.idx, feedback=self.feedback)
+                if views:
+                    self.characters_ready.emit(p.characters)
+                else:
+                    self.error.emit(f"角色「{name or idx + 1}」三视图重生成失败")
             elif self.task == "merge":
                 out, err = p.merge()
                 if out:
@@ -639,6 +653,8 @@ def build_director_panel(app):
 
     # 若上次有未完成的任务，顶部提示可继续（不必从头来）
     _maybe_offer_resume(app)
+    # v4.106：装 Agent 桥，让聊天对话框也能指挥导演台（改镜/关键帧/三视图/合成）
+    install_agent_bridge(app)
 
 
 # ---------- 步骤切换 ----------
@@ -696,6 +712,217 @@ def _set_busy(app, busy):
                 pass
     # 单镜卡片按钮已在网页内（DirectorWebView）；运行期防重入改由
     # _on_web_action 检查 app.director_busy 实现，这里无需禁用 Qt 按钮。
+    # v4.106 Agent 桥接：任务收尾时通知正在等待的对话框指令（如有）。
+    if not busy:
+        ev = getattr(app, "_director_agent_event", None)
+        if ev is not None:
+            app._director_agent_event = None
+            try:
+                app._director_agent_result = _agent_result_snapshot(app)
+            except Exception as e:
+                app._director_agent_result = {"ok": False, "msg": f"状态收集失败：{e}"}
+            try:
+                ev.set()
+            except Exception:
+                pass
+
+
+# ---------- v4.106 对话框指令桥接（Agent 工具 → 导演台） ----------
+def _agent_result_snapshot(app):
+    """任务收尾时抓一份结果摘要，回给等待中的 Agent 工具调用。"""
+    p = getattr(app, "director_pipeline", None)
+    status_txt = ""
+    try:
+        status_txt = app.director_status.text()
+    except Exception:
+        pass
+    clips_ok = clips_total = 0
+    if p is not None:
+        clips_total = len(p.shots or [])
+        clips_ok = sum(1 for x in (getattr(p, "clip_paths", None) or []) if x)
+    return {"ok": True, "step": getattr(app, "director_step", 0),
+            "status": status_txt, "clips_ok": clips_ok, "clips_total": clips_total}
+
+
+def _agent_status(app):
+    """导演项目全量状态快照（供 director_status 工具），JSON 友好。"""
+    p = getattr(app, "director_pipeline", None)
+    if p is None:
+        return {"ok": True, "active": False,
+                "msg": "导演台当前没有进行中的项目。请先在导演台页填好主题点「开始导演」。"}
+    state = getattr(app, "director_clips_state", []) or []
+    clips = getattr(p, "clip_paths", None) or []
+    kfs = getattr(p, "keyframes", None) or []
+
+    def _clip_mark(i):
+        if i < len(clips) and clips[i] and os.path.isfile(str(clips[i])):
+            return "已生成"
+        if i < len(state) and state[i].get("error"):
+            return "失败"
+        return "未生成"
+
+    return {
+        "ok": True, "active": True,
+        "busy": bool(getattr(app, "director_busy", False)),
+        "step": getattr(app, "director_step", 0),
+        "portrait_mode": bool(getattr(p, "portrait_mode", False)),
+        "characters": [
+            {"i": j + 1, "name": (c.get("name") or ""),
+             "desc": (c.get("desc") or "")[:80],
+             "views_ok": sum(1 for v in (c.get("views") or []) if v)}
+            for j, c in enumerate(getattr(p, "characters", None) or [])],
+        "shots": [
+            {"i": i + 1, "zh": (s.get("zh") or "")[:60],
+             "keyframe": ("有" if (i < len(kfs) and kfs[i]) else "无"),
+             "clip": _clip_mark(i),
+             "error": (state[i].get("error", "")[:100] if i < len(state) else "")}
+            for i, s in enumerate(getattr(p, "shots", None) or [])],
+        "clips_ok": sum(1 for x in clips if x),
+        "clips_total": len(getattr(p, "shots", None) or []),
+        "final": getattr(app, "director_final_path", "") or "",
+    }
+
+
+class _DirectorCmdBridge(QObject):
+    """跨线程指令桥：Agent 工具线程 emit(dict) → UI 线程排队执行。
+
+    生成类指令只负责在 UI 线程启动 DirectorThread，随即返回；
+    完成通知由 _set_busy(False) 钩子 set 事件，等待方在 Agent 线程。
+    """
+    cmd = Signal(dict)
+
+    def __init__(self, app):
+        super().__init__(app)
+        self._app = app
+        self.cmd.connect(self._exec)
+
+    def _exec(self, c):
+        app = self._app
+        ev = c.get("_ev")
+        try:
+            res = agent_director_command(app, c)
+        except Exception as e:
+            res = {"ok": False, "msg": f"导演台指令执行异常：{e}"}
+        if res is not None:  # 同步完成（status / 校验失败），直接回
+            app._director_agent_result = res
+            app._director_agent_event = None
+            if ev is not None:
+                try:
+                    ev.set()
+                except Exception:
+                    pass
+        # res is None → 已开后台线程，等待 _set_busy(False) 钩子回填结果
+
+
+def install_agent_bridge(app):
+    """build_director_panel 末尾调用：装桥并把执行器登记给 director_agent_tools。"""
+    bridge = _DirectorCmdBridge(app)
+    app._director_cmd_bridge = bridge
+
+    def _dispatch(cmd, timeout=1200):
+        import threading as _th
+        ev = _th.Event()
+        cmd = dict(cmd)
+        cmd["_ev"] = ev
+        app._director_agent_result = None
+        app._director_agent_event = ev
+        bridge.cmd.emit(cmd)
+        if not ev.wait(max(30, min(int(timeout or 1200), 3600))):
+            app._director_agent_event = None
+            r = app._director_agent_result
+            if isinstance(r, dict):
+                return r
+            return {"ok": False, "msg": "等待导演台任务完成超时（任务可能仍在后台跑，"
+                                        "可用 director_status 查询进度）。"}
+        return app._director_agent_result or {"ok": False, "msg": "无结果返回"}
+
+    try:
+        import director_agent_tools as _dat
+        _dat.set_dispatcher(_dispatch)
+    except Exception as e:
+        print(f"[director] agent bridge install failed: {e}")
+
+
+def agent_director_command(app, cmd):
+    """在 UI 线程执行一条对话框导演指令。
+
+    返回 dict = 同步结果；返回 None = 已启动后台任务（结果稍后经 _set_busy 钩子回填）。
+    """
+    action = cmd.get("action", "")
+    p = getattr(app, "director_pipeline", None)
+    if action == "status":
+        return _agent_status(app)
+    if p is None:
+        return {"ok": False,
+                "msg": "导演台当前没有进行中的项目。请先在导演台页填好主题点「开始导演」。"}
+    if getattr(app, "director_busy", False):
+        return {"ok": False, "msg": "上一步还在跑，请等它完成后再下指令。"}
+
+    if action == "revise_clip":
+        try:
+            idx = int(cmd.get("idx", 0)) - 1  # 用户视角从 1 数
+        except Exception:
+            return {"ok": False, "msg": "分镜号格式不对"}
+        note = (cmd.get("note") or "").strip() or None
+        if not (0 <= idx < len(p.shots)):
+            return {"ok": False, "msg": f"分镜号超出范围（共 {len(p.shots)} 镜）"}
+        if cmd.get("replace") and note:
+            # 内容审核被拦时需整段替换英文提示词
+            p.shots[idx]["en"] = note
+            note = None
+        _set_status(app, f"[对话框指令] 正在按意见重生成 镜{idx + 1}…")
+        _log(app, f"✎ [对话框] 修改 镜{idx + 1}：{note or '（直接重生成）'}")
+        _run_thread(app, "clip_one", idx=idx, note=note)
+        return None
+
+    if action == "revise_keyframe":
+        try:
+            idx = int(cmd.get("idx", 0)) - 1
+        except Exception:
+            return {"ok": False, "msg": "分镜号格式不对"}
+        if getattr(p, "portrait_mode", False):
+            return {"ok": False, "msg": "口播模式没有关键帧（画面已锁定本人形象）"}
+        if not (0 <= idx < len(p.shots or [])):
+            return {"ok": False, "msg": f"分镜号超出范围（共 {len(p.shots or [])} 镜）"}
+        note = (cmd.get("note") or "").strip() or None
+        _set_status(app, f"[对话框指令] 正在重生成 镜{idx + 1} 关键帧…")
+        _log(app, f"✎ [对话框] 重生成 镜{idx + 1} 关键帧：{note or '（无修改意见）'}")
+        _run_thread(app, "keyframe_one", idx=idx, feedback=note)
+        return None
+
+    if action == "revise_character":
+        try:
+            idx = int(cmd.get("idx", 0)) - 1  # 角色序号（director_status 里可见）
+        except Exception:
+            return {"ok": False, "msg": "角色序号格式不对"}
+        if getattr(p, "portrait_mode", False):
+            return {"ok": False, "msg": "口播模式没有人物三视图（形象已锁定本人照片）"}
+        chars = getattr(p, "characters", None) or []
+        if not chars:
+            return {"ok": False, "msg": "还没有人物三视图（可能尚未生成到该步骤）"}
+        if not (0 <= idx < len(chars)):
+            return {"ok": False, "msg": f"角色序号超出范围（共 {len(chars)} 个角色）"}
+        note = (cmd.get("note") or "").strip() or None
+        name = chars[idx].get("name") or f"角色{idx + 1}"
+        _set_status(app, f"[对话框指令] 正在重生成「{name}」三视图…")
+        _log(app, f"✎ [对话框] 重生成角色「{name}」三视图：{note or '（无修改意见）'}")
+        _run_thread(app, "character_one", idx=idx, feedback=note)
+        return None
+
+    if action == "merge":
+        clips = getattr(p, "clip_paths", None) or []
+        if not any(clips):
+            return {"ok": False, "msg": "还没有可合成的视频片段（先逐镜生成）"}
+        _set_status(app, "[对话框指令] 正在合成成片…")
+        _log(app, "🎬 [对话框] 合成成片…")
+        try:
+            app.director_merge_btn.setEnabled(False)
+        except Exception:
+            pass
+        _run_thread(app, "merge")
+        return None
+
+    return {"ok": False, "msg": f"未知导演台指令：{action}"}
 
 
 # ---------- 启动 ----------

@@ -819,6 +819,58 @@ class VideoPipeline:
             self.clip_paths[i] = clip
         return clip
 
+    def regenerate_keyframe(self, i, feedback=None):
+        """只重生成第 i 镜的关键帧（v4.106 对话框指令用，其余镜/场景图不动）。
+
+        复用 gen_keyframes 的 prompt 装配（人物锁定 + 修改意见），成功后
+        就地更新 self.keyframes[i] 并返回新路径；失败返回 None。
+        """
+        if self.portrait_mode or not (0 <= i < len(self.shots)):
+            return None
+        shot = self.shots[i]
+        en = shot.get("en") or shot.get("zh") or "a cinematic scene"
+        lock = self.character_lock or ""
+        fb = f"[Revision note: {feedback}] " if feedback else ""
+        prompt = (
+            f"Keyframe and environment concept art for ONE video shot: {en}. "
+            f"{lock} {fb}"
+            f"High detail, cinematic composition, consistent lighting and visual "
+            f"style, no text, no watermark, no extra characters.")
+        self.log(f"  ↻ 重生成 镜{i+1} 关键帧…")
+        path = self._gen_one_keyframe(i, prompt)
+        if path:
+            if self.keyframes is None:
+                self.keyframes = []
+            while len(self.keyframes) <= i:
+                self.keyframes.append(None)
+            self.keyframes[i] = path
+        return path
+
+    def regenerate_character(self, idx, feedback=None):
+        """只重生成第 idx 个角色的三视图（v4.106 对话框指令用，其他角色不动）。
+
+        若带修改意见且涉及外观，意见会追加进角色描述并同步刷新 character_lock，
+        保证后续逐镜提示词里的角色锁定跟新形象一致。
+        返回 (角色名, views列表或None)。
+        """
+        if self.portrait_mode or not self.characters:
+            return (None, None)
+        if not (0 <= idx < len(self.characters)):
+            return (None, None)
+        c = self.characters[idx]
+        name = c.get("name") or "主角"
+        desc = c.get("desc") or ""
+        if feedback:
+            desc = f"{desc} | updated appearance: {feedback}"
+            c["desc"] = desc
+            self.character_lock = self._build_character_lock(self.characters)
+        self.log(f"  ↻ 重生成角色「{name}」三视图…")
+        views = self._gen_character_views(name, desc)
+        ok = any(views)
+        if ok:
+            c["views"] = views
+        return (name, views if ok else None)
+
     # ---------- 音频层：分镜自带音轨优先（合成时沿用，见 _merge / _probe_has_audio） ----------
 
     def merge(self):
