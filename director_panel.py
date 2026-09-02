@@ -638,7 +638,14 @@ def build_director_panel(app):
     scroll.setWidget(body)
     outer = QVBoxLayout(page)
     outer.setContentsMargins(0, 0, 0, 0)
-    outer.addWidget(scroll)
+    outer.addWidget(scroll, 1)
+
+    # v4.107：导演台底部常驻「导演对话」条——独立会话，主对话框零交集。
+    # 局部懒导入，避免 director_chat → agent → ui 的循环依赖在模块加载期炸。
+    from director_chat import DirectorChatBar
+    bar = DirectorChatBar(app)
+    app.director_chat = bar
+    outer.addWidget(bar)
 
     # 运行期状态
     app.director_step = 0
@@ -991,6 +998,9 @@ def _director_start(app):
     from video_pipeline import VideoPipeline
     app.director_pipeline = VideoPipeline(app.cfg, APP_DIR, {}, auto_approve=True)
     app.director_pipeline.prepare(**params)
+    # v4.107：新项目 → 切换导演对话历史到本项目目录（跟随项目可回溯）
+    if getattr(app, "director_chat", None) is not None:
+        app.director_chat.reload_for_project()
     # VLM 质检开关在 prepare 之后再挂，避免改动 VideoPipeline.prepare 的签名
     app.director_pipeline.vision_review = app.director_vision_review.isChecked()
 
@@ -1738,6 +1748,9 @@ def _load_session(app):
         except Exception:
             pass
     app.director_pipeline = p
+    # v4.107：载入续跑任务 → 切换导演对话历史到本项目目录
+    if getattr(app, "director_chat", None) is not None:
+        app.director_chat.reload_for_project()
 
     # 还原参数控件（仅用于展示/一致性；任务已锁定，输入框禁用）
     app.director_topic.setPlainText(pp.get("topic", ""))

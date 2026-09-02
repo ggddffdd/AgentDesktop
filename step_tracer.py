@@ -27,13 +27,16 @@ from datetime import datetime
 class StepTracer:
     """Agent 步级追踪器：每步写一条 JSONL 记录，线程安全。"""
 
-    def __init__(self, session_id=None):
+    def __init__(self, session_id=None, enabled=True):
         base = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "traces")
         os.makedirs(base, exist_ok=True)
         self.session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
         self.path = os.path.join(base, f"{self.session_id}.jsonl")
         self._started_at = None
         self._lock = threading.Lock()
+        # v4.107：enabled=False 用于隔离会话（导演台独立对话条）——不落盘、不混进
+        # 主会话的轨迹文件。接口保持不变，调用方无感。
+        self.enabled = bool(enabled)
 
     def start(self):
         self._started_at = datetime.now()
@@ -73,6 +76,8 @@ class StepTracer:
         return self.path
 
     def _write(self, entry):
+        if not self.enabled:
+            return
         try:
             with self._lock:
                 with open(self.path, "a", encoding="utf-8") as f:

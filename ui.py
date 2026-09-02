@@ -4782,6 +4782,20 @@ class ChatWindow(QMainWindow):
         if self._follow_bottom:
             self._request_scroll_bottom()
 
+    def _render_director_redirect(self, text):
+        """v4.107：主对话框里的导演指令不进主控 Agent、不写主会话（零交集），
+        只在聊天区渲染一条引导气泡，提示去导演台底部「导演对话」条下指令。
+        该气泡不入库——下次渲染主会话会从 session 重建，引导自然消失（一次性提示）。"""
+        bubble = self._fmt_bubble(
+            "assistant",
+            "🎬 这条像给导演台的指令（「%s」）。导演台已独立出来，请在"
+            "**导演台底部「导演对话」条**里直接下指令；主对话框不处理导演相关操作。"
+            % text)
+        if self.main_stack.currentIndex() != 1:
+            self.main_stack.setCurrentIndex(1)
+        self.chat_view.append(bubble)
+        self._request_scroll_bottom()
+
     def _replace_last_streaming(self):
         """v4.104：流式更新——只替换 #stream-bubble 的 innerHTML（页面内局部重排），
         其余消息 DOM 不动。旧 QTextBrowser 时代需 setHtml 全量重建 + 滚动比例恢复，
@@ -6177,6 +6191,13 @@ class ChatWindow(QMainWindow):
         has_images = bool(images or file_image_parts)
         if not clean_text and not has_images:
             return
+        # v4.107：导演指令拦截——主对话框输入「改第3镜关键帧 / 主角换发型 / 合成成片 /
+        # 导演台进度」等，不进主控 Agent、不写主会话（与主对话模块零交集）。
+        # 改为在聊天区渲染一条引导，提示去导演台底部「导演对话」条下指令。
+        if clean_text and self._is_director_command(clean_text):
+            self.input_box.clear()
+            self._render_director_redirect(clean_text)
+            return
         if not self.cfg["api_key"]:
             self.status_label.setText("还没填 API Key，请在设置中输入后回车")
             return
@@ -6749,9 +6770,8 @@ class ChatWindow(QMainWindow):
         # 分开写的表述连写词表会漏判，用「对象词×动作词」同现识别。
         if self._is_media_gen_request(last_user):
             return True
-        # v4.106：导演台对话指令——改分镜/关键帧/三视图/合成/查进度，
-        # 需真调 director_* 工具（弱模型会退化成文字演导演），升舱 DeepSeek。
-        return self._is_director_command(last_user)
+        # v4.107：导演指令已从主路由摘除（统一在导演台底部对话条处理），不再升舱。
+        return False
 
     def _user_refuses_tools(self, messages):
         """v4.100：检测用户是否明确要求『不要调用工具/纯聊天』。
@@ -6823,7 +6843,7 @@ class ChatWindow(QMainWindow):
             return True
         return False
 
-    def _agent_call(self, messages, tools, on_delta=None, force_required=False, force_tool=None):
+    def _agent_call(self, messages, tools, on_delta=None, force_required=False, force_tool=None, force_complex=False):
         import urllib.request as urllib_req
         import logging as _logging
         _tool_intent = self._needs_tool_intent(messages)
@@ -6834,7 +6854,7 @@ class ChatWindow(QMainWindow):
             for m in messages
         )
         # 路由：工具意图或含图都升舱到 complex_model（视觉模型）
-        _route_force = _tool_intent or _has_img_call
+        _route_force = _tool_intent or _has_img_call or force_complex
         _refuse_tools = self._user_refuses_tools(messages)
         _base_url, _model, _api_key = self._route_model(messages, force_complex=_route_force)
         url = _base_url.rstrip("/") + "/chat/completions"
@@ -7376,10 +7396,8 @@ class ChatWindow(QMainWindow):
         # 会漏判 → 普通模式不自动进 Agent。组合判定兜底命中这类表述。
         if self._is_media_gen_request(text):
             return True
-        # v4.106：导演台对话指令——「把第3镜的关键帧改成夜晚 / 主角换成短发 / 合成成片 /
-        # 导演台进度怎么样」需进 Agent 调 director_* 工具，普通关键词表覆盖不到。
-        if self._is_director_command(text):
-            return True
+        # v4.107：导演指令已从主路由摘除——统一在导演台底部「导演对话」条处理，
+        # 主对话框不再进 Agent。故此处不再识别 _is_director_command。
         return any(h.lower() in t for h in self._ACTION_HINTS)
 
     # v4.102 fix11：媒体生成组合词表——"生成/做/制作/创建 视频/口播/数字人/图"常被用户

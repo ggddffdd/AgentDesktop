@@ -142,11 +142,19 @@ class AgentWorker(QThread):
 
     # ---- 主循环 ----
 
-    def __init__(self, mw, messages, tool_defs, mcp_clients=None, task_id=None, resume=False):
+    def __init__(self, mw, messages, tool_defs, mcp_clients=None, task_id=None,
+                 resume=False, isolated=False, force_complex=False):
         super().__init__()
         self.mw = mw
         self.messages = messages
         self.tool_defs = tool_defs
+        # v4.107：isolated=隔离会话（导演台底部独立对话条）。与主对话模块零交集：
+        # 不回写主会话历史、不写长期记忆、不从主会话取 _seq 种子（自己从 0 起算）。
+        # 仅保留 deliverable_added（成片登记到交付物区）。
+        self._isolated = bool(isolated)
+        # force_complex=True：绕过工具意图判定，直接升舱 complex_model（DeepSeek）。
+        # 导演台独立会话用——工具集虽小但都是写操作，弱模型容易退化成文字演工具。
+        self._force_complex = bool(force_complex) or bool(isolated)
         # v4.101：断点续传——每个 Agent 任务带唯一 task_id，停止时标记 paused、正常完成删除。
         self.task_id = task_id or task_resume.new_task_id()
         self.resume = bool(resume)
@@ -160,11 +168,12 @@ class AgentWorker(QThread):
             if isinstance(_m, dict):
                 _m["_seq"] = 0
         try:
-            _sess = mw.store.active()
-            if _sess is not None:
-                for _em in _sess.messages:
-                    if isinstance(_em, dict) and isinstance(_em.get("_seq"), int) and _em["_seq"] > 0:
-                        self._seq_ctr = max(self._seq_ctr, _em["_seq"])
+            if not self._isolated:  # 隔离会话：不读主会话，_seq 从 0 起算
+                _sess = mw.store.active()
+                if _sess is not None:
+                    for _em in _sess.messages:
+                        if isinstance(_em, dict) and isinstance(_em.get("_seq"), int) and _em["_seq"] > 0:
+                            self._seq_ctr = max(self._seq_ctr, _em["_seq"])
         except Exception:
             pass
         self.mcp_clients = mcp_clients or []
@@ -671,7 +680,11 @@ class AgentWorker(QThread):
         mw.app_dir = APP_DIR  # 缓存供工具调用使用
         # v4.59 步级追踪器：记录每一步的输入/决策/工具/耗时
         _t0 = time.time()
-        _tracer = StepTracer(getattr(mw.store.active(), "sid", None))
+        # v4.107：隔离会话不落盘轨迹（enabled=False），也不借用主会话 sid。
+        _tracer = StepTracer(
+            None if self._isolated else getattr(mw.store.active(), "sid", None),
+            enabled=not self._isolated,
+        )
         _tracer.start()
         _tracer.trace(0, "thinking", summary="Agent 启动", user_goal=self._goal_hint()[:200])
         _total_tools = 0
@@ -813,6 +826,7 @@ class AgentWorker(QThread):
                     on_delta=lambda d: self.stream_chunk.emit(d),
                     force_required=force_required,
                     force_tool=_ft,
+                    force_complex=self._force_complex,
                 )
             except Exception as e:
                 log.error("Agent 调用失败: %s", e)
@@ -1097,8 +1111,10 @@ class AgentWorker(QThread):
                 self._auto_remember(mw)
             # v4.102 fix12：所有退出路径（正常完成/熔断/停止/超时/步数耗尽）都在此汇流，
             # 统一写回一条任务级轨迹，实现「踩过的坑下次不再踩」。
-            self._persist_task_memory(mw, duration_s=round(time.time() - _t0, 1),
-                                      steps=step)
+            # v4.107：隔离会话跳过——导演会话的经验不该进全局经验库。
+            if not self._isolated:
+                self._persist_task_memory(mw, duration_s=round(time.time() - _t0, 1),
+                                          steps=step)
             self.render.emit()
         except Exception as e:
             # 收尾归档失败不影响本轮收尾，绝不吞掉 done.emit()
@@ -1399,6 +1415,9 @@ class AgentWorker(QThread):
         - 兜底：若 session 尚无任何 `_seq`（首批运行），用内容指纹反向扫描定位历史边界
           （反向扫描避免重复消息命中错误首次出现），再写回其后的增量。
         """
+        # v4.107：隔离会话（导演台独立对话条）一律不回写主会话历史。
+        if getattr(self, "_isolated", False):
+            return
         try:
             session = mw.store.active()
         except Exception:
@@ -1531,6 +1550,10 @@ class AgentWorker(QThread):
         
         仅在对话中实际执行过工具调用时才触发，避免纯闲聊污染记忆库。
         """
+        # v4.107：隔离会话（导演台对话）不写长期记忆——导演闲聊（"这镜太暗了"）
+        # 不该被提炼成用户画像事实污染全局记忆。
+        if getattr(self, "_isolated", False):
+            return
         # 快速判断：本轮对话是否有实质性操作
         has_tool_msg = any(
             msg.get("role") == "tool" for msg in self.messages

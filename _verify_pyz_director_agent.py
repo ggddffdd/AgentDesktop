@@ -86,13 +86,15 @@ if t is None:
 else:
     check("tools 引用 director_agent_tools", "director_agent_tools" in all_names(t))
 
-print("== 5. ui 路由接线（v4.106 fix route）==")
+print("== 5. ui 导演指令拦截（v4.107 独立对话条）==")
 ui = get_code("ui")
 if ui is None:
     check("PYZ 内存在 ui", False)
 else:
     n = all_names(ui)
-    for sym in ("_is_director_command", "_DIRECTOR_OBJ_KW", "_DIRECTOR_VERB_KW",
+    # 识别词表仍在（_is_director_command 内部用），但路由已从主 Agent 摘除
+    for sym in ("_is_director_command", "_render_director_redirect",
+                "_DIRECTOR_OBJ_KW", "_DIRECTOR_VERB_KW",
                 "_DIRECTOR_STATUS_KW", "_DIRECTOR_STATUS_Q"):
         check(f"ui 含 {sym}", sym in n)
 
@@ -103,11 +105,16 @@ else:
             yield c
             stack.extend(x for x in c.co_consts if isinstance(x, types.CodeType))
 
-    # 精确判定：不是"模块里出现过名字"，而是这两个路由函数体内真的调用了它
+    # v4.107 精确判定：send() 拦截点真调 _is_director_command（零交集拦截闸门）
+    sends = [c for c in walk(ui) if c.co_name == "send"]
+    check("send() 体内调用 _is_director_command（拦截点）",
+          any("_is_director_command" in c.co_names for c in sends))
+
+    # 路由已摘除：_message_needs_agent / _needs_tool_intent 不再调用 _is_director_command
     for fname in ("_message_needs_agent", "_needs_tool_intent"):
         fns = [c for c in walk(ui) if c.co_name == fname]
         hit = any("_is_director_command" in f.co_names for f in fns)
-        check(f"{fname} 体内调用 _is_director_command", hit)
+        check(f"{fname} 不再调用 _is_director_command（已摘除）", not hit)
 
     # 状态问句补漏：'还没/没生成' 等应进词表（否则"第几镜还没生成完"漏判）
     # 注意：词表定义在方法体内，是局部 tuple const，必须遍历全部 code object
@@ -119,7 +126,38 @@ else:
     check("_DIRECTOR_STATUS_Q 含 '还没'", "还没" in q_consts)
     check("_DIRECTOR_STATUS_Q 含 '没生成'", "没生成" in q_consts)
 
-print("== 6. main 入口 localres scheme 保留 ==")
+print("== 6. director_chat 独立对话条模块 ==")
+dc = get_code("director_chat")
+if dc is None:
+    check("PYZ 内存在 director_chat", False)
+else:
+    n = all_names(dc)
+    for sym in ("DirectorChatBar", "DIRECTOR_TOOL_NAMES", "DIRECTOR_SYS",
+                "reload_for_project", "_state_brief"):
+        check(f"director_chat 含 {sym}", sym in n)
+
+print("== 7. agent 隔离模式（isolated + force_complex）==")
+ag = get_code("agent")
+if ag is None:
+    check("PYZ 内存在 agent", False)
+else:
+    n = all_names(ag)
+    for sym in ("_isolated", "_force_complex"):
+        check(f"agent 含 {sym}", sym in n)
+    # _sync_to_session / _auto_remember 体内真判断 _isolated（隔离闸门）
+    def walk(co):
+        stack = [co]
+        while stack:
+            c = stack.pop()
+            yield c
+            stack.extend(x for x in c.co_consts if isinstance(x, types.CodeType))
+    for fname in ("_sync_to_session", "_auto_remember"):
+        fns = [c for c in walk(ag) if c.co_name == fname]
+        # getattr(self, "_isolated", False) 里 "_isolated" 是字符串常量（co_consts），
+        # 必须用 all_names（co_names + co_consts 字符串）而非仅 co_names 判定。
+        check(f"{fname} 体内判断 _isolated", any("_isolated" in all_names(f) for f in fns))
+
+print("== 8. main 入口 localres scheme 保留 ==")
 car = CArchiveReader(EXE)
 main_co = None
 for name, info in car.toc.items():
