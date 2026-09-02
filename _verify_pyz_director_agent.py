@@ -136,6 +136,21 @@ else:
                 "reload_for_project", "_state_brief"):
         check(f"director_chat 含 {sym}", sym in n)
 
+    def walk(co):
+        stack = [co]
+        while stack:
+            c = stack.pop()
+            yield c
+            stack.extend(x for x in c.co_consts if isinstance(x, types.CodeType))
+
+    # 清空按钮（v4.107.1）：_build_ui 真建 clear_btn，_clear_chat 方法真存在且清空+写空
+    builds = [c for c in walk(dc) if c.co_name == "_build_ui"]
+    check("_build_ui 体内创建 clear_btn", any("clear_btn" in c.co_names for c in builds))
+    clears = [c for c in walk(dc) if c.co_name == "_clear_chat"]
+    check("_clear_chat 方法存在", bool(clears))
+    check("_clear_chat 清空 history 并写空持久化",
+          any("_save_history" in c.co_names and "history" in c.co_names for c in clears))
+
 print("== 7. agent 隔离模式（isolated + force_complex）==")
 ag = get_code("agent")
 if ag is None:
