@@ -4,7 +4,7 @@
 把常用的多步任务固化成模板，面板里点某一步的「▶ 执行」即可把该步提示词
 作为用户消息发到当前聊天会话（可选强制走 Agent 多工具执行）。
 
-数据存到 ~/Documents/AgentDesktop/workflow_templates.json（独立文件，不污染 config.json）。
+数据存到 ~/Documents/小臭玩AI/workflow_templates.json（独立文件，不污染 config.json）。
 面板打开方式：工具栏「⚙️ 工作流」按钮 / 托盘菜单 / 快捷键 Ctrl+Alt+W。
 """
 import os
@@ -22,7 +22,7 @@ from PySide6.QtGui import QDesktopServices
 
 log = logging.getLogger("workflow_manager")
 
-WF_DIR = os.path.join(os.path.expanduser("~"), "Documents", "AgentDesktop")
+WF_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI")
 WF_PATH = os.path.join(WF_DIR, "workflow_templates.json")
 
 CATEGORIES = ["内容创作", "视频创作", "小说创作", "营销运营", "日常助手", "其他"]
@@ -97,7 +97,7 @@ class StepEditor(QDialog):
         self.title_edit = QLineEdit(step.get("title", ""))
         self.title_edit.setPlaceholderText("例如：选今日养生主题")
         self.prompt_edit = QTextEdit(step.get("prompt", ""))
-        self.prompt_edit.setPlaceholderText("发给Agent的提示词（支持换行）")
+        self.prompt_edit.setPlaceholderText("发给小臭的提示词（支持换行）")
         self.force_chk = QCheckBox("强制走 Agent（多工具执行，如生图/联网）")
         self.force_chk.setChecked(bool(step.get("force_agent", False)))
         form.addRow("步骤标题", self.title_edit)
@@ -483,10 +483,10 @@ class WorkflowManagerWindow(QWidget):
             QMessageBox.warning(self, "打开失败", str(e))
 
     def _open_products(self):
-        """一键打开统一产物目录（~/Documents/AgentDesktop/产物），
+        """一键打开统一产物目录（~/Documents/小臭玩AI/产物），
         图片在「图片」、截图在「截图」、视频在「视频」子目录。"""
         d = getattr(cfg_mod_wf, "PRODUCTS_DIR", None) or os.path.join(
-            os.path.expanduser("~"), "Documents", "AgentDesktop", "产物")
+            os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
         try:
             os.makedirs(d, exist_ok=True)
             QDesktopServices.openUrl(QUrl.fromLocalFile(d))

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""AgentDesktop — 技能市场发现 UI（P2）
+"""小臭玩AI — 技能市场发现 UI（P2）
 
 独立窗口：让用户「发现并安装」新技能，而不只是管理已装的。
 
@@ -11,7 +11,7 @@
   * 可编辑清单 skills_catalog.json（用户目录）：把常用技能链接常驻市场，重启不丢。
 
 设计取舍：
-- 用户网络境外站常不通，故「在线搜索」是增强项；链接安装走 ghproxy/jsdelivr/gitmirror
+- 大哥网络境外站常不通，故「在线搜索」是增强项；链接安装走 ghproxy/jsdelivr/gitmirror
   镜像，是国内可达主路径，务必保证好用。
 - 安装是网络操作，放 QThread 防 UI 卡死；卸载是本地操作，同步即可。
 - 复用已有基建：config.get_skill_scan_dirs / skill_loader.scan_skills /
@@ -38,8 +38,8 @@ from skill_loader import scan_skills, normalize_skill_name
 log = logging.getLogger(__name__)
 
 # 用户数据目录（应用自有数据，非系统个人目录）
-USER_SKILLS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "AgentDesktop", "skills")
-CATALOG_PATH = os.path.join(os.path.expanduser("~"), "Documents", "AgentDesktop", "skills_catalog.json")
+USER_SKILLS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "skills")
+CATALOG_PATH = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "skills_catalog.json")
 
 # 配色
 _COLOR_CARD = QColor("#ffffff")
@@ -80,7 +80,7 @@ class SkillMarketWindow(QMainWindow):
         self.search_results = [] # 在线搜索结果（本次会话有效）
         self._cards = []         # 当前显示的卡片控件
         self._suppress = False
-        self.setWindowTitle("技能市场 - Agent玩 AI")
+        self.setWindowTitle("技能市场 - 小臭玩 AI")
         self.setMinimumSize(860, 660)
         self.resize(980, 720)
         self.init_ui()
@@ -422,7 +422,7 @@ class SkillMarketWindow(QMainWindow):
             data.append(item)
             with open(CATALOG_PATH, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-            self.status_bar.setText(f"已加入清单：{name}（重启Agent后仍在）")
+            self.status_bar.setText(f"已加入清单：{name}（重启小臭后仍在）")
             self.reload()
         except Exception as e:
             QMessageBox.critical(self, "错误", f"写入清单失败：{e}")

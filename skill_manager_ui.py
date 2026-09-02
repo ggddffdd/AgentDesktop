@@ -56,9 +56,9 @@ class SkillLoaderThread(QThread):
         seen = set()
         try:
             for d in config.get_skill_scan_dirs():
-                if "AgentDesktop" in d and "Documents" in d:
+                if "小臭玩AI" in d and "Documents" in d:
                     source = "我的技能"
-                elif os.path.basename(d.rstrip("/\\")) == "skills" and "AgentDesktop" not in d:
+                elif os.path.basename(d.rstrip("/\\")) == "skills" and "小臭玩AI" not in d:
                     source = "内置"
                 else:
                     source = "自定义"
@@ -98,7 +98,7 @@ class SkillManagerWindow(QMainWindow):
 
     def init_ui(self):
         """初始化 UI"""
-        self.setWindowTitle("技能管理器 - Agent玩 AI")
+        self.setWindowTitle("技能管理器 - 小臭玩 AI")
         self.setMinimumSize(900, 700)
 
         central_widget = QWidget()
@@ -372,7 +372,7 @@ class SkillManagerWindow(QMainWindow):
 
     # ---------- 导入 / 打开目录 ----------
     def _user_skills_dir(self):
-        d = os.path.join(os.path.expanduser("~"), "Documents", "AgentDesktop", "skills")
+        d = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "skills")
         os.makedirs(d, exist_ok=True)
         return d
 

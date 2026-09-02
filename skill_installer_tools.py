@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""AgentDesktop — 技能自装工具（受控：对话触发 + 用户拍板 + 自动安全审计 + 落盘用户目录）
+"""小臭玩AI — 技能自装工具（受控：对话触发 + 用户拍板 + 自动安全审计 + 落盘用户目录）
 
-让Agent按用户给的方向自己去搜候选技能、展示给用户拍板，选定后自动拉取
+让小臭按用户给的方向自己去搜候选技能、展示给用户拍板，选定后自动拉取
 SKILL.md → 安全审计（P0 拒绝 / P1 警告 / P2 通过）→ 规整为统一格式
 「技能名/SKILL.md」（frontmatter 必含 category，与用户目录既有技能同构）→
 写入用户目录 skills/（避开 _internal 被重建覆盖），并更新 config 的 skills_dir。
@@ -22,12 +22,12 @@ log = logging.getLogger("dsdesktop")
 
 # 用户级技能目录（持久，不被重建覆盖）
 def _user_skills_dir():
-    return os.path.join(os.path.expanduser("~"), "Documents", "AgentDesktop", "skills")
+    return os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "skills")
 
 
 # ---------- 安全审计 ----------
 
-# P0：明确危险指令（诱导Agent用已有工具干坏事 / 直接恶意）
+# P0：明确危险指令（诱导小臭用已有工具干坏事 / 直接恶意）
 _DANGER_PROMPT_PATTERNS = [
     r"删除.*(文件|目录|folder|file)",
     r"rm\s+-rf",
@@ -92,7 +92,7 @@ def audit_skill(skillmd_text, prompt_text):
     return "P2", ["未检出明显风险"]
 
 
-# ---------- SKILL.md → Agent .py 转换 ----------
+# ---------- SKILL.md → 小臭 .py 转换 ----------
 
 def _parse_skillmd(text):
     """解析 SKILL.md：取 frontmatter 的 name/description/emoji + 正文。"""
@@ -131,7 +131,7 @@ def _normalize_skillmd_for_install(raw_text, default_category="通用技能"):
 
     统一格式 = 技能名/SKILL.md（与用户目录既有 27 个技能同构），frontmatter 必含
     name / description / emoji / category。来源缺字段时给默认值，缺 category 时给
-    默认分类，保证Agent市场里每个技能都有分类、可筛选。
+    默认分类，保证小臭市场里每个技能都有分类、可筛选。
 
     返回 (text, name, category)。
     """
@@ -161,7 +161,7 @@ def _normalize_skillmd_for_install(raw_text, default_category="通用技能"):
 
 
 def convert_skillmd_to_xiaochou(skillmd_text):
-    """把 SKILL.md 文本转成Agent .py 技能文件内容（带 SKILL_* 头注释）。"""
+    """把 SKILL.md 文本转成小臭 .py 技能文件内容（带 SKILL_* 头注释）。"""
     name, description, emoji, body = _parse_skillmd(skillmd_text)
     lines = [
         "# -*- coding: utf-8 -*-",
@@ -398,7 +398,7 @@ def tool_skill_install(cfg, app_dir, args):
         f"来源：{url}\n"
         f"文件：{fpath}\n"
         f"安全等级：{level}{warn_note}\n\n"
-        f"重启Agent后，它会出现在【技能市场 / 可用技能】清单，用 use_skill 传入「{name}」即可加载。",
+        f"重启小臭后，它会出现在【技能市场 / 可用技能】清单，用 use_skill 传入「{name}」即可加载。",
         [], None,
     )
 
@@ -450,7 +450,7 @@ SKILL_INSTALLER_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "skill_install",
-            "description": "安装一个外部技能：拉取 GitHub 上的 SKILL.md，自动做安全审计（P0 危险拒绝），通过后转成Agent技能格式写入用户目录并生效。安装前会弹确认框。链接支持：仓库页 / tree 或 blob 链接 / raw SKILL.md 直链；会自动探测子目录与分支，国内网络不可达时自动走镜像。",
+            "description": "安装一个外部技能：拉取 GitHub 上的 SKILL.md，自动做安全审计（P0 危险拒绝），通过后转成小臭技能格式写入用户目录并生效。安装前会弹确认框。链接支持：仓库页 / tree 或 blob 链接 / raw SKILL.md 直链；会自动探测子目录与分支，国内网络不可达时自动走镜像。",
             "parameters": {
                 "type": "object",
                 "properties": {

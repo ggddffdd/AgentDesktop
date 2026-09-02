@@ -18,15 +18,15 @@ import datetime
 
 # ---------- 路径 ----------
 def get_pending_dir(cfg):
-    """待审核目录：默认 ~/Documents/AgentDesktop/skills_pending。"""
+    """待审核目录：默认 ~/Documents/小臭玩AI/skills_pending。"""
     if isinstance(cfg, dict) and cfg.get("skills_pending_dir"):
         return cfg["skills_pending_dir"]
     return os.path.join(
-        os.path.expanduser("~"), "Documents", "AgentDesktop", "skills_pending")
+        os.path.expanduser("~"), "Documents", "小臭玩AI", "skills_pending")
 
 
 def get_active_dir(cfg):
-    """正式技能目录：用户目录 ~/Documents/AgentDesktop/skills（与 skill_loader 第一来源一致）。
+    """正式技能目录：用户目录 ~/Documents/小臭玩AI/skills（与 skill_loader 第一来源一致）。
 
     cfg 可带 "skills_dir" 覆盖（离线单测用），否则取 config.get_skill_scan_dirs()[0]。
     """
@@ -40,7 +40,7 @@ def get_active_dir(cfg):
     except Exception:
         pass
     return os.path.join(
-        os.path.expanduser("~"), "Documents", "AgentDesktop", "skills")
+        os.path.expanduser("~"), "Documents", "小臭玩AI", "skills")
 
 
 # ---------- 提交（模型侧调用）----------
