@@ -20,11 +20,15 @@ else:
 # 所有生成类产物（图片/截图/视频）统一写到用户文档下的「产物」目录，
 # 而非程序目录（dist）深处，避免用户难找。UI 端用 os.path.join(APP_DIR, rel)
 # + abspath 解析 rel（含 .. 上溯）打开，路径仍正确，聊天显示不受影响。
-PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "AgentDesktop", "产物")
+PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.98"
-APP_BUILD_DATE = "2026-08-19"
+APP_VERSION = "v4.102.1"
+APP_BUILD_DATE = "2026-08-30"
+# v4.102（2026-08-22）图像输入链路：DeepSeek 通道模型换 deepseek-v4-flash-vision-exp，
+# ui.py 支持视觉模型保留 image_url、普通对话/Agent 带图路由视觉模型。
+# v4.101（2026-08-21）停止按钮 + 断点续传：普通 Agent 任务停止→检查点 paused→「▶ 继续上次任务」
+# + 编排取消保留检查点可续跑（task_resume.mark_paused / _resume_agent_task / _scan_agent_resume）。
 # v4.85（2026-08-17）集成版：生视频分辨率选择器（8 预设，实测 Agnes 透传任意 WxH 至 4K）
 # + 数字人分身面板（digital_twin_panel，本人形象库+口播+首帧锁定）
 # + 导演台面板（director_panel + video_pipeline 内核：LLM 剧本/分镜→逐镜生成→尾帧接力→ffmpeg 合成）。
@@ -44,7 +48,7 @@ log = logging.getLogger("dsdesktop")
 # ---------- 配置 ----------
 # v4.79 起：config.json 迁到用户文档目录，与 sessions/记忆等数据同处。
 # 原因：存程序目录(dist)时，每次重打包整个目录被移走，用户 API key/模型设置全丢。
-USER_DATA_DIR = os.path.join(os.path.expanduser("~"), "Documents", "AgentDesktop")
+USER_DATA_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI")
 LEGACY_CONFIG_PATH = os.path.join(APP_DIR, "config.json")   # 旧位置（仅迁移用）
 CONFIG_PATH = os.path.join(USER_DATA_DIR, "config.json")
 
@@ -54,7 +58,7 @@ DEFAULT_CONFIG = {
     "model": "deepseek-chat",
     "hotkey": "ctrl+shift+d",
     "system_prompt": (
-        "你是「AgentDesktop」—— 用户(user)的 Windows 本地桌面工作台。\n\n"
+        "你是「小臭玩AI」—— 大哥(xyb)的 Windows 本地桌面工作台。\n\n"
         "## 强制路由表 — 命中以下关键词必须调用对应工具，禁止只给文字回答\n"
         "| 场景/关键词 | 必须调用 | 说明 |\n"
         "|------------|---------|------|\n"
@@ -82,14 +86,14 @@ DEFAULT_CONFIG = {
         "## 全部能力速查\n"
         "联网搜索(web_search) | 网页抓取(web_fetch) | 文件读写(read_file/write_file) | "
         "命令(run_command) | Python(run_python) | 生图(image_gen) | 生视频(video_gen) | "
-        "定时(schedule) | 自动化任务(create_automation/list_automation/delete_automation) | 截图(screenshot) | 知识库RAG(rag_index/rag_search，Obsidian Vault: C:\\Users\\user\\Documents\\_mybase) | "
+        "定时(schedule) | 自动化任务(create_automation/list_automation/delete_automation) | 截图(screenshot) | 知识库RAG(rag_index/rag_search，Obsidian Vault: C:\\Users\\xyb\\Documents\\_mybase) | "
         "数据库(db_insert/db_query/db_update/db_delete：notes/todos/assets) | 图表(chart_gen) | "
         "日志(log_query) | 上下文(context_compress/context_summary) | "
         "Webhook(webhook_start/events/stop，端口9000) | 技能(use_skill/skill_search/skill_install) | "
         "ASR(SenseVoiceSmall) | TTS(edge-tts) | 浏览器(browser_open/click/fill/read) | "
         "系统控制(system_*：剪贴板/窗口/进程/输入) | 软件控制(software_*：pywinauto) | 长期记忆(remember)\n\n"
         "## 模型\n"
-        "默认 Agnes（agnes-2.5-flash，永久免费）；DeepSeek 为用户付费主力通道。\n\n"
+        "默认 Agnes（agnes-2.5-flash，永久免费）；DeepSeek 为大哥付费主力通道。\n\n"
         "## 硬约束\n"
         "1. 命中路由表关键词→直接调工具，禁止纯文字回答\n"
         "2. 时间/事实性问题→调 web_search，禁止凭模型知识猜测\n"
@@ -97,7 +101,7 @@ DEFAULT_CONFIG = {
         "4. 能推断参数不追问，用合理默认值\n"
         "5. 成功报产物路径，失败报真实错误，禁止谎称已完成\n"
         "6. 「再来/重新/重做/regenerate」→重新调工具，禁止复用历史结果\n"
-        "7. 产物路径统一到 ~/Documents/AgentDesktop/ 对应子目录\n"
+        "7. 产物路径统一到 ~/Documents/小臭玩AI/ 对应子目录\n"
         "8. **禁止承诺式循环**：禁止连续多轮只输出「我现在开始做/马上做/下一步执行」之类的承诺而不真去调工具。每一步要么调工具、要么给出最终成品，否则算任务失败。\n"
         "9. **用户意图优先**：用户原话意图明确时，禁止跳到不相关技能/工具（如「清空回收站」→调 system_clean_recycle_bin，不许跑去调 ppt-generator）。\n"
         "10. **选题/盘点/列方向 类需求优先用训练知识直接出文本**（见下方【爆款选题与盘点模板】），"
@@ -115,12 +119,12 @@ DEFAULT_CONFIG = {
     "agent_skip_confirm": False,
     "onboarded": False,       # v4.79：新手引导是否已看过（看过则不再弹）
     "image_gen_provider": "agnes",
-    "image_gen_model": "agnes-image-2.1-flash",
-    "image_gen_size": "1024x768",
+    "image_gen_model": "agnes-image-2.5-flash",
+    "image_gen_size": "1920x1080",
     "sd_webui_url": "http://127.0.0.1:7860",
     "gateway_url": "http://127.0.0.1:8000",
     "gateway_autostart": True,   # v4.79：识图后端(free-api-gateway)随 APP 自动拉起
-    "gateway_dir": r"<GATEWAY_DIR>",  # 网关项目目录（含 run_gateway.bat / app/main.py）
+    "gateway_dir": r"C:\Users\xyb\WorkBuddy\2026-07-06-23-07-12\free-api-gateway",  # 网关项目目录（含 run_gateway.bat / app/main.py）
     "harness_notes_path": os.path.join(USER_DATA_DIR, "harness_notes.json"),  # v4.80：可自我 refine+版本回滚的操作经验库（借鉴 Prime-Agent Continual Harness）
     "task_resume_dir": os.path.join(USER_DATA_DIR, "task_resume"),  # v4.81：长任务断点续跑/心跳检查点目录（借鉴 Prime-Agent daemon 续跑）
     "orch_auto_resume": True,  # v4.82：长任务断点自动续跑（崩溃/强杀后重开 APP 自动从断点继续，无需手动点「继续」）
@@ -135,13 +139,13 @@ DEFAULT_CONFIG = {
             "name": "filesystem",
             "command": "npx",
             "args": ["-y", "@modelcontextprotocol/server-filesystem",
-                     "<PROJECT_DIR>",
-                     "<USER_DATA_DIR>"],
+                     "C:/Users/xyb/WorkBuddy/2026-07-11-22-26-49/deepseek-desktop",
+                     "C:/Users/xyb/Documents/小臭玩AI"],
             "enabled": True
         }
     ],
     "model_profiles": {
-        "DeepSeek 官方": {"base_url": "https://api.deepseek.com", "model": "deepseek-chat", "api_key": ""},
+        "DeepSeek 官方": {"base_url": "https://api.deepseek.com", "model": "deepseek-v4-flash-vision-exp", "api_key": ""},
         "硅基流动": {"base_url": "https://api.siliconflow.cn/v1", "model": "deepseek-ai/DeepSeek-V3", "api_key": ""},
         "智谱 GLM": {"base_url": "https://open.bigmodel.cn/api/ai/v1", "model": "glm-4-flash", "api_key": ""},
         "腾讯混元": {"base_url": "https://api.hunyuan.cloud.tencent.com/v1", "model": "hunyuan-lite", "api_key": ""},
@@ -246,18 +250,26 @@ TOPIC_IDEA_TEMPLATE = """
 4. **封面/标题建议**：封面文案 + 视觉元素（色彩/构图/IP 形象）
 5. **爆款因子**：为什么这条会火（情绪/实用/争议/季节性/反差）
 
-如平台未指定，默认覆盖**小红书 + 抖音**（用户主战场）。
+如平台未指定，默认覆盖**小红书 + 抖音**（大哥主战场）。
 如目标用户未指定，默认按「小红书泛大众 18-35 岁女性」展开。
 
 ### 注意事项
 - **不要凭空编造具体数据**（如「2024 年小红书 XXX 品类增长 200%」）——除非你确定有据可查，否则用「据训练数据」「通常情况下」模糊表述
 - **实时数据必须搜**（如「今天热搜」「最近 7 天榜单」），模型训练数据可能已过时
-- 选题不必全展开——可先给 20-30 个标题 + 简述，让用户挑 3-5 个再深耕
+- 选题不必全展开——可先给 20-30 个标题 + 简述，让大哥挑 3-5 个再深耕
 """
 
 
 # ---------- Agent 模式（v4）：工具定义 + 系统提示 ----------
 AGENT_SYS_APPEND = (
+    "\n## 执行风格铁律（v4.104 新增，违反即失败）\n"
+    "- 能一步做完绝不两步：优先选用「一次调用就能直接达成目标」的工具，"
+    "不要先探测再操作、不要「先看看再动手」、不要做多余的前置调用。\n"
+    "- 只调真正必要的工具：回答能直接给的就不调工具；一个工具能拿到的结果不要拆成两个。\n"
+    "- 禁止自问自答、禁止复述步骤、禁止「我先做 X 然后做 Y 然后…」式的计划播报，"
+    "直接执行并汇报结果。\n"
+    "- 调工具前想清楚：这一步调用后能否离目标更近？不能就不调。\n"
+    "- 最终回答只给结论和必要信息（产物路径/关键数字），不要重复工具过程。\n"
     "\n## 工具调用补充规则\n"
     "【重要】你运行在 Windows 系统上（PowerShell），不是 Linux / macOS。"
     "禁止使用 cat / grep / ls / head / tail / sed / awk 等 Unix 命令，"
@@ -265,7 +277,7 @@ AGENT_SYS_APPEND = (
     "读取文件内容请用 read_file 工具，脚本请用 run_python，批量操作请用 PowerShell。\n"
     "run_command 在 Windows 走 PowerShell：列文件用 Get-ChildItem -Recurse，错误重定向用 2>$null"
     "（不是 2>nul），文本搜索用 Select-String（不是 findstr），否则命令会报错浪费次数。\n"
-    "- 最多连续调 20 轮工具；复杂任务分批执行（每批 ≤5 项），接近上限优先落盘\n"
+    "- 最多连续调 12 轮工具；复杂任务分批执行（每批 ≤5 项），接近上限优先落盘\n"
     "- 文件路径用相对于程序目录的相对路径（如 notes/todo.txt）\n"
     "- write_file / run_command / run_python / browser 类操作执行前弹确认框\n"
     "- image_gen 返回的图片路径直接在对话中显示\n"
@@ -288,15 +300,15 @@ def get_skill_scan_dirs():
     """返回所有要扫描的技能目录（绝对路径，去重、保序）。
 
     **单一路经策略（v4.79 技能统一）**：
-    用户目录 ~/Documents/AgentDesktop/skills 排第一、作为唯一完整来源（内置技能已
+    用户目录 ~/Documents/小臭玩AI/skills 排第一、作为唯一完整来源（内置技能已
     复制进用户目录），内置/打包目录降为兜底（仅补全用户目录缺失的）。
     这样重打包（safe-delete 整体搬 dist）不影响技能可见性，技能物理上只认用户目录。
 
     顺序：用户目录 → 内置/打包 skills（兜底）→ config.skills_dir（自定义，若有）。
     """
     dirs = []
-    # 用户目录（唯一完整来源，用户自己加技能的地方，重打包不影响）
-    user_dir = os.path.join(os.path.expanduser("~"), "Documents", "AgentDesktop", "skills")
+    # 用户目录（唯一完整来源，大哥自己加技能的地方，重打包不影响）
+    user_dir = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "skills")
     if user_dir:
         dirs.append(user_dir)
     # 内置/打包技能目录（兜底：仅补全用户目录没有的，防用户目录被清空）
@@ -386,14 +398,14 @@ def load_dynamic_skills(compact=False):
             return ""
         return ("\n\n【可用技能】\n"
                 "（当前无可用技能；把技能放进 技能名/SKILL.md 目录，"
-                "置于 ~/Documents/AgentDesktop/skills 即可被自动识别）")
+                "置于 ~/Documents/小臭玩AI/skills 即可被自动识别）")
 
     # 「技能必须落地」硬约束——堵住「连续多轮只输出承诺不调工具」的承诺式循环（compact/完整都保留）
     HARD = [
         "## ⚠️ 技能执行硬约束（适用所有可用技能）",
         "1. 加载技能后**必须立即调用 run_python / write_file / run_command 落地**，禁止只输出大纲/计划/承诺。",
         "2. 交付物必须是**实物**（文件/写入/计算结果），不是文字描述。",
-        "3. 完成后必须返回**产物绝对路径**（默认 ~/Documents/AgentDesktop/ 对应子目录）。",
+        "3. 完成后必须返回**产物绝对路径**（默认 ~/Documents/小臭玩AI/ 对应子目录）。",
         "4. 不允许「我先思考一下」「下一步再调工具」之类的纯文字回应——每一步必须产生可验证的副产物。",
         "5. 用户说「做 X」= 立即产出 X，不是「先列 X 的章节大纲」。",
     ]
@@ -425,13 +437,79 @@ from tool_defs import TOOL_DEFS  # 工具定义见 tool_defs.py（已从 config.
 
 MAX_AGENT_STEPS = 20
 # 续跑单轮步数上限（独立于 MAX_AGENT_STEPS，便于单独调参防空转烧 token）。
-# 默认与 MAX_AGENT_STEPS 一致；观察「续跑截断」日志频率后再决定是否下调。
 AGENT_RESUME_STEPS = 20
 # Agent 单轮步数耗尽后自动续跑的轮数（每轮再给 MAX_AGENT_STEPS 步，封顶防无限循环）
 # 总预算 = (1 + AGENT_RESUME_ROUNDS) * MAX_AGENT_STEPS 步。设为 0 则回到旧的硬停行为。
+# v4.104.1（2026-08-31）：v4.104 曾收紧到 24 步（12/12/1），实测复杂任务不够用、
+# 「任务随时断」。现放宽回总 60 步（20/20/2）。
+# 断的根因交给 token 预算管（见下方 AGENT_TOKEN_BUDGET），步数只防死循环，不防花钱。
 AGENT_RESUME_ROUNDS = 2
 TOOL_READ_LIMIT = 8000
 TOOL_RESULT_LIMIT = 6000
+
+
+def get_agent_step_budget(cfg=None):
+    """取当前生效的步数预算：优先 config.json（cfg），回退模块默认。
+
+    返回 (max_steps, resume_steps, resume_rounds)。
+    v4.104.1：步数此前写死在代码里，调一次要重打包 8 分钟；改为可配置后
+    改 config.json 重启即生效。非法值（非正数/非数字）一律回退模块默认。
+    """
+    d = cfg if isinstance(cfg, dict) else {}
+    out = []
+    for key, default in (("agent_max_steps", MAX_AGENT_STEPS),
+                         ("agent_resume_steps", AGENT_RESUME_STEPS),
+                         ("agent_resume_rounds", AGENT_RESUME_ROUNDS)):
+        try:
+            v = int(d.get(key, default))
+        except (TypeError, ValueError):
+            v = default
+        if v < 0:
+            v = default
+        out.append(v)
+    return tuple(out)
+
+# ---------- v4.102 fix12：Agent 单任务 token 预算熔断 ----------
+# 背景：续跑/步数预算（AGENT_RESUME_*）只约束「轮次」，不约束「token 花销」。
+# DeepSeek 付费路由一旦被大量触发（复杂任务自动升舱），单任务 token 可无上限
+# 累积——这正是 Codex /goal 烧钱的同源风险。Agnes 免费主通道不烧钱，付费通道
+# 必须设红线。**设为 0 即完全禁用熔断**（行为回退）。
+# v4.104.1（2026-08-31）：大哥反馈「任务随时断」→ 总预算 200K → 400K。
+# 同日再提：大哥要求「400000+」→ 400K → 500K，留足复杂任务余量。
+# 同时付费档 150K → 0（跟随总预算）。原因：熔断取的是
+#   _limit = min(总预算, 付费档预算)   # 只要任务触发过一次 DeepSeek 就生效
+# 付费档 150K 会先把 limit 从 200K 拉到 150K，等于总预算形同虚设，
+# 这才是「怎么老断」的真凶。改 0 后单一真相源，只调 agent_token_budget 一个数。
+AGENT_TOKEN_BUDGET = 500000           # 单任务 token 硬上限（0 = 禁用熔断）
+AGENT_TOKEN_WARN = 0.8                # 达预算该比例时提前告警一次
+AGENT_TOKEN_BUDGET_DEEPSEEK = 0       # 付费通道单独更紧（0 = 跟随总预算）
+
+
+def get_agent_token_budget(cfg=None):
+    """取当前生效的 token 预算配置：优先 config.json（cfg），回退模块默认。
+
+    返回 (budget, warn_ratio, deepseek_budget)。
+    budget=0 表示禁用熔断；deepseek_budget=0 表示付费通道跟随总预算。
+    """
+    d = cfg if isinstance(cfg, dict) else {}
+    try:
+        budget = int(d.get("agent_token_budget", AGENT_TOKEN_BUDGET))
+    except (TypeError, ValueError):
+        budget = AGENT_TOKEN_BUDGET
+    try:
+        warn = float(d.get("agent_token_warn", AGENT_TOKEN_WARN))
+    except (TypeError, ValueError):
+        warn = AGENT_TOKEN_WARN
+    try:
+        ds = int(d.get("agent_token_budget_deepseek",
+                       AGENT_TOKEN_BUDGET_DEEPSEEK))
+    except (TypeError, ValueError):
+        ds = AGENT_TOKEN_BUDGET_DEEPSEEK
+    if budget < 0:
+        budget = 0
+    if not 0 < warn <= 1:
+        warn = AGENT_TOKEN_WARN
+    return budget, warn, ds
 
 
 # ---------- 技能库（v4.5，DEFAULT_SKILLS 仅作工具栏技能兜底常量，不再落盘 skills.json）----------
@@ -529,7 +607,7 @@ def load_skills():
 def load_config():
     """Read config; auto-create with defaults on first run.
 
-    v4.79：若新位置（~/Documents/AgentDesktop/config.json）不存在而旧位置
+    v4.79：若新位置（~/Documents/小臭玩AI/config.json）不存在而旧位置
     （程序目录/config.json）存在，则迁移旧配置到新位置，保住用户 API 设置。
     """
     if not os.path.exists(CONFIG_PATH):
