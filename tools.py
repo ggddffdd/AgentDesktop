@@ -17,7 +17,7 @@ from pathlib import Path
 from datetime import datetime
 
 import glob
-from config import APP_DIR, TOOL_READ_LIMIT, TOOL_RESULT_LIMIT, PRODUCTS_DIR
+from config import APP_DIR, TOOL_READ_LIMIT, TOOL_RESULT_LIMIT, PRODUCTS_DIR, USER_DATA_DIR
 import search as search_mod
 from system_control_tools import SYSTEM_CONTROL_TOOL_TABLE
 from software_control_tools import SOFTWARE_CONTROL_TOOL_TABLE
@@ -614,7 +614,9 @@ def tool_web_search(cfg, query):
 def _is_sensitive_file(path):
     """v4.90 安全加固：判断是否敏感文件（含 API key / 密钥），Agent 禁止读取。
 
-    覆盖：AgentDesktop 主配置 config.json（含所有 api_key）、.env、私钥、凭据等。
+    覆盖：用户数据目录下的主配置 config.json（含所有 api_key）、.env、私钥、凭据等。
+    v4.108.1：清理 v4.100 开源脱敏时留在本机源码里的 AgentDesktop 残串——
+    该残串匹配不到真实路径，拦截实际由下方 endswith("config.json") 兜底，故行为未变。
     """
     if not path:
         return False
@@ -623,8 +625,6 @@ def _is_sensitive_file(path):
                    "secret", "api_key", "apikey", "access_token", "passwd"):
         if marker in p:
             return True
-    if "Agent玩ai/config.json" in p:
-        return True
     if p.rstrip("/").endswith("config.json"):
         return True
     return False
@@ -864,7 +864,7 @@ def tool_run_python(app_dir, code):
     类任务彻底失效。改为子进程执行（与 run_command 同机制，已验证 pptx OK）后恢复能力；
     危险操作仍由权限引擎在执行前弹确认，安全边界不变。
 
-    产物落在 ~/AgentDesktop/workspace，避免污染 app 目录；上报绝对路径便于交付物打开。
+    产物落在用户数据目录 workspace，避免污染 app 目录；上报绝对路径便于交付物打开。
     返回 (output_str, [(abs_path, kind, name), ...])。
     """
     if not code or not code.strip():
@@ -875,7 +875,9 @@ def tool_run_python(app_dir, code):
         return "未找到可用的 Python 解释器（请确认已安装 Python 并加入 PATH）", []
 
     # 独立工作区：产物默认落这里，不污染 app 目录
-    ws = os.path.join(os.path.expanduser("~"), "Documents", "AgentDesktop", "workspace")
+    # v4.108.1：v4.100 脱敏残留把 USER_DATA_DIR 写成了 AgentDesktop/workspace，
+    # run_python 产物落进了空壳目录——改回真实用户数据目录（小臭玩AI）。
+    ws = os.path.join(USER_DATA_DIR, "workspace")
     os.makedirs(ws, exist_ok=True)
     fname = f"run_{datetime.now().strftime('%Y%m%d%H%M%S')}.py"
     fpath = os.path.join(ws, fname)
@@ -1528,7 +1530,7 @@ def tool_schedule(args):
 def tool_use_skill(cfg, app_dir, skill_name):
     """加载指定技能的 prompt，返回可注入对话上下文的技能指令文本。
 
-    跨多目录查找：内置/打包 skills、用户目录 ~/Documents/AgentDesktop/skills、config.skills_dir。
+    跨多目录查找：内置/打包 skills、用户数据目录（Documents 下用户目录）/skills、config.skills_dir。
     同时支持 .py 与 技能名/SKILL.md 两种形态。
     """
     if not skill_name or not skill_name.strip():
@@ -1688,7 +1690,9 @@ def tool_sys_info(cfg, app_dir, _progress=None):
     """
     import os, sqlite3, datetime
     from config import TOOL_DEFS
-    lines = ["## AgentDesktop 系统实时状态（权威清单 · 只准复述此清单）",
+    # v4.108.1：自称从脱敏残留 AgentDesktop 改回本机品牌（开源脱敏时自动再变 AgentDesktop）
+    _APP_LABEL = "小臭玩AI"
+    lines = [f"## {_APP_LABEL} 系统实时状态（权威清单 · 只准复述此清单）",
              f"_查询时间：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_", ""]
 
     # —— 一、真实工具清单（动态枚举 TOOL_DEFS，实时可信，禁止编造）——
@@ -1736,7 +1740,10 @@ def tool_sys_info(cfg, app_dir, _progress=None):
     lines.append("")
 
     # —— 四、本地数据库（SQLite）——
-    data_dir = os.path.expanduser("~/Documents/AgentDesktop")
+    # v4.108.1：数据目录曾写死 ~/Documents/AgentDesktop（v4.100 脱敏残留），
+    # 导致 sys_info 误报「三个库未创建、数据目录 AgentDesktop」——真实数据全在
+    # USER_DATA_DIR（Documents/小臭玩AI）。改从 config 常量取，开源脱敏自动跟随。
+    data_dir = USER_DATA_DIR
     lines.append("### 四、本地数据库（SQLite）")
     for db, label in [("xiaochou.db", "应用库"), ("agent_log.db", "日志库"), ("memory.db", "记忆搜索库")]:
         dp = os.path.join(data_dir, db)
