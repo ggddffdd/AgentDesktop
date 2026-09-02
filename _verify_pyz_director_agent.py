@@ -151,6 +151,18 @@ else:
     check("_clear_chat 清空 history 并写空持久化",
           any("_save_history" in c.co_names and "history" in c.co_names for c in clears))
 
+    # v4.107 bugfix：_on_chunk 用 QTextCursor「替换」语义（不再是 _insert 追加），
+    # 否则累积文本会被一遍遍重复拼接（「镜镜3镜3关键…」灾难）。判据：
+    # QTextCursor / insertText / _stream_pos 都出现在 _on_chunk 函数体内。
+    chunks = [c for c in walk(dc) if c.co_name == "_on_chunk"]
+    if chunks:
+        c0 = chunks[0]
+        check("_on_chunk 用 QTextCursor 替换", "QTextCursor" in c0.co_names)
+        check("_on_chunk 用 insertText 覆盖", "insertText" in c0.co_names)
+        check("_on_chunk 记录流式起点 _stream_pos", "_stream_pos" in c0.co_names)
+    else:
+        check("_on_chunk 方法存在", False)
+
 print("== 7. agent 隔离模式（isolated + force_complex）==")
 ag = get_code("agent")
 if ag is None:
