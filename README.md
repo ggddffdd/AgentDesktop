@@ -1,4 +1,4 @@
-# AgentDesktop
+# 小臭玩AI
 
 一个常驻 Windows 桌面的**本地 AI Agent 工作台**：系统托盘常驻 + 全局快捷键一键呼出 + 多步推理 Agent 循环 + 45+ 内置工具 + 多模型智能路由 + MCP 可扩展。
 
@@ -59,7 +59,7 @@ pip install -r requirements.txt
 ```
 
 ### 3. 配置 API Key
-首次运行会在 `~/Documents/AgentDesktop/` 下生成 `config.json`，填入模型密钥即可。默认走 DeepSeek（`https://api.deepseek.com`），也可在界面顶部「模型」下拉里切换预设。
+首次运行会在 `~/Documents/小臭玩AI/` 下生成 `config.json`，填入模型密钥即可。默认走 DeepSeek（`https://api.deepseek.com`），也可在界面顶部「模型」下拉里切换预设。
 
 > 想零成本：切换到 **Agnes**（永久免费）或 **硅基流动**（注册送额度）等预设即可，无需改代码。
 
@@ -77,14 +77,14 @@ python main.py
 | 发送消息 | `Enter`（`Shift + Enter` 换行） |
 
 - 关窗口不退出，缩回系统托盘；托盘右键 → 退出 才真正关闭。
-- 对话自动保存到 `~/Documents/AgentDesktop/`，下次打开自动恢复。
+- 对话自动保存到 `~/Documents/小臭玩AI/`，下次打开自动恢复。
 
 ---
 
 ## 目录结构
 
 ```
-AgentDesktop/
+小臭玩AI/
 ├── main.py                 # 主入口（托盘/热键/网关自启/新手引导）
 ├── ui.py                   # 主界面（对话/流式渲染/多面板导航）
 ├── agent.py                # Agent 循环 + 工具调用分发 + 模型路由
@@ -115,21 +115,21 @@ AgentDesktop/
 
 ## 打包成 exe（可选）
 
-仓库提供 `AgentDesktop.spec`（PyInstaller），可打包为免装 Python 的独立程序：
+仓库提供 `小臭玩AI.spec`（PyInstaller），可打包为免装 Python 的独立程序：
 
 ```bash
 pip install pyinstaller
-pyinstaller AgentDesktop.spec
+pyinstaller 小臭玩AI.spec
 ```
 
-产物在 `dist/AgentDesktop/`。首次运行会在 `~/Documents/AgentDesktop/` 生成 `config.json`，填好 key 即可用。
+产物在 `dist/小臭玩AI/`。首次运行会在 `~/Documents/小臭玩AI/` 生成 `config.json`，填好 key 即可用。
 
 ---
 
 ## 安全提醒
 
 - `config.json` 含你的 API Key，**别分享、别上传公网**。
-- `~/Documents/AgentDesktop/` 下有聊天记录、记忆、技能等本地数据，注意保护。
+- `~/Documents/小臭玩AI/` 下有聊天记录、记忆、技能等本地数据，注意保护。
 - 危险工具（执行命令、系统/软件操控、浏览器点击）默认需要确认；请勿在不受信环境开启「免确认」模式。
 
 ---
