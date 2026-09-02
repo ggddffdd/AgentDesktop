@@ -6747,7 +6747,11 @@ class ChatWindow(QMainWindow):
             return True
         # v4.102 fix11：媒体生成组合判定兜底——"生成口播视频 / 做个数字人"这类
         # 分开写的表述连写词表会漏判，用「对象词×动作词」同现识别。
-        return self._is_media_gen_request(last_user)
+        if self._is_media_gen_request(last_user):
+            return True
+        # v4.106：导演台对话指令——改分镜/关键帧/三视图/合成/查进度，
+        # 需真调 director_* 工具（弱模型会退化成文字演导演），升舱 DeepSeek。
+        return self._is_director_command(last_user)
 
     def _user_refuses_tools(self, messages):
         """v4.100：检测用户是否明确要求『不要调用工具/纯聊天』。
@@ -7372,6 +7376,10 @@ class ChatWindow(QMainWindow):
         # 会漏判 → 普通模式不自动进 Agent。组合判定兜底命中这类表述。
         if self._is_media_gen_request(text):
             return True
+        # v4.106：导演台对话指令——「把第3镜的关键帧改成夜晚 / 主角换成短发 / 合成成片 /
+        # 导演台进度怎么样」需进 Agent 调 director_* 工具，普通关键词表覆盖不到。
+        if self._is_director_command(text):
+            return True
         return any(h.lower() in t for h in self._ACTION_HINTS)
 
     # v4.102 fix11：媒体生成组合词表——"生成/做/制作/创建 视频/口播/数字人/图"常被用户
@@ -7403,6 +7411,37 @@ class ChatWindow(QMainWindow):
         if self._message_is_statement_only(text):
             return False
         return True
+
+    # v4.106：导演台对话指令词表——对象词收窄到导演台特有名词（分镜/关键帧/三视图/
+    # 成片/导演台/主角/角色），避免「换个头像」「改改文章」这类普通编辑误进 Agent。
+    # 单字「镜」只覆盖「第3镜/这镜/下一镜」写法；误伤面小（含"镜"且带明确改动的句子
+    # 基本都在聊镜头）。
+    _DIRECTOR_OBJ_KW = ("导演台", "分镜", "关键帧", "三视图", "成片",
+                        "主角", "角色", "这镜", "这一镜", "下一镜", "末镜", "镜")
+    _DIRECTOR_VERB_KW = ("重生成", "重新生成", "改成", "换成", "换回", "修改", "改一下",
+                         "改改", "重做", "合成", "再来一版", "补一镜", "加一镜", "删掉",
+                         "去掉", "调亮", "调暗")
+    _DIRECTOR_STATUS_KW = ("导演台", "分镜", "关键帧", "三视图", "成片",
+                           "第几镜", "哪几镜", "几镜")
+    _DIRECTOR_STATUS_Q = ("进度", "状态", "怎么样", "好了吗", "好了没", "跑到哪",
+                          "生成到哪", "到哪一步", "卡在哪", "到哪了", "停在哪",
+                          "还没", "没生成", "没好", "没出", "没跑")
+
+    def _is_director_command(self, text):
+        """v4.106：是否导演台对话指令（查进度 / 改分镜 / 重生成关键帧·三视图 / 合成）。
+        命中 → 普通模式自动进 Agent，且升舱 DeepSeek（director_* 工具意图）。"""
+        if not text:
+            return False
+        t = text.lower()
+        if self._message_is_statement_only(text):
+            return False
+        # 进度查询：「导演台进度怎么样 / 分镜跑到哪了」
+        if any(o in t for o in self._DIRECTOR_STATUS_KW) and \
+                any(q in t for q in self._DIRECTOR_STATUS_Q):
+            return True
+        # 修改指令：「把第3镜的关键帧改成夜晚 / 主角换成短发 / 合成成片」
+        return any(o in t for o in self._DIRECTOR_OBJ_KW) and \
+            any(v in t for v in self._DIRECTOR_VERB_KW)
 
     def _message_is_topic_only(self, text):
         """v4.56：用户消息是否属于"列方向/选题/盘点"型需求，且**不**含执行意图。
