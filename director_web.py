@@ -88,6 +88,7 @@ class _LocalResHandler(QWebEngineUrlSchemeHandler):
                 pass
             return
         ext = os.path.splitext(p)[1].lower()
+        mime = self._MIME.get(ext, b"application/octet-stream")
         try:
             with open(p, "rb") as f:
                 data = f.read()
@@ -103,7 +104,7 @@ class _LocalResHandler(QWebEngineUrlSchemeHandler):
         self._devs.append((dev, buf))  # buf 随 dev 存活，防 GC
         job.destroyed.connect(lambda: self._drop(dev))
         try:
-            job.reply(dev)
+            job.reply(mime, dev)
         except Exception:
             self._drop(dev)
 
