@@ -9,7 +9,7 @@ import ctypes
 from datetime import datetime
 
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import QThread, Signal, QAbstractNativeEventFilter
+from PySide6.QtCore import QThread, Signal, QAbstractNativeEventFilter, Qt
 from ui import ChatWindow, TrayApp, THEME
 
 log = logging.getLogger("dsdesktop")
@@ -18,7 +18,7 @@ log = logging.getLogger("dsdesktop")
 import perf_baseline
 
 # 崩溃日志目录（与记忆同级，便于排查）——未捕获异常写这里，崩了能查不静默
-LOG_DIR = os.path.join(os.path.expanduser("~/Documents/AgentDesktop"), "logs")
+LOG_DIR = os.path.join(os.path.expanduser("~/Documents/小臭玩AI"), "logs")
 
 
 def _install_crash_logger():
@@ -212,7 +212,7 @@ def main():
     _install_crash_logger()
     perf_baseline.mark("crash_logger")
 
-    # 确保产物目录存在（统一产物落点：~/Documents/AgentDesktop/产物）
+    # 确保产物目录存在（统一产物落点：~/Documents/小臭玩AI/产物）
     try:
         os.makedirs(config.PRODUCTS_DIR, exist_ok=True)
     except Exception as e:
@@ -254,6 +254,9 @@ def main():
         log.info("Obsidian 已禁用（obsidian_enabled=false），跳过初始化")
     perf_baseline.mark("obsidian")
 
+    # v4.104：QtWebEngine 硬性要求——必须在 QApplication 实例化之前设置，
+    # 否则 Chromium 渲染进程共享上下文创建失败（聊天区白屏）。
+    QApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     perf_baseline.mark("qapp")
@@ -294,7 +297,7 @@ def main():
                 if getattr(window, "tray_app", None):
                     from PySide6.QtGui import QSystemTrayIcon
                     window.tray_app.tray.showMessage(
-                        "AgentDesktop · Webhook", f"收到 {kind} 事件",
+                        "小臭玩AI · Webhook", f"收到 {kind} 事件",
                         QSystemTrayIcon.Information, 4000)
             except Exception:
                 pass
@@ -310,6 +313,66 @@ def main():
                 log.warning("Webhook 自动启动失败: %s", ok)
     except Exception as e:
         log.warning("Webhook 集成失败（不影响主程序）: %s", e)
+
+    # 浏览器扩展桥接服务（v4.103：抓网页进对话）
+    # 仅本机 127.0.0.1:9100，带 token 校验，安全无外部暴露。
+    try:
+        from browser_bridge import (browser_bridge_start, browser_bridge_stop,
+                                    set_event_callback as _bridge_set_cb)
+        from PySide6.QtCore import QTimer
+
+        def _bridge_cb(kind, payload):
+            if kind != "browser_page":
+                return
+            try:
+                def _inject():
+                    try:
+                        p = payload
+                        title = p.get("title", "")
+                        url = p.get("url", "")
+                        text = p.get("text", "")
+                        sel = p.get("selection", "")
+                        note = p.get("note", "")
+                        body = sel if sel else text
+                        if not body:
+                            return
+                        block = "请帮我处理这个网页内容"
+                        if note:
+                            block += "（要求：" + note + "）"
+                        block += "\n\n"
+                        block += "标题：" + title + "\n链接：" + url + "\n\n"
+                        block += "---\n" + body + "\n---"
+                        window.input_box.setPlainText(block)
+                        window.input_box.setFocus()
+                        if getattr(window, "tray_app", None):
+                            from PySide6.QtGui import QSystemTrayIcon
+                            window.tray_app.tray.showMessage(
+                                "小臭玩AI · 浏览器扩展",
+                                "已收到网页：" + (title[:30] or "（无标题）")
+                                + "（按 Enter 让 AI 处理）",
+                                QSystemTrayIcon.Information, 4000)
+                    except Exception as e:
+                        log.warning("浏览器扩展注入失败: %s", e)
+
+                # 跨线程（HTTP server 线程）→ 主线程执行 UI 操作
+                QTimer.singleShot(0, _inject)
+            except Exception as e:
+                log.warning("浏览器扩展回调异常: %s", e)
+
+        _bridge_set_cb(_bridge_cb)
+        tok = browser_bridge_start(cfg)
+        if isinstance(tok, str) and tok:
+            cfg["browser_bridge_token"] = tok
+            try:
+                from config import save_config
+                save_config(cfg)
+            except Exception:
+                pass
+            log.info("浏览器扩展桥接已启动（配对码已生成并持久化）")
+        else:
+            log.warning("浏览器扩展桥接启动失败: %s", tok)
+    except Exception as e:
+        log.warning("浏览器扩展桥接集成失败（不影响主程序）: %s", e)
 
     # 识图后端（free-api-gateway）随 APP 自动拉起（联网识图不再需手动启动）
     try:
@@ -378,14 +441,14 @@ def main():
 def run_autobackup():
     """v4.76：OS 级自动备份入口（由 Windows 任务计划程序调用，无 GUI）。
 
-    将用户数据目录（~/Documents/AgentDesktop）整体复制到带时间戳的备份子目录，
+    将用户数据目录（~/Documents/小臭玩AI）整体复制到带时间戳的备份子目录，
     排除体积庞大的「产物」目录，并保留最近 14 份。结果写入 logs/backup.log。
     返回 (ok: bool, msg: str)。
     """
     import shutil
     from datetime import datetime
 
-    data_dir = os.path.join(os.path.expanduser("~/Documents"), "AgentDesktop")
+    data_dir = os.path.join(os.path.expanduser("~/Documents"), "小臭玩AI")
     if not os.path.isdir(data_dir):
         return False, f"数据目录不存在：{data_dir}"
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
