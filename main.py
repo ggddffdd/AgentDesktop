@@ -61,6 +61,7 @@ class ObsidianInitWorker(QThread):
 
     def run(self):
         try:
+            import config  # 本模块顶层未 import config，缺这行会 NameError（沉默吞掉知识库索引）
             result = config.init_obsidian(self.cfg, self.store, timeout=self.timeout)
         except Exception as e:
             result = "Obsidian 初始化异常: %s" % e
