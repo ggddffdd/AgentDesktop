@@ -98,7 +98,8 @@ chk("config: 新增 get_agent_step_budget（步数可配置）",
     "get_agent_step_budget" in cfg_names)
 chk("config: 步数配置键 agent_max_steps 存在", "agent_max_steps" in cfg_consts)
 # v4.104.1：token 预算 200K → 400K，付费档 150K → 0（跟随总预算，消除 min() 提前熔断）
-chk("config: AGENT_TOKEN_BUDGET=400000", 400000 in cfg_consts)
+# 09-02：总预算再上调到 500K（config.py:483），断言随源码走
+chk("config: AGENT_TOKEN_BUDGET=500000", 500000 in cfg_consts)
 
 print("\n===== 汇总 =====")
 bad = [l for l, okc, _ in CHECKS if not okc]
