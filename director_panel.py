@@ -27,6 +27,7 @@ from PySide6.QtCore import Qt, QSize, QThread, Signal, QUrl
 
 from ui import THEME
 from config import APP_DIR
+from director_web import DirectorWebView, register_localres_scheme
 
 
 # ---------- 异常兜底装饰器 ----------
@@ -450,11 +451,8 @@ def build_director_panel(app):
     characters_scroll = QScrollArea()
     characters_scroll.setWidgetResizable(True)
     characters_scroll.setStyleSheet(f"QScrollArea{{border:none;background:transparent;}}")
-    app.director_characters_body = QWidget()
-    app.director_characters_layout = QVBoxLayout(app.director_characters_body)
-    app.director_characters_layout.setContentsMargins(0, 0, 0, 0)
-    app.director_characters_layout.setSpacing(8)
-    characters_scroll.setWidget(app.director_characters_body)
+    app.director_characters_web = DirectorWebView(THEME, lambda s: _on_web_action(app, s))
+    characters_scroll.setWidget(app.director_characters_web)
     cl0.addWidget(characters_scroll, 1)
     cbtns = QHBoxLayout()
     cbtns.setSpacing(12)
@@ -527,11 +525,8 @@ def build_director_panel(app):
     keyframes_scroll = QScrollArea()
     keyframes_scroll.setWidgetResizable(True)
     keyframes_scroll.setStyleSheet(f"QScrollArea{{border:none;background:transparent;}}")
-    app.director_keyframes_body = QWidget()
-    app.director_keyframes_grid = QGridLayout(app.director_keyframes_body)
-    app.director_keyframes_grid.setContentsMargins(0, 0, 0, 0)
-    app.director_keyframes_grid.setSpacing(12)
-    keyframes_scroll.setWidget(app.director_keyframes_body)
+    app.director_keyframes_web = DirectorWebView(THEME, lambda s: _on_web_action(app, s))
+    keyframes_scroll.setWidget(app.director_keyframes_web)
     kl.addWidget(keyframes_scroll, 1)
     kbtns = QHBoxLayout()
     kbtns.setSpacing(12)
@@ -562,11 +557,8 @@ def build_director_panel(app):
     clips_scroll = QScrollArea()
     clips_scroll.setWidgetResizable(True)
     clips_scroll.setStyleSheet(f"QScrollArea{{border:none;background:transparent;}}")
-    app.director_clips_body = QWidget()
-    app.director_clips_grid = QGridLayout(app.director_clips_body)
-    app.director_clips_grid.setContentsMargins(0, 0, 0, 0)
-    app.director_clips_grid.setSpacing(12)
-    clips_scroll.setWidget(app.director_clips_body)
+    app.director_clips_web = DirectorWebView(THEME, lambda s: _on_web_action(app, s))
+    clips_scroll.setWidget(app.director_clips_web)
     cl.addWidget(clips_scroll, 1)
     clbtns = QHBoxLayout()
     clbtns.setSpacing(12)
@@ -584,7 +576,7 @@ def build_director_panel(app):
     clbtns.addWidget(app.director_clips_adopt)
     cl.addLayout(clbtns)
     app.director_stack.addWidget(clips_page)
-    app.director_clip_cards = []
+    app.director_clips_state = []
 
     # 页4：合成
     merge_page = QWidget()
@@ -594,13 +586,9 @@ def build_director_panel(app):
     mhint = QLabel("⑥ 全部片段已生成。可回「生成」步骤单镜修改，或直接点「合成成片」。")
     mhint.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
     ml.addWidget(mhint)
-    app.director_merge_preview = QLabel("尚未合成")
-    app.director_merge_preview.setFixedHeight(200)
-    app.director_merge_preview.setAlignment(Qt.AlignCenter)
-    app.director_merge_preview.setStyleSheet(
-        f"QLabel{{background:{THEME['bg']};border:1px solid {THEME['border']};"
-        f"border-radius:10px;color:{THEME['dim']};font-size:13px;}}")
-    ml.addWidget(app.director_merge_preview, 1)
+    app.director_merge_web = DirectorWebView(THEME, lambda s: _on_web_action(app, s))
+    ml.addWidget(app.director_merge_web, 1)
+    app.director_merge_web.render_empty("尚未合成")
     mbtns = QHBoxLayout()
     mbtns.setSpacing(12)
     app.director_merge_btn = QPushButton("🎬 合成成片")
@@ -703,15 +691,8 @@ def _set_busy(app, busy):
                 w.setEnabled(not busy)
             except Exception:
                 pass
-    # 单镜卡片里的 ↻/✎改/🔍 按钮也一并禁用
-    for c in getattr(app, "director_clip_cards", []) or []:
-        for key in ("play", "mod", "regen", "view"):
-            b = c.get(key)
-            if b is not None:
-                try:
-                    b.setEnabled(not busy)
-                except Exception:
-                    pass
+    # 单镜卡片按钮已在网页内（DirectorWebView）；运行期防重入改由
+    # _on_web_action 检查 app.director_busy 实现，这里无需禁用 Qt 按钮。
 
 
 # ---------- 启动 ----------
@@ -1057,158 +1038,89 @@ def _adopt_keyframes(app):
 
 # ---------- ③ 逐镜生成 ----------
 def _prepare_clip_cards(app, n):
-    _clear_layout(app.director_clips_grid)
-    app.director_clip_cards = []
-    cols = 3
-    for i in range(n):
-        card = QFrame()
-        card.setStyleSheet(f"QFrame{{background:{THEME['card']};border:1px solid {THEME['border']};"
-                           f"border-radius:10px;}}")
-        cl = QVBoxLayout(card)
-        cl.setContentsMargins(8, 8, 8, 8)
-        cl.setSpacing(6)
-        frame = QLabel("生成中…")
-        frame.setFixedSize(150, 84)
-        frame.setAlignment(Qt.AlignCenter)
-        frame.setStyleSheet(f"QLabel{{background:{THEME['bg']};border-radius:6px;color:{THEME['dim']};font-size:11px;}}")
-        cl.addWidget(frame)
-        info = QLabel(f"镜{i+1} · ⏳ 排队中")
-        info.setStyleSheet(f"color:{THEME['text']};font-size:12px;")
-        cl.addWidget(info)
-        bl = QHBoxLayout()
-        bl.setSpacing(4)
-        play = QPushButton("▶")
-        play.setFixedSize(26, 28)
-        play.setStyleSheet(_btn_small_style())
-        play.setEnabled(False)
-        play.clicked.connect(lambda _, p=None, idx=i: _play_clip(app, idx))
-        mod = QPushButton("✎改")
-        mod.setFixedSize(34, 28)
-        mod.setStyleSheet(_btn_small_style())
-        mod.clicked.connect(lambda _, idx=i: _modify_clip(app, idx))
-        regen = QPushButton("↻")
-        regen.setFixedSize(26, 28)
-        regen.setStyleSheet(_btn_small_style())
-        regen.clicked.connect(lambda _, idx=i: _regenerate_clip(app, idx))
-        view = QPushButton("🔍")
-        view.setFixedSize(26, 28)
-        view.setStyleSheet(_btn_small_style())
-        view.clicked.connect(lambda _, idx=i: _view_prompt(app, idx))
-        bl.addWidget(play)
-        bl.addWidget(mod)
-        bl.addWidget(regen)
-        bl.addWidget(view)
-        cl.addLayout(bl)
-        app.director_clips_grid.addWidget(card, i // cols, i % cols)
-        app.director_clip_cards.append(
-            {"frame": frame, "info": info, "play": play, "mod": mod,
-             "regen": regen, "view": view, "path": None, "error": ""})
+    """初始化分镜状态并渲染占位卡片（网页网格）。"""
+    app.director_clips_state = [
+        {"status": "queued", "path": None, "error": "", "kf": None, "info": None}
+        for _ in range(n)
+    ]
+    _render_clips(app)
+
+
+def _render_clips(app):
+    """全量重渲染分镜网格（逐镜生成完/失败时调用）。"""
+    cards = getattr(app, "director_clips_state", []) or []
+    html = "".join(
+        clip_card_html(i, c.get("status", "queued"), c.get("path"),
+                       c.get("kf"), c.get("error", ""), c.get("info"))
+        for i, c in enumerate(cards)
+    )
+    app.director_clips_web.render_cards(html)
+
+
+def _on_web_action(app, sig):
+    """网页预览区按钮回调（kind:idx），来自 chat_web._ChatPage 的 __xc__ 通道。"""
+    if not sig or ":" not in sig:
+        return
+    kind, _, idx_s = sig.partition(":")
+    try:
+        idx = int(idx_s)
+    except ValueError:
+        return
+    # 运行期防重入：生成中只允许查看提示词，禁止改/重生成
+    if kind in ("mod", "regen") and getattr(app, "director_busy", False):
+        _set_status(app, "正在生成中，请稍候再操作。", err=True)
+        return
+    if kind == "mod":
+        _modify_clip(app, idx)
+    elif kind == "regen":
+        _regenerate_clip(app, idx)
+    elif kind == "view":
+        _view_prompt(app, idx)
+    elif kind == "play":
+        _play_clip(app, idx)
 
 
 def _build_character_cards(app, characters):
-    """把每个角色的三视图（正/侧/背）渲染成卡片，供用户判定是否会崩。"""
-    _clear_layout(app.director_characters_layout)
-    app.director_character_cards = []
-    for c in (characters or []):
-        box = QFrame()
-        box.setStyleSheet(f"QFrame{{background:{THEME['card']};border:1px solid {THEME['border']};"
-                          f"border-radius:10px;}}")
-        bl = QVBoxLayout(box)
-        bl.setContentsMargins(10, 10, 10, 10)
-        bl.setSpacing(6)
-        name = QLabel(c.get("name", "角色"))
-        name.setStyleSheet(f"font-size:14px;font-weight:600;color:{THEME['text']};")
-        bl.addWidget(name)
-        desc = QLabel(c.get("desc", ""))
-        desc.setWordWrap(True)
-        desc.setStyleSheet(f"font-size:11px;color:{THEME['dim']};")
-        bl.addWidget(desc)
-        hl = QHBoxLayout()
-        hl.setSpacing(6)
-        for v in (c.get("views") or []):
-            lbl = QLabel("无")
-            lbl.setFixedSize(96, 140)
-            lbl.setAlignment(Qt.AlignCenter)
-            lbl.setStyleSheet(f"QLabel{{background:{THEME['bg']};border-radius:6px;"
-                                f"color:{THEME['dim']};font-size:10px;}}")
-            if v and os.path.isfile(v):
-                pm = QPixmap(v).scaled(96, 140, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                lbl.setPixmap(pm)
-                lbl.setText("")
-            hl.addWidget(lbl)
-        bl.addLayout(hl)
-        app.director_characters_layout.addWidget(box)
-    app.director_characters_layout.addStretch(1)
+    """把每个角色的三视图渲染成网页卡片（可点击灯箱放大，看清人物会不会崩）。"""
+    html = "".join(character_card_html(c) for c in (characters or []))
+    if not html:
+        html = '<div class="empty">无角色</div>'
+    app.director_characters_web.render_cards(html)
 
 
 def _build_keyframe_cards(app, keyframes):
-    """把每镜关键帧+场景图渲染成缩略图卡片。"""
-    _clear_layout(app.director_keyframes_grid)
-    app.director_keyframe_cards = []
-    cols = 3
-    for i, kf in enumerate(keyframes or []):
-        card = QFrame()
-        card.setStyleSheet(f"QFrame{{background:{THEME['card']};border:1px solid {THEME['border']};"
-                          f"border-radius:10px;}}")
-        cl = QVBoxLayout(card)
-        cl.setContentsMargins(8, 8, 8, 8)
-        cl.setSpacing(6)
-        frame = QLabel("无")
-        frame.setFixedSize(150, 84)
-        frame.setAlignment(Qt.AlignCenter)
-        frame.setStyleSheet(f"QLabel{{background:{THEME['bg']};border-radius:6px;"
-                                f"color:{THEME['dim']};font-size:11px;}}")
-        if kf and os.path.isfile(kf):
-            pm = QPixmap(kf).scaled(150, 84, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            frame.setPixmap(pm)
-            frame.setText("")
-        cl.addWidget(frame)
-        info = QLabel(f"镜{i+1} · 关键帧" if kf else f"镜{i+1} · 生成失败")
-        info.setStyleSheet(f"color:{THEME['text']};font-size:12px;")
-        cl.addWidget(info)
-        # VLM 质检结果：让「抗崩坏」看得见——崩没崩一眼看到，而不只是日志里一行
-        _p = getattr(app, "director_pipeline", None)
-        _note = (getattr(_p, "review_notes", {}) or {}).get(i) or ""
-        if _note:
-            _failed = "VERDICT: FAIL" in _note.upper()
-            qc = QLabel("⚠️ 质检未通过" if _failed else "✅ 质检通过")
-            qc.setStyleSheet(
-                f"color:{'#d98c3f' if _failed else THEME['dim']};font-size:11px;")
-            qc.setToolTip(_note[:400])
-            cl.addWidget(qc)
-        app.director_keyframes_grid.addWidget(card, i // cols, i % cols)
-        app.director_keyframe_cards.append({"frame": frame, "info": info, "path": kf})
+    """把每镜关键帧+场景图渲染成网页缩略图卡片（含 VLM 质检状态，可灯箱放大）。"""
+    notes = (getattr(app.director_pipeline, "review_notes", {}) or {}) if getattr(app, "director_pipeline", None) else {}
+    html = "".join(
+        keyframe_card_html(i, kf, notes.get(i, ""))
+        for i, kf in enumerate(keyframes or [])
+    )
+    if not html:
+        html = '<div class="empty">无关键帧</div>'
+    app.director_keyframes_web.render_cards(html)
 
 
 @_safe
 def _on_clip_ready(app, i, path):
-    cards = app.director_clip_cards
-    if i < 0 or i >= len(cards):
+    cards = getattr(app, "director_clips_state", None)
+    if cards is None or i < 0 or i >= len(cards):
         return
-    c = cards[i]
-    c["path"] = path
-    kf = app.director_pipeline.keyframe(path)
-    if kf and os.path.isfile(kf):
-        pm = QPixmap(kf).scaled(150, 84, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        c["frame"].setPixmap(pm)
-        c["frame"].setText("")
-    else:
-        c["frame"].setText("无预览")
-    c["info"].setText(f"镜{i+1} · ✅ 完成")
-    c["play"].setEnabled(True)
+    kf = app.director_pipeline.keyframe(path) if getattr(app, "director_pipeline", None) else None
+    cards[i].update({
+        "status": "done", "path": path, "error": "",
+        "kf": kf if (kf and os.path.isfile(kf)) else None,
+    })
+    _render_clips(app)
     _save_session(app)
 
 
 @_safe
 def _on_clip_failed(app, i, reason=""):
-    cards = app.director_clip_cards
-    if i < 0 or i >= len(cards):
+    cards = getattr(app, "director_clips_state", None)
+    if cards is None or i < 0 or i >= len(cards):
         return
-    c = cards[i]
-    c["error"] = reason or ""
-    c["info"].setText(f"镜{i+1} · ❌ 失败（🔍看提示词）")
-    # 完整失败原因挂到 tooltip，鼠标悬停即可查看，不挤占卡片空间
-    c["info"].setToolTip(f"失败原因：{reason}\n\n点 🔍 查看本镜实际发给模型的提示词。")
+    cards[i].update({"status": "fail", "error": reason or "", "path": None})
+    _render_clips(app)
     _save_session(app)
 
 
@@ -1221,8 +1133,9 @@ def _on_clips_done(app, ok, total, msg):
 
 
 def _play_clip(app, idx):
-    if 0 <= idx < len(app.director_clip_cards):
-        _play_video(app, app.director_clip_cards[idx]["path"])
+    state = getattr(app, "director_clips_state", []) or []
+    if 0 <= idx < len(state):
+        _play_video(app, state[idx].get("path"))
 
 
 def _play_video(app, path):
@@ -1237,8 +1150,9 @@ def _view_prompt(app, idx):
         return
     prompt = getattr(app.director_pipeline, "last_prompts", {}).get(idx, "")
     err = ""
-    if 0 <= idx < len(app.director_clip_cards):
-        err = app.director_clip_cards[idx].get("error", "")
+    state = getattr(app, "director_clips_state", []) or []
+    if 0 <= idx < len(state):
+        err = state[idx].get("error", "")
     dlg = QDialog(app)
     dlg.setWindowTitle(f"镜{idx+1} · 实际发给模型的提示词")
     dlg.setMinimumWidth(540)
@@ -1277,8 +1191,9 @@ def _modify_clip(app, idx):
         return
     prompt = getattr(app.director_pipeline, "last_prompts", {}).get(idx, "")
     err = ""
-    if 0 <= idx < len(app.director_clip_cards):
-        err = app.director_clip_cards[idx].get("error", "")
+    state = getattr(app, "director_clips_state", []) or []
+    if 0 <= idx < len(state):
+        err = state[idx].get("error", "")
     dlg = QDialog(app)
     dlg.setWindowTitle(f"修改 镜{idx+1}")
     dlg.setMinimumWidth(560)
@@ -1358,8 +1273,8 @@ def _regenerate_clip(app, idx):
 
 @_safe
 def _regenerate_all(app):
-    cards = getattr(app, "director_clip_cards", None)
-    if not cards:
+    state = getattr(app, "director_clips_state", None)
+    if not state:
         _set_status(app, "还没有可重新生成的片段。", err=True)
         return
     if app.director_pipeline is None:
@@ -1367,13 +1282,6 @@ def _regenerate_all(app):
         return
     _set_status(app, "正在全部重新生成…")
     _log(app, "↺ 全部重新生成…")
-    for c in cards:
-        info = c.get("info")
-        if info is not None:
-            info.setText(info.text().split("·")[0] + "· ⏳ 重生成中")
-        play = c.get("play")
-        if play is not None:
-            play.setEnabled(False)
     _run_thread(app, "clips")
 
 
@@ -1401,12 +1309,8 @@ def _on_merge_ready(app, ok, msg, path):
     if ok and path and os.path.isfile(path):
         app.director_final_path = path
         kf = app.director_pipeline.keyframe(path)
-        if kf and os.path.isfile(kf):
-            pm = QPixmap(kf).scaled(356, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            app.director_merge_preview.setPixmap(pm)
-            app.director_merge_preview.setText("")
-        else:
-            app.director_merge_preview.setText("成片已生成（无预览）")
+        app.director_merge_web.render_cards(
+            merge_card_html(path, kf if (kf and os.path.isfile(kf)) else None))
         app.director_merge_play.setEnabled(True)
         _set_status(app, msg)
         _log(app, f"✅ {msg}")
@@ -1454,11 +1358,12 @@ def _director_reset(app):
     app.director_merge_play.setEnabled(False)
     app.director_story_edit.clear()
     _clear_layout(app.director_shots_layout)
-    _clear_layout(app.director_clips_grid)
-    app.director_clip_cards = []
+    app.director_clips_state = []
     app.director_shot_rows = []
-    app.director_merge_preview.setText("尚未合成")
-    app.director_merge_preview.setPixmap(QPixmap())
+    app.director_clips_web.render_empty("尚未生成")
+    app.director_keyframes_web.render_empty("尚未生成")
+    app.director_characters_web.render_empty("尚未生成")
+    app.director_merge_web.render_empty("尚未合成")
     app.director_log.clear()
     _set_step(app, 0)
     _set_busy(app, False)
@@ -1659,38 +1564,26 @@ def _load_session(app):
     if step >= 4 and p.keyframes:
         _build_keyframe_cards(app, p.keyframes)
     if step >= 5:
-        _prepare_clip_cards(app, len(p.shots or []))
-        for i, c in enumerate(app.director_clip_cards):
+        n = len(p.shots or [])
+        state = [{"status": "queued", "path": None, "error": "", "kf": None} for _ in range(n)]
+        for i in range(n):
             path = p.clip_paths[i] if i < len(p.clip_paths) else None
             err = p.last_errors.get(i, "")
             if path and os.path.isfile(path):
-                c["path"] = path
                 kf = p.keyframe(path)
-                if kf and os.path.isfile(kf):
-                    c["frame"].setPixmap(
-                        QPixmap(kf).scaled(150, 84, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                    c["frame"].setText("")
-                else:
-                    c["frame"].setText("无预览")
-                c["info"].setText(f"镜{i+1} · ✅ 完成")
-                c["play"].setEnabled(True)
+                state[i] = {"status": "done", "path": path, "error": "",
+                           "kf": kf if (kf and os.path.isfile(kf)) else None}
             elif err:
-                c["error"] = err
-                c["info"].setText(f"镜{i+1} · ❌ 失败（🔍看提示词）")
-                c["info"].setToolTip(f"失败原因：{err}\n\n点 🔍 查看本镜实际发给模型的提示词。")
-            else:
-                c["info"].setText(f"镜{i+1} · ⏳ 未生成")
+                state[i] = {"status": "fail", "error": err, "path": None, "kf": None}
+        app.director_clips_state = state
+        _render_clips(app)
     if step >= 6:
         fp = data.get("final_path")
         if fp and os.path.isfile(fp):
             app.director_final_path = fp
             kf = p.keyframe(fp)
-            if kf and os.path.isfile(kf):
-                app.director_merge_preview.setPixmap(
-                    QPixmap(kf).scaled(356, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                app.director_merge_preview.setText("")
-            else:
-                app.director_merge_preview.setText("成片已生成（无预览）")
+            app.director_merge_web.render_cards(
+                merge_card_html(fp, kf if (kf and os.path.isfile(kf)) else None))
             app.director_merge_play.setEnabled(True)
 
     _set_step(app, step)

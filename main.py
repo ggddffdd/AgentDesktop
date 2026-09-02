@@ -258,6 +258,13 @@ def main():
     # v4.104：QtWebEngine 硬性要求——必须在 QApplication 实例化之前设置，
     # 否则 Chromium 渲染进程共享上下文创建失败（聊天区白屏）。
     QApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
+    # v4.105：导演台预览区 localres:// scheme——必须在 QApplication 前注册（Qt 硬性要求），
+    # 否则自定义 scheme 不生效，分镜/关键帧/合成预览的图片/视频无法加载（被 CORS 拦）。
+    try:
+        from director_web import register_localres_scheme
+        register_localres_scheme()
+    except Exception:
+        pass
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     perf_baseline.mark("qapp")
