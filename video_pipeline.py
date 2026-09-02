@@ -25,7 +25,10 @@ import subprocess
 import urllib.request
 
 from tools import (_agnes_creds, _build_video_prompt, tool_video_gen,
-                   tool_image_gen, PRODUCTS_DIR, AGNES_MAX_REF_IMAGES)
+                   tool_image_gen, PRODUCTS_DIR)
+# 参考图硬上限：Agnes reference 模式实测 6 张报 400，固定 5。
+# （原为 tools 导出，视频统一内核后归 video_pipeline 自管，避免悬空依赖 tools）
+AGNES_MAX_REF_IMAGES = 5
 import vision_qc as vq
 
 # 画面风格短语（与 video-agent 一致）

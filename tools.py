@@ -1174,6 +1174,26 @@ def _gen_local_sd(cfg, app_dir, prompt, size=None):
         return f"保存本地 SD 图片失败：{e}"
 
 
+def _build_video_prompt(prompt, dialogue=None):
+    """把口播/台词包进视频 prompt（逻辑与 video-agent/core/agnes._inject_dialogue 对齐）。
+
+    agnes-video-2.5-flash 会念出括号里的中文元指令（如“用中文说”之类），
+    因此所有非台词文字改用英文，中文台词仅放在引号内，避免控制语泄漏进画面文字。
+    video_pipeline.py 在逐镜生成时调用本函数注入本镜台词。
+    """
+    if not dialogue:
+        return prompt
+    d = dialogue.strip()
+    if not d:
+        return prompt
+    return (
+        f"{prompt.rstrip('. ')}\n\n"
+        f'Spoken line in Mandarin: "{d}"\n'
+        f"Only the quoted line above should be spoken. No English, no introduction. "
+        f"Natural lip-synced mouth movement, clear spoken Mandarin voice."
+    )
+
+
 def _agnes_creds(cfg):
     """从配置中取 Agnes 通道的 base_url 与 api_key（独立于当前聊天模型，始终走 Agnes 直连）。"""
     prof = (cfg.get("model_profiles") or {}).get("Agnes") or {}
