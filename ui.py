@@ -3416,15 +3416,18 @@ class ChatWindow(QMainWindow):
         einstall.setFixedHeight(34)
         einstall.setStyleSheet(self._secondary_btn_style())
         # v4.108 M-27：优先运行目录（用户自装/自改），缺失时回退到 exe 随附的
-        # dist/browser_extension 副本（开源分发/换机时安装说明不再指向不存在的文件）
+        # 扩展副本——PyInstaller 6.x onedir 的 datas 落 _internal/ 下，开发态在仓库根。
         install_path = os.path.join(
             os.path.expanduser("~"), "Documents", "小臭玩AI", "browser_extension", "README.md")
         if not os.path.exists(install_path):
             try:
-                _alt = os.path.join(os.path.dirname(sys.executable),
-                                    "browser_extension", "README.md")
-                if os.path.exists(_alt):
-                    install_path = _alt
+                _exe_dir = os.path.dirname(sys.executable)
+                for _cand in (os.path.join(_exe_dir, "_internal", "browser_extension",
+                                           "README.md"),
+                              os.path.join(_exe_dir, "browser_extension", "README.md")):
+                    if os.path.exists(_cand):
+                        install_path = _cand
+                        break
             except Exception:
                 pass
         einstall.clicked.connect(lambda: self._open_path(install_path))
