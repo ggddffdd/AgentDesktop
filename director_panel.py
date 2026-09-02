@@ -1,4 +1,4 @@
-"""导演台面板（Agent内嵌工作台 · 多步编排版）。
+"""导演台面板（小臭内嵌工作台 · 多步编排版）。
 
 交互参照成熟项目（OpenMontage 多 Agent 编排 + 每步人工确认）的方式重做：
 主题 → ① 剧本（可编辑/重写）→ ② 分镜（逐镜可编辑/增删）→ ③ 逐镜生成
@@ -77,7 +77,7 @@ STYLE_ITEMS = [
     ("纪录片 documentary", "documentary"),
 ]
 
-STEP_LABELS = ["主题", "剧本", "分镜", "生成", "合成"]
+STEP_LABELS = ["主题", "剧本", "人物", "分镜", "关键帧", "生成", "合成"]
 
 
 # ---------- 样式 ----------
@@ -138,6 +138,8 @@ class DirectorThread(QThread):
     status = Signal(str, bool)
     story_ready = Signal(str)
     shots_ready = Signal(object)
+    characters_ready = Signal(object)
+    keyframes_ready = Signal(object)
     clip_ready = Signal(int, str)
     clip_failed = Signal(int, str)
     clips_done = Signal(int, int, str)
@@ -165,6 +167,12 @@ class DirectorThread(QThread):
             elif self.task == "shots":
                 p.gen_shots(feedback=self.feedback)
                 self.shots_ready.emit(p.shots)
+            elif self.task == "characters":
+                p.gen_characters(feedback=self.feedback)
+                self.characters_ready.emit(p.characters)
+            elif self.task == "keyframes":
+                p.gen_keyframes(feedback=self.feedback)
+                self.keyframes_ready.emit(p.keyframes)
             elif self.task == "clips":
                 def on_clip(i, path):
                     if path:
@@ -209,8 +217,9 @@ def build_director_panel(app):
     head = QLabel("导演台 · video-agent")
     head.setStyleSheet(f"font-size:20px;font-weight:700;color:{THEME['text']};")
     lay.addWidget(head)
-    sub = QLabel("主题 → ①剧本（可改）→ ②分镜（逐镜可改）→ ③逐镜生成（每镜可预览/单镜改）→ "
-                 "④合成成片。每一步跑完都会停下来等你确认，中途随时能改。")
+    sub = QLabel("主题 → ①剧本（可改）→ ②人物三视图（角色锁定）→ ③分镜（逐镜可改）→ "
+                 "④关键帧+场景图 → ⑤逐镜生成（每镜可预览/单镜改）→ ⑥合成成片。"
+                 "每步都自动把人物三视图/关键帧作参照，减少人物与场景崩坏。")
     sub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
     lay.addWidget(sub)
 
@@ -248,7 +257,7 @@ def build_director_panel(app):
     pl.addWidget(tlab)
     app.director_topic = QTextEdit()
     app.director_topic.setFixedHeight(64)
-    app.director_topic.setPlaceholderText("例：一只小狗早上在院子里追蝴蝶的治愈微故事 / "
+    app.director_topic.setPlaceholderText("例：一只柯基早上在院子里追蝴蝶的治愈微故事 / "
                                           "口播模式可贴原稿（≥60字或前缀「原稿：」走直通）")
     app.director_topic.setStyleSheet(_edit_style())
     pl.addWidget(app.director_topic)
@@ -280,7 +289,8 @@ def build_director_panel(app):
     dlab.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
     dlab.setFixedWidth(40)
     row1.addWidget(dlab)
-    app.director_duration = _spin((3, 16), 5, " 秒")
+    # 新版 agnes-video-2.5-flash 时长合法范围 4~12 秒（旧版 3~16s）
+    app.director_duration = _spin((4, 12), 5, " 秒")
     app.director_duration.setFixedWidth(90)
     row1.addWidget(app.director_duration)
     app.director_inputs.append(app.director_duration)
@@ -324,7 +334,16 @@ def build_director_panel(app):
     app.director_relay.setChecked(True)
     app.director_subtitle = QCheckBox("烧录字幕")
     app.director_subtitle.setChecked(True)
-    for c in (app.director_dialogue, app.director_portrait, app.director_relay, app.director_subtitle):
+    # VLM 质检：调用 DeepSeek 视觉模型审查关键帧，会产生费用并延长生成时间，
+    # 因此必须给用户开关（默认开，因为它是抗崩坏的关键一环）。
+    app.director_vision_review = QCheckBox("VLM 质检")
+    app.director_vision_review.setChecked(True)
+    app.director_vision_review.setToolTip(
+        "生成关键帧后用 DeepSeek 视觉模型审查人物/场景是否崩坏，"
+        "不通过自动带诊断重生成（每镜最多重试 2 次）。\n"
+        "会产生 DeepSeek 调用费用并延长生成时间；关闭后仅靠参考图锁定。")
+    for c in (app.director_dialogue, app.director_portrait, app.director_relay,
+              app.director_subtitle, app.director_vision_review):
         c.setStyleSheet(_chk_style())
         row2.addWidget(c)
         app.director_inputs.append(c)
@@ -353,6 +372,7 @@ def build_director_panel(app):
     ref.addWidget(app.director_ref_label, 1)
     app.director_ref_image = None
     pl.addLayout(ref)
+
     lay.addWidget(params)
     app.director_params_box = params
 
@@ -417,6 +437,43 @@ def build_director_panel(app):
     sl.addLayout(sbtns)
     app.director_stack.addWidget(story_page)
 
+    # 页1.5：人物三视图（角色锁定，抗崩坏）
+    characters_page = QWidget()
+    cl0 = QVBoxLayout(characters_page)
+    cl0.setContentsMargins(0, 0, 0, 0)
+    cl0.setSpacing(10)
+    chint = QLabel("② 人物三视图已生成。每个角色含正面/侧面/背面三视图，可据此判断人物是否会崩；"
+                   "满意后点「采用人物 → 去分镜」。不满意可「重新生成人物」并附意见。")
+    chint.setWordWrap(True)
+    chint.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    cl0.addWidget(chint)
+    characters_scroll = QScrollArea()
+    characters_scroll.setWidgetResizable(True)
+    characters_scroll.setStyleSheet(f"QScrollArea{{border:none;background:transparent;}}")
+    app.director_characters_body = QWidget()
+    app.director_characters_layout = QVBoxLayout(app.director_characters_body)
+    app.director_characters_layout.setContentsMargins(0, 0, 0, 0)
+    app.director_characters_layout.setSpacing(8)
+    characters_scroll.setWidget(app.director_characters_body)
+    cl0.addWidget(characters_scroll, 1)
+    cbtns = QHBoxLayout()
+    cbtns.setSpacing(12)
+    app.director_characters_revise = QPushButton("✎ 重新生成人物（可附意见）")
+    app.director_characters_revise.setFixedHeight(36)
+    app.director_characters_revise.setStyleSheet(_btn_style())
+    app.director_characters_revise.clicked.connect(lambda: _revise_characters(app))
+    app.director_characters_adopt = QPushButton("✓ 采用人物 → 去分镜")
+    app.director_characters_adopt.setFixedHeight(36)
+    app.director_characters_adopt.setCursor(Qt.PointingHandCursor)
+    app.director_characters_adopt.setStyleSheet(_btn_accent_style())
+    app.director_characters_adopt.clicked.connect(lambda: _adopt_characters(app))
+    cbtns.addWidget(app.director_characters_revise)
+    cbtns.addStretch(1)
+    cbtns.addWidget(app.director_characters_adopt)
+    cl0.addLayout(cbtns)
+    app.director_stack.addWidget(characters_page)
+    app.director_character_cards = []
+
     # 页2：分镜
     shots_page = QWidget()
     shl = QVBoxLayout(shots_page)
@@ -457,12 +514,49 @@ def build_director_panel(app):
     shl.addLayout(shbtns)
     app.director_stack.addWidget(shots_page)
 
+    # 页2.5：分镜关键帧 + 场景图（每镜首帧参照，抗崩坏）
+    keyframes_page = QWidget()
+    kl = QVBoxLayout(keyframes_page)
+    kl.setContentsMargins(0, 0, 0, 0)
+    kl.setSpacing(10)
+    khint = QLabel("④ 分镜关键帧+场景图已生成。每镜一张首帧参照图，逐镜生成时会自动作为首帧注入，"
+                   "人物与场景更不易崩坏；满意后点「采用关键帧 → 去生成」。可「重新生成关键帧」并附意见。")
+    khint.setWordWrap(True)
+    khint.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    kl.addWidget(khint)
+    keyframes_scroll = QScrollArea()
+    keyframes_scroll.setWidgetResizable(True)
+    keyframes_scroll.setStyleSheet(f"QScrollArea{{border:none;background:transparent;}}")
+    app.director_keyframes_body = QWidget()
+    app.director_keyframes_grid = QGridLayout(app.director_keyframes_body)
+    app.director_keyframes_grid.setContentsMargins(0, 0, 0, 0)
+    app.director_keyframes_grid.setSpacing(12)
+    keyframes_scroll.setWidget(app.director_keyframes_body)
+    kl.addWidget(keyframes_scroll, 1)
+    kbtns = QHBoxLayout()
+    kbtns.setSpacing(12)
+    app.director_keyframes_revise = QPushButton("✎ 重新生成关键帧（可附意见）")
+    app.director_keyframes_revise.setFixedHeight(36)
+    app.director_keyframes_revise.setStyleSheet(_btn_style())
+    app.director_keyframes_revise.clicked.connect(lambda: _revise_keyframes(app))
+    app.director_keyframes_adopt = QPushButton("✓ 采用关键帧 → 去生成")
+    app.director_keyframes_adopt.setFixedHeight(36)
+    app.director_keyframes_adopt.setCursor(Qt.PointingHandCursor)
+    app.director_keyframes_adopt.setStyleSheet(_btn_accent_style())
+    app.director_keyframes_adopt.clicked.connect(lambda: _adopt_keyframes(app))
+    kbtns.addWidget(app.director_keyframes_revise)
+    kbtns.addStretch(1)
+    kbtns.addWidget(app.director_keyframes_adopt)
+    kl.addLayout(kbtns)
+    app.director_stack.addWidget(keyframes_page)
+    app.director_keyframe_cards = []
+
     # 页3：逐镜生成
     clips_page = QWidget()
     cl = QVBoxLayout(clips_page)
     cl.setContentsMargins(0, 0, 0, 0)
     cl.setSpacing(10)
-    app.director_clips_progress = QLabel("③ 准备逐镜生成…")
+    app.director_clips_progress = QLabel("⑤ 准备逐镜生成…")
     app.director_clips_progress.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
     cl.addWidget(app.director_clips_progress)
     clips_scroll = QScrollArea()
@@ -497,7 +591,7 @@ def build_director_panel(app):
     ml = QVBoxLayout(merge_page)
     ml.setContentsMargins(0, 0, 0, 0)
     ml.setSpacing(10)
-    mhint = QLabel("④ 全部片段已生成。可回「生成」步骤单镜修改，或直接点「合成成片」。")
+    mhint = QLabel("⑥ 全部片段已生成。可回「生成」步骤单镜修改，或直接点「合成成片」。")
     mhint.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
     ml.addWidget(mhint)
     app.director_merge_preview = QLabel("尚未合成")
@@ -597,9 +691,13 @@ def _set_busy(app, busy):
               getattr(app, "director_merge_btn", None),
               getattr(app, "director_story_revise", None),
               getattr(app, "director_story_adopt", None),
+              getattr(app, "director_characters_revise", None),
+              getattr(app, "director_characters_adopt", None),
               getattr(app, "director_shots_revise", None),
               getattr(app, "director_shots_add", None),
-              getattr(app, "director_shots_adopt", None)):
+              getattr(app, "director_shots_adopt", None),
+              getattr(app, "director_keyframes_revise", None),
+              getattr(app, "director_keyframes_adopt", None)):
         if w is not None:
             try:
                 w.setEnabled(not busy)
@@ -682,6 +780,8 @@ def _director_start(app):
     from video_pipeline import VideoPipeline
     app.director_pipeline = VideoPipeline(app.cfg, APP_DIR, {}, auto_approve=True)
     app.director_pipeline.prepare(**params)
+    # VLM 质检开关在 prepare 之后再挂，避免改动 VideoPipeline.prepare 的签名
+    app.director_pipeline.vision_review = app.director_vision_review.isChecked()
 
     app.director_log.clear()
     _set_status(app, "正在生成剧本…")
@@ -707,6 +807,8 @@ def _run_thread(app, task, feedback=None, idx=None, note=None):
     th.status.connect(lambda t, e=False: _set_status(app, t, e))
     th.story_ready.connect(lambda t: _on_story_ready(app, t))
     th.shots_ready.connect(lambda s: _on_shots_ready(app, s))
+    th.characters_ready.connect(lambda c: _on_characters_ready(app, c))
+    th.keyframes_ready.connect(lambda k: _on_keyframes_ready(app, k))
     th.clip_ready.connect(lambda i, p: _on_clip_ready(app, i, p))
     th.clip_failed.connect(lambda i: _on_clip_failed(app, i))
     th.clips_done.connect(lambda ok, tot, msg: _on_clips_done(app, ok, tot, msg))
@@ -741,9 +843,46 @@ def _revise_story(app):
 @_safe
 def _adopt_story(app):
     app.director_pipeline.set_story(app.director_story_edit.toPlainText())
+    _save_session(app)
+    if app.director_pipeline.portrait_mode:
+        # 本人形象口播：照片已锁定形象，跳过人物三视图，直接去分镜
+        _set_status(app, "正在拆分分镜…")
+        _log(app, "✓ 采用剧本 → 拆分分镜（口播模式跳过人物设定）…")
+        _set_step(app, 3)
+        _run_thread(app, "shots")
+    else:
+        _set_status(app, "正在生成人物三视图…")
+        _log(app, "✓ 采用剧本 → 生成人物三视图…")
+        _set_step(app, 2)
+        _run_thread(app, "characters")
+
+
+@_safe
+def _on_characters_ready(app, characters):
+    _build_character_cards(app, characters)
+    n = len(characters)
+    _set_status(app, f"人物三视图已生成（{n} 个角色）。可查看/重生成，满意后「采用人物」。")
+    _log(app, f"✅ 人物三视图完成（{n} 个角色）。")
+    _set_busy(app, False)
+    _save_session(app)
+
+
+@_safe
+def _revise_characters(app):
+    text, ok = QInputDialog.getText(
+        app, "重新生成人物", "输入修改意见（可留空直接重试）：", text="")
+    if not ok:
+        return
+    _set_status(app, "正在按意见重新生成人物三视图…")
+    _log(app, "✎ 重新生成人物三视图…")
+    _run_thread(app, "characters", feedback=text.strip() or None)
+
+
+@_safe
+def _adopt_characters(app):
     _set_status(app, "正在拆分分镜…")
-    _log(app, "✓ 采用剧本 → 拆分分镜…")
-    _set_step(app, 2)
+    _log(app, "✓ 采用人物 → 拆分分镜…")
+    _set_step(app, 3)
     _save_session(app)
     _run_thread(app, "shots")
 
@@ -870,11 +1009,49 @@ def _adopt_shots(app):
         _set_status(app, "分镜为空，无法继续。", err=True)
         return
     app.director_pipeline.set_shots(shots)
-    _set_status(app, "正在逐镜生成视频…")
-    _log(app, f"✓ 采用分镜（{len(shots)} 镜）→ 逐镜生成…")
-    _set_step(app, 3)
     _save_session(app)
-    _prepare_clip_cards(app, len(shots))
+    if app.director_pipeline.portrait_mode:
+        # 口播模式：照片已锁定形象，跳过关键帧，直接逐镜生成
+        _set_status(app, "正在逐镜生成视频…")
+        _log(app, f"✓ 采用分镜（{len(shots)} 镜）→ 逐镜生成（口播模式跳过关键帧）…")
+        _set_step(app, 5)
+        _prepare_clip_cards(app, len(shots))
+        _run_thread(app, "clips")
+    else:
+        _set_status(app, "正在生成分镜关键帧 + 场景图…")
+        _log(app, f"✓ 采用分镜（{len(shots)} 镜）→ 生成关键帧…")
+        _set_step(app, 4)
+        _run_thread(app, "keyframes")
+
+
+@_safe
+def _on_keyframes_ready(app, keyframes):
+    _build_keyframe_cards(app, keyframes)
+    ok_kf = sum(1 for x in keyframes if x)
+    _set_status(app, f"关键帧+场景图已生成（{ok_kf}/{len(keyframes)} 镜有效）。可查看/重生成，满意后「采用关键帧」。")
+    _log(app, f"✅ 关键帧+场景图完成（{ok_kf}/{len(keyframes)} 镜）。")
+    _set_busy(app, False)
+    _save_session(app)
+
+
+@_safe
+def _revise_keyframes(app):
+    text, ok = QInputDialog.getText(
+        app, "重新生成关键帧", "输入修改意见（可留空直接重试）：", text="")
+    if not ok:
+        return
+    _set_status(app, "正在按意见重新生成关键帧+场景图…")
+    _log(app, "✎ 重新生成关键帧+场景图…")
+    _run_thread(app, "keyframes", feedback=text.strip() or None)
+
+
+@_safe
+def _adopt_keyframes(app):
+    _set_status(app, "正在逐镜生成视频…")
+    _log(app, "✓ 采用关键帧 → 逐镜生成…")
+    _set_step(app, 5)
+    _save_session(app)
+    _prepare_clip_cards(app, len(app.director_pipeline.shots))
     _run_thread(app, "clips")
 
 
@@ -926,6 +1103,81 @@ def _prepare_clip_cards(app, n):
         app.director_clip_cards.append(
             {"frame": frame, "info": info, "play": play, "mod": mod,
              "regen": regen, "view": view, "path": None, "error": ""})
+
+
+def _build_character_cards(app, characters):
+    """把每个角色的三视图（正/侧/背）渲染成卡片，供用户判定是否会崩。"""
+    _clear_layout(app.director_characters_layout)
+    app.director_character_cards = []
+    for c in (characters or []):
+        box = QFrame()
+        box.setStyleSheet(f"QFrame{{background:{THEME['card']};border:1px solid {THEME['border']};"
+                          f"border-radius:10px;}}")
+        bl = QVBoxLayout(box)
+        bl.setContentsMargins(10, 10, 10, 10)
+        bl.setSpacing(6)
+        name = QLabel(c.get("name", "角色"))
+        name.setStyleSheet(f"font-size:14px;font-weight:600;color:{THEME['text']};")
+        bl.addWidget(name)
+        desc = QLabel(c.get("desc", ""))
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"font-size:11px;color:{THEME['dim']};")
+        bl.addWidget(desc)
+        hl = QHBoxLayout()
+        hl.setSpacing(6)
+        for v in (c.get("views") or []):
+            lbl = QLabel("无")
+            lbl.setFixedSize(96, 140)
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setStyleSheet(f"QLabel{{background:{THEME['bg']};border-radius:6px;"
+                                f"color:{THEME['dim']};font-size:10px;}}")
+            if v and os.path.isfile(v):
+                pm = QPixmap(v).scaled(96, 140, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                lbl.setPixmap(pm)
+                lbl.setText("")
+            hl.addWidget(lbl)
+        bl.addLayout(hl)
+        app.director_characters_layout.addWidget(box)
+    app.director_characters_layout.addStretch(1)
+
+
+def _build_keyframe_cards(app, keyframes):
+    """把每镜关键帧+场景图渲染成缩略图卡片。"""
+    _clear_layout(app.director_keyframes_grid)
+    app.director_keyframe_cards = []
+    cols = 3
+    for i, kf in enumerate(keyframes or []):
+        card = QFrame()
+        card.setStyleSheet(f"QFrame{{background:{THEME['card']};border:1px solid {THEME['border']};"
+                          f"border-radius:10px;}}")
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(8, 8, 8, 8)
+        cl.setSpacing(6)
+        frame = QLabel("无")
+        frame.setFixedSize(150, 84)
+        frame.setAlignment(Qt.AlignCenter)
+        frame.setStyleSheet(f"QLabel{{background:{THEME['bg']};border-radius:6px;"
+                                f"color:{THEME['dim']};font-size:11px;}}")
+        if kf and os.path.isfile(kf):
+            pm = QPixmap(kf).scaled(150, 84, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            frame.setPixmap(pm)
+            frame.setText("")
+        cl.addWidget(frame)
+        info = QLabel(f"镜{i+1} · 关键帧" if kf else f"镜{i+1} · 生成失败")
+        info.setStyleSheet(f"color:{THEME['text']};font-size:12px;")
+        cl.addWidget(info)
+        # VLM 质检结果：让「抗崩坏」看得见——崩没崩一眼看到，而不只是日志里一行
+        _p = getattr(app, "director_pipeline", None)
+        _note = (getattr(_p, "review_notes", {}) or {}).get(i) or ""
+        if _note:
+            _failed = "VERDICT: FAIL" in _note.upper()
+            qc = QLabel("⚠️ 质检未通过" if _failed else "✅ 质检通过")
+            qc.setStyleSheet(
+                f"color:{'#d98c3f' if _failed else THEME['dim']};font-size:11px;")
+            qc.setToolTip(_note[:400])
+            cl.addWidget(qc)
+        app.director_keyframes_grid.addWidget(card, i // cols, i % cols)
+        app.director_keyframe_cards.append({"frame": frame, "info": info, "path": kf})
 
 
 @_safe
@@ -1128,7 +1380,7 @@ def _regenerate_all(app):
 # ---------- ④ 合成 ----------
 @_safe
 def _adopt_clips(app):
-    _set_step(app, 4)
+    _set_step(app, 6)
     _set_status(app, "进入合成步骤。可回「生成」单镜修改，或直接合成成片。")
     _log(app, "✓ 进入合成步骤。")
     _save_session(app)
@@ -1253,6 +1505,7 @@ def _save_session(app):
                 "portrait": app.director_portrait.isChecked(),
                 "relay": app.director_relay.isChecked(),
                 "subtitle": app.director_subtitle.isChecked(),
+                "vision_review": app.director_vision_review.isChecked(),
                 "ref_image": app.director_ref_image,
             },
             "pipeline": {
@@ -1274,6 +1527,12 @@ def _save_session(app):
                 "project_dir": getattr(p, "project_dir", None),
                 "story": getattr(p, "story", ""),
                 "shots": getattr(p, "shots", []),
+                "characters": getattr(p, "characters", []),
+                "character_lock": getattr(p, "character_lock", ""),
+                "keyframes": getattr(p, "keyframes", []),
+                # scene_images 的 key 是场景号(int)，JSON 只认字符串键，存时转 str、读时转回 int
+                "scene_images": {str(k): v for k, v in getattr(p, "scene_images", {}).items()},
+                "review_notes": {str(k): v for k, v in getattr(p, "review_notes", {}).items()},
                 "clip_paths": getattr(p, "clip_paths", []),
                 "last_prompts": {str(k): v for k, v in getattr(p, "last_prompts", {}).items()},
                 "last_errors": {str(k): v for k, v in getattr(p, "last_errors", {}).items()},
@@ -1326,12 +1585,17 @@ def _load_session(app):
     for key in ("topic", "n", "duration", "style_key", "style_prompt", "ref_image_path",
                 "portrait_mode", "with_dialogue", "relay", "transition", "transition_dur",
                 "burn_subtitles", "passthrough_script", "width", "height", "project_dir",
-                "story", "shots"):
+                "story", "shots", "characters", "character_lock", "keyframes"):
         if key in pl:
             setattr(p, key, pl[key])
     p.clip_paths = pl.get("clip_paths", [None] * len(pl.get("shots", [])))
     p.last_prompts = {int(k): v for k, v in pl.get("last_prompts", {}).items()}
     p.last_errors = {int(k): v for k, v in pl.get("last_errors", {}).items()}
+    # 场景图/质检记录的键是场景号与镜号（int），JSON 只认字符串键，这里转回 int
+    p.scene_images = {int(k): v for k, v in (pl.get("scene_images") or {}).items()
+                      if str(k).lstrip("-").isdigit()}
+    p.review_notes = {int(k): v for k, v in (pl.get("review_notes") or {}).items()
+                      if str(k).lstrip("-").isdigit()}
     # 工程目录可能已被清理，确保存在（关键帧预览/重生成要用）
     if p.project_dir:
         try:
@@ -1354,6 +1618,9 @@ def _load_session(app):
     app.director_portrait.setChecked(bool(pp.get("portrait", False)))
     app.director_relay.setChecked(bool(pp.get("relay", True)))
     app.director_subtitle.setChecked(bool(pp.get("subtitle", True)))
+    app.director_vision_review.setChecked(bool(pp.get("vision_review", True)))
+    # 恢复 pipeline 上的质检开关（会话续跑时保持一致）
+    p.vision_review = app.director_vision_review.isChecked()
     ref = pp.get("ref_image")
     app.director_ref_image = ref if (ref and os.path.isfile(ref)) else None
     if app.director_ref_image:
@@ -1385,9 +1652,13 @@ def _load_session(app):
     # 还原各步骤内容
     if step >= 1:
         app.director_story_edit.setPlainText(p.story or "")
-    if step >= 2:
-        _build_shot_rows(app, p.shots or [])
+    if step >= 2 and p.characters:
+        _build_character_cards(app, p.characters)
     if step >= 3:
+        _build_shot_rows(app, p.shots or [])
+    if step >= 4 and p.keyframes:
+        _build_keyframe_cards(app, p.keyframes)
+    if step >= 5:
         _prepare_clip_cards(app, len(p.shots or []))
         for i, c in enumerate(app.director_clip_cards):
             path = p.clip_paths[i] if i < len(p.clip_paths) else None
@@ -1409,7 +1680,7 @@ def _load_session(app):
                 c["info"].setToolTip(f"失败原因：{err}\n\n点 🔍 查看本镜实际发给模型的提示词。")
             else:
                 c["info"].setText(f"镜{i+1} · ⏳ 未生成")
-    if step >= 4:
+    if step >= 6:
         fp = data.get("final_path")
         if fp and os.path.isfile(fp):
             app.director_final_path = fp
@@ -1423,8 +1694,8 @@ def _load_session(app):
             app.director_merge_play.setEnabled(True)
 
     _set_step(app, step)
-    _set_status(app, f"已从上次进度恢复（进行到：{STEP_LABELS[min(step, 4)]}）。可继续编辑或直接操作。")
-    _log(app, f"💾 已从上次进度恢复，当前步骤：{STEP_LABELS[min(step, 4)]}。")
+    _set_status(app, f"已从上次进度恢复（进行到：{STEP_LABELS[min(step, len(STEP_LABELS)-1)]}）。可继续编辑或直接操作。")
+    _log(app, f"💾 已从上次进度恢复，当前步骤：{STEP_LABELS[min(step, len(STEP_LABELS)-1)]}。")
     return True
 
 
@@ -1449,7 +1720,7 @@ def _maybe_offer_resume(app):
     bl.setContentsMargins(14, 10, 14, 10)
     bl.setSpacing(12)
     label = QLabel(
-        f"💾 发现上次未完成的导演台任务（进行到：{STEP_LABELS[min(step, 4)]}）。"
+        f"💾 发现上次未完成的导演台任务（进行到：{STEP_LABELS[min(step, len(STEP_LABELS)-1)]}）。"
         f"可继续编辑，不必从头开始。")
     label.setStyleSheet(f"color:{THEME['text']};font-size:13px;")
     bl.addWidget(label, 1)
