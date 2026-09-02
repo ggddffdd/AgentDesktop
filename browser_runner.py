@@ -197,7 +197,9 @@ def main():
                     loc, kind = _locate(page, args.selector)
                     text = loc.inner_text()
                 else:
-                    text = page.inner_text()
+                    # v4.108 H-07 修复：page.inner_text() 的 selector 是必填参数，
+                    # 整页读取必须显式传 "body"，否则 TypeError 直接崩。
+                    text = page.inner_text("body")
                 out = {"ok": True, "action": "read", "url": page.url,
                        "title": page.title(), "text": text[:8000]}
 
@@ -211,4 +213,11 @@ def main():
 
 
 if __name__ == "__main__":
+    # v4.108 H-09：无论父进程是否注入 PYTHONIOENCODING，出口都固定 UTF-8，
+    # 保证中文 JSON 结果不被系统 GBK 编码污染（父进程按 UTF-8 读取）。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
     main()

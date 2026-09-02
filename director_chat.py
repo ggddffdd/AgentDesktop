@@ -155,10 +155,31 @@ class DirectorChatBar(QWidget):
             return
         self.input.clear()
         self._append("你", text)
+        # v4.108 H-15：先做可执行性预检，被拒的指令不写 history（不落库、不下轮可见）——
+        # 否则下一轮模型看到"用户提过这个需求"，会把它当已确认任务直接执行。
+        _reject = self._exec_precheck()
+        if _reject:
+            self._append("系统", _reject)
+            return
         self.history.append({"role": "user", "content": text})
         self._trim_history()
         self._save_history()
         self._start_worker()
+
+    def _exec_precheck(self):
+        """指令执行前的可执行性预检：返回 None=可执行，str=拒绝原因。"""
+        import config
+        try:
+            all_tools = config.get_all_tools(self.app.cfg)
+        except Exception:
+            all_tools = []
+        tools = [t for t in all_tools
+                 if (t.get("function") or {}).get("name") in DIRECTOR_TOOL_NAMES]
+        if not tools:
+            return "导演工具未加载，无法执行指令（重启程序可恢复）。"
+        if getattr(self.app, "director_busy", False):
+            return "导演台正在生成中，等它跑完再下指令。"
+        return None
 
     def _start_worker(self):
         from agent import AgentWorker

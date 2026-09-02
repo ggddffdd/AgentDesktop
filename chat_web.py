@@ -287,6 +287,7 @@ class ChatWebView(QWebEngineView):
 
     def __init__(self, theme: dict, parent=None):
         super().__init__(parent)
+        self._theme = theme or {}  # v4.108 M-26：存主题，加载失败重试沿用（勿丢深色主题）
         self._page = _ChatPage(self)
         self._page.anchorActivated.connect(self.anchorActivated)
         self.setPage(self._page)
@@ -317,7 +318,8 @@ class ChatWebView(QWebEngineView):
 
     def _retry_load(self):
         if not self._ever_ready:
-            self.setHtml(_build_html({}), QUrl("file:///"))
+            # v4.108 M-26：重试用原始主题重建（原传 {} 导致深色主题变量全丢）
+            self.setHtml(_build_html(self._theme), QUrl("file:///"))
 
     def _exec(self, js):
         if self._ready:

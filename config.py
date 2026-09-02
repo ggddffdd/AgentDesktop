@@ -23,8 +23,8 @@ else:
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.107"
-APP_BUILD_DATE = "2026-09-02"
+APP_VERSION = "v4.108"
+APP_BUILD_DATE = "2026-09-03"
 # v4.102（2026-08-22）图像输入链路：DeepSeek 通道模型换 deepseek-v4-flash-vision-exp，
 # ui.py 支持视觉模型保留 image_url、普通对话/Agent 带图路由视觉模型。
 # v4.101（2026-08-21）停止按钮 + 断点续传：普通 Agent 任务停止→检查点 paused→「▶ 继续上次任务」
@@ -182,7 +182,10 @@ DEFAULT_CONFIG = {
     # Webhook / 事件驱动（模块6）
     "webhook_enabled": False,      # 默认关闭，避免未经意开启端口；可用 webhook_start 工具或设为 true 自动启动
     "webhook_port": 9000,
-    "webhook_host": "0.0.0.0",
+    # v4.108 M-28：默认回环绑定 + 共享 token（启动时若为空会自动生成持久化）。
+    # 原先 0.0.0.0 裸奔，局域网任何人可 POST /api/trigger 伪造事件。
+    "webhook_host": "127.0.0.1",
+    "webhook_token": "",
     # 技能管理器（模块7）：已启用技能清单
     "enabled_skills": [],
     # v4.76：OS 级自动备份（Windows 任务计划程序）
@@ -673,13 +676,25 @@ def save_config(cfg):
     """将配置字典写回 config.json（自动创建父目录）。
 
     技能管理器启用/禁用技能后调用，确保状态重启不丢失。
+    v4.108 M-24：改为 tmp + os.replace 原子写——原 open("w") 写入途中崩溃会留下
+    截断的损坏配置，下次启动加载失败直接丢全部设置。
     """
+    import tempfile
     try:
         parent = os.path.dirname(CONFIG_PATH)
         if parent and not os.path.isdir(parent):
             os.makedirs(parent, exist_ok=True)
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        fd, tmp = tempfile.mkstemp(dir=parent or ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, CONFIG_PATH)
+        except Exception:
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+            raise
         log.info("配置已保存到 %s", CONFIG_PATH)
     except Exception as e:
         log.error("保存 config.json 失败: %s", e)

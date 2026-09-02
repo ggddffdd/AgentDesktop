@@ -46,6 +46,16 @@ def _guess_kind(path):
     return "file"
 
 
+def _safe_relpath(path, base):
+    """v4.108 H-10：跨盘符安全的 relpath——os.path.relpath 在不同盘（C:↔D:）会抛
+    ValueError('path is on mount ... start on mount ...')，冻结 exe 装在非 C 盘时
+    产物路径跨盘即崩。ValueError 时回退返回绝对路径（仍可展示/定位文件）。"""
+    try:
+        return os.path.relpath(path, base).replace("\\", "/")
+    except ValueError:
+        return os.path.abspath(path).replace("\\", "/")
+
+
 def _normalize_deliverable(d, app_dir):
     """将交付物标准化为 (rel_path, kind, name) 三元组。
     支持字符串（路径）或元组两种输入格式。
@@ -53,7 +63,7 @@ def _normalize_deliverable(d, app_dir):
     if isinstance(d, tuple):
         return d
     path_str = str(d)
-    rel = os.path.relpath(path_str, app_dir).replace("\\", "/")
+    rel = _safe_relpath(path_str, app_dir)
     return (rel, _guess_kind(path_str), os.path.basename(path_str))
 
 
@@ -146,7 +156,10 @@ def _h_run_python(cfg, app_dir, args, progress=None):
 
 @register_tool("image_gen")
 def _h_image_gen(cfg, app_dir, args, progress=None):
-    res = tool_image_gen(cfg, app_dir, args.get("prompt", ""), progress=progress)
+    # v4.108 M-16：模型传的 size（"WxH"）必须透传给后端——此前被 handler 丢弃，
+    # 模型以为指定了尺寸实际永远走默认。
+    res = tool_image_gen(cfg, app_dir, args.get("prompt", ""),
+                         size=args.get("size"), progress=progress)
     if isinstance(res, tuple):
         return (res[0], [res], None)
     return (res, [], None)
@@ -369,8 +382,21 @@ def _h_db_delete(cfg, app_dir, args, progress=None):
 def _h_webhook_start(cfg, app_dir, args, progress=None):
     from webhook_server import webhook_start
     port = args.get("port", 9000)
-    r = webhook_start(port)
-    return (f"Webhook 服务器已启动（端口 {port}）" if r is True else f"Webhook 启动失败：{r}", [], None)
+    # v4.108 M-28：带共享 token 启动（空则回环保护）；token 为空时自动生成并持久化
+    token = (cfg or {}).get("webhook_token") or ""
+    if not token:
+        import uuid
+        token = uuid.uuid4().hex[:16]
+        cfg["webhook_token"] = token
+        try:
+            from config import save_config
+            save_config(cfg)
+        except Exception:
+            pass
+    r = webhook_start(port, token=token)
+    return (f"Webhook 服务器已启动（端口 {port}，仅本机 127.0.0.1 可访问，"
+            f"请求需带 X-Webhook-Token: {token}）" if r is True
+            else f"Webhook 启动失败：{r}", [], None)
 
 @register_tool("webhook_stop")
 def _h_webhook_stop(cfg, app_dir, args, progress=None):
@@ -793,7 +819,7 @@ def snapshot_workspace(app_dir=None):
     for dirpath, _, filenames in os.walk(base):
         for fn in filenames:
             full = os.path.join(dirpath, fn)
-            rel = os.path.relpath(full, base).replace('\\', '/')
+            rel = _safe_relpath(full, base)
             result.add(rel)
     return result
 
@@ -896,14 +922,14 @@ def _tool_run_python_legacy(app_dir, code):
     """旧的子进程执行方式（保留兼容）"""
     if not code or not code.strip():
         return "未提供代码", []
-    exe = resolve_python()
+    exe = _resolve_python_exe()
     if not exe:
         return "未找到 Python 解释器，请先安装 Python 并加入 PATH", []
     gen_dir = os.path.join(app_dir, "gen")
     os.makedirs(gen_dir, exist_ok=True)
     fname = f"run_{datetime.now().strftime('%Y%m%d%H%M%S')}.py"
     fpath = os.path.join(gen_dir, fname)
-    frel = os.path.relpath(fpath, app_dir).replace("\\", "/")
+    frel = _safe_relpath(fpath, app_dir)
     try:
         with open(fpath, "w", encoding="utf-8") as f:
             f.write(code)
@@ -1058,7 +1084,7 @@ def _save_gen_image(app_dir, data_or_path, is_bytes=False):
         shutil.copyfile(data_or_path, fpath)
     else:
         raise ValueError(f"无法处理的生图结果：{data_or_path}")
-    rel = os.path.relpath(fpath, app_dir).replace("\\", "/")
+    rel = _safe_relpath(fpath, app_dir)
     return (rel, "image", os.path.basename(rel))
 
 
@@ -1338,7 +1364,7 @@ def _save_gen_video(app_dir, url):
     with urllib.request.urlopen(req, timeout=120) as r:
         with open(fpath, "wb") as f:
             f.write(r.read())
-    rel = os.path.relpath(fpath, app_dir).replace("\\", "/")
+    rel = _safe_relpath(fpath, app_dir)
     return (rel, "video", os.path.basename(rel))
 
 
@@ -1453,7 +1479,7 @@ def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=
         return f"视频生成失败（统一内核）：{e}"
     if not path or not os.path.isfile(path):
         return "视频生成未返回本地文件"
-    rel = os.path.relpath(path, app_dir).replace("\\", "/")
+    rel = _safe_relpath(path, app_dir)
     return (rel, "video", os.path.basename(rel))
 
 

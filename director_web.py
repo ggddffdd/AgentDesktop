@@ -78,7 +78,9 @@ class _LocalResHandler(QWebEngineUrlSchemeHandler):
 
     def requestStarted(self, job):
         u = job.requestUrl()
-        p = urllib.parse.unquote(u.path())  # /C:/Users/.../x.png
+        # v4.108 M-10：QUrl.path() 已做 URL 解码，切勿再 unquote——二次解码会把路径里
+        # 合法字面 %（如 %20 文件名）后的字符误当转义，解析错文件。直接取解码后路径。
+        p = u.path()  # /C:/Users/.../x.png
         if p.startswith("/"):
             p = p[1:]
         if not p or not os.path.isfile(p):

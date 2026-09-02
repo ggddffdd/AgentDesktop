@@ -15,6 +15,12 @@ import sys
 import json
 import traceback
 import functools
+import threading
+
+# v4.108 M-07：导演指令派发互斥锁——app._director_agent_event 是单实例通道，
+# 两个隔离会话并发调用 director_* 工具时后一个会覆盖前一个的 Event，导致前一个
+# 永远等不到回执（静默超时）。此锁串行化「emit+等待」临界段，杜绝覆盖。
+_DIR_DISPATCH_LOCK = threading.Lock()
 
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QSpinBox,
@@ -206,7 +212,7 @@ class DirectorThread(QThread):
                 if views:
                     self.characters_ready.emit(p.characters)
                 else:
-                    self.error.emit(f"角色「{name or idx + 1}」三视图重生成失败")
+                    self.error.emit(f"角色「{name or self.idx + 1}」三视图重生成失败")
             elif self.task == "merge":
                 out, err = p.merge()
                 if out:
@@ -700,6 +706,9 @@ def _set_busy(app, busy):
     注意：director_go / director_stop 由 start/stop/reset 单独管理，这里不动。
     """
     app.director_busy = busy
+    # v4.108 H-14：新任务启动时清掉上次失败标记，避免旧错误污染新回执。
+    if busy:
+        app._director_agent_error = None
     for w in (getattr(app, "director_clips_regen_all", None),
               getattr(app, "director_clips_adopt", None),
               getattr(app, "director_merge_btn", None),
@@ -725,7 +734,14 @@ def _set_busy(app, busy):
         if ev is not None:
             app._director_agent_event = None
             try:
-                app._director_agent_result = _agent_result_snapshot(app)
+                snap = _agent_result_snapshot(app)
+                # v4.108 H-14：任务失败时回执必须如实报失败与原因，
+                # 禁止回填 ok:True 让导演 Agent 向用户谎报"已完成"。
+                _err = getattr(app, "_director_agent_error", None)
+                if _err:
+                    snap["ok"] = False
+                    snap["msg"] = f"任务失败：{_err}"
+                app._director_agent_result = snap
             except Exception as e:
                 app._director_agent_result = {"ok": False, "msg": f"状态收集失败：{e}"}
             try:
@@ -831,17 +847,20 @@ def install_agent_bridge(app):
         ev = _th.Event()
         cmd = dict(cmd)
         cmd["_ev"] = ev
-        app._director_agent_result = None
-        app._director_agent_event = ev
-        bridge.cmd.emit(cmd)
-        if not ev.wait(max(30, min(int(timeout or 1200), 3600))):
-            app._director_agent_event = None
-            r = app._director_agent_result
-            if isinstance(r, dict):
-                return r
-            return {"ok": False, "msg": "等待导演台任务完成超时（任务可能仍在后台跑，"
-                                        "可用 director_status 查询进度）。"}
-        return app._director_agent_result or {"ok": False, "msg": "无结果返回"}
+        # v4.108 M-07：互斥锁串行化派发——并发指令排队等待，不让单实例事件通道被覆盖。
+        # （busy 检查在 UI 线程 slot 内做，两个指令几乎同时到达时都能过检，必须在此串行。）
+        with _DIR_DISPATCH_LOCK:
+            app._director_agent_result = None
+            app._director_agent_event = ev
+            bridge.cmd.emit(cmd)
+            if not ev.wait(max(30, min(int(timeout or 1200), 3600))):
+                app._director_agent_event = None
+                r = app._director_agent_result
+                if isinstance(r, dict):
+                    return r
+                return {"ok": False, "msg": "等待导演台任务完成超时（任务可能仍在后台跑，"
+                                            "可用 director_status 查询进度）。"}
+            return app._director_agent_result or {"ok": False, "msg": "无结果返回"}
 
     try:
         import director_agent_tools as _dat
@@ -1031,7 +1050,7 @@ def _run_thread(app, task, feedback=None, idx=None, note=None):
     th.characters_ready.connect(lambda c: _on_characters_ready(app, c))
     th.keyframes_ready.connect(lambda k: _on_keyframes_ready(app, k))
     th.clip_ready.connect(lambda i, p: _on_clip_ready(app, i, p))
-    th.clip_failed.connect(lambda i: _on_clip_failed(app, i))
+    th.clip_failed.connect(lambda i, r: _on_clip_failed(app, i, r))
     th.clips_done.connect(lambda ok, tot, msg: _on_clips_done(app, ok, tot, msg))
     th.merge_ready.connect(lambda ok, msg, p: _on_merge_ready(app, ok, msg, p))
     th.error.connect(lambda e: _on_error(app, e))
@@ -1523,6 +1542,16 @@ def _regenerate_all(app):
     if app.director_pipeline is None:
         _set_status(app, "流程未初始化，请先点「开始导演」。", err=True)
         return
+    # v4.108 M-09：先把各卡片状态重置为排队中并立即刷新——否则全量重生成期间
+    # 卡片仍显示旧的「已生成」结果，用户无法感知进度、容易误以为没生效而重复点击。
+    for _c in state:
+        _c["status"] = "queued"
+        _c["path"] = None
+        _c["error"] = ""
+    try:
+        _render_clips(app)
+    except Exception:
+        pass
     _set_status(app, "正在全部重新生成…")
     _log(app, "↺ 全部重新生成…")
     _run_thread(app, "clips")
@@ -1561,7 +1590,10 @@ def _on_merge_ready(app, ok, msg, path):
         name = os.path.basename(path)
         app.director_paths.append(path)
         try:
-            rel = os.path.relpath(path, APP_DIR).replace("\\", "/")
+            try:  # v4.108 H-10：跨盘符回退绝对路径，避免登记静默失败
+                rel = os.path.relpath(path, APP_DIR).replace("\\", "/")
+            except ValueError:
+                rel = path.replace("\\", "/")
             app.store.active().deliverables.append(
                 {"rel": rel, "kind": "video", "name": name, "desc": rel})
             app.store.save()
@@ -1616,6 +1648,8 @@ def _director_reset(app):
 
 @_safe
 def _on_error(app, e):
+    # v4.108 H-14：先记失败原因再解锁（_set_busy(False) 会抓快照回给 Agent）。
+    app._director_agent_error = str(e)
     _set_busy(app, False)
     _set_status(app, f"出错：{e}", err=True)
     _log(app, f"❌ {e}")

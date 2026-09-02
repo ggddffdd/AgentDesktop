@@ -19,17 +19,28 @@ import http.server
 import socketserver
 import threading
 import json
+import uuid
 from datetime import datetime
 from pathlib import Path
 
 
+MAX_BODY = 256 * 1024  # v4.108 M-28：请求体上限 256KB，防打爆内存
+
 _event_callback = None
+# v4.108 M-28：共享 token（非空时校验 X-Webhook-Token，不匹配 401）
+_server_token = ""
 
 
 def set_event_callback(fn):
     """注册事件回调，签名 fn(kind, payload)。用于 UI 托盘通知等。"""
     global _event_callback
     _event_callback = fn
+
+
+def set_server_token(token):
+    """设置/更新共享 token；空串 = 不校验（默认回环绑定下仍安全）。"""
+    global _server_token
+    _server_token = token or ""
 
 
 def _user_data_dir():
@@ -56,16 +67,37 @@ def _log_event(kind, payload):
 
 
 class WebhookHandler(http.server.BaseHTTPRequestHandler):
+    def _token_ok(self):
+        """v4.108 M-28：token 校验——_server_token 非空时必须匹配 X-Webhook-Token。"""
+        if not _server_token:
+            return True
+        return self.headers.get("X-Webhook-Token", "") == _server_token
+
     def _read_json(self):
         try:
             length = int(self.headers.get("Content-Length", 0))
+            if length > MAX_BODY:  # v4.108 M-28：请求体限长
+                return {"__too_large__": True}
             raw = self.rfile.read(length) if length else b""
             return json.loads(raw.decode("utf-8")) if raw else {}
         except Exception:
             return {}
 
+    def _reject(self, code, msg):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(
+            {"error": msg}, ensure_ascii=False).encode("utf-8"))
+
     def do_POST(self):
+        if not self._token_ok():  # v4.108 M-28
+            self._reject(401, "Unauthorized（缺少或错误的 X-Webhook-Token）")
+            return
         data = self._read_json()
+        if isinstance(data, dict) and data.pop("__too_large__", False):
+            self._reject(413, "Payload Too Large")
+            return
         if self.path == "/webhook/github":
             event = self.headers.get("X-GitHub-Event", "unknown")
             _log_event("github", {"event": event, "payload": data})
@@ -83,6 +115,10 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
         self._send(200, body)
 
     def do_GET(self):
+        # v4.108 M-28：有 token 时状态页也要校验（回显最近事件 payload，可能含敏感内容）
+        if self.path in ("/", "/index.html") and not self._token_ok():
+            self._reject(401, "Unauthorized（缺少或错误的 X-Webhook-Token）")
+            return
         if self.path == "/health":
             self._send(200, {"status": "ok"})
         elif self.path in ("/", "/index.html"):
@@ -127,11 +163,14 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
 
 
 class WebhookServer:
-    def __init__(self, host="0.0.0.0", port=9000):
+    def __init__(self, host="127.0.0.1", port=9000, token=""):
+        # v4.108 M-28：默认回环绑定——原先 0.0.0.0 让局域网任何人可 POST 伪造事件
         self.host = host
         self.port = port
         self._server = None
         self._thread = None
+        if token:
+            set_server_token(token)
 
     def start(self):
         if self._server:
@@ -162,15 +201,24 @@ def get_webhook_server(cfg=None):
     global _server
     if _server is None:
         port = (cfg or {}).get("webhook_port", 9000)
-        host = (cfg or {}).get("webhook_host", "0.0.0.0")
-        _server = WebhookServer(host=host, port=port)
+        host = (cfg or {}).get("webhook_host") or "127.0.0.1"
+        # v4.108 M-28：存量配置可能存过 0.0.0.0（旧默认），强制降级回环——
+        # webhook 可选功能默认只服务本机，要对外需显式改 host。
+        if host in ("0.0.0.0", "::"):
+            host = "127.0.0.1"
+        token = (cfg or {}).get("webhook_token", "")
+        if token:
+            set_server_token(token)
+        _server = WebhookServer(host=host, port=port, token=token)
     return _server
 
 
-def webhook_start(port=None):
+def webhook_start(port=None, token=""):
     global _server
+    if token:
+        set_server_token(token)
     if _server is None:
-        _server = WebhookServer(port=port or 9000)
+        _server = WebhookServer(port=port or 9000, token=token)
     r = _server.start()
     return r
 

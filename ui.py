@@ -1223,8 +1223,12 @@ class _EdgeResizeFilter(QAbstractNativeEventFilter):
             try:
                 msg = ctypes.cast(message, ctypes.POINTER(ctypes.wintypes.MSG)).contents
                 if msg.message == _WM_NCHITTEST and not self._win.isMaximized():
-                    x = msg.lParam & 0xFFFF
-                    y = (msg.lParam >> 16) & 0xFFFF
+                    # v4.108 H-11：lParam 的屏幕坐标是【物理像素】，而 win.x()/width()
+                    # 是【逻辑坐标】——高分屏（125%/150% 缩放）直接相减导致热区偏移、
+                    # 边缘缩放失灵。先按 devicePixelRatio 把物理坐标归一为逻辑坐标。
+                    dpr = float(self._win.devicePixelRatioF() or 1.0)
+                    x = (msg.lParam & 0xFFFF) / dpr
+                    y = ((msg.lParam >> 16) & 0xFFFF) / dpr
                     wx = x - self._win.x()
                     wy = y - self._win.y()
                     w = self._win.width()
@@ -1235,9 +1239,9 @@ class _EdgeResizeFilter(QAbstractNativeEventFilter):
                     if wx >= w - m and wy <= m:
                         return True, ctypes.wintypes.LPARAM(_HTTOPRIGHT)
                     if wx <= m and wy >= h - m:
-                        return True, ctypes.wintypes.LPARAM(_HTBOTTOMLEFT)
+                        return True, ctypes.wintypes.LPARAM(_HT_BOTTOMLEFT)
                     if wx >= w - m and wy >= h - m:
-                        return True, ctypes.wintypes.LPARAM(_HTBOTTOMRIGHT)
+                        return True, ctypes.wintypes.LPARAM(_HT_BOTTOMRIGHT)
                     if wx <= m:
                         return True, ctypes.wintypes.LPARAM(_HTLEFT)
                     if wx >= w - m:
@@ -3411,8 +3415,18 @@ class ChatWindow(QMainWindow):
         einstall = QPushButton("打开扩展安装说明")
         einstall.setFixedHeight(34)
         einstall.setStyleSheet(self._secondary_btn_style())
+        # v4.108 M-27：优先运行目录（用户自装/自改），缺失时回退到 exe 随附的
+        # dist/browser_extension 副本（开源分发/换机时安装说明不再指向不存在的文件）
         install_path = os.path.join(
             os.path.expanduser("~"), "Documents", "小臭玩AI", "browser_extension", "README.md")
+        if not os.path.exists(install_path):
+            try:
+                _alt = os.path.join(os.path.dirname(sys.executable),
+                                    "browser_extension", "README.md")
+                if os.path.exists(_alt):
+                    install_path = _alt
+            except Exception:
+                pass
         einstall.clicked.connect(lambda: self._open_path(install_path))
         el.addWidget(einstall)
         lay.addWidget(ext_card)
@@ -4248,8 +4262,10 @@ class ChatWindow(QMainWindow):
         return ""
 
     def _on_anchor_clicked(self, url):
-        """v4.75：处理气泡内的 regen:/edit: 链接；其余（http 等）交给系统浏览器。"""
-        s = url.toString()
+        """v4.75：处理气泡内的 regen:/edit: 链接；其余（http 等）交给系统浏览器。
+        v4.108 H-06 修复：QWebEngineView 的链接信号传 str（QTextBrowser 时代是 QUrl），
+        统一按 str 处理，恢复「重新生成/改写/👍/👎」四个气泡按钮。"""
+        s = url if isinstance(url, str) else url.toString()
         if s.startswith("regen:"):
             try:
                 self._regen_message(int(s[len("regen:"):]))
@@ -4274,7 +4290,7 @@ class ChatWindow(QMainWindow):
             except Exception:
                 pass
             return
-        QDesktopServices.openUrl(url)
+        QDesktopServices.openUrl(QUrl(s) if isinstance(s, str) else url)
 
     def _regen_message(self, idx):
         """v4.75：重新生成 idx 处的 assistant 回复。截断该条及之后所有消息，按原上文路由重跑。"""
@@ -6455,11 +6471,17 @@ class ChatWindow(QMainWindow):
         w.start()
 
     def _on_tool_log(self, entry):
+        # v4.108 M-22：tool_log 的 args/result 截断存储——web_search/read_file 等
+        # 全文可达数 KB，全量入库导致 sessions.json 无限膨胀（实测 1.3MB+），
+        # 每次落盘/加载都拖慢。保留前段 + 省略号即可回溯工具干了什么。
+        def _clip(s, n=500):
+            s = str(s or "")
+            return s if len(s) <= n else s[:n] + "…(截断)"
         self.store.active().messages.append({
             "role": "tool_log",
             "name": entry.get("name", ""),
-            "args": entry.get("args", ""),
-            "result": entry.get("result", ""),
+            "args": _clip(entry.get("args", ""), 300),
+            "result": _clip(entry.get("result", ""), 500),
         })
         self._save_throttled()  # v4.58：批量保存，避免每个工具一次磁盘 IO
         self._render_throttled()  # v4.58：节流渲染，避免信号洪水
@@ -6963,8 +6985,10 @@ class ChatWindow(QMainWindow):
                             if tc.get("id"):
                                 acc["id"] = tc["id"]
                             fn = tc.get("function") or {}
-                            if fn.get("name"):
-                                acc["function"]["name"] += fn["name"]
+                            # v4.108 M-18：兼容网关会多 chunk 重复发 function.name，
+                            # 只取首次，禁止 += 拼接（否则聚合出 "web_sweb_search"）。
+                            if fn.get("name") and not acc["function"].get("name"):
+                                acc["function"]["name"] = fn["name"]
                             if fn.get("arguments"):
                                 acc["function"]["arguments"] += fn["arguments"]
             return _content, _acc, _u
@@ -6980,9 +7004,27 @@ class ChatWindow(QMainWindow):
                     body.pop("stream_options", None)
                     full_content, tool_acc, _usage = _stream_once(body)
                 except Exception as e2:
+                    # v4.108 H-04：失败必须上抛交给 agent.py 兜底弹错，不能吞掉装"成功"。
                     _logging.getLogger("dsdesktop").error("Agent 流式调用失败: %s", e2)
+                    raise
+            elif _code in (429, 500, 502, 503, 504):
+                # v4.108 H-04：限流/网关抖动 → 退避重试 2 次（2s/4s），仍失败则上抛。
+                _last = e
+                for _attempt in range(2):
+                    time.sleep(2 * (_attempt + 1))
+                    try:
+                        full_content, tool_acc, _usage = _stream_once(body)
+                        _last = None
+                        break
+                    except Exception as e3:
+                        _last = e3
+                if _last is not None:
+                    _logging.getLogger("dsdesktop").error("Agent 流式调用重试仍失败: %s", _last)
+                    raise
             else:
+                # v4.108 H-04：其余失败（超时/断流等）同样上抛，禁止静默返回空响应。
                 _logging.getLogger("dsdesktop").error("Agent 流式调用失败: %s", e)
+                raise
 
         tool_calls = []
         for idx in sorted(tool_acc):
@@ -7579,6 +7621,16 @@ class ChatWindow(QMainWindow):
     def closeEvent(self, event):
         # v4.47: 点×彻底退出（之前是 event.ignore()+hide 缩到托盘，导致多实例/僵尸累积）
         event.accept()
+        try:
+            # v4.108 M-20：关窗前终止 Agent worker——request_stop 会唤醒阻塞中的
+            # 危险操作确认（_confirm_event.set），wait(3s) 给子线程收尾，避免
+            # 「QThread: Destroyed while thread is still running」崩溃与确认弹窗挂死。
+            w = self._agent_worker
+            if w is not None and w.isRunning():
+                w.request_stop()
+                w.wait(3000)
+        except Exception:
+            pass
         try:
             self._clear_ghost()
         except Exception:

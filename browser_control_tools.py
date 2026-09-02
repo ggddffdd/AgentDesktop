@@ -158,9 +158,13 @@ def _run_runner(action, url, selector="", text="", cfg=None, headless="1", app_d
             return {"ok": False, "error": msg}
         cmd += ["--cdp", cdp]
     try:
+        # v4.108 H-09：显式注入 UTF-8 stdout，避免子进程按系统 GBK 编码输出中文
+        # 导致父进程 UTF-8 解码乱码/丢字（errors="ignore" 只丢字符不报错，静默坏数据）。
+        _run_env = dict(os.environ)
+        _run_env["PYTHONIOENCODING"] = "utf-8"
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=90,
-            encoding="utf-8", errors="ignore",
+            encoding="utf-8", errors="ignore", env=_run_env,
         )
     except Exception as e:
         return {"ok": False, "error": f"启动浏览器执行器失败：{e}"}

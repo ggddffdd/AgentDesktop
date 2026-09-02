@@ -99,12 +99,12 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "image_gen",
-            "description": "根据文字描述生成图片，返回工作区内的图片文件路径（图片会直接显示在对话里）。适合画图、配图、海报草图、插画、封面图等。支持指定尺寸：传 size 可控制画幅，如 '1920x1080' 横版(16:9)、'1024x1024' 方图；不传默认 1920x1080 横版。",
+            "description": "根据文字描述生成图片，返回工作区内的图片文件路径（图片会直接显示在对话里）。适合画图、配图、海报草图、插画、封面图等。支持指定尺寸：传 size 可控制画幅，如 '1920x1080' 横版(16:9)、'1024x1024' 方图；不传则用设置里的默认画幅（config 默认 1920x1080 横版，会随 size 参数透传实际生效）。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "prompt": {"type": "string", "description": "图片描述，越具体越好，如'水墨风格的山间日出，远山云雾缭绕，飞鸟掠过'"},
-                    "size": {"type": "string", "description": "可选，图片尺寸 WxH，如 '1920x1080' 横版(16:9)、'1024x1024' 方图。不传默认 1920x1080 横版。"}
+                    "size": {"type": "string", "description": "可选，图片尺寸 WxH，如 '1920x1080' 横版(16:9)、'1024x1024' 方图。不传用 config 的 image_gen_size 默认。"}
                 },
                 "required": ["prompt"]
             },

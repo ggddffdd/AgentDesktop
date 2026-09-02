@@ -861,6 +861,10 @@ class VideoPipeline:
         name = c.get("name") or "主角"
         desc = c.get("desc") or ""
         if feedback:
+            # v4.108 M-08：替换而非追加——多次修改同一角色时旧意见会残留累积
+            # （"updated appearance: A | updated appearance: B"），早期过时意见
+            # 持续影响后续生成。每次只保留最新一条修改意见。
+            desc = re.sub(r"\s*\|\s*updated appearance:.*$", "", desc)
             desc = f"{desc} | updated appearance: {feedback}"
             c["desc"] = desc
             self.character_lock = self._build_character_lock(self.characters)
@@ -899,7 +903,9 @@ class VideoPipeline:
         err_parts = ["ffmpeg 合成失败"]
         if detail:
             err_parts.append(detail)
-        if os.path.exists(out_path):
+        # v4.108 M-05：条件写反修复——此处是【失败分支】，输出文件没生成才该提示；
+        # 原 os.path.exists(...) 导致失败时报"未生成"（反了），输出正常却追文案。
+        if not os.path.exists(out_path):
             err_parts.append("（输出文件未生成）")
         return None, " | ".join(err_parts)
 
@@ -1233,10 +1239,16 @@ class VideoPipeline:
             return None
 
     def _head_frame_path(self, clip_path):
-        """抽视频【首帧】作关键帧预览图，返回 PNG 路径（失败返回 None）。"""
+        """抽视频【首帧】作关键帧预览图，返回 PNG 路径（失败返回 None）。
+
+        v4.108 M-11：输出名按 clip 路径 hash 固定——已抽过则直接命中缓存返回，
+        避免 resume/重渲染/播放预览时对同一长视频反复同步抽帧卡 UI 数秒。
+        """
         try:
             out = os.path.join(self.project_dir,
                                f"head_{abs(hash(clip_path)) % 100000:05d}.png")
+            if os.path.exists(out) and os.path.getsize(out) >= 100:
+                return out  # 缓存命中
             args = [self.ffmpeg, "-y", "-i", clip_path,
                     "-frames:v", "1", "-q:v", "2", out]
             self._run_ff(args, timeout=30)
@@ -1247,7 +1259,7 @@ class VideoPipeline:
             return None
 
     # ---------- 第4步：ffmpeg 合成 ----------
-    def _run_ff(self, args, timeout=60):
+    def _run_ff(self, args, timeout=60, cancel_check=None):
         """统一执行 ffmpeg 子进程，返回 (returncode, stdout_text, stderr_text)。
 
         ⚠️ 绝对不要用 subprocess.run(..., text=True)：
@@ -1257,11 +1269,47 @@ class VideoPipeline:
         变成空字符串。这会让 _probe_has_audio 把"探测失败"误判成"无音轨"，
         导致成片被铺成 anullsrc 静音轨（实测 2 kb/s / -91 dB 完全无声）。
         所以这里用 bytes 模式捕获，再显式按 utf-8 解码并容错。
+
+        v4.108 M-06：cancel_check 提供时走 Popen 轮询——每 0.5s 检查一次取消
+        标志（如 self.cancelled），置位即 kill 子进程，让长合并能被「停止」中断；
+        不传则保持 subprocess.run 原路径（其余调用零影响）。
         """
-        r = subprocess.run(args, capture_output=True, timeout=timeout)
-        out = (r.stdout or b"").decode("utf-8", "replace")
-        err = (r.stderr or b"").decode("utf-8", "replace")
-        return r.returncode, out, err
+        if cancel_check is None:
+            r = subprocess.run(args, capture_output=True, timeout=timeout)
+            out = (r.stdout or b"").decode("utf-8", "replace")
+            err = (r.stderr or b"").decode("utf-8", "replace")
+            return r.returncode, out, err
+        proc = subprocess.Popen(
+            args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                out_b, err_b = proc.communicate(timeout=0.5)
+                break  # 子进程正常结束
+            except subprocess.TimeoutExpired:
+                if cancel_check():
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    try:
+                        proc.communicate(timeout=5)
+                    except Exception:
+                        pass
+                    return -1, "", "ffmpeg 已取消"
+                if time.monotonic() > deadline:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    try:
+                        proc.communicate(timeout=5)
+                    except Exception:
+                        pass
+                    return -1, "", f"ffmpeg 超时（>{timeout}s）"
+        return (proc.returncode,
+                (out_b or b"").decode("utf-8", "replace"),
+                (err_b or b"").decode("utf-8", "replace"))
 
     def _probe_has_audio(self, path):
         """探测片段是否带音轨。
@@ -1397,7 +1445,8 @@ class VideoPipeline:
         mode = "沿用片段音轨" if use_clip_audio else "静音轨兜底"
         self.log(f"🔧 ffmpeg 合成（{mode}）：{m} 路输入，共 {len(args)} 参数")
         try:
-            rc, out, err = self._run_ff(args, timeout=600)
+            rc, out, err = self._run_ff(args, timeout=600,
+                                        cancel_check=lambda: self.cancelled)
             if rc != 0:
                 # 提取关键错误信息（ffmpeg stderr 通常很长，取最后几行）
                 err_lines = err.strip().splitlines()
@@ -1455,6 +1504,10 @@ class VideoPipeline:
         if ok:
             self._check_audio_level(out_path)
             return True, ""
+        # v4.108 M-06：被「停止」中断（cancel_check 命中 kill）不算失败，
+        # 直接返回取消文案，不再触发静音轨降级重试（避免取消后白跑一次合并）。
+        if self.cancelled or "已取消" in (detail or ""):
+            return False, "合成已取消"
         # 2) 若失败源于「片段音轨不可用」→ 降级为静音轨重试，保证至少能出片
         if self._is_stream_error(detail):
             self.log("  ⚠️ 沿用分镜音轨失败，降级为静音轨重试（成片将无声）…")

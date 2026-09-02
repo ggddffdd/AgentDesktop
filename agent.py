@@ -191,8 +191,14 @@ class AgentWorker(QThread):
         # 此处不再重复加载，避免双份/不一致。
 
     def request_stop(self):
-        """主线程调用，请求停止 Agent 循环（下一轮/下一工具前生效）。"""
+        """主线程调用，请求停止 Agent 循环（下一轮/下一工具前生效）。
+        v4.108 M-20：同时唤醒阻塞中的危险操作确认等待（否则关窗/停止时
+        子线程永久卡在 _confirm_event.wait()，QThread 销毁报 crash）。"""
         self._stop_requested = True
+        try:
+            self._confirm_event.set()
+        except Exception:
+            pass
 
     def _emit_status(self, text):
         """v4.102 fix7：统一状态出口——记录最近一次具体状态的时间戳与文字，
@@ -233,7 +239,9 @@ class AgentWorker(QThread):
         self._confirm_val = False
         self._confirm_event.clear()
         self.confirm_action.emit(title, detail)
-        self._confirm_event.wait()
+        # v4.108 M-20：等待加超时——关窗/停止（request_stop 已 set 本事件）时
+        # 不再永久阻塞；超时按「拒绝」处理（危险操作默认不执行，安全优先）。
+        self._confirm_event.wait(timeout=180)
         return self._confirm_val
 
     def _stream_text(self, text):
@@ -724,21 +732,24 @@ class AgentWorker(QThread):
 
         # v4.101：断点续传——任务开始即写「运行中」检查点（崩溃/强杀遗留可据此恢复）；
         # 用户主动停止时改写为 paused 保留，正常完成/自动停止则删除。
-        try:
-            _sid = getattr(mw.store.active(), "sid", None)
-        except Exception:
-            _sid = None
-        try:
-            task_resume.save_checkpoint(mw.cfg, {
-                "task_id": self.task_id,
-                "task_type": "agent",
-                "status": "running",
-                "sid": _sid,
-                "task": self._goal_hint()[:200],
-                "created": datetime.datetime.now().isoformat(timespec="seconds"),
-            })
-        except Exception:
-            pass
+        # v4.108 M-13：isolated 隔离会话（导演台对话）跳过 checkpoint——
+        # 否则会以主会话 sid 写检查点，主聊天界面冒出导演任务的「继续上次任务」按钮。
+        if not getattr(self, "_isolated", False):
+            try:
+                _sid = getattr(mw.store.active(), "sid", None)
+            except Exception:
+                _sid = None
+            try:
+                task_resume.save_checkpoint(mw.cfg, {
+                    "task_id": self.task_id,
+                    "task_type": "agent",
+                    "status": "running",
+                    "sid": _sid,
+                    "task": self._goal_hint()[:200],
+                    "created": datetime.datetime.now().isoformat(timespec="seconds"),
+                })
+            except Exception:
+                pass
         # 续传模式：注入「继续上次任务」提示，强制模型从断点接着干。
         # 注意 _seq=-1 哨兵：_sync_to_session 不会把它回写进会话（system 角色本就不该持久化）。
         if self.resume:
@@ -831,6 +842,8 @@ class AgentWorker(QThread):
             except Exception as e:
                 log.error("Agent 调用失败: %s", e)
                 self.tool_log.emit({"name": "错误", "args": "", "result": str(e)})
+                # v4.108 H-04：失败要让用户在气泡里看得见，不再静默结束装"完成"。
+                self.stream_commit.emit(f"\n\n⚠️ 模型调用失败：{e}")
                 break
 
             # v4.102 fix12：累计工具名 + token 预算熔断（超预算即停，保留阶段性结果）
@@ -946,6 +959,8 @@ class AgentWorker(QThread):
                     self._idle_steps = max(self._idle_steps, 1)
                 # v4.59 checkpoint：每步工具执行完增量同步，崩了可从断点恢复
                 self._sync_to_session(mw)
+                # v4.108 H-05/M-15：同步后落盘检查点快照 + 心跳（原只有 run 开头一次）
+                self._sync_agent_checkpoint(mw)
             else:
                 # v4.98 撒谎检测器：模型用文字"演"工具调用（伪造 [工具]/✅ 已保存/
                 # run_python( 等）却不真发 tool_call，这种内容不能当最终结果展示，
@@ -1034,6 +1049,9 @@ class AgentWorker(QThread):
                             self.messages, self.tool_defs,
                             on_delta=lambda d: self.stream_chunk.emit(d),
                             force_required=force_required,
+                            # v4.108 M-12：续跑同样透传复杂模型开关——导演隔离会话恒复杂，
+                            # 漏传会让纯文字续跑轮回落弱模型，退化成「文字演工具」。
+                            force_complex=self._force_complex,
                         )
                     except Exception as e:
                         log.error("Agent 续跑调用失败: %s", e)
@@ -1059,6 +1077,8 @@ class AgentWorker(QThread):
                             self._idle_steps = max(self._idle_steps, 1)
                         # v4.59 checkpoint：续跑中每步工具执行完也同步
                         self._sync_to_session(mw)
+                        # v4.108 H-05/M-15：续跑每步同样落盘快照 + 心跳
+                        self._sync_agent_checkpoint(mw)
                     else:
                         if content:
                             self.stream_commit.emit(content)
@@ -1294,6 +1314,21 @@ class AgentWorker(QThread):
 
                 self._handle_tool_result(tc, name, fn, result_str, deliverables, schedule)
 
+        # v4.108 H-03 修复：停止后为所有未拿到回执的 tool_calls 补占位 tool 消息——
+        # assistant.tool_calls 已落库，缺回执会让下一轮 API 400（会话带毒）。
+        if self._stop_requested:
+            _done_ids = set()
+            for m in self.messages:
+                if m.get("role") == "tool":
+                    _done_ids.add(m.get("tool_call_id"))
+            for tc in tool_calls:
+                if tc.get("id") not in _done_ids:
+                    self.messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", ""),
+                        "content": "（系统提示：用户已停止任务，该工具调用未完成执行。）",
+                    })
+
     def _exec_tool_calls(self, tool_calls, mw, APP_DIR):
         """执行一批工具调用（串行/并发由权限引擎决策），供主循环与续跑共用。"""
         # v4.93：run_workflow 是「子代理并行」入口——不走通用 exec_tool，直接触发任务图，
@@ -1319,6 +1354,16 @@ class AgentWorker(QThread):
                 "success": bool(_out),
                 "duration_ms": int((time.time() - _t0) * 1000),
             })
+            # v4.108 H-02 修复：同批其余 tool_calls 必须补占位回执——
+            # assistant 消息已带完整 tool_calls 落库，缺 tool 回执会让下一轮 API 400。
+            for tc in tool_calls:
+                if tc is _wf_tc:
+                    continue
+                self.messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.get("id", ""),
+                    "content": "（系统提示：该调用已被同批的 run_workflow 子代理工作流取代，无需单独执行。）",
+                })
             return
         # v4.100：remember 会话级节流——闲聊或误操作下模型可能反复写记忆刷屏，
         # 限制单次 Agent 运行内 remember 调用累计不超过 2 次，超出部分直接拦截并提示，
@@ -1338,7 +1383,7 @@ class AgentWorker(QThread):
                 fn = tc.get("function", {})
                 self.messages.append({
                     "role": "tool",
-                    "tool_call_id": fn.get("id", ""),
+                    "tool_call_id": tc.get("id", ""),
                     "content": "（系统提示：本次会话已写入足够记忆，为避免刷屏不再重复写入。如需记录请用更精简的事实。）",
                 })
             self._guard_blocked = True  # 通知主循环：本次工具调用已被拦截
@@ -1370,7 +1415,7 @@ class AgentWorker(QThread):
                 fn = tc.get("function", {})
                 self.messages.append({
                     "role": "tool",
-                    "tool_call_id": fn.get("id", ""),
+                    "tool_call_id": tc.get("id", ""),
                     "content": "（系统提示：该工具调用已重复执行且被拦截，请直接给出正文回答，不要再调用相同工具。）",
                 })
             self._guard_blocked = True  # v4.60：通知主循环，这次工具调用被拦截了
@@ -1404,6 +1449,24 @@ class AgentWorker(QThread):
         except Exception:
             pass
         return goal
+
+    def _is_sync_writable(self, m):
+        """v4.108 M-14：判定消息可否回写进可见会话历史。
+
+        仅真实对话内容（assistant 正文/工具调用、tool 结果）可回写；system 提示、
+        _internal 自检指令、nudge/伪造工具指令等一律排除——否则它们会以 user 角色
+        气泡渲染进聊天记录，后续轮次还被当作用户发言发给模型，污染上下文与界面。
+        """
+        if not isinstance(m, dict):
+            return False
+        if m.get("role") == "system":
+            return False
+        if m.get("_internal"):
+            return False
+        c = str(m.get("content") or "")
+        if c in (self._AGENT_NUDGE, self._AGENT_FAKE_TOOL_INSTR):
+            return False
+        return bool(m.get("tool_calls")) or m.get("role") in ("assistant", "tool")
 
     def _sync_to_session(self, mw):
         """把 agent 本轮产生的 assistant(tool_calls) + tool 结果回写到 session.messages，
@@ -1452,6 +1515,8 @@ class AgentWorker(QThread):
                 if not (isinstance(m, dict) and isinstance(m.get("_seq"), int)
                         and m["_seq"] > max_seq):
                     continue
+                if not self._is_sync_writable(m):  # v4.108 M-14：内部消息不回写
+                    continue
                 _sig = (m.get("role"), str(m.get("content")), str(m.get("tool_call_id", "")))
                 if _sig in _exist_sigs:
                     continue
@@ -1480,7 +1545,7 @@ class AgentWorker(QThread):
         if start_idx is None:
             # 无法对齐（例如结构变化），保守追加尾部增量
             for m in self.messages[-1:]:
-                if isinstance(m, dict) and (m.get("role") in ("assistant", "tool") or m.get("tool_calls")):
+                if self._is_sync_writable(m):  # v4.108 M-14
                     _sig = (m.get("role"), str(m.get("content")), str(m.get("tool_call_id", "")))
                     if _sig in _exist_sigs:
                         continue
@@ -1488,12 +1553,39 @@ class AgentWorker(QThread):
                     existing.append(dict(m))
             return
         for m in self.messages[start_idx:]:
-            if isinstance(m, dict) and (m.get("role") in ("assistant", "tool") or m.get("tool_calls")):
+            if self._is_sync_writable(m):  # v4.108 M-14（原白名单 role in assistant/tool）
                 _sig = (m.get("role"), str(m.get("content")), str(m.get("tool_call_id", "")))
                 if _sig in _exist_sigs:
                     continue
                 _exist_sigs.add(_sig)
                 existing.append(dict(m))
+
+    def _sync_agent_checkpoint(self, mw):
+        """v4.108 H-05/M-15：每步工具执行后增量更新断点检查点。
+
+        原实现只在 run() 开头写一次 checkpoint（仅任务描述）——崩溃后「继续上次任务」
+        拿不到任何工具调用/结果快照，恢复上下文全丢（断点续跑空壳）。此处把最近
+        可回写消息快照 + 心跳时间戳一起落盘（原子写），文件有界（最近 40 条）。
+        """
+        if getattr(self, "_isolated", False):
+            return
+        try:
+            _sid = getattr(mw.store.active(), "sid", None)
+        except Exception:
+            _sid = None
+        try:
+            recent = [dict(m) for m in self.messages[-40:]
+                      if isinstance(m, dict) and self._is_sync_writable(m)]
+            task_resume.save_checkpoint(mw.cfg, {
+                "task_id": self.task_id,
+                "task_type": "agent",
+                "status": "running",
+                "sid": _sid,
+                "task": self._goal_hint()[:200],
+                "messages": recent,
+            })
+        except Exception:
+            pass
 
     def _handle_tool_result(self, tc, name, fn, result_str, deliverables, schedule):
         """统一处理工具执行结果：发射信号、追加 tool message。

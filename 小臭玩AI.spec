@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-datas = [('config.json', '.'), ('agent_rules.md', '.'), ('skills', 'skills'), ('images', 'images'), ('icon.ico', '.'), ('browser_runner.py', '.'),
+datas = [('config.json', '.'), ('agent_rules.md', '.'), ('skills', 'skills'), ('images', 'images'), ('icon.ico', '.'), ('browser_runner.py', '.'), ('browser_extension', 'browser_extension'),
           # 统一视频内核：video-agent/core 整包随附为 exe 同目录下的 `core` 包
           ('../video-agent/core', 'core')]
 binaries = []
