@@ -1317,7 +1317,10 @@ def _on_web_action(app, sig):
     elif kind == "view":
         _view_prompt(app, idx)
     elif kind == "play":
-        _play_clip(app, idx)
+        if idx == -1:
+            _play_video(app, getattr(app, "director_final_path", None))
+        else:
+            _play_clip(app, idx)
 
 
 def _build_character_cards(app, characters):

@@ -139,8 +139,13 @@ html,body{margin:0;padding:0;background:var(--bg);
 .card{background:var(--card);border:1px solid var(--border);border-radius:10px;
   overflow:hidden;display:flex;flex-direction:column;box-shadow:0 1px 2px rgba(0,0,0,.05);}
 .thumb{width:100%;aspect-ratio:16/9;background:#000;display:flex;align-items:center;
-  justify-content:center;cursor:zoom-in;overflow:hidden;}
-.thumb img,.thumb video{width:100%;height:100%;object-fit:contain;background:#000;display:block;}
+  justify-content:center;cursor:zoom-in;overflow:hidden;position:relative;}
+.play-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  pointer-events:none;z-index:2;}
+.play-overlay::before{content:'▶';font-size:28px;color:rgba(255,255,255,.85);
+  background:rgba(0,0,0,.4);width:52px;height:52px;border-radius:50%;display:flex;
+  align-items:center;justify-content:center;text-indent:4px;}
+.thumb img,.thumb video{width:100%;height:100%;object-fit:contain;background:#000;display:block;cursor:pointer;}
 .thumb3{height:120px;border-radius:6px;cursor:zoom-in;object-fit:cover;background:#000;}
 .ph{color:var(--dim);font-size:12px;padding:8px;text-align:center;}
 .info{padding:6px 8px 2px;font-size:12px;color:var(--text);word-break:break-word;}
@@ -214,7 +219,8 @@ def clip_card_html(i, status, path=None, kf=None, error="", info_text=None):
     if status == "done" and path and os.path.isfile(path):
         poster = f' poster="{_localres_url(kf)}"' if (kf and os.path.isfile(kf)) else ""
         thumb = (f'<div class="thumb"><video src="{_localres_url(path)}" '
-                 f'controls preload="metadata"{poster}></video></div>')
+                 f'controls preload="metadata"{poster} onclick="act(\'play\',{i})"></video>'
+                 f'<div class="play-overlay"></div></div>')
         info = info_text or f"镜{i+1} · ✅ 完成"
         btns = (f'<div class="btns">'
                 f'<a onclick="act(\'mod\',{i})">✎改</a>'
@@ -279,7 +285,8 @@ def merge_card_html(path, kf=None):
         poster = f' poster="{_localres_url(kf)}"' if (kf and os.path.isfile(kf)) else ""
         thumb = (f'<div class="thumb" style="aspect-ratio:auto;">'
                  f'<video src="{_localres_url(path)}" controls preload="metadata"{poster} '
-                 f'style="width:100%;max-height:360px;"></video></div>')
+                 f'style="width:100%;max-height:360px;cursor:pointer;" onclick="act(\'play\',-1)"></video>'
+                 f'<div class="play-overlay"></div></div>')
         info = "成片预览（可内嵌播放）"
         return f'<div class="card">{thumb}<div class="info">{_esc(info)}</div></div>'
     return '<div class="empty">尚未合成</div>'
