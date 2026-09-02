@@ -102,7 +102,7 @@ class ClipboardMonitor(QObject):
         if IMG_RE.match(text.strip()):
             return {"type": "image_path", "path": text.strip()}
         if len(text) > 100:
-            return {"type": "text", "length": len(text), "hint": "可让Agent翻译/摘要"}
+            return {"type": "text", "length": len(text), "hint": "可让小臭翻译/摘要"}
         return None
 
     def _looks_like_code(self, text):

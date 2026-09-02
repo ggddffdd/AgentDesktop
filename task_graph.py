@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""AgentDesktop — 任务图引擎 v4.60
+"""小臭玩AI — 任务图引擎 v4.60
 
 用 WorkBuddy 任务编排同款模式：
   TaskCreate(subject, description) → 新建节点

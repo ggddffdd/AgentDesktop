@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""自动化任务面板（Agent内嵌工作台）。
+"""自动化任务面板（小臭内嵌工作台）。
 
 build_automation_panel(app): 在 app.automation_page 上构建 UI。
 - 任务列表：启用开关 / 名称 / 动作徽章 / 调度摘要 / 下次运行 / 编辑 / 删除。

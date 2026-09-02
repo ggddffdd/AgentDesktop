@@ -33,7 +33,7 @@ def set_event_callback(fn):
 
 
 def _user_data_dir():
-    p = Path.home() / "Documents" / "AgentDesktop"
+    p = Path.home() / "Documents" / "小臭玩AI"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -210,7 +210,7 @@ def _esc(s):
 STATUS_PAGE_HTML = """<!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AgentDesktop · Webhook</title>
+<title>小臭玩AI · Webhook</title>
 <style>
   body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:720px;margin:24px auto;padding:0 16px;color:#222;line-height:1.5}
   h1{font-size:20px;margin:0 0 4px}
@@ -224,7 +224,7 @@ STATUS_PAGE_HTML = """<!doctype html>
   .t{color:#999;font-size:12px;margin-left:8px}
   .muted{color:#999}
 </style></head><body>
-<h1>⚡ AgentDesktop · Webhook 服务</h1>
+<h1>⚡ 小臭玩AI · Webhook 服务</h1>
 <p class="ok">● 运行中</p>
 <div class="box">
   <div>局域网访问：<code>http://{HOST}</code></div>
@@ -244,5 +244,5 @@ STATUS_PAGE_HTML = """<!doctype html>
   <b>最近事件</b>
   <ul>{EVENTS}</ul>
 </div>
-<p class="muted">事件记录于 ~/Documents/AgentDesktop/webhook_events.jsonl</p>
+<p class="muted">事件记录于 ~/Documents/小臭玩AI/webhook_events.jsonl</p>
 </body></html>"""

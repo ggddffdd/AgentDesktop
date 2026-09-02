@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""AgentDesktop — 跨对话长期记忆库（用户画像 / 偏好 / 约定 / 项目状态）
+"""小臭玩AI — 跨对话长期记忆库（用户画像 / 偏好 / 约定 / 项目状态）
 
-记忆文件放在用户文档目录（~/Documents/AgentDesktop/memory.md），
-刻意避开程序目录（dist/AgentDesktop/），因为重建会清空整个程序目录，
+记忆文件放在用户文档目录（~/Documents/小臭玩AI/memory.md），
+刻意避开程序目录（dist/小臭玩AI/），因为重建会清空整个程序目录，
 放在文档目录可保证记忆在多次重打包间持久保留。
 
 v2（2026-07-23）改进：
@@ -25,7 +25,7 @@ from datetime import datetime
 log = logging.getLogger(__name__)
 
 # 记忆目录刻意放在用户文档下，不受程序重建影响
-MEMORY_DIR = os.path.expanduser("~/Documents/AgentDesktop")
+MEMORY_DIR = os.path.expanduser("~/Documents/小臭玩AI")
 MEMORY_PATH = os.path.join(MEMORY_DIR, "memory.md")
 MEMORY_DB_PATH = os.path.join(MEMORY_DIR, "memory.db")  # v4.59 SQLite FTS5 搜索库
 # v4.73：钉住核心画像（永远注入，不滚出、不依赖召回命中）——解决"早期重要记忆被滚动淘汰冲掉"

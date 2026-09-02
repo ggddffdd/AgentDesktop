@@ -18,7 +18,7 @@ from pathlib import Path
 
 
 def _user_data_dir():
-    p = Path.home() / "Documents" / "AgentDesktop"
+    p = Path.home() / "Documents" / "小臭玩AI"
     p.mkdir(parents=True, exist_ok=True)
     return p
 

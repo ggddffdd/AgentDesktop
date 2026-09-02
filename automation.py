@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""AgentDesktop — 自动化任务模块（定时提醒 / 定时执行 Agent 任务）。
+"""小臭玩AI — 自动化任务模块（定时提醒 / 定时执行 Agent 任务）。
 
 职责：
-1. 任务数据模型与 JSON 持久化（~/Documents/AgentDesktop/automation_tasks.json）；
+1. 任务数据模型与 JSON 持久化（~/Documents/小臭玩AI/automation_tasks.json）；
 2. 调度判断：一次性 / 每天 / 每周 / 间隔重复；
 3. 供面板（automation_panel）与主窗口调度器（ui.py 的 QTimer tick）复用。
 

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-AgentDesktop · 实时语音模块（移植自数字分身 twin.py）
+小臭玩AI · 实时语音模块（移植自数字分身 twin.py）
   - ASR   : 麦克风语音 -> 中文文本（硅基流动 SenseVoiceSmall，需硅基流动 key）
   - TTS   : 文本 -> 中文语音（edge-tts，免 key）
   - Record: 麦克风录音（ffmpeg dshow，免 Python 音频包 / 免 portaudio）
@@ -22,7 +22,7 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ffmpeg：优先用本机 winget 安装路径，否则退回 PATH 上的 ffmpeg
 FFMPEG = (
-    r"C:\Users\<用户名>\AppData\Local\Microsoft\WinGet\Packages"
+    r"C:\Users\xyb\AppData\Local\Microsoft\WinGet\Packages"
     r"\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe"
     r"\ffmpeg-8.1-full_build\bin\ffmpeg.exe"
 )

@@ -2,7 +2,7 @@
 """
 数据可视化输出模块 v1.1
 集成 matplotlib，生成柱状/折线/饼/散点图，自动配置中文字体（Windows 微软雅黑），治愈系配色。
-输出 PNG 到用户目录 ~/Documents/AgentDesktop/charts/（避开重建覆盖），返回路径。
+输出 PNG 到用户目录 ~/Documents/小臭玩AI/charts/（避开重建覆盖），返回路径。
 
 使用：
     from chart_generator import ChartGenerator
@@ -20,7 +20,7 @@ from pathlib import Path
 
 
 def _charts_dir():
-    d = os.path.join(os.path.expanduser("~"), "Documents", "AgentDesktop", "charts")
+    d = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "charts")
     os.makedirs(d, exist_ok=True)
     return d
 

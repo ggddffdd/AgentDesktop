@@ -56,7 +56,7 @@ class McpClient:
         init_result = self._send_request("initialize", {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": {"name": "AgentDesktop", "version": "1.0.0"},
+            "clientInfo": {"name": "deepseek-desktop", "version": "1.0.0"},
         })
         if init_result is None or "error" in init_result:
             log.error("MCP [%s] initialize 失败: %s", self.name, init_result)

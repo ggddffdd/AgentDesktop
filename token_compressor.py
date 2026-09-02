@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""AgentDesktop — Token 压缩器 v4.60
+"""小臭玩AI — Token 压缩器 v4.60
 
 参照 OpenHuman TokenJuice 设计：工具结果进模型前自动清理压缩。
 三层规则：

@@ -38,7 +38,7 @@ class Session:
 
 
 class SessionStore:
-    PATH = os.path.join(os.path.expanduser("~/Documents/AgentDesktop"), "sessions.json")
+    PATH = os.path.join(os.path.expanduser("~/Documents/小臭玩AI"), "sessions.json")
 
     def __init__(self):
         self.sessions = {}
