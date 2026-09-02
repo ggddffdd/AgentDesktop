@@ -146,7 +146,7 @@ def build_report():
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     parts = []
     parts.append("=" * 60)
-    parts.append("        AgentDesktop · 调试诊断包")
+    parts.append("        小臭玩AI · 调试诊断包")
     parts.append("=" * 60)
     try:
         import config as _cfg
@@ -204,7 +204,7 @@ def export_diagnostic_package(parent=None):
         return
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    default_name = f"Agent诊断包_{stamp}.txt"
+    default_name = f"小臭诊断包_{stamp}.txt"
     # 默认落在用户文档/桌面，方便查找
     docs = os.path.join(os.path.expanduser("~"), "Documents")
     default_dir = docs if os.path.isdir(docs) else os.path.expanduser("~")

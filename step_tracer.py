@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""AgentDesktop — Agent 步级追踪器（v4.59）
+"""小臭玩AI — Agent 步级追踪器（v4.59）
 
 参照 OpenAI SDK trace span / LangSmith step-by-step 设计。
 轻量增量模块：不篡改现有 agent 循环，在关键节点插桩记录结构化日志。
@@ -15,7 +15,7 @@
     tracer.trace(step=1, phase="tool_result", tool_name="web_search", result="...", duration_ms=1234)
     tracer.done()
 
-输出文件：~/Documents/AgentDesktop/traces/<session_id>.jsonl
+输出文件：~/Documents/小臭玩AI/traces/<session_id>.jsonl
 """
 
 import json
@@ -28,7 +28,7 @@ class StepTracer:
     """Agent 步级追踪器：每步写一条 JSONL 记录，线程安全。"""
 
     def __init__(self, session_id=None):
-        base = os.path.join(os.path.expanduser("~"), "Documents", "AgentDesktop", "traces")
+        base = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "traces")
         os.makedirs(base, exist_ok=True)
         self.session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
         self.path = os.path.join(base, f"{self.session_id}.jsonl")

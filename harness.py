@@ -34,7 +34,7 @@ DEFAULT_HARNESS = {
         {
             "id": "agnes_video_voiceover",
             "title": "Agnes 视频口播：dialogue 必填才会出声",
-            "body": "Agnes 视频模型(agnes-video-v2.0)支持内置中文口播。只有把台词填进 dialogue 参数，视频才会带真人中文语音+对口型；不填则纯画面无声（这不是 Agnes 的缺陷，是没传台词）。做人物说话/口播/带货视频，务必先写好中文台词再调 video_gen。",
+            "body": "Agnes 视频模型(agnes-video-2.5-flash，2026-08-30 起限时免费)支持内置中文口播。只有把台词填进 dialogue 参数，视频才会带真人中文语音+对口型；不填则纯画面无声（这不是 Agnes 的缺陷，是没传台词）。做人物说话/口播/带货视频，务必先写好中文台词再调 video_gen。",
             "tags": ["agnes", "video_gen", "口播", "dialogue"],
             "created": "2026-08-12",
             "updated": "2026-08-12",
@@ -43,7 +43,7 @@ DEFAULT_HARNESS = {
         {
             "id": "video_default_portrait",
             "title": "视频默认竖版（抖音/视频号/小红书）",
-            "body": "video_gen 的 aspect 默认竖版 portrait(768x1152)。做竖屏平台内容时保持默认，不要传 landscape。横版仅用于特殊宽屏需求。",
+            "body": "video_gen 默认竖版（新版画幅 9:16，即旧版的 768x1152 竖屏）。做竖屏平台内容时保持默认，不要传 landscape。横版仅用于特殊宽屏需求。注意新版 2.5-flash 分辨率固定 720P、时长 4-12 秒，不再接受 width/height。",
             "tags": ["video_gen", "aspect"],
             "created": "2026-08-12",
             "updated": "2026-08-12",
@@ -83,7 +83,7 @@ DEFAULT_HARNESS = {
 def _default_path(cfg):
     if isinstance(cfg, dict) and cfg.get("harness_notes_path"):
         return cfg["harness_notes_path"]
-    return os.path.join(os.path.expanduser("~"), "Documents", "AgentDesktop", "harness_notes.json")
+    return os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "harness_notes.json")
 
 
 def _history_path(cfg):

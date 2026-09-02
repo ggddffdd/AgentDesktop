@@ -2,7 +2,7 @@
 """
 结构化日志模块 v1.1
 SQLite 存储，替代纯文本 debug.log，支持按级别/模块/时间查询。
-落用户目录（~Documents/AgentDesktop/agent_log.db），避开重建覆盖 dist。
+落用户目录（~Documents/小臭玩AI/agent_log.db），避开重建覆盖 dist。
 
 单例用法：
     from structured_logger import get_logger
@@ -19,7 +19,7 @@ from pathlib import Path
 
 
 def _default_db_path():
-    d = os.path.join(os.path.expanduser("~"), "Documents", "AgentDesktop")
+    d = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI")
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, "agent_log.db")
 

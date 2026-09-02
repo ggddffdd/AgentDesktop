@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""AgentDesktop · 性能基线模块（v4.78）
+"""小臭玩AI · 性能基线模块（v4.78）
 
 双轨设计：
   1) 应用内启动埋点：main.py 各阶段 mark()，启动完成 finalize_startup() 落盘
@@ -30,7 +30,7 @@ import tempfile
 import subprocess
 from datetime import datetime
 
-PERF_DIR = os.path.join(os.path.expanduser("~/Documents/AgentDesktop"), "perf")
+PERF_DIR = os.path.join(os.path.expanduser("~/Documents/小臭玩AI"), "perf")
 STARTUP_LOG = os.path.join(PERF_DIR, "startup.jsonl")
 BASELINE_PATH = os.path.join(PERF_DIR, "baseline.json")
 RUNS_DIR = os.path.join(PERF_DIR, "runs")
@@ -393,7 +393,7 @@ def save_run(metrics, cmp, verdict):
 # ============================================================
 def _print_report(metrics, cmp, verdict, run_path):
     print("=" * 58)
-    print("AgentDesktop 性能基线报告  (%s)" % metrics.get("ts"))
+    print("小臭玩AI 性能基线报告  (%s)" % metrics.get("ts"))
     print("=" * 58)
     for k, v in metrics.items():
         if k in ("ts", "frozen"):
@@ -412,7 +412,7 @@ def _print_report(metrics, cmp, verdict, run_path):
 
 def main_cli():
     import argparse
-    ap = argparse.ArgumentParser(description="AgentDesktop 性能基线")
+    ap = argparse.ArgumentParser(description="小臭玩AI 性能基线")
     ap.add_argument("--save-baseline", action="store_true", help="跑基准并设为新基线")
     ap.add_argument("--json", action="store_true", help="输出 JSON")
     args = ap.parse_args()
