@@ -187,6 +187,9 @@ class AgentWorker(QThread):
         # 问题（fix8 nudge 门槛后纯文本分支命中）直接 AttributeError 崩溃 → run() 抛异常
         # → done.emit() 不触发 → UI 卡死。用户实证：回答已渲染但状态栏常驻「工作中」。
         self._guard_blocked = False
+        # v4.108 M-25：工具序号全局单调——UI 用它做 live-tool-{index} 卡片 id。
+        # 旧实现每批 enumerate 从 0 起，跨轮重复 id → replace_live 替换错卡/状态串。
+        self._tool_seq = 0
         # 技能清单由 ui.py 的 _build_system_prompt() 统一通过 config.load_dynamic_skills() 注入，
         # 此处不再重复加载，避免双份/不一致。
 
@@ -199,6 +202,11 @@ class AgentWorker(QThread):
             self._confirm_event.set()
         except Exception:
             pass
+
+    def _next_tool_index(self):
+        """v4.108 M-25：工具卡片 id 用全局单调序号（跨批不重复）。"""
+        self._tool_seq += 1
+        return self._tool_seq
 
     def _emit_status(self, text):
         """v4.102 fix7：统一状态出口——记录最近一次具体状态的时间戳与文字，
@@ -1152,13 +1160,15 @@ class AgentWorker(QThread):
         """串行执行工具调用（含危险操作确认），统一走权限引擎决策。"""
         engine = mw.permission_engine
         total = len(tool_calls)
-        for idx, tc in enumerate(tool_calls):
+        for _seq_idx, tc in enumerate(tool_calls):
             fn = tc.get("function", {})
             name = fn.get("name", "")
             try:
                 args = json.loads(fn.get("arguments", "{}") or "{}")
             except Exception:
                 args = {}
+            # v4.108 M-25：卡片 id 用全局单调序号；started/finished 同值配对
+            idx = self._next_tool_index()
             if self._stop_requested:
                 self._emit_status("⏹ 已停止（用户请求）")
                 result_str = "⏹ 已停止（用户请求）"
@@ -1270,14 +1280,15 @@ class AgentWorker(QThread):
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {}
-            for idx, tc in enumerate(tool_calls):
+            for _seq_idx, tc in enumerate(tool_calls):
                 fn = tc.get("function", {})
                 name = fn.get("name", "")
                 try:
                     args = json.loads(fn.get("arguments", "{}") or "{}")
                 except Exception:
                     args = {}
-
+                # v4.108 M-25：卡片 id 用全局单调序号（并发批内各工具唯一）
+                idx = self._next_tool_index()
                 if self._stop_requested:
                     self._emit_status("⏹ 已停止（用户请求）")
                     break
@@ -1340,6 +1351,13 @@ class AgentWorker(QThread):
             _wf_type = _args.get("type", "research_write")
             _task = _args.get("task", "")
             self._emit_status(f"🔄 触发子代理工作流：{_wf_type}")
+            # v4.108 M-25：workflow 也走全局工具序号 + started/finished 配对，
+            # 让 UI 能显示一张「子代理工作流」卡片并在完成时原位替换。
+            _wf_idx = self._next_tool_index()
+            self.tool_started.emit({
+                "name": "run_workflow", "args": {"type": _wf_type},
+                "index": _wf_idx, "total": 1,
+            })
             _t0 = time.time()
             _out = self._run_workflow(_wf_type, _task)
             self.messages.append({
@@ -1350,7 +1368,7 @@ class AgentWorker(QThread):
             self.tool_finished.emit({
                 "name": "run_workflow",
                 "result_preview": str(_out)[:200],
-                "index": 0,
+                "index": _wf_idx,
                 "success": bool(_out),
                 "duration_ms": int((time.time() - _t0) * 1000),
             })

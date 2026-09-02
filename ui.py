@@ -1525,6 +1525,12 @@ class ChatWindow(QMainWindow):
         self._streaming = False
         self._streaming_text = ""
         self._sse_buf = ""
+        # v4.108 M-25：live 工具卡台账（只在 DOM 中、不进 messages）。
+        # agent_index（worker 内配对键）→ 卡片信息；UI 用自增 _live_seq 生成唯一
+        # DOM id，彻底避开「agent 每批 index 从 0 起」导致的跨轮/跨任务 id 撞车。
+        # 台账同时让「全量重建（会话切换/页面自愈）」能按序恢复进行中的工具卡。
+        self._live_tools = {}
+        self._live_seq = 0
         self.agent_mode = self.cfg.get("agent_mode", False)
         self.agent_skip_confirm = self.cfg.get("agent_skip_confirm", False)
         # ---- 权限引擎（v4.50，借鉴 andrewyng/openworker 的 permissions.py）----
@@ -4769,9 +4775,30 @@ class ChatWindow(QMainWindow):
             # v4.104 fix：全量重建也要带上流式内容，否则流式首帧（count=0 时）
             # 不显示，等第一帧文本来了才冒出来，观感突兀。
             if self._streaming and self._streaming_text:
-                parts.append(self._fmt_bubble("assistant", self._streaming_text))
+                # v4.108 M-25：流式部件带 #stream-bubble id（与 jsStream 创建结构一致），
+                # commit 后 end_stream 能移除——否则无 id 残留与增量 append 正文形成
+                # 同段双气泡（pageReloaded 自愈路径曾触发）。
+                parts.append(
+                    '<div class="msg-row ai" id="stream-bubble">'
+                    + self._fmt_bubble("assistant", self._streaming_text)
+                    + '</div>')
             self.chat_view.render_all("".join(parts))
             self._rendered_msg_count = len(msgs)
+            # v4.108 M-25：jsRenderAll 清空了 DOM，live 工具卡（不进 messages）随之消失。
+            # Agent 仍运行（页面自愈/切换回会话的全量重建）时按台账恢复 running/done 卡，
+            # 否则 replace_live 找不到目标、工具过程在界面上直接蒸发。
+            if (getattr(self, "_agent_active", False)
+                    and getattr(self, "_live_tools", None)):
+                for _rec in sorted(self._live_tools.values(),
+                                   key=lambda r: r.get("ui_seq", 0)):
+                    if _rec.get("status") == "done":
+                        self.chat_view.append(self._tool_card_html(
+                            _rec["ui_seq"], _rec.get("display_name", ""),
+                            done=True, result_preview=_rec.get("result", "")))
+                    else:
+                        self.chat_view.append(self._tool_card_html(
+                            _rec["ui_seq"], _rec.get("display_name", ""),
+                            _rec.get("args_preview", "")))
         else:
             # 增量追加：只渲染渲染计数之后的新消息
             new_msgs = msgs[rendered:]
@@ -6499,10 +6526,30 @@ class ChatWindow(QMainWindow):
         "remember": "写入长期记忆",
     }
 
+    def _tool_card_html(self, ui_seq, display_name, args_preview="", done=False,
+                        result_preview=""):
+        """v4.108 M-25：统一生成 live 工具卡 HTML（running/done 两态共用）。"""
+        if done:
+            return (
+                f'<div class="tool-card" id="live-tool-{ui_seq}" '
+                f'style="margin-left: 20px;">'
+                f'<span class="tool-dot done"></span>'
+                f'<span class="tool-name">{display_name} ✓</span>'
+                f'<span class="tool-result">{result_preview}</span>'
+                f'</div>'
+            )
+        return (
+            f'<div class="tool-card" id="live-tool-{ui_seq}">'
+            f'<span class="tool-dot running"></span>'
+            f'<span class="tool-name">{display_name}</span>'
+            f'<span class="tool-args">{args_preview}</span>'
+            f'</div>'
+        )
+
     def _on_tool_started(self, data):
         name = data.get("name", "")
         args = data.get("args", {})
-        index = data.get("index", 0)
+        agent_index = data.get("index", 0)
 
         display_name = self._TOOL_NAME_MAP.get(name, name)
         args_preview = ""
@@ -6510,32 +6557,40 @@ class ChatWindow(QMainWindow):
             vals = [str(v) for v in args.values() if v]
             if vals:
                 args_preview = html_mod.escape(vals[0][:30])
-
-        html = (
-            f'<div class="tool-card" id="live-tool-{index}">'
-            f'<span class="tool-dot running"></span>'
-            f'<span class="tool-name">{display_name}</span>'
-            f'<span class="tool-args">{args_preview}</span>'
-            f'</div>'
-        )
-        self.chat_view.append(html)
+        # v4.108 M-25：UI 自管唯一 DOM id（agent index 只做 started↔finished 配对键）
+        self._live_seq += 1
+        ui_seq = self._live_seq
+        self._live_tools[agent_index] = {
+            "ui_seq": ui_seq, "name": name, "display_name": display_name,
+            "args_preview": args_preview, "status": "running", "result": "",
+        }
+        self.chat_view.append(
+            self._tool_card_html(ui_seq, display_name, args_preview))
 
     def _on_tool_finished(self, data):
         name = data.get("name", "")
         display_name = self._TOOL_NAME_MAP.get(name, name)
         result_preview = html_mod.escape(str(data.get("result_preview", ""))[:100])
-        index = data.get("index", 0)
+        agent_index = data.get("index", 0)
 
-        html = (
-            f'<div class="tool-card" id="live-tool-{index}" '
-            f'style="margin-left: 20px;">'
-            f'<span class="tool-dot done"></span>'
-            f'<span class="tool-name">{display_name} ✓</span>'
-            f'<span class="tool-result">{result_preview}</span>'
-            f'</div>'
-        )
+        rec = self._live_tools.get(agent_index)
+        if rec is not None and rec.get("name") == name:
+            ui_seq = rec["ui_seq"]
+            rec["status"] = "done"
+            rec["result"] = result_preview
+        else:
+            # 找不到 started（历史/直发 finished）：兜底追加一张 done 卡，不丢信息
+            self._live_seq += 1
+            ui_seq = self._live_seq
+            self._live_tools[agent_index] = {
+                "ui_seq": ui_seq, "name": name, "display_name": display_name,
+                "args_preview": "", "status": "done", "result": result_preview,
+            }
         # 原位替换 running 卡 → done 卡（同一 id，不追加新 DOM，零重复）
-        self.chat_view.replace_live(f"live-tool-{index}", html)
+        self.chat_view.replace_live(
+            f"live-tool-{ui_seq}",
+            self._tool_card_html(ui_seq, display_name, done=True,
+                                 result_preview=result_preview))
 
         # v4.84：模型刚提交了一个待审核技能，刷新徽标并提示
         if name == "create_skill":
@@ -6605,8 +6660,10 @@ class ChatWindow(QMainWindow):
         msgs.append({"role": "assistant", "content": text})
         self._track_context("assistant", text)
         self._save_throttled()  # v4.58：批量保存
-        # v4.96：强制全量重建，清除流式气泡残留，根治碎片
-        self._rendered_msg_count = 0
+        # v4.108 M-25：不再强制全量重建（旧 v4.96 方案）——jsRenderAll 会清空 DOM，
+        # 把只活在 DOM 里的 live 工具卡（running/done）一并抹掉，随后 replace_live
+        # 找不到目标静默丢弃。增量渲染计数不变 → 只 append 本句 + end_stream 清流式
+        # 残留（v4.104 增量路径已覆盖清理），工具卡 DOM 原样保留。
         self._render_throttled()  # v4.58：节流渲染
         self._speak(text)
 
