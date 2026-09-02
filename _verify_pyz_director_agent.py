@@ -86,7 +86,40 @@ if t is None:
 else:
     check("tools 引用 director_agent_tools", "director_agent_tools" in all_names(t))
 
-print("== 5. main 入口 localres scheme 保留 ==")
+print("== 5. ui 路由接线（v4.106 fix route）==")
+ui = get_code("ui")
+if ui is None:
+    check("PYZ 内存在 ui", False)
+else:
+    n = all_names(ui)
+    for sym in ("_is_director_command", "_DIRECTOR_OBJ_KW", "_DIRECTOR_VERB_KW",
+                "_DIRECTOR_STATUS_KW", "_DIRECTOR_STATUS_Q"):
+        check(f"ui 含 {sym}", sym in n)
+
+    def walk(co):
+        stack = [co]
+        while stack:
+            c = stack.pop()
+            yield c
+            stack.extend(x for x in c.co_consts if isinstance(x, types.CodeType))
+
+    # 精确判定：不是"模块里出现过名字"，而是这两个路由函数体内真的调用了它
+    for fname in ("_message_needs_agent", "_needs_tool_intent"):
+        fns = [c for c in walk(ui) if c.co_name == fname]
+        hit = any("_is_director_command" in f.co_names for f in fns)
+        check(f"{fname} 体内调用 _is_director_command", hit)
+
+    # 状态问句补漏：'还没/没生成' 等应进词表（否则"第几镜还没生成完"漏判）
+    # 注意：词表定义在方法体内，是局部 tuple const，必须遍历全部 code object
+    q_consts = set()
+    for c in walk(ui):
+        for k in c.co_consts:
+            if isinstance(k, tuple) and "没生成" in k:
+                q_consts |= {x for x in k if isinstance(x, str)}
+    check("_DIRECTOR_STATUS_Q 含 '还没'", "还没" in q_consts)
+    check("_DIRECTOR_STATUS_Q 含 '没生成'", "没生成" in q_consts)
+
+print("== 6. main 入口 localres scheme 保留 ==")
 car = CArchiveReader(EXE)
 main_co = None
 for name, info in car.toc.items():

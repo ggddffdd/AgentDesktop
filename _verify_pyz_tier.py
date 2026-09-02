@@ -38,14 +38,27 @@ f = fn[0]
 print("co_varnames:", f.co_varnames[:6])
 print("has w,h:", "w" in f.co_varnames and "h" in f.co_varnames)
 
-consts = []
-def walk2(co):
-    for c in co.co_consts:
-        if isinstance(c, str):
-            consts.append(c)
-        elif isinstance(c, types.CodeType):
-            walk2(c)
-walk2(f)
+def collect_strings(co):
+    """收集字符串常量。
+
+    ⚠️ `return "2K", "16:9"` 会被编译期 fold 成一个 tuple const，
+    只扫 co_consts 的 str 会漏掉档位/比例字符串 —— 必须展开 tuple。
+    """
+    out = []
+    stack = [co]
+    while stack:
+        c = stack.pop()
+        for k in c.co_consts:
+            if isinstance(k, str):
+                out.append(k)
+            elif isinstance(k, tuple):
+                out.extend(x for x in k if isinstance(x, str))
+            elif isinstance(k, types.CodeType):
+                stack.append(k)
+    return out
+
+
+consts = collect_strings(f)
 print("has '2K':", "2K" in consts)
 print("has '16:9':", "16:9" in consts)
 
