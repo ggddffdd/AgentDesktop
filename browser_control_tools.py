@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""AgentDesktop — 浏览器控制工具（受控：对话触发 + 执行前确认 + 日志可见）
+"""小臭玩AI — 浏览器控制工具（受控：对话触发 + 执行前确认 + 日志可见）
 
 实际浏览器操作交给 browser_runner.py（Playwright），本模块通过 subprocess 调
 系统 Python 执行，规避冻结 exe 打包 Playwright 的复杂度。所有工具返回
@@ -10,27 +10,46 @@
 """
 
 import os
+import sys
 import json
 import subprocess
+import time
+import urllib.request
+import urllib.parse
 
 # 系统 Python（运行 Playwright 的执行体）。顺序：配置 > 已知路径 > 通用名。
 _DEFAULT_PY = [
-    r"<PYTHON_EXE>",
+    r"C:\Users\xyb\AppData\Local\Programs\Python\Python312\python.exe",
     "python3",
     "python",
 ]
 
 
 def _resource_path(name):
-    """定位 browser_runner.py：开发态同目录，冻结态在 _internal 下。"""
+    """定位 browser_runner.py：开发态同目录，冻结态在 exe 所在目录或 _internal 下。
+
+    重要：冻结态下本模块 __file__ 路径里的中文（小臭玩AI）可能被编码损坏（如变 СAI），
+    因此**不能**依赖 __file__ 推断目录。优先用 sys.executable 所在目录——Windows 会返回
+    正确的 Unicode 路径，绝不会乱码。
+    """
+    candidates = []
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        candidates.append(os.path.join(exe_dir, name))
+        candidates.append(os.path.join(exe_dir, "_internal", name))
+        mp = getattr(sys, "_MEIPASS", None)
+        if mp:
+            candidates.append(os.path.join(mp, name))
+            candidates.append(os.path.join(mp, "_internal", name))
+    # 开发态：__file__ 同目录（源码树中文路径完好）
     base = os.path.dirname(os.path.abspath(__file__))
-    cand = os.path.join(base, name)
-    if os.path.exists(cand):
-        return cand
-    cand2 = os.path.join(base, "_internal", name)
-    if os.path.exists(cand2):
-        return cand2
-    return cand
+    candidates.append(os.path.join(base, name))
+    candidates.append(os.path.join(base, "_internal", name))
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    # 全找不到：返回最可能是路径（exe 目录），让报错信息准确
+    return candidates[0] if candidates else name
 
 
 def _find_python(cfg):
@@ -43,7 +62,79 @@ def _find_python(cfg):
     return "python"
 
 
-def _run_runner(action, url, selector="", text="", cfg=None, headless="1"):
+# ---------- CDP 自动拉起（v4.103：无需手动点快捷方式）----------
+_EDGE_CANDIDATES = [
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+]
+
+
+def _find_edge():
+    for c in _EDGE_CANDIDATES:
+        if os.path.isfile(c):
+            return c
+    return ""
+
+
+def _cdp_ready(cdp_url, timeout=1.0):
+    try:
+        urllib.request.urlopen(cdp_url.rstrip("/") + "/json/version", timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+
+def _ensure_cdp(cdp, app_dir=None):
+    """确保 CDP 调试端口可用；不可用则自动拉起带调试端口的 Edge。返回 (ok, msg)。
+
+    关键：用**专属 profile 目录**启动 Edge（独立单例锁），永远不和用户真实 Edge 的
+    默认 profile 抢锁，因此调试端口必定能起来，自动接管稳定可用。
+    """
+    if _cdp_ready(cdp):
+        return True, ""
+    edge = _find_edge()
+    if not edge:
+        return False, ("未找到 Edge 可执行文件，无法自动启动调试浏览器。"
+                       "请确认已安装 Microsoft Edge。")
+    port = urllib.parse.urlparse(cdp).port or 9222
+    # 专属 profile：放在 app_dir 下，避免与默认 Edge 单例冲突导致调试端口起不来
+    if app_dir:
+        profile = os.path.join(app_dir, "cdp_edge_profile")
+    else:
+        profile = os.path.expandvars(r"%LOCALAPPDATA%/小臭玩AI/cdp_edge_profile")
+    try:
+        os.makedirs(profile, exist_ok=True)
+    except Exception:
+        profile = os.path.join(os.path.expanduser("~"), "cdp_edge_profile")
+        os.makedirs(profile, exist_ok=True)
+    args = [
+        edge,
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={profile}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-networking",
+    ]
+    try:
+        kwargs = {}
+        if os.name == "nt":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        subprocess.Popen(
+            args,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            close_fds=True, **kwargs,
+        )
+    except Exception as e:
+        return False, f"自动启动 Edge 失败：{e}"
+    for _ in range(60):  # 最多约 18 秒，Edge 冷启动较慢
+        if _cdp_ready(cdp):
+            return True, ""
+        time.sleep(0.3)
+    return False, ("自动启动 Edge 后调试端口仍未就绪。请稍后重试，或检查 Edge 是否被安全"
+                   "软件拦截启动。小臭使用独立 profile 接管浏览器，不会干扰你的真实 Edge。")
+
+
+def _run_runner(action, url, selector="", text="", cfg=None, headless="1", app_dir=None):
     """调用 browser_runner.py，返回解析后的 JSON dict。"""
     # v4.34 lazyload：检查 Playwright 可用性，不可用返回友好提示而非 subprocess 报错
     try:
@@ -52,6 +143,7 @@ def _run_runner(action, url, selector="", text="", cfg=None, headless="1"):
         return {"ok": False, "error": "Playwright 未安装。浏览器自动化需先运行：pip install playwright && python -m playwright install chromium"}
     py = _find_python(cfg)
     runner = _resource_path("browser_runner.py")
+    cdp = (cfg or {}).get("browser_cdp", "") if cfg else ""
     cmd = [
         py, runner,
         "--action", action,
@@ -60,6 +152,11 @@ def _run_runner(action, url, selector="", text="", cfg=None, headless="1"):
         "--text", text or "",
         "--headless", headless,
     ]
+    if cdp:
+        ok, msg = _ensure_cdp(cdp, app_dir=app_dir)
+        if not ok:
+            return {"ok": False, "error": msg}
+        cmd += ["--cdp", cdp]
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=90,
@@ -87,7 +184,9 @@ def _run_runner(action, url, selector="", text="", cfg=None, headless="1"):
 def _deliver_shot(out):
     shot = out.get("screenshot", "")
     if shot and os.path.exists(shot):
-        return [shot]
+        # 返回标准化 (rel, kind, name) 三元组；rel 用绝对路径，
+        # _on_deliverable_open 的 os.path.join(APP_DIR, rel) 对绝对路径原样返回可正确打开。
+        return [(shot, "image", os.path.basename(shot))]
     return []
 
 
@@ -97,7 +196,7 @@ def tool_browser_open(cfg, app_dir, args):
     url = args.get("url", "")
     if not url:
         return ("失败：browser_open 需要 url", [], None)
-    out = _run_runner("open", url, cfg=cfg)
+    out = _run_runner("open", url, cfg=cfg, app_dir=app_dir)
     if not out.get("ok"):
         return (f"失败：{out.get('error', '未知错误')}", [], None)
     return (
@@ -112,7 +211,7 @@ def tool_browser_click(cfg, app_dir, args):
     sel = args.get("selector", "")
     if not url or not sel:
         return ("失败：browser_click 需要 url 和 selector", [], None)
-    out = _run_runner("click", url, selector=sel, cfg=cfg)
+    out = _run_runner("click", url, selector=sel, cfg=cfg, app_dir=app_dir)
     if not out.get("ok"):
         return (f"失败：{out.get('error', '未知错误')}", [], None)
     return (
@@ -128,7 +227,7 @@ def tool_browser_fill(cfg, app_dir, args):
     text = args.get("text", "")
     if not url or not sel or text is None:
         return ("失败：browser_fill 需要 url、selector、text", [], None)
-    out = _run_runner("fill", url, selector=sel, text=text, cfg=cfg)
+    out = _run_runner("fill", url, selector=sel, text=text, cfg=cfg, app_dir=app_dir)
     if not out.get("ok"):
         return (f"失败：{out.get('error', '未知错误')}", [], None)
     return (
@@ -143,7 +242,7 @@ def tool_browser_read(cfg, app_dir, args):
     sel = args.get("selector", "")
     if not url:
         return ("失败：browser_read 需要 url", [], None)
-    out = _run_runner("read", url, selector=sel, cfg=cfg)
+    out = _run_runner("read", url, selector=sel, cfg=cfg, app_dir=app_dir)
     if not out.get("ok"):
         return (f"失败：{out.get('error', '未知错误')}", [], None)
     txt = out.get("text", "")
@@ -158,7 +257,7 @@ BROWSER_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "browser_open",
-            "description": "用内置反检测浏览器打开一个网页 URL 并截图返回。用于查看网页内容、留档截图。登录态会通过持久化 profile 保留。",
+            "description": "打开网页并截图。若已配置 browser_cdp（如用户以 --remote-debugging-port=9222 启动的真实 Edge 且端口已就绪），则接管该浏览器当前页面（带登录态）；否则自动拉起一个独立 profile 的 Edge，不干扰真实 Edge。用于查看网页、留档截图。**操作网页内容请用本系列工具（browser_open/click/fill/read）；不要用 app_* 工具——app_* 针对原生桌面程序（如 Excel），读不到浏览器网页内容。多步操作（填表/发布）请先 browser_open 打开页面，再 browser_fill/browser_click 直接操作当前页面（接管模式下不会重新刷新页面、不会清空已填内容）。**",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -172,7 +271,7 @@ BROWSER_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "browser_click",
-            "description": "打开网页并点击指定元素，返回点击后截图。selector 支持 css=、text=、xpath= 前缀，默认按可见文本匹配。",
+            "description": "点击网页指定元素并返回点击后截图。selector 支持 css=、text=、xpath= 前缀；无前缀时含 . # [ > 等按 CSS 处理，否则按可见文本。接管浏览器（CDP）模式下直接点击当前已打开页面的元素，不要重复 browser_open（重复打开会刷新清空已填内容）。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -187,7 +286,7 @@ BROWSER_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "browser_fill",
-            "description": "打开网页并在指定输入框填入文本，返回截图。用于自动填表。selector 同 browser_click。",
+            "description": "在指定输入框/编辑器填入文本并返回截图，用于自动填表、发布文章。selector 同 browser_click（支持 css=/text=/xpath= 前缀，无前缀智能判断）。已兼容知乎等 contenteditable 富文本编辑器（标题/正文均为 contenteditable）。接管浏览器（CDP）模式下直接填当前页面，不要重复 browser_open（重复打开会刷新清空已填内容）。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -203,7 +302,7 @@ BROWSER_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "browser_read",
-            "description": "打开网页并提取页面文本（或指定元素文本）返回，用于抓取网页文字内容做分析。",
+            "description": "提取网页文本（或指定元素文本）返回，用于抓取网页文字内容做分析。selector 同 browser_click（支持 css=/text=/xpath= 前缀，无前缀智能判断）。接管浏览器（CDP）模式下直接读取当前页面，不要重复 browser_open。",
             "parameters": {
                 "type": "object",
                 "properties": {
