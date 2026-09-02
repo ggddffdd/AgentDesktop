@@ -23,8 +23,8 @@ else:
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.102.1"
-APP_BUILD_DATE = "2026-08-30"
+APP_VERSION = "v4.107"
+APP_BUILD_DATE = "2026-09-02"
 # v4.102（2026-08-22）图像输入链路：DeepSeek 通道模型换 deepseek-v4-flash-vision-exp，
 # ui.py 支持视觉模型保留 image_url、普通对话/Agent 带图路由视觉模型。
 # v4.101（2026-08-21）停止按钮 + 断点续传：普通 Agent 任务停止→检查点 paused→「▶ 继续上次任务」
