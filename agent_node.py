@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""AgentDesktop — 多 Agent 节点 v4.60
+"""小臭玩AI — 多 Agent 节点 v4.60
 
 每个 AgentNode 是一个专用 LLM Agent，可被工作流引擎编排。
 特性：
