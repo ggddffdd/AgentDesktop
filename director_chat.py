@@ -104,10 +104,11 @@ class DirectorChatBar(QWidget):
         self.input.installEventFilter(self)
         row.addWidget(self.input, 1)
 
+        self.clear_btn = QPushButton("清空")
         self.send_btn = QPushButton("发送")
         self.stop_btn = QPushButton("停止")
         self.stop_btn.setVisible(False)
-        for b in (self.send_btn, self.stop_btn):
+        for b in (self.clear_btn, self.send_btn, self.stop_btn):
             b.setFixedHeight(48)
             b.setCursor(Qt.PointingHandCursor)
         self.send_btn.setStyleSheet(
@@ -119,8 +120,16 @@ class DirectorChatBar(QWidget):
             f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
             f"border:1px solid {THEME['border']};border-radius:10px;padding:0 18px;"
             f"font-size:13px;}}")
+        self.clear_btn.setStyleSheet(
+            f"QPushButton{{background:{THEME['card']};color:{THEME['faint']};"
+            f"border:1px solid {THEME['border']};border-radius:10px;padding:0 14px;"
+            f"font-size:13px;}}"
+            f"QPushButton:hover{{color:{THEME['text']};}}")
+        self.clear_btn.setToolTip("清空当前项目的对话历史（不动已生成的剧本/三视图/分镜/成片）")
+        self.clear_btn.clicked.connect(self._clear_chat)
         self.send_btn.clicked.connect(self.send)
         self.stop_btn.clicked.connect(self._on_stop)
+        row.addWidget(self.clear_btn)
         row.addWidget(self.send_btn)
         row.addWidget(self.stop_btn)
         lay.addLayout(row)
@@ -193,6 +202,17 @@ class DirectorChatBar(QWidget):
             self._worker.request_stop()
             self._append("系统", "已请求停止。")
 
+    def _clear_chat(self):
+        """清空当前项目的对话历史（内存 + 显示 + 持久化），不动项目产物。"""
+        if self._worker is not None:
+            self._append("系统", "正在生成中，先点「停止」再清空。")
+            return
+        self.history = []
+        self.log.clear()
+        self._save_history()      # 写空历史，重开/换项目回来也是干净的
+        self.input.clear()
+        self.input.setFocus()
+
     # ---------- 信号槽 ----------
     def _on_status(self, text):
         # Agent 心跳状态只显示最新一条，避免刷屏（工具执行期间状态变化频繁）
@@ -237,6 +257,7 @@ class DirectorChatBar(QWidget):
 
     def _set_busy(self, busy):
         self.send_btn.setEnabled(not busy)
+        self.clear_btn.setEnabled(not busy)
         self.stop_btn.setVisible(busy)
         self.input.setReadOnly(busy)
         if not busy:
