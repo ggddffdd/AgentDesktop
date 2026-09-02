@@ -63,3 +63,25 @@ tools_protocol_analysis.md
 
 # ===== 二进制资源（含品牌视觉，无法文本脱敏） =====
 icon.ico
+
+# ===== 调试 / 验证产物（不进版本库） =====
+# 探针脚本（_probe_*/probe_* 前缀）
+_probe_*.py
+probe_*.py
+vision_qc.py
+# 冒烟 / 启动脚本（_smoke_*/smoke_*/offscreen_smoke_* 前缀）
+_smoke_*.py
+smoke_*.py
+offscreen_smoke_*.py
+# 运行输出日志（txt 残留）
+_dup_out.txt
+_hist_out.txt
+_*.txt
+# 截图
+*_screen*.png
+_probe_ref.png
+# 视频产物
+*.mp4
+# 生成产物目录
+_real_img_test/
+incoming/
