@@ -27,7 +27,10 @@ from PySide6.QtCore import Qt, QSize, QThread, Signal, QUrl
 
 from ui import THEME
 from config import APP_DIR
-from director_web import DirectorWebView, register_localres_scheme
+from director_web import (
+    DirectorWebView, register_localres_scheme,
+    clip_card_html, keyframe_card_html, character_card_html, merge_card_html,
+)
 
 
 # ---------- 异常兜底装饰器 ----------
