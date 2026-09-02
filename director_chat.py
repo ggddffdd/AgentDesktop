@@ -17,6 +17,7 @@ import os
 import json
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTextEdit,
                                QPushButton)
 
@@ -235,15 +236,33 @@ class DirectorChatBar(QWidget):
         if not self._streaming:
             self._streaming = True
             self._insert("🎬 导演：")
-        self._insert(d)
+            # 记录流式片段起点：_insert 已把光标滚到末尾，起点即「导演：」标签之后
+            self._stream_pos = self.log.textCursor().position()
+        # stream_chunk 语义是「累积文本」（与主聊天 jsStream 的替换语义一致），
+        # 而 QTextEdit 的 insertPlainText 是「追加」——若直接追加，累积文本会被
+        # 一遍遍重复拼接（用户实证「镜镜3镜3关键镜3关键帧…」灾难）。这里手动做
+        # 「替换」：选中 [起点, 末尾] 旧片段，用最新累积文本整体覆盖。
+        cur = self.log.textCursor()
+        cur.beginEditBlock()
+        cur.setPosition(self._stream_pos)
+        cur.movePosition(QTextCursor.MoveOperation.End,
+                         QTextCursor.MoveMode.KeepAnchor)
+        cur.insertText(d)
+        cur.endEditBlock()
+        cur.movePosition(QTextCursor.MoveOperation.End)
+        self.log.setTextCursor(cur)
 
     def _on_commit(self, text):
+        _t = (text or "").strip()
         if self._streaming:
             self._insert("\n")
             self._streaming = False
-        text = (text or "").strip()
-        if text:
-            self.history.append({"role": "assistant", "content": text})
+        elif _t:
+            # 兜底：模型没走流式 chunk 直接 commit（超时/收敛/熔断等提示消息），
+            # 此时 _streaming 为 False，若不补渲染会只进历史不上屏。
+            self._insert(f"🎬 导演：{_t}\n")
+        if _t:
+            self.history.append({"role": "assistant", "content": _t})
             self._trim_history()
             self._save_history()
         self._set_hint("")
