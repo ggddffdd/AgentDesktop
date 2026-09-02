@@ -39,10 +39,23 @@ def _download_bytes(url, timeout=80):
 search_mod.download_bytes = _download_bytes
 ns["search_mod"] = search_mod
 
+# 需要一并带过来的模块级常量（档位表/比例表/防加字后缀/要字关键词），
+# 否则被抽取的函数体里引用它们会 NameError（这是本 harness 的限制，非产品 bug）。
+need_consts = ("_AGNES_TIERS", "_AGNES_RATIOS", "_WANT_TEXT_RE", "_ANTI_TEXT_SUFFIX")
+
 for node in tree.body:
+    take = False
     if isinstance(node, ast.FunctionDef) and node.name in need:
+        take = True
+    elif isinstance(node, ast.Assign):
+        names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        take = any(n in need_consts for n in names)
+    if take:
         code = compile(ast.Module(body=[node], type_ignores=[]), "tools.py", "exec")
         exec(code, ns)
+
+missing = [c for c in need_consts if c not in ns]
+assert not missing, f"模块级常量未抽到: {missing}"
 
 # 产物目录（用临时目录，避免污染真实产物库）
 TMP = os.path.join(HERE, "_real_img_test")
