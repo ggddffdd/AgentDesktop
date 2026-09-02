@@ -1269,129 +1269,87 @@ def _image_to_payload_value(value, app_dir):
 
 
 def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=None,
-                   image=None, first_frame=None, last_frame=None, dialogue=None, progress=None):
-    """生视频（Agnes 直连）：提交 -> 轮询 -> 下载。不经过本地网关。
+                   image=None, first_frame=None, last_frame=None, dialogue=None,
+                   progress=None, images=None):
+    """生视频（统一内核：委托 video-agent/core 的 AgnesClient）。
+
+    与网页版 / director_panel 共用同一套 core/，根除两份 Agnes 视频客户端。
+    模型固定 agnes-video-2.5-flash（720P，seconds 4-12，三模式 text/keyframe/reference）。
 
     返回 (rel, 'video', name) 交付物元组，或错误字符串。
-    duration: 秒（4-16），自动对齐到 8n+1 帧；aspect: 'landscape'/'portrait'；
-    image: 图生视频源图 URL（留空则文生视频）；
-    dialogue: 口播台词（中文）。填写后 Agnes 视频模型会**合成中文语音并对口型**，
-        视频自带人声（agnes-ai 技能已验证）；不填则纯画面无声。
-    first_frame/last_frame: 首尾帧图（URL 或 base64 data URI）。
-        - 首尾都提供 -> 关键帧模式（extra_body.image=[首,尾], mode=keyframes）
-        - 仅首帧提供 -> 单图首帧锁定（顶层 image=首帧，第1帧=该图）
-        - 都不提供 -> 纯文生视频
+    duration: 秒，自动钳制到 [4,12]；aspect: 'landscape'/'portrait'；
+    resolution: 仅作宽高提示（2.5-flash 实际分辨率由 size 决定，默认 720P）；
+    image / images: 图生视频参考图（reference 模式，≤5 张）；
+    first_frame/last_frame: 首尾帧（keyframe 模式）；
+    dialogue: 口播台词（中文），模型合成中文语音 + 对口型。
     """
     if not prompt:
         return "未提供视频描述"
+    try:
+        from core_agnes import AgnesClient, AgnesError
+    except Exception as e:
+        return f"视频内核导入失败：{e}"
     base, key = _agnes_creds(cfg)
-    # 时长(秒) -> 帧数，取最接近的 8n+1，限制在 [81, 401]
+    # 时长：2.5-flash 限 [4,12] 秒，取整数秒
     if duration and isinstance(duration, (int, float)):
-        target = int(float(duration) * 24)
-        n = max(1, round((target - 1) / 8))
-        num_frames = max(81, min(401, 8 * n + 1))
+        secs = int(round(float(duration)))
     else:
-        num_frames = 281
-    if resolution and "x" in str(resolution):
-        # 显式分辨率优先（UI 分辨率选择器传入，如 "1920x1080"）
-        try:
-            w, h = (int(x) for x in str(resolution).lower().split("x", 1))
-            width, height = w, h
-        except Exception:
-            width, height = 768, 1152  # 解析失败回退竖版默认
-    elif aspect == "landscape":
-        width, height = 1152, 768
-    else:
-        width, height = 768, 1152  # 默认竖版（抖音/视频号/小红书等竖屏平台）
-    # 口播台词注入：Agnes 视频模型把台词写进 prompt 即同步合成中文语音+对口型
-    # （agnes-ai SKILL.md 第 887-912 行已验证；模板为英文 wrapper + 中文台词，实测有效）
-    eff_prompt = prompt
-    if dialogue:
-        eff_prompt = (
-            f"{prompt}\n\n"
-            f"The character speaks in Chinese (用中文说): \"{dialogue}\". "
-            f"NO English speech. Natural lip-synced mouth movement, clear spoken Mandarin voice."
-        )
-    payload = {
-        "model": "agnes-video-v2.0",
-        "prompt": eff_prompt,
-        "width": width,
-        "height": height,
-        "num_frames": num_frames,
-        "frame_rate": 24,
-    }
-    # 归一化图片参数：本地/相对路径自动转 base64 data URI（Agnes 只认 URL 或 data URI）
-    image = _image_to_payload_value(image, app_dir)
-    first_frame = _image_to_payload_value(first_frame, app_dir)
-    last_frame = _image_to_payload_value(last_frame, app_dir)
-    # 首尾帧关键帧模式（精确过渡）；仅首帧则单图首帧锁定；否则文生视频
-    if first_frame and last_frame:
-        payload["extra_body"] = {
-            "image": [first_frame, last_frame],
-            "mode": "keyframes",
-        }
-    elif first_frame:
-        payload["image"] = first_frame
+        secs = 8
+    secs = max(4, min(12, secs))
+    # 比例：landscape -> 16:9，否则默认竖版 9:16（抖音/视频号/小红书）
+    aspect_ratio = "16:9" if aspect == "landscape" else "9:16"
+    size = "720P"
+    # 参考图归并：images(多) 优先，其次 image(单)
+    ref_list = []
+    if images:
+        ref_list = list(images) if isinstance(images, (list, tuple)) else [images]
     elif image:
-        payload["image"] = image
-    payload = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(base + "/videos", data=payload, method="POST")
-    req.add_header("Content-Type", "application/json")
-    if key:
-        req.add_header("Authorization", f"Bearer {key}")
+        ref_list = [image]
+    # 图片归一化（本地/相对路径 -> data URI，URL 透传），交给 core 前先转好
+    first_frame = _image_to_payload_value(first_frame, app_dir) if first_frame else None
+    last_frame = _image_to_payload_value(last_frame, app_dir) if last_frame else None
+    ref_list = [_image_to_payload_value(v, app_dir) for v in ref_list] if ref_list else None
+    # 进度回调适配：core 用 on_event(type, payload)，包装成 progress(str)
+    def _on_event(ev, payload):
+        if not progress:
+            return
+        if ev == "submitted":
+            progress("🎬 视频已提交，生成中…")
+        elif ev == "progress":
+            progress(f"🎬 视频生成中…已等待约 {int(payload.get('elapsed', 0))}s")
+        elif ev == "done":
+            progress("✅ 视频已生成")
+    # 保存到产物目录「视频」，路径与旧 _save_gen_video 保持一致（video_pipeline 靠 rel 拼回）
+    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    v_dir = os.path.join(PRODUCTS_DIR, "视频")
+    os.makedirs(v_dir, exist_ok=True)
+    dest_path = os.path.join(v_dir, f"video_{stamp}.mp4")
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read().decode("utf-8", "ignore"))
+        client = AgnesClient(api_key=key, base_url=base, video_model="agnes-video-2.5-flash")
+        path = client.generate_video(
+            prompt=prompt,
+            seconds=secs,
+            aspect_ratio=aspect_ratio,
+            size=size,
+            mode=None,            # 三模式由 core 自动推导（imgs->reference / 首尾帧->keyframe）
+            first_frame=first_frame,
+            last_frame=last_frame,
+            images=ref_list,
+            dialogue=dialogue,
+            model="agnes-video-2.5-flash",
+            dest_path=dest_path,
+            on_event=_on_event,
+            timeout=120,
+        )
+    except AgnesError as e:
+        return f"视频生成失败（统一内核）：{e.msg}"
     except Exception as e:
-        # HTTPError(4xx/5xx) 带 Agnes 的真实拒绝原因（JSON 正文），
-        # 必须读出来，否则永远只显示"HTTP Error 400: Bad Request"盲报，无法定位
-        body = ""
-        if hasattr(e, "read"):
-            try:
-                body = e.read().decode("utf-8", "ignore").strip()[:600]
-            except Exception:
-                pass
-        code = getattr(e, "code", "")
-        reason = getattr(e, "reason", "")
-        if code:
-            tail = f" | {body}" if body else ""
-            return f"视频提交失败（Agnes 直连）：HTTP {code} {reason}{tail}"
-        return f"视频提交失败（Agnes 直连）：{e}"
-    task_id = data.get("task_id") or data.get("id")
-    if not task_id:
-        return f"视频提交未返回任务ID：{data}"
-    # 轮询（每10秒一次，最多等10分钟；Agnes 高峰期排队可能较久）
-    deadline = time.time() + 600
-    status = {}
-    wait0 = time.time()
-    while time.time() < deadline:
-        if progress:
-            progress(f"🎬 视频生成中…已等待约 {int(time.time() - wait0)}s（可随时点停止）")
-        time.sleep(10)
-        try:
-            sreq = urllib.request.Request(
-                base + f"/videos/{task_id}",
-                headers={"Authorization": f"Bearer {key}"} if key else {},
-            )
-            with urllib.request.urlopen(sreq, timeout=15) as sr:
-                status = json.loads(sr.read().decode("utf-8", "ignore"))
-        except Exception:
-            continue
-        st = status.get("status")
-        if st == "completed":
-            video_url = (status.get("metadata") or {}).get("url") or ""
-            break
-        elif st in ("failed", "error"):
-            return f"视频生成失败：{status.get('error', status)}"
-    else:
-        return (f"视频生成超时（已轮询约20分钟仍无结果），任务ID：{task_id}。"
-                f"可稍后在 Agnes 控制台查看，或稍后重试。")
-    if not video_url:
-        return f"视频已完成但未返回下载地址：{status}"
-    try:
-        return _save_gen_video(app_dir, video_url)
-    except Exception as e:
-        return f"保存视频失败：{e}"
+        return f"视频生成失败（统一内核）：{e}"
+    if not path or not os.path.isfile(path):
+        return "视频生成未返回本地文件"
+    rel = os.path.relpath(path, app_dir).replace("\\", "/")
+    return (rel, "video", os.path.basename(rel))
+
 
 
 def tool_schedule(args):
