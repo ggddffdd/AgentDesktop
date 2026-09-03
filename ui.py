@@ -35,7 +35,10 @@ import task_resume
 import automation
 
 # v4.109：路由旁路日志（只写不读，任何失败静默吞掉，绝不干扰对话）
-import route_log
+try:
+    import route_log   # v4.109：旁路埋点（路由/用量/技能），只写不读
+except Exception:      # 旁路模块缺失绝不能拖垮主界面（冻结环境 import 失败必炸）
+    route_log = None
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -5886,6 +5889,12 @@ class ChatWindow(QMainWindow):
         self._refresh_skill_buttons()
         self._update_skill_bar()
         sk = self._current_skill()
+        # v4.110 旁路埋点：只在「选中」时记一次，取消选中不算一次使用
+        if sk:
+            try:
+                route_log.log_skill(sk.get("name") or skill_id, "manual")
+            except Exception:
+                pass
         self.status_label.setText(f"已切换技能：{sk['name']}" if sk else "已切换为通用模式")
 
     def _clear_skill(self):

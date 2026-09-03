@@ -6,16 +6,20 @@
     python route_stats.py 7          # 只看最近 7 天
     python route_stats.py 7 kw       # 最近 7 天 + 按触发原因 Top 榜
 
-输出四个数（决定要不要动路由的依据）：
+输出（决定要不要动路由 / 动技能库的依据）：
   1. DeepSeek 触发率       —— 付费通道占全部对话的比例
   2. 付费 token 总量        —— 真实烧了多少
   3. 触发原因 Top 榜        —— 哪些关键词在误命中（收紧词表的依据）
   4. 手动锁定占比           —— Auto 之外被手动干预的比例
+  5. 技能使用榜（v4.110）   —— 50 个技能里哪几个真在用、谁是死重
 
 判定口径（跑完一周照这个看）：
   - 触发率 < 20% 且付费 token 可忽略 → 路由健康，方案归档，别改了
   - 触发率 > 60% 且 Top 榜大量是无关高频词（保存/运行/分析/表格）
     → 该动的是收紧 _needs_tool_intent 关键词表，不是加复杂度评分
+  - 技能覆盖率 < 30% → 大部分技能是死重，把「从未使用」走 enabled_skills 禁用
+    （禁用不是删除，随时能开回来），每轮系统提示能省一截
+  - 某个技能全是「手动」零「自动」→ 触发词/描述写得太隐晦，模型不会主动用
 """
 
 import sys
@@ -137,6 +141,93 @@ def main():
         print("  该动的是收紧 _needs_tool_intent 词表，而不是加复杂度评分。")
     else:
         print("  付费触发率 %.1f%%，处于中间地带。继续观察，或看关键词榜有无明显误命中。" % rate)
+
+    # ============ 技能使用榜（v4.110）============
+    print("\n" + "=" * 56)
+    print("技能使用榜%s" % ("（最近 %d 天）" % days if days else "（全部）"))
+    print("=" * 56)
+
+    skills = [r for r in recs if r.get("event") == "skill"]
+    if not skills:
+        print("无技能使用记录。埋点从 v4.110 起生效 —— 正常用几天后这一节才有数据。")
+        return
+
+    try:
+        from skill_loader import normalize_skill_name, get_available_skills
+    except Exception:
+        def normalize_skill_name(s):
+            return str(s or "").strip().lower()
+        get_available_skills = None
+
+    _stat = defaultdict(lambda: {"n": 0, "auto": 0, "manual": 0})
+    _fails = Counter()
+    for s in skills:
+        nm = normalize_skill_name(s.get("name"))
+        if not nm:
+            continue
+        if s.get("ok") is False:
+            _fails[nm] += 1          # 模型想用但没找到 → 单独统计，不算命中
+            continue
+        d = _stat[nm]
+        d["n"] += 1
+        src = s.get("source") or ""
+        if src in ("auto", "manual"):
+            d[src] += 1
+
+    _hit = sum(d["n"] for d in _stat.values())
+    print("技能加载 %d 次：命中 %d / 落空 %d"
+          % (len(skills), _hit, sum(_fails.values())))
+
+    print("\n-- Top 排行 --")
+    print("  %-26s %5s %6s %6s" % ("技能", "次数", "自动", "手动"))
+    for k, v in sorted(_stat.items(), key=lambda x: -x[1]["n"])[:20]:
+        print("  %-26s %5d %6d %6d" % (k[:26], v["n"], v["auto"], v["manual"]))
+
+    # ---- 覆盖率 / 死重候选 ----
+    all_names = set()
+    if get_available_skills:
+        try:
+            from config import get_skill_scan_dirs
+            for d in get_skill_scan_dirs():
+                for sk in get_available_skills(d):
+                    n = normalize_skill_name(sk.get("name", ""))
+                    if n:
+                        all_names.add(n)
+        except Exception:
+            all_names = set()
+
+    used = set()
+    if all_names:
+        used = set(_stat.keys()) & all_names
+        dead = sorted(all_names - set(_stat.keys()))
+        print("\n-- 覆盖率 --")
+        print("  用过 %d / 共 %d 个技能（%.0f%%）"
+              % (len(used), len(all_names), 100.0 * len(used) / len(all_names)))
+        if dead:
+            print("\n-- 从未使用（死重候选 %d 个）--" % len(dead))
+            for n in dead:
+                print("  " + n)
+
+    if _fails:
+        print("\n-- 模型想用但没找到的名字（幻觉 / 清单对不上）--")
+        for k, v in _fails.most_common(10):
+            print("  %-30s %d 次" % (k, v))
+
+    # ---- 技能判定 ----
+    print("\n-- 技能判定 --")
+    if all_names:
+        rate_used = 100.0 * len(used) / len(all_names)
+        if rate_used < 30:
+            print("  覆盖率 %.0f%% < 30%% → 大部分技能是死重。" % rate_used)
+            print("  建议把「从未使用」清单走 enabled_skills 禁用（不是删除，随时能开回来），")
+            print("  每轮固定注入的技能清单能省下一截，也少干扰模型选择。")
+        else:
+            print("  覆盖率 %.0f%%，技能库整体在用，不必清理。" % rate_used)
+    manual_only = [k for k, v in _stat.items() if v["n"] >= 2 and v["auto"] == 0]
+    if manual_only:
+        print("  以下 %d 个技能全是手动点选、模型从未自动命中 → 触发词/描述写得太隐晦："
+              % len(manual_only))
+        print("    " + "、".join(manual_only[:12]))
 
 
 if __name__ == "__main__":

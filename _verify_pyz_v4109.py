@@ -38,7 +38,16 @@ zr = ZlibArchiveReader(EXE, start_offset=off)
 
 
 def find_module(name):
-    """精确匹配模块短名，禁止 endswith（会误命中 browser_control_tools 等）。"""
+    """完整模块名精确匹配优先，再退回末段匹配。
+
+    ⚠️ 禁止 endswith（会命中 browser_control_tools 等 30+ 模块）；
+    也**不能只写** `k.split(".")[-1] == name` —— v4.110 实测：PYZ 里 `tools`
+    有 7 个同名候选（comtypes.tools / pandas.core.tools / pydantic.tools …），
+    toc 是 dict、顺序不定，退回末段匹配前必须先试全名精确匹配。
+    """
+    for k in zr.toc.keys():
+        if k == name:
+            return k
     for k in zr.toc.keys():
         if k.split(".")[-1] == name:
             return k

@@ -25,6 +25,10 @@ from browser_control_tools import BROWSER_CONTROL_TOOL_TABLE
 from skill_installer_tools import SKILL_INSTALLER_TOOL_TABLE
 from memory_store import append_memory, search_memory as _search_memory
 from structured_logger import get_logger
+try:
+    import route_log   # v4.110：旁路埋点（路由/用量/技能），只写不读
+except Exception:      # 旁路模块缺失绝不能拖垮工具模块（冻结环境 import 失败必炸）
+    route_log = None
 from chart_generator import ChartGenerator
 chart_gen = ChartGenerator()
 from context_manager import get_context_manager
@@ -1527,6 +1531,19 @@ def tool_schedule(args):
     return result_str, (message, secs, repeat)
 
 
+def _log_skill_hit(name, ok=True):
+    """v4.110 技能使用旁路埋点（source=auto，即模型自己调 use_skill 命中）。
+
+    route_log 缺失或写盘失败一律静默跳过——旁路不许拖垮技能加载这条主链路。
+    """
+    if route_log is None:
+        return
+    try:
+        route_log.log_skill(name, "auto", ok=ok)
+    except Exception:
+        pass
+
+
 def tool_use_skill(cfg, app_dir, skill_name):
     """加载指定技能的 prompt，返回可注入对话上下文的技能指令文本。
 
@@ -1578,11 +1595,14 @@ def tool_use_skill(cfg, app_dir, skill_name):
             except Exception:
                 pass
         names = "、".join(dict.fromkeys([n for n in names if n])) or "（无）"
+        _log_skill_hit(skill_name, ok=False)   # 模型想用但没找到 → 幻觉名或清单对不上
         return f"未找到技能「{skill_name}」。可用技能：{names}"
 
     if not prompt.strip():
+        _log_skill_hit(skill_name, ok=False)
         return f"技能「{skill_name}」已加载，但未定义内容。"
 
+    _log_skill_hit(skill_name, ok=True)
     return (
         f"【已加载技能：{skill_name}】\n"
         f"技能目录：{skill_dir}\n（如技能引用 references/ 下的文件，可用 read_file 读取该目录下的文件）\n"

@@ -14,7 +14,12 @@
 字段：
   event=route  路由决策：model / base_url / upgraded / reason / lock / msgs_len
   event=usage  调用成本：model / base_url / prompt_tokens / completion_tokens / total_tokens
-两者用 ts + model 关联；tier 标注 paid/free，便于直接统计付费通道花费。
+  event=skill  技能使用（v4.110）：name / source(auto|manual) / ok
+前两者用 ts + model 关联；tier 标注 paid/free，便于直接统计付费通道花费。
+
+v4.110 增 event=skill：回答「50 个技能里到底哪几个真在用」。
+source 区分「模型自动命中」与「用户手动点选」——某个技能若 100% 是 manual，
+说明模型从来不会自动用它（触发词有问题）；ok=False 的记录则暴露模型幻觉技能名。
 """
 
 import os
@@ -73,6 +78,22 @@ def log_route(**fields):
                 pass
             with open(p, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
+        return True
+    except Exception:
+        return False
+
+
+def log_skill(name="", source="", ok=True):
+    """v4.110 技能使用埋点。
+
+    source: "auto"   = 模型自己调 use_skill 工具命中（说明触发词/描述写对了）
+            "manual" = 用户在界面上点选（说明模型不会自动用，得人来）
+    ok:     是否真的找到了该技能。ok=False 记录的是「模型想用但没找到的名字」，
+            这类数据能暴露模型幻觉技能名，或技能清单与模型理解对不上。
+    """
+    try:
+        log_route(event="skill", name=str(name or ""), source=str(source or ""),
+                  ok=bool(ok))
         return True
     except Exception:
         return False
