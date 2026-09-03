@@ -82,6 +82,9 @@ _*.txt
 _probe_ref.png
 # 视频产物
 *.mp4
+# 例外：_dw_test 是 director_web 回归脚本的素材（clip1.mp4 仅 6KB），
+# 缺了它 _verify_director_web_logic.py 会报 11 项假 FAIL（实为素材缺失非代码问题）
+!_dw_test/*.mp4
 # 生成产物目录
 _real_img_test/
 incoming/

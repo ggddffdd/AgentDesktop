@@ -34,6 +34,9 @@ import task_resume
 # v4.88：自动化任务（定时提醒 / 定时执行 Agent 任务）
 import automation
 
+# v4.109：路由旁路日志（只写不读，任何失败静默吞掉，绝不干扰对话）
+import route_log
+
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QTextBrowser, QLineEdit, QPushButton, QSystemTrayIcon, QMenu, QLabel,
@@ -1981,6 +1984,9 @@ class ChatWindow(QMainWindow):
         # 输入区
         cc_lay.addWidget(self._build_input_area())
 
+        # v4.109：模型下拉填充（必须在 _build_input_area 建好 combo 之后）
+        self._fill_model_combo()
+
         # 麦克风列表填充（必须在 status_label 建好之后，否则 __init__ 崩溃）
         self._fill_mics()
 
@@ -1998,6 +2004,75 @@ class ChatWindow(QMainWindow):
         chat_layout.setSpacing(0)
         chat_layout.addWidget(split)
 
+    # ---------- v4.109 模型选择下拉（Auto 智能路由 / 手动锁定档位） ----------
+    def _fill_model_combo(self):
+        """填充下拉：Auto + 主模型 + 各 model_profiles 档位。
+
+        - Auto（默认）：走原有智能路由，行为与 v4.108 完全一致。
+        - 主模型：锁定 cfg 的 base_url/model/api_key。
+        - 各 profile：锁定该档位；未填 api_key 的档位列出但**禁用**，
+          避免选中后静默失败（也能让大哥看到"去设置里填 key 就能用"）。
+        选择持久化到 config.json 的 model_lock，重启保持。
+        """
+        # 注意：必须叫 chat_model_combo。设置弹层里还有一个同名的 self.model_combo
+        # （_build_settings_popup 内创建，__init__ 在其后执行会覆盖本引用），
+        # 复用会导致输入区下拉变孤儿控件、且路由读到设置弹层的值。
+        if not hasattr(self, "chat_model_combo"):
+            return
+        cfg = self.cfg or {}
+        self.chat_model_combo.blockSignals(True)
+        try:
+            self.chat_model_combo.clear()
+            self.chat_model_combo.addItem("Auto · 智能路由", "")
+            self.chat_model_combo.addItem("主模型 · %s" % (cfg.get("model") or "未设置"),
+                                          "__main__")
+            for name, prof in (cfg.get("model_profiles") or {}).items():
+                prof = prof or {}
+                ok = bool(prof.get("api_key")) and bool(prof.get("model")) and bool(prof.get("base_url"))
+                label = "%s · %s" % (name, prof.get("model") or "未设置")
+                if not ok:
+                    label += "（未配置 Key）"
+                idx = self.chat_model_combo.addItem(label, name)
+                if not ok:
+                    try:
+                        self.chat_model_combo.model().item(idx).setEnabled(False)
+                    except Exception:
+                        pass
+            # 恢复上次选择（锁定档位若已不存在则安全回落 Auto）
+            saved = cfg.get("model_lock", "") or ""
+            target = 0
+            for i in range(self.chat_model_combo.count()):
+                if self.chat_model_combo.itemData(i) == saved:
+                    target = i
+                    break
+            self.chat_model_combo.setCurrentIndex(target)
+            self._model_lock = self.chat_model_combo.itemData(target) or ""
+        finally:
+            self.chat_model_combo.blockSignals(False)
+
+    def _on_model_combo_changed(self, idx):
+        """下拉切换：写入 self._model_lock 并持久化。Auto 时清空锁定。"""
+        try:
+            val = self.chat_model_combo.itemData(idx)
+        except Exception:
+            return
+        val = val or ""
+        self._model_lock = val
+        try:
+            self.cfg["model_lock"] = val
+            import config as _cfg
+            _cfg.save_config(self.cfg)
+        except Exception as e:
+            log.warning("保存 model_lock 失败: %s", e)
+        try:
+            name = (self.chat_model_combo.itemText(idx) or "").strip()
+            if val:
+                self.status_label.setText("已锁定模型：%s（Auto 路由已停用）" % name)
+            else:
+                self.status_label.setText("模型：Auto 智能路由")
+        except Exception:
+            pass
+
     def _build_input_area(self):
         """输入区卡片：状态/技能条 + 附件 + 输入框 + 发送。"""
         input_area = QWidget()
@@ -2006,10 +2081,34 @@ class ChatWindow(QMainWindow):
         ia_lay.setContentsMargins(24, 8, 24, 20)
         ia_lay.setSpacing(8)
 
+        # v4.109：状态行 = 左状态文字 + 右模型选择（Auto 智能路由 / 手动锁定档位）
+        _top_row = QWidget()
+        _top_lay = QHBoxLayout(_top_row)
+        _top_lay.setContentsMargins(0, 0, 0, 0)
+        _top_lay.setSpacing(8)
         self.status_label = QLabel("")
         self.status_label.setStyleSheet(
             f"color:{THEME['faint']};font-size:11px;min-height:12px;")
-        ia_lay.addWidget(self.status_label)
+        _top_lay.addWidget(self.status_label, 1)
+        self.chat_model_combo = QComboBox()
+        self.chat_model_combo.setFixedHeight(24)
+        self.chat_model_combo.setMinimumWidth(150)
+        self.chat_model_combo.setMaximumWidth(280)
+        self.chat_model_combo.setToolTip(
+            "Auto = 智能路由（默认：轻量走 Agnes，工具/复杂任务自动升舱 DeepSeek）\n"
+            "其他选项 = 手动锁定，本轮起全程只用该模型，不再自动切换")
+        self.chat_model_combo.setStyleSheet(
+            f"QComboBox{{background:{THEME['card']};border:1px solid {THEME['border']};"
+            f"border-radius:6px;padding:2px 6px;font-size:11px;color:{THEME['dim']};}}"
+            f"QComboBox:hover{{border-color:{THEME['border_hover']};}}"
+            f"QComboBox:focus{{border:1px solid {THEME['accent']};}}"
+            f"QComboBox::drop-down{{border:none;width:18px;}}"
+            f"QComboBox QAbstractItemView{{background:{THEME['card']};"
+            f"border:1px solid {THEME['border']};"
+            f"selection-background-color:{THEME['accent']};}}")
+        self.chat_model_combo.currentIndexChanged.connect(self._on_model_combo_changed)
+        _top_lay.addWidget(self.chat_model_combo, 0)
+        ia_lay.addWidget(_top_row)
 
         self.skill_bar = QWidget()
         self.skill_bar.setVisible(False)
@@ -6467,7 +6566,8 @@ class ChatWindow(QMainWindow):
                     for p in m["content"])
             for m in _msgs
         )
-        _, _m, _ = self._route_model(_msgs, force_complex=(_ti or _has_img))
+        _, _m, _ = self._route_model(_msgs, force_complex=(_ti or _has_img),
+                                     reason="agent_worker")
         _vision_ok = _model_supports_vision(_m)
         # 统一走 _sanitize_msg_for_api——滤掉 tool/tool_log/None；视觉模型保留多模态
         # list（含图像），非视觉归一化为纯文本（list 原样发接口会 400）。
@@ -6770,24 +6870,98 @@ class ChatWindow(QMainWindow):
         self._busy = False
         self.send_btn.setEnabled(True)
         self._on_input_changed()
-    def _route_model(self, messages, force_complex=False):
+    def _route_model(self, messages, force_complex=False, reason=""):
         """v4.94+v4.98 模型智能路由：默认主模型，复杂任务或工具意图升级到 complex_model。
         返回 (base_url, model, api_key)。complex_model 未配置 api_key 时回退主模型。
-        force_complex=True 时直接强制走 complex_model（工具意图：杜绝弱模型退化成文字演工具）。"""
+        force_complex=True 时直接强制走 complex_model（工具意图：杜绝弱模型退化成文字演工具）。
+
+        v4.109 两处增量（均不改变 Auto 默认行为）：
+        - reason：调用方可传入升舱归因（tool_intent / image / force），写入旁路日志。
+        - 手动锁定 self._model_lock：下拉菜单选了 Auto 之外的档位时全程锁定，
+          完全绕过智能路由；锁定档位失效（key 被删/配置不全）则回退主模型，
+          **绝不静默跳到付费通道**。
+        """
         cfg = self.cfg
         base_url = cfg.get("base_url", "")
         model = cfg.get("model", "")
         api_key = cfg.get("api_key", "")
+        _upgraded = False
+        _why = reason or ""
+
+        # ---- v4.109 手动锁定优先：选了具体模型就不再自动切换 ----
+        _lock = getattr(self, "_model_lock", "") or ""
+        if _lock:
+            if _lock == "__main__":
+                _why = "manual_lock:main"
+            else:
+                _prof = (cfg.get("model_profiles") or {}).get(_lock) or {}
+                if _prof.get("api_key") and _prof.get("model") and _prof.get("base_url"):
+                    base_url = _prof["base_url"]
+                    model = _prof["model"]
+                    api_key = _prof["api_key"]
+                    _why = "manual_lock:" + _lock
+                else:
+                    _why = "lock_invalid:fallback_main"
+            self._route_reason = _why
+            self._log_route(messages, model, base_url, False, _why)
+            return base_url, model, api_key
+
         routing = cfg.get("model_routing") or {}
         if not routing.get("enabled", True):
+            self._route_reason = "routing_disabled"
+            self._log_route(messages, model, base_url, False, "routing_disabled")
             return base_url, model, api_key
         if not (force_complex or self._is_complex(messages, routing)):
+            self._route_reason = "default"
+            self._log_route(messages, model, base_url, False, "default")
             return base_url, model, api_key
         prof_name = routing.get("complex_model", "")
         prof = (cfg.get("model_profiles") or {}).get(prof_name) or {}
         if prof.get("api_key") and prof.get("model") and prof.get("base_url"):
-            return prof["base_url"], prof["model"], prof["api_key"]
+            if not _why:
+                _why = ("force_complex" if force_complex
+                        else self._complexity_reason(messages, routing))
+            base_url = prof["base_url"]
+            model = prof["model"]
+            api_key = prof["api_key"]
+            _upgraded = True
+        else:
+            _why = "complex_profile_unset"
+        self._route_reason = _why
+        self._log_route(messages, model, base_url, _upgraded, _why)
         return base_url, model, api_key
+
+    def _complexity_reason(self, messages, routing):
+        """v4.109：复杂度判定的具体归因（命中哪个关键词 / 长度超阈值），供旁路日志复盘。"""
+        hints = routing.get("complex_hint") or []
+        threshold = routing.get("length_threshold", 1500)
+        total = 0
+        for m in messages or []:
+            c = m.get("content", "")
+            if not isinstance(c, str):
+                continue
+            total += len(c)
+            for h in hints:
+                if h in c:
+                    return "kw:" + h
+        if total > threshold:
+            return "len:%d>%s" % (total, threshold)
+        return "complex"
+
+    def _log_route(self, messages, model, base_url, upgraded, reason):
+        """v4.109 旁路路由日志：只记录不干预，任何异常一律吞掉。"""
+        try:
+            _n = 0
+            for _m in messages or []:
+                _c = _m.get("content")
+                if isinstance(_c, str):
+                    _n += len(_c)
+            route_log.log_route(event="route", model=model, base_url=base_url,
+                                upgraded=upgraded, reason=reason,
+                                lock=getattr(self, "_model_lock", "") or "",
+                                msgs_len=_n)
+        except Exception:
+            pass
 
     def _is_complex(self, messages, routing):
         """复杂任务判定：命中关键词 或 消息总长度超阈值。"""
@@ -6938,7 +7112,12 @@ class ChatWindow(QMainWindow):
         # 路由：工具意图或含图都升舱到 complex_model（视觉模型）
         _route_force = _tool_intent or _has_img_call or force_complex
         _refuse_tools = self._user_refuses_tools(messages)
-        _base_url, _model, _api_key = self._route_model(messages, force_complex=_route_force)
+        # v4.109：升舱归因——记录"是谁把这次调用送进了付费通道"，供旁路日志复盘
+        _route_reason = ("tool_intent" if _tool_intent
+                         else ("image" if _has_img_call
+                               else ("force_complex" if force_complex else "")))
+        _base_url, _model, _api_key = self._route_model(
+            messages, force_complex=_route_force, reason=_route_reason)
         url = _base_url.rstrip("/") + "/chat/completions"
         body = {
             "model": _model,
@@ -7123,6 +7302,15 @@ class ChatWindow(QMainWindow):
                 for tc in tool_calls)
             _pt = _est_in // 2
             _ct = max(_est_out // 2, 1)
+        # v4.109：旁路成本日志（只记录，不干预；拿真实 token 才能算清付费通道花了多少）
+        try:
+            route_log.log_route(event="usage", model=_model, base_url=_base_url,
+                                prompt_tokens=_pt, completion_tokens=_ct,
+                                total_tokens=_pt + _ct,
+                                reason=getattr(self, "_route_reason", ""),
+                                lock=getattr(self, "_model_lock", "") or "")
+        except Exception:
+            pass
         return {
             "content": full_content,
             "tool_calls": tool_calls,
@@ -7172,13 +7360,25 @@ class ChatWindow(QMainWindow):
         )
         if _has_img:
             # 带图 → 走视觉模型通道（复杂/工具意图路径，强制 complex）
-            _bu, _m, _k = self._route_model(session.messages, force_complex=True)
+            _bu, _m, _k = self._route_model(session.messages, force_complex=True,
+                                            reason="image")
             # v4.102：视觉模型思考阶段会先吐 reasoning_content（content 为空，可能持续
             # 10-30秒），给用户明确反馈避免误以为「卡死无回复」。
             self.status_label.setText("看图中…（视觉模型思考中，请稍候 10-30 秒）")
         else:
             _bu, _m, _k = self.cfg["base_url"], self.cfg["model"], self.cfg["api_key"]
+            # v4.109：手动锁定在这条路径上生效（Auto 时保持原样——普通对话仍只走主模型，
+            # 不因为命中 complex_hint 关键词就升舱付费，行为与 v4.108 完全一致）。
+            if getattr(self, "_model_lock", ""):
+                _bu, _m, _k = self._route_model(session.messages, reason="stream_lock")
         _vision_ok = _model_supports_vision(_m)
+        if _has_img and not _vision_ok and getattr(self, "_model_lock", ""):
+            # 手动锁定了非视觉模型 + 用户发图：图会被归一化成纯文本，明确告知避免困惑
+            try:
+                self.status_label.setText(
+                    "已锁定 %s（非视觉模型）：本轮图片按文字描述处理，看图请切回 Auto" % _m)
+            except Exception:
+                pass
 
         # v4.79 hotfix：历史必须经 _sanitize_msg_for_api 清洗——session 里混有
         # tool/tool_log/None/list 内容（UI 展示用），直接发接口会 400。

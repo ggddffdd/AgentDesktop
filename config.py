@@ -153,6 +153,9 @@ DEFAULT_CONFIG = {
         "魔搭 ModelScope": {"base_url": "https://api.modelscope.cn/v1", "model": "qwen2.5-7b-instruct", "api_key": ""},
         "Agnes": {"base_url": "https://apihub.agnes-ai.cn/v1", "model": "agnes-2.5-flash", "api_key": ""},
     },
+    # v4.109：模型下拉选择。""=Auto 智能路由（默认行为，等同 v4.108）；
+    # "__main__"=锁定主模型；其余=锁定 model_profiles 里的档位名（如 "DeepSeek 官方"）。
+    "model_lock": "",
     "model_routing": {
         "enabled": True,                 # 模型智能路由开关
         "complex_model": "DeepSeek 官方",  # 复杂任务升级到的 profile（必须已在 model_profiles 且填了 api_key）
