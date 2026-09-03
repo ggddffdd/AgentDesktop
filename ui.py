@@ -7921,6 +7921,8 @@ class TrayApp:
         show_action.triggered.connect(self.toggle)
         skill_action = QAction("🧩 技能管理器", app)
         skill_action.triggered.connect(self._open_skill_manager)
+        tool_action = QAction("🧰 工具管理器", app)   # v4.111：工具白名单（省 token）
+        tool_action.triggered.connect(self._open_tool_manager)
         market_action = QAction("🛍 技能市场", app)
         market_action.triggered.connect(self._open_skill_market)
         wf_action = QAction("⚙️ 工作流模板", app)
@@ -7934,6 +7936,7 @@ class TrayApp:
         quit_action.triggered.connect(self.quit)
         menu.addAction(show_action)
         menu.addAction(skill_action)
+        menu.addAction(tool_action)
         menu.addAction(market_action)
         menu.addAction(wf_action)
         menu.addAction(review_action)
@@ -7964,6 +7967,21 @@ class TrayApp:
         except Exception as e:
             try:
                 self.tray.showMessage("技能管理器", f"打开失败：{e}",
+                                      QSystemTrayIcon.Warning, 5000)
+            except Exception:
+                pass
+
+    def _open_tool_manager(self):
+        """v4.111 工具管理器：勾掉不用的工具，减少每轮注入体积。
+
+        白名单为空 = 全部注入（默认，行为零变化）；勾掉只是不注入、不是删除。
+        """
+        try:
+            from tool_manager_ui import open_tool_manager
+            open_tool_manager(self.cfg)
+        except Exception as e:
+            try:
+                self.tray.showMessage("工具管理器", f"打开失败：{e}",
                                       QSystemTrayIcon.Warning, 5000)
             except Exception:
                 pass

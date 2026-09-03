@@ -5,6 +5,9 @@ datas = [('config.json', '.'), ('agent_rules.md', '.'), ('skills', 'skills'), ('
           ('../video-agent/core', 'core')]
 binaries = []
 hiddenimports = ['PySide6', 'PySide6.QtPrintSupport', 'PySide6.QtWebEngineWidgets', 'PySide6.QtWebEngineCore', 'chat_web', 'requests', 'psutil', 'watchdog', 'skill_manager_ui', 'clipboard_monitor', 'mcp_client', 'rag', 'ui', 'agent', 'agent_node', 'tools', 'config', 'skill_loader', 'memory_store', 'context_manager', 'session', 'browser_control_tools', 'chart_generator', 'database_tools', 'sandbox', 'search', 'skill_installer_tools', 'software_control_tools', 'step_tracer', 'structured_logger', 'system_control_tools', 'task_graph', 'token_compressor', 'voice', 'webhook_server', 'permissions', 'risk', 'cryptography', 'docx', 'perf_baseline', 'onboarding', 'harness', 'task_resume', 'trace_log', 'skill_review', 'digital_twin_panel', 'director_panel', 'video_pipeline', 'automation', 'automation_panel', 'browser_bridge', 'route_log',
+               # v4.111 工具管理器：与 skill_manager_ui 同为函数内延迟导入，
+               # 静态分析扫不到，必须显式登记，否则打包后点菜单报 ModuleNotFoundError。
+               'tool_manager_ui',
                # 统一内核桥接 + video-agent/core 包（让 PyInstaller 静态收集 core.*）
                'core_agnes', 'core', 'core.agnes', 'core.media', 'core.config', 'core.models', 'core.pipeline', 'core.script', 'core.__init__']
 

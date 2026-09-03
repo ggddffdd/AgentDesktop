@@ -191,6 +191,11 @@ DEFAULT_CONFIG = {
     "webhook_token": "",
     # 技能管理器（模块7）：已启用技能清单
     "enabled_skills": [],
+    # v4.111 工具开关：白名单。空 = 全部启用（向后兼容，行为零变化）。
+    # 实测 68 个工具定义共 26,699 字符，占每次 API 输入 token 约 65%；
+    # 其中 30 个从未被用过却占 42.9% 体积。关掉不用的 = 最省的一刀，且随时能开回来。
+    # 生成清单：python tool_budget.py --suggest
+    "enabled_tools": [],
     # v4.76：OS 级自动备份（Windows 任务计划程序）
     "autobackup_freq": "",        # ""=关闭 / "daily" / "weekly"
     "autobackup_time": "03:00",   # HH:MM
@@ -357,6 +362,60 @@ def _load_enabled_skills():
     except Exception as e:
         log.warning("读取 enabled_skills 失败: %s", e)
     return []
+
+
+def _load_enabled_tools():
+    """读取 config.json 的 enabled_tools 白名单（v4.111 起用于工具注入过滤）。
+
+    失败或字段缺失时返回 []，表示「未配置」→ 调用方按全启用处理（向后兼容）。
+
+    规则与 enabled_skills（v4.67）完全一致：空 = 全开，非空 = 只留显式列出的。
+    """
+    try:
+        if os.path.exists(CONFIG_PATH):
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                return json.load(f).get("enabled_tools", []) or []
+    except Exception as e:
+        log.warning("读取 enabled_tools 失败: %s", e)
+    return []
+
+
+def _filter_enabled_tools(tools, cfg=None):
+    """按 enabled_tools 白名单过滤工具清单。
+
+    取值顺序：**优先用调用方传进来的 cfg**，取不到再读 config.json 文件。
+    （只读文件会和调用方手上的 cfg 脱节——测试改了内存里的 cfg 却读不到，
+      表现就是"配了白名单但没生效"，极难排查。）
+
+    为什么动这里（v4.111 实测）：68 个工具定义 26,699 字符，占每次 API 输入
+    token 的约 65%；Agent 路径每轮全量注入，长会话（知乎那条 323 次工具调用）
+    把这项放大几百倍。**功能可以无限堆，但每轮注入量不能跟着涨**——否则
+    「功能怪兽」路线会被自己的成本拖死。
+
+    ⚠ 过滤掉的等于不存在：模型看不见就不会调。但只是不注入、不是删除，
+      配置里加回来即可恢复。
+    ⚠ 这里过滤后 `_build_tool_overview`（系统提示里的工具概览）也会一起瘦——
+      它同样读 get_all_tools，不会漏改。
+    """
+    enabled = cfg.get("enabled_tools") if isinstance(cfg, dict) else None
+    if enabled is None:
+        enabled = _load_enabled_tools()
+    if not enabled:
+        return tools
+    keep = set(enabled)
+    out = []
+    for t in tools:
+        fn = (t or {}).get("function") or {}
+        name = fn.get("name") or (t or {}).get("name") or ""
+        if name in keep:
+            out.append(t)
+    # 白名单里写了不存在的工具名（拼错 / 工具已改名）→ 明确告警，别静默吞掉
+    gone = keep - {((t or {}).get("function") or {}).get("name")
+                   or (t or {}).get("name") or "" for t in tools}
+    if gone:
+        log.warning("enabled_tools 里有 %d 个名字匹配不到任何工具（拼错或已改名）：%s",
+                    len(gone), sorted(gone))
+    return out
 
 
 def load_dynamic_skills(compact=False):
@@ -762,7 +821,9 @@ def get_all_tools(cfg):
         pass
     for client in mcp_clients:
         tools.extend(client.tools)
-    return tools
+    # v4.111 工具白名单过滤（空=全开，行为零变化）。放在 MCP 合并**之后**，
+    # 这样 MCP 工具也一起受控——它们同样按字符算钱。
+    return _filter_enabled_tools(tools, cfg)
 
 
 def shutdown_mcp():
