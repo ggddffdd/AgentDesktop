@@ -27,7 +27,7 @@ Python 侧链接拦截（JS → Python）：
 import json
 import os
 
-from PySide6.QtCore import Signal, QUrl
+from PySide6.QtCore import Signal, QUrl, QTimer
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEnginePage
@@ -293,27 +293,68 @@ class ChatWebView(QWebEngineView):
         self.setPage(self._page)
         self._ready = False
         self._ever_ready = False
+        self._rebuilding = False  # v4.118：自愈重建中（探活/崩溃触发），完成后须发 pageReloaded
         self._pending = []
         self.loadFinished.connect(self._on_load_finished)
+        # v4.118：渲染进程崩溃（OOM/GPU 等）→ QWebEngineView 直接白屏且不触发
+        # loadFinished，此前无任何处理 → 「过几分钟空白、手动刷新恢复」。
+        # 崩溃后自动重建页面，重建成功走 loadFinished→pageReloaded 让上层全量重渲染自愈。
+        self.renderProcessTerminated.connect(self._on_render_process_terminated)
+        # v4.118 保底心跳：每 60s 探活 DOM。渲染进程静默死亡（部分平台不发
+        # renderProcessTerminated）或 DOM 被意外清空时兜底重建。
+        self._probe_inflight = False
+        self._probe_timer = QTimer(self)
+        self._probe_timer.setInterval(60_000)
+        self._probe_timer.timeout.connect(self._probe_alive)
+        self._probe_timer.start()
         # baseUrl 用 file:/// 使头像/图片的 file:// 引用可加载
         self.setHtml(_build_html(theme), QUrl("file:///"))
 
     # ---- 内部 ----
+    def _on_render_process_terminated(self, status, exit_code):
+        # 0=Normal 1=Abnormal 2=Killed 3=Crashed；出现即按崩溃重建。
+        # _ever_ready 保持 True + 打 _rebuilding 标记：重建完成后发 pageReloaded
+        self._ready = False
+        self._rebuilding = True
+        self.setHtml(_build_html(self._theme), QUrl("file:///"))
+
+    def _probe_alive(self):
+        if self._probe_inflight or not self._ready:
+            return
+        self._probe_inflight = True
+        try:
+            self.page().runJavaScript(
+                "!!document.getElementById('container')",
+                0, self._on_probe_result)
+        except Exception:
+            self._probe_inflight = False
+
+    def _on_probe_result(self, result):
+        self._probe_inflight = False
+        if result is True:
+            return
+        # DOM 探活失败：页面已死/被清空 → 重建。
+        # 打 _rebuilding 标记：重建完成后发 pageReloaded 通知上层全量重渲染
+        self._ready = False
+        self._rebuilding = True
+        self.setHtml(_build_html(self._theme), QUrl("file:///"))
+
     def _on_load_finished(self, ok):
         if ok:
             was_ready = self._ready
+            was_rebuilding = self._rebuilding
             self._ready = True
+            self._rebuilding = False
             self._ever_ready = True
             pending, self._pending = self._pending, []
             for js in pending:
                 self._exec(js)
-            if was_ready:
-                # 就绪后又重载：DOM 已被清空，通知上层全量重渲染
+            if was_ready or was_rebuilding:
+                # 就绪后又重载/自愈重建完成：DOM 已被清空，通知上层全量重渲染
                 self.pageReloaded.emit()
         else:
             # 加载失败：仅首次未就绪时延迟重试一次（避免信号风暴）
             if not self._ever_ready:
-                from PySide6.QtCore import QTimer
                 QTimer.singleShot(800, self._retry_load)
 
     def _retry_load(self):

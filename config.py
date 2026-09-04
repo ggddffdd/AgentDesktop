@@ -23,8 +23,15 @@ else:
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.108"
-APP_BUILD_DATE = "2026-09-03"
+APP_VERSION = "v4.119"
+APP_BUILD_DATE = "2026-09-04"
+# v4.119（2026-09-04）聊天区白屏治本：main.py 在 import PySide6 之前设
+# QTWEBENGINE_CHROMIUM_FLAGS 禁 GPU 合成（Windows 上 GPU 加速撞显卡驱动/HDR/高DPI →
+# renderer 周期性崩溃约 1 分钟一次，v4.118 自愈只是崩后重建治标不治本）。
+# 禁 GPU 后走软件光栅化，聊天渲染无感知差异；v4.118 的崩溃自愈+心跳探活保留作双保险。
+# v4.118（2026-09-04）聊天区空白自愈：ChatWebView 挂 renderProcessTerminated——渲染进程
+# 崩溃（OOM/GPU）自动重建页面；新增 60s DOM 心跳探活兜底（渲染进程静默死亡/DOM 被清空），
+# 重建完成经 pageReloaded 通知上层全量重渲染。修复「过几分钟对话框空白、手动刷新才恢复」。
 # v4.102（2026-08-22）图像输入链路：DeepSeek 通道模型换 deepseek-v4-flash-vision-exp，
 # ui.py 支持视觉模型保留 image_url、普通对话/Agent 带图路由视觉模型。
 # v4.101（2026-08-21）停止按钮 + 断点续传：普通 Agent 任务停止→检查点 paused→「▶ 继续上次任务」

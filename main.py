@@ -8,6 +8,16 @@ import traceback
 import ctypes
 from datetime import datetime
 
+# v4.119：WebEngine 禁 GPU（治本）——必须在 import PySide6 之前设置，晚了不生效。
+# Windows 上 GPU 硬件加速撞显卡驱动/HDR/高 DPI 缩放 → Chromium renderer 周期性崩溃
+# （约 1 分钟一次），v4.118 的 renderProcessTerminated 自愈只是崩后重建（每分钟闪一次）。
+# 禁 GPU 后走软件光栅化，聊天/Markdown 渲染无感知差异。setdefault 不覆盖用户已设值。
+os.environ.setdefault(
+    "QTWEBENGINE_CHROMIUM_FLAGS",
+    "--disable-gpu --disable-gpu-compositing --disable-software-rasterizer "
+    "--disable-dev-shm-usage",
+)
+
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QThread, Signal, QObject, QAbstractNativeEventFilter, Qt
 from ui import ChatWindow, TrayApp, THEME
