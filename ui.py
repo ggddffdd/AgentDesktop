@@ -2137,6 +2137,9 @@ class ChatWindow(QMainWindow):
         self.chat_view.anchorActivated.connect(self._on_anchor_clicked)
         # v4.104：页面意外重载（DOM 清空）→ 全量重渲染自愈
         self.chat_view.pageReloaded.connect(self._on_chat_page_reloaded)
+        # v4.120.2：首屏就绪（第一次 loadFinished）→ 权威数据全量重渲染，
+        # 兜底首帧 runJavaScript 被吞导致的「首屏白屏 + 历史不显示」回归。
+        self.chat_view.ready.connect(self._on_chat_page_reloaded)
         cc_lay.addWidget(self.chat_view, 1)
 
         # 输入区

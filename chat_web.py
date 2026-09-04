@@ -300,6 +300,10 @@ class ChatWebView(QWebEngineView):
 
     anchorActivated = Signal(str)
     pageReloaded = Signal()
+    # v4.120.2：首屏就绪信号——仅在第一次 loadFinished(True) 时发射一次，
+    # 通知上层用权威会话数据全量重渲染。不依赖首帧 runJavaScript(jsRenderAll)
+    # 是否落地（首帧偶发被吞），根治「首屏白屏 + 历史不显示」回归。
+    ready = Signal()
 
     def __init__(self, theme: dict, parent=None):
         super().__init__(parent)
@@ -324,6 +328,10 @@ class ChatWebView(QWebEngineView):
         self._probe_timer.setInterval(60_000)
         self._probe_timer.timeout.connect(self._probe_alive)
         self._probe_timer.start()
+        # v4.120.2：首屏就绪看门狗——极端环境下初始 setHtml 可能不触发
+        # loadFinished（_ever_ready 永远 False），探活又因 `not _ready` 早退不重建，
+        # 结果永久白屏无兜底。4s 后仍未就绪则强制重建一次，给页面一次重来机会。
+        QTimer.singleShot(4000, self._first_ready_watchdog)
         _we_diag("chat view init; QTWEBENGINE_CHROMIUM_FLAGS="
                  f"{os.environ.get('QTWEBENGINE_CHROMIUM_FLAGS', '')!r}")
         # baseUrl 用 file:/// 使头像/图片的 file:// 引用可加载
@@ -404,6 +412,12 @@ class ChatWebView(QWebEngineView):
                 if was_rebuilding:
                     _we_diag("self-heal rebuild finished -> pageReloaded")
                 self.pageReloaded.emit()
+            else:
+                # v4.120.2：首次就绪——pending 冲刷可能已把首屏历史灌入 DOM，
+                # 但首帧 runJavaScript 偶发被吞，这里再发一次 ready 让上层用权威
+                # 会话数据全量重渲染，幂等（jsRenderAll 整体替换 innerHTML）。
+                _we_diag("first load finished -> emit ready")
+                self.ready.emit()
         else:
             _we_diag(f"loadFinished(False) ever_ready={self._ever_ready}")
             # 加载失败：仅首次未就绪时延迟重试一次（避免信号风暴）
@@ -414,6 +428,15 @@ class ChatWebView(QWebEngineView):
         if not self._ever_ready:
             # v4.108 M-26：重试用原始主题重建（原传 {} 导致深色主题变量全丢）
             self.setHtml(_build_html(self._theme), QUrl("file:///"))
+
+    def _first_ready_watchdog(self):
+        """v4.120.2：首屏就绪看门狗。4s 内 loadFinished 一直没来（_ever_ready 仍
+        False）→ 强制重建一次，避免永久白屏无兜底。若已就绪则什么都不做。"""
+        if self._ever_ready:
+            return
+        _we_diag("first-ready watchdog: never became ready in 4s -> rebuild once")
+        self._ready = False
+        self.setHtml(_build_html(self._theme), QUrl("file:///"))
 
     def _exec(self, js):
         if self._ready:
