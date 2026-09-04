@@ -112,7 +112,7 @@ class SkillManagerWindow(QMainWindow):
         title_layout.addWidget(title)
         title_layout.addStretch()
 
-        refresh_btn = QPushButton("🔄 刷新")
+        refresh_btn = QPushButton("刷新")
         refresh_btn.clicked.connect(self.load_skills_async)
         title_layout.addWidget(refresh_btn)
 
@@ -140,11 +140,11 @@ class SkillManagerWindow(QMainWindow):
         self.status_combo.currentTextChanged.connect(self._apply_filter)
         filter_layout.addWidget(self.status_combo, 1)
 
-        import_btn = QPushButton("📥 导入技能")
+        import_btn = QPushButton("导入技能")
         import_btn.clicked.connect(self.import_skill)
         filter_layout.addWidget(import_btn)
 
-        open_dir_btn = QPushButton("📂 打开目录")
+        open_dir_btn = QPushButton("打开目录")
         open_dir_btn.clicked.connect(self.open_dir)
         filter_layout.addWidget(open_dir_btn)
 
@@ -189,7 +189,7 @@ class SkillManagerWindow(QMainWindow):
         button_layout = QHBoxLayout()
         button_layout.addStretch()
 
-        self.btn_uninstall = QPushButton("🗑️ 卸载")
+        self.btn_uninstall = QPushButton("卸载")
         self.btn_uninstall.clicked.connect(self.uninstall_selected_skill)
         self.btn_uninstall.setEnabled(False)
         button_layout.addWidget(self.btn_uninstall)

@@ -91,10 +91,10 @@ html, body {{ margin:0; padding:0; background: {t.get("bg", "#F7F8FC")};
   text-align: left; word-break: break-word; overflow-wrap: anywhere; }}
 .msg-row.ai .bubble {{ background: {t.get("asst_bg", "#FFFFFF")};
   color: {t.get("asst_text", "#202124")}; border: 1px solid {t.get("border", "#E5E7EB")};
-  border-radius: 4px 14px 14px 14px; box-shadow: 0 1px 2px rgba(0,0,0,.05); }}
+  border-radius: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.05); }}
 .msg-row.user .bubble {{ background: {t.get("user_bg", "#E8F0FE")};
   color: {t.get("user_text", "#202124")}; border: 1px solid {t.get("user_border", "#C6DAFC")};
-  border-radius: 14px 4px 14px 14px; }}
+  border-radius: 14px; }}
 .bubble a {{ color: {t.get("link", "#1A73E8")}; text-decoration: none; }}
 .bubble a:hover {{ text-decoration: underline; }}
 .actions {{ margin: 3px 0 0 4px; font-size: 11px; }}

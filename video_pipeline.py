@@ -270,6 +270,18 @@ class VideoPipeline:
         self.scene_images = {}        # {scene_id: 环境概念图路径}（纯场景、无人物）
         self.vision_review = True     # VLM 质检开关（走 DeepSeek 视觉模型）
         self.review_notes = {}        # {shot_index: 最近一次质检的诊断文本}
+        # 抗崩坏 v3（参考 ArcReel 的 clues）：跨镜复用的「关键道具 / 场景资产」追踪。
+        # 人物锁只锁人，道具与陈设照样会跨镜漂移（同一把剑换了造型、同一块招牌换了字）。
+        # clues 为空时全链路不注入任何文本/参考图 —— Auto 默认行为与旧版完全一致。
+        self.clues = []               # [{"name","desc","kind":"prop|set","image":path|None}]
+        self.clue_lock = ""           # 写入逐镜提示词的道具/资产锁定描述（英文）
+        self.clues_done = False
+        self.clue_versions = {}       # {idx: [{"image":path,"desc":str}, ...]}
+        # 版本回滚（v后续）：每次 revise 覆盖前把当前文件备份到 versions/，支持一键回退上一版
+        self.versions_dir = None
+        self.clip_versions = {}       # {i: [version_file_path, ...]} 历史栈（旧→新）
+        self.keyframe_versions = {}   # {i: [version_file_path, ...]}
+        self.character_versions = {}  # {idx: [{"views":[3 png], "desc":str}, ...]}
         # 音频：分镜片段由 Agnes 直接生成「台词口型 + 背景音效」音轨，
         # 合成成片时优先沿用片段自带音轨（见 _merge / _probe_has_audio）；
         # 转场或极少数无音轨片段用静音轨补齐，确保 concat 每段音视频齐全。
@@ -319,6 +331,13 @@ class VideoPipeline:
             clip_dir = os.path.join(PRODUCTS_DIR, "视频", f"director_{ts}")
         os.makedirs(clip_dir, exist_ok=True)
         self.project_dir = clip_dir
+        # 版本回滚：建 versions/ 子目录 + 清空历史栈（保证每次新建工程干净起步）
+        self.versions_dir = os.path.join(clip_dir, "versions")
+        os.makedirs(self.versions_dir, exist_ok=True)
+        self.clip_versions = {}
+        self.keyframe_versions = {}
+        self.character_versions = {}
+        self.clue_versions = {}
         self.story = ""
         self.shots = []
         self.clip_paths = []
@@ -489,6 +508,178 @@ class VideoPipeline:
                 "(same face, hair, body shape, clothing, age): " + "; ".join(parts) +
                 ". Do NOT alter their appearance between shots.")
 
+    # ---------- 第1.6步：关键道具 / 场景资产追踪（clue，抗崩坏 v3，参考 ArcReel） ----------
+    def gen_clues(self, feedback=None):
+        """从剧本抽取跨镜复用的「关键道具 / 场景资产」，每个生成一张参考图。
+
+        人物锁只锁人；道具与陈设一样会跨镜漂移（同一把剑换造型、同一块招牌换字）。
+        clue 就是 ArcReel 里的 clues：把这些「视觉资产」也单独立档 + 生参考图 + 写锁定串。
+
+        portrait_mode 下跳过（口播画面没有跨镜道具叙事）。
+        失败/抽不出来时保持 clues 为空 —— 后续全链路不注入，行为与旧版一致。
+        """
+        self.clues = []
+        self.clue_lock = ""
+        if self.portrait_mode:
+            self.clues_done = True
+            return self.clues
+        if not self.story:
+            raise RuntimeError("请先生成剧本")
+        specs = self._extract_clue_specs(feedback=feedback)
+        items = []
+        for spec in specs[:4]:
+            name = (spec.get("name") or "").strip()
+            desc = (spec.get("desc") or "").strip()
+            if not (name or desc):
+                continue
+            kind = "set" if str(spec.get("kind", "")).lower().startswith("s") else "prop"
+            image = self._gen_clue_image(name or "prop", desc, kind)
+            items.append({"name": name or "prop", "desc": desc,
+                          "kind": kind, "image": image})
+        self.clues = items
+        self.clue_lock = self._build_clue_lock(items)
+        self.clues_done = True
+        return self.clues
+
+    def set_clues(self, clues, clue_lock=""):
+        self.clues = clues or []
+        self.clue_lock = clue_lock or self._build_clue_lock(self.clues)
+        self.clues_done = True
+
+    def _extract_clue_specs(self, feedback=None):
+        """让 LLM 从剧本抽取跨镜复用的关键道具/场景资产（英文视觉描述），最多 4 个。"""
+        fb = ""
+        if feedback:
+            fb = (f"\nRevision note: {feedback}\n"
+                  "Output the revised list.\n")
+        user_prompt = (
+            f"Script:\n<<<\n{self.story}\n>>>\n\n"
+            "List the KEY VISUAL ASSETS that appear in MORE THAN ONE shot and must stay "
+            "identical every time they appear. Two kinds:\n"
+            "- prop: an object the characters carry or use (weapon, letter, phone, cup, "
+            "necklace, vehicle...)\n"
+            "- set: a signature part of the location (a shop sign, a specific door, a "
+            "painting on the wall, a landmark building...)\n"
+            "Ignore anything that shows up in only one shot, and ignore the characters "
+            "themselves (people are handled separately). At most 4 items.\n"
+            "For each return a JSON object:\n"
+            "- name: short label, may be Chinese (e.g. '青铜短剑')\n"
+            "- kind: \"prop\" or \"set\"\n"
+            "- desc: a concise ENGLISH visual description (shape, size, color, material, "
+            "wear, markings) precise enough to redraw it identically.\n"
+            "Return ONLY a JSON array like "
+            '[{"name":"...","kind":"prop","desc":"..."}, ...]. '
+            "If the script has no such recurring asset, return []. "
+            "No markdown, no extra text." + fb)
+        try:
+            content = _agnes_chat(self.cfg, [
+                {"role": "system", "content": (
+                    "You are a props and set-dressing supervisor for AI video. Read a "
+                    "short script and list only the recurring props / set pieces that "
+                    "must look identical across shots. Be conservative: fewer, truly "
+                    "recurring items beat a long speculative list.")},
+                {"role": "user", "content": user_prompt},
+            ], temperature=0.4)
+            specs = self._parse_clue_specs(content)
+        except Exception as e:
+            self.log(f"  ⚠️ 道具/场景资产抽取失败（{e}），本次不做道具锁定")
+            specs = []
+        return specs
+
+    @staticmethod
+    def _parse_clue_specs(content):
+        """解析 LLM 返回的 clue JSON；抽不出来一律返回 []（宁缺勿滥，空=不注入）。"""
+        if not content:
+            return []
+        txt = content.strip()
+        txt = re.sub(r"^```(?:json)?", "", txt).strip()
+        txt = re.sub(r"```$", "", txt).strip()
+
+        def _norm(arr):
+            out = []
+            for x in arr[:4]:
+                if isinstance(x, dict):
+                    out.append({"name": str(x.get("name", "")).strip(),
+                                "kind": str(x.get("kind", "prop")).strip(),
+                                "desc": str(x.get("desc", "")).strip()})
+            return out
+
+        try:
+            obj = json.loads(txt)
+            arr = obj.get("clues") if isinstance(obj, dict) else obj
+            if isinstance(arr, list):
+                return _norm(arr)
+        except Exception:
+            pass
+        m = re.search(r"\[.*\]", txt, re.S)
+        if m:
+            try:
+                arr = json.loads(m.group(0))
+                if isinstance(arr, list):
+                    return _norm(arr)
+            except Exception:
+                pass
+        return []
+
+    def _gen_clue_image(self, name, desc, kind="prop"):
+        """为一个道具/场景资产生成一张参考图（道具=白底特写，资产=局部环境图）。"""
+        if kind == "set":
+            prompt = (
+                f"Reference photo of ONE distinctive set piece with NO people: {desc}. "
+                f"Medium shot centered on this element, natural lighting, "
+                f"{self.style_prompt}. High detail, sharp focus, no text overlay, "
+                f"no watermark.")
+        else:
+            prompt = (
+                f"Product-style reference photo of ONE single object, isolated: {desc}. "
+                f"Centered on a clean solid neutral background, even studio lighting, "
+                f"no hands, no people, no other objects. High detail, sharp focus, "
+                f"no text overlay, no watermark.")
+        return self._gen_one_image(prompt, tag=f"道具/资产「{name}」参考图")
+
+    @staticmethod
+    def _build_clue_lock(clues):
+        """把 clue 列表拼成英文锁定串；空列表返回空串（→ 全链路不注入）。"""
+        if not clues:
+            return ""
+        parts = []
+        for c in clues or []:
+            name = (c.get("name") or "").strip()
+            desc = (c.get("desc") or "").strip()
+            if not (name or desc):
+                continue
+            tag = "set piece" if str(c.get("kind", "")).lower() == "set" else "prop"
+            parts.append(f"{name} ({tag}): {desc}" if name else f"{tag}: {desc}")
+        if not parts:
+            return ""
+        return ("[PROP & SET LOCK] These recurring items must look IDENTICAL every time "
+                "they appear (same shape, size, color, material, wear and markings): " +
+                "; ".join(parts) +
+                ". Do NOT redesign, recolor or replace them between shots.")
+
+    def _locks_text(self):
+        """把人物锁 + 道具/资产锁拼成一段（任一为空自动省略）。"""
+        return " ".join(x for x in (self.character_lock or "", self.clue_lock or "") if x)
+
+    def _shot_clues(self, i):
+        """判断本镜出现的 clue：用名字在分镜文本里匹配。
+
+        ⚠️ 与 _shot_characters 不同：匹配不到时返回空列表（**不兜底塞主道具**）——
+        把没出现的道具参考图塞进去，会诱导模型把无关物件画进画面，反而制造崩坏。
+        """
+        if not self.clues:
+            return []
+        shot = self.shots[i] if i < len(self.shots) else {}
+        text = " ".join(str(shot.get(k) or "") for k in ("zh", "en", "line"))
+        if not text.strip():
+            return []
+        hits = []
+        for c in self.clues:
+            name = (c.get("name") or "").strip()
+            if name and name in text:
+                hits.append(c)
+        return hits
+
     # ---------- 第2.5步：分镜关键帧 + 场景图（每镜首帧参照，抗崩坏） ----------
     def gen_keyframes(self, feedback=None, max_review_retry=2):
         """为每一镜生成关键帧（含 VLM 质检闭环），并为每个场景生成环境图。
@@ -507,7 +698,7 @@ class VideoPipeline:
             raise RuntimeError("请先生成分镜")
         # 场景图：每个 scene 一张纯环境概念图（供逐镜作场景参照，抗场景漂移）
         self.gen_scene_images()
-        lock = self.character_lock or ""
+        lock = self._locks_text()   # 人物锁 + 道具/资产锁（clue 为空时等于原来的人物锁）
         fb = f"[修改意见：{feedback}] " if feedback else ""
         kfs = []
         for i, shot in enumerate(self.shots):
@@ -639,8 +830,13 @@ class VideoPipeline:
             return True, ""
         shot = self.shots[i] if i < len(self.shots) else {}
         desc = shot.get("en") or shot.get("zh") or ""
+        extra = ""
+        if self.clue_lock:
+            extra = ("\nAlso verify the recurring props / set pieces listed above look "
+                     "identical to their locked descriptions (shape, color, material); "
+                     "report any mismatch under ISSUES.")
         question = (f"Required shot description: {desc}\n"
-                    f"{self.character_lock}\n\n{self.REVIEW_QUESTION}")
+                    f"{self._locks_text()}{extra}\n\n{self.REVIEW_QUESTION}")
         note = self._vision_review(image_path, question)
         if not note:
             return True, ""
@@ -695,6 +891,11 @@ class VideoPipeline:
         # 3) 本场景环境图：场景锁定
         sc = (self.shots[i].get("scene") or 1) if i < len(self.shots) else 1
         _add(self.scene_images.get(sc), "scene")
+        # 4) 本镜出现的关键道具/场景资产（clue，抗崩坏 v3）：只占剩余额度，
+        #    排在最后 —— 保证原有三类参考图的顺序与优先级完全不变（只增不改）
+        if not self.portrait_mode:
+            for c in self._shot_clues(i):
+                _add(c.get("image"), f"clue:{c.get('name', '')}")
         return refs
 
     @staticmethod
@@ -721,6 +922,12 @@ class VideoPipeline:
                 parts.append(
                     f"<Picture {idx}> is the location — keep the same place, props, "
                     f"architecture and lighting")
+            elif role.startswith("clue:"):
+                cname = role.split(":", 1)[1]
+                parts.append(
+                    f"<Picture {idx}> shows the recurring item {cname} — reproduce it "
+                    f"exactly (same shape, color, material and markings), do not "
+                    f"redesign it")
         if not parts:
             return ""
         return ("[REFERENCE IMAGES] " + "; ".join(parts) +
@@ -738,6 +945,9 @@ class VideoPipeline:
         # 人物三视图锁定：把角色外观描述写进本镜提示词，确保跨镜人物一致（抗崩坏）
         if self.character_lock:
             prompt = f"{prompt.rstrip('. ')}, {self.character_lock}"
+        # 道具/场景资产锁定（clue，抗崩坏 v3）：clue 为空时不注入，行为与旧版一致
+        if self.clue_lock:
+            prompt = f"{prompt.rstrip('. ')}, {self.clue_lock}"
         # 多参考图指代：用 <Picture N> 明确每张参考图的用途（抗崩坏 v2）
         # 必须在 _build_clip_prompt 里拼，因为指代文本要与实际装配顺序严格一一对应
         if refs:
@@ -816,7 +1026,12 @@ class VideoPipeline:
         clip = self._gen_one_clip(prompt, self.duration, f"{self.width}x{self.height}",
                                   first_frame, line, i, ref_images=ref_paths)
         if clip:
+            # 版本回滚：覆盖前把旧片段备份到 versions/，入历史栈
+            old = self.clip_paths[i] if (i < len(self.clip_paths) and self.clip_paths[i]) else None
             self.clip_paths[i] = clip
+            v = self._backup_file(old, "clip", i)
+            if v:
+                self.clip_versions.setdefault(i, []).append(v)
         return clip
 
     def regenerate_keyframe(self, i, feedback=None):
@@ -829,7 +1044,7 @@ class VideoPipeline:
             return None
         shot = self.shots[i]
         en = shot.get("en") or shot.get("zh") or "a cinematic scene"
-        lock = self.character_lock or ""
+        lock = self._locks_text()   # 人物锁 + 道具/资产锁（clue 为空时等于原来的人物锁）
         fb = f"[Revision note: {feedback}] " if feedback else ""
         prompt = (
             f"Keyframe and environment concept art for ONE video shot: {en}. "
@@ -843,7 +1058,12 @@ class VideoPipeline:
                 self.keyframes = []
             while len(self.keyframes) <= i:
                 self.keyframes.append(None)
+            # 版本回滚：覆盖前把旧关键帧备份到 versions/，入历史栈
+            old = self.keyframes[i]
             self.keyframes[i] = path
+            v = self._backup_file(old, "keyframe", i)
+            if v:
+                self.keyframe_versions.setdefault(i, []).append(v)
         return path
 
     def regenerate_character(self, idx, feedback=None):
@@ -860,6 +1080,8 @@ class VideoPipeline:
         c = self.characters[idx]
         name = c.get("name") or "主角"
         desc = c.get("desc") or ""
+        old_views = c.get("views")
+        old_desc = c.get("desc")
         if feedback:
             # v4.108 M-08：替换而非追加——多次修改同一角色时旧意见会残留累积
             # （"updated appearance: A | updated appearance: B"），早期过时意见
@@ -872,8 +1094,173 @@ class VideoPipeline:
         views = self._gen_character_views(name, desc)
         ok = any(views)
         if ok:
+            # 版本回滚：备份旧三视图（复制 png 到 versions/）+ 旧描述
+            backed = [b for b in (self._backup_file(vp, "char", idx)
+                                   for vp in (old_views or []) if vp) if b]
+            self.character_versions.setdefault(idx, []).append({
+                "views": backed if backed else old_views,
+                "desc": old_desc,
+            })
             c["views"] = views
         return (name, views if ok else None)
+
+    def regenerate_clue(self, idx, feedback=None):
+        """只重生成第 idx 个道具/场景资产的参考图（其他 clue 不动）。
+
+        带修改意见时意见会替换进描述并同步刷新 clue_lock，保证后续逐镜提示词
+        里的道具锁定跟新造型一致。返回 (名称, 图片路径或None)。
+        """
+        if self.portrait_mode or not self.clues:
+            return (None, None)
+        if not (0 <= idx < len(self.clues)):
+            return (None, None)
+        c = self.clues[idx]
+        name = c.get("name") or "道具"
+        desc = c.get("desc") or ""
+        kind = c.get("kind") or "prop"
+        old_image = c.get("image")
+        old_desc = c.get("desc")
+        if feedback:
+            # 与 regenerate_character 同策略：替换而非追加，避免旧意见累积残留
+            desc = re.sub(r"\s*\|\s*updated look:.*$", "", desc)
+            desc = f"{desc} | updated look: {feedback}"
+            c["desc"] = desc
+            self.clue_lock = self._build_clue_lock(self.clues)
+        self.log(f"  ↻ 重生成道具/资产「{name}」参考图…")
+        image = self._gen_clue_image(name, desc, kind)
+        if image:
+            # 版本回滚：备份旧参考图 + 旧描述
+            backed = self._backup_file(old_image, "clue", idx)
+            self.clue_versions.setdefault(idx, []).append({
+                "image": backed or old_image,
+                "desc": old_desc,
+            })
+            c["image"] = image
+        return (name, image)
+
+    # ---------- 版本回滚（v后续）：revise 覆盖前已备份到 versions/，此处恢复指针 ----------
+    def _backup_file(self, src, kind, idx):
+        """把当前文件复制到 versions/ 作版本备份，返回版本路径（失败返回 None）。"""
+        if not src or not os.path.isfile(src) or not self.versions_dir:
+            return None
+        try:
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            ms = f"_{int(time.time() * 1000) % 1000:03d}"  # 毫秒尾缀，避免同秒内多次 revise 互相覆盖丢版本
+            base = os.path.basename(src)
+            name, ext = os.path.splitext(base)
+            dst = os.path.join(self.versions_dir, f"{kind}_{idx + 1}_{ts}{ms}{ext}")
+            shutil.copy2(src, dst)
+            return dst
+        except Exception:
+            return None
+
+    def rollback_clip(self, i, version=-1):
+        """把第 i 镜的片段回滚到历史某一版本（默认上一版）。返回恢复后的路径或 None。"""
+        if not (0 <= i < len(self.shots)):
+            return None
+        hist = self.clip_versions.get(i, [])
+        if not hist:
+            return None
+        try:
+            v = hist[version]   # 支持正索引（绝对第几版）与负索引（-1 上一版，-2 更早）
+        except (IndexError, TypeError):
+            return None
+        if not v or not os.path.isfile(v):
+            return None
+        self.clip_paths[i] = v
+        return v
+
+    def rollback_keyframe(self, i, version=-1):
+        """把第 i 镜的关键帧回滚到历史某一版本。返回恢复后的路径或 None。"""
+        if not (0 <= i < len(self.shots)):
+            return None
+        hist = self.keyframe_versions.get(i, [])
+        if not hist:
+            return None
+        try:
+            v = hist[version]   # 支持正索引（绝对第几版）与负索引（-1 上一版，-2 更早）
+        except (IndexError, TypeError):
+            return None
+        if not v or not os.path.isfile(v):
+            return None
+        if self.keyframes is None:
+            self.keyframes = []
+        while len(self.keyframes) <= i:
+            self.keyframes.append(None)
+        self.keyframes[i] = v
+        return v
+
+    def rollback_character(self, idx, version=-1):
+        """把第 idx 个角色的三视图+描述回滚到历史某一版本。返回角色名或 None。"""
+        if not (0 <= idx < len(self.characters)):
+            return None
+        hist = self.character_versions.get(idx, [])
+        if not hist:
+            return None
+        try:
+            v = hist[version]   # 支持正索引（绝对第几版）与负索引（-1 上一版，-2 更早）
+        except (IndexError, TypeError):
+            return None
+        if not isinstance(v, dict):
+            return None
+        c = self.characters[idx]
+        if v.get("views"):
+            c["views"] = v["views"]
+        if v.get("desc") is not None:
+            c["desc"] = v["desc"]
+            self.character_lock = self._build_character_lock(self.characters)
+        return c.get("name")
+
+    def rollback_clue(self, idx, version=-1):
+        """把第 idx 个道具/资产的参考图+描述回滚到历史某一版本。返回名称或 None。"""
+        if not (0 <= idx < len(self.clues)):
+            return None
+        hist = self.clue_versions.get(idx, [])
+        if not hist:
+            return None
+        try:
+            v = hist[version]   # 支持正索引（绝对第几版）与负索引（-1 上一版，-2 更早）
+        except (IndexError, TypeError):
+            return None
+        if not isinstance(v, dict):
+            return None
+        c = self.clues[idx]
+        if v.get("image"):
+            c["image"] = v["image"]
+        if v.get("desc") is not None:
+            c["desc"] = v["desc"]
+            self.clue_lock = self._build_clue_lock(self.clues)
+        return c.get("name")
+
+    def list_versions(self):
+        """返回各镜/角色的历史版本时间戳清单（供 UI / 对话显示）。"""
+        def _ts(p):
+            if not p or not os.path.isfile(p):
+                return None
+            m = re.search(r"_(\d{8}_\d{6}(?:_\d{3})?)\.", os.path.basename(p))
+            return m.group(1) if m else None
+        out = {"clip": {}, "keyframe": {}, "character": {}, "clue": {}}
+        for i, hist in self.clip_versions.items():
+            ts = [_ts(p) for p in hist]
+            if any(ts):
+                out["clip"][i] = ts
+        for i, hist in self.keyframe_versions.items():
+            ts = [_ts(p) for p in hist]
+            if any(ts):
+                out["keyframe"][i] = ts
+        for idx, hist in self.character_versions.items():
+            ts = []
+            for v in hist:
+                # views 可能是 None 或 []（三视图全失败时），不能直接下标取 [0]
+                vs = (v.get("views") or []) if isinstance(v, dict) else []
+                ts.append(_ts(vs[0]) if vs else None)
+            if any(ts):
+                out["character"][idx] = ts
+        for idx, hist in self.clue_versions.items():
+            ts = [_ts(v.get("image")) if isinstance(v, dict) else None for v in hist]
+            if any(ts):
+                out["clue"][idx] = ts
+        return out
 
     # ---------- 音频层：分镜自带音轨优先（合成时沿用，见 _merge / _probe_has_audio） ----------
 

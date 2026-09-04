@@ -185,6 +185,122 @@ DELIVERY_COLORS = {
     "file":  ("delivery_blue", "accent"),
 }
 
+# v4.114：Feather 风格线性 SVG 图标（24×24 viewBox, stroke 2, round caps）
+# 用于侧栏导航，替代 emoji——矢量渲染基线天然齐平，选中态可换色
+_NAV_ICONS = {
+    "对话":   '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+    "编排":   '<polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="20"/><line x1="21" y1="20" x2="21" y2="13"/><polyline points="21 16 21 13 18 13"/><line x1="4" y1="4" x2="9" y2="4"/><polyline points="11 8 11 5 8 5"/>',
+    "生图":   '<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>',
+    "生视频": '<polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>',
+    "数字人": '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+    "导演台": '<rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/>',
+    "工具":   '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
+    "任务":   '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+    # v4.115：第二轮去 emoji 化补充图标（欢迎页/顶栏钮/交付 tag 复用）
+    "编辑":   '<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>',
+    "代码":   '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
+    "设计":   '<path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/>',
+    "删除":   '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>',
+    "清单":   '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
+    "文档":   '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>',
+    "附件":   '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
+    "刷新":   '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
+    "语音":   '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/>',
+    "静音":   '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>',
+    "技能":   '<line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>',
+    "市场":   '<path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/>',
+    "导出":   '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>',
+    "设置":   '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+}
+
+
+def _nav_icon_pixmap(icon_name, color, size=18, device_ratio=2.0):
+    """渲染导航 SVG 图标为 QPixmap（描边线性风格，2x 超采样抗锯齿）。"""
+    from PySide6.QtCore import QByteArray
+    from PySide6.QtSvg import QSvgRenderer  # QtSvg 模块（QtGui 里没有）
+    body = _NAV_ICONS.get(icon_name)
+    if not body:
+        return QPixmap()
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" '
+        f'fill="none" stroke="{color}" stroke-width="2" '
+        'stroke-linecap="round" stroke-linejoin="round">'
+        f'{body}</svg>'
+    )
+    renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
+    px = QPixmap(int(size * device_ratio), int(size * device_ratio))
+    px.fill(Qt.transparent)
+    p = QPainter(px)
+    p.setRenderHint(QPainter.Antialiasing)
+    renderer.render(p, QRect(0, 0, px.width(), px.height()))
+    p.end()
+    return px
+
+
+def _make_avatar_label(size=34):
+    """v4.114：头像徽标——深蓝渐变底 + 白色人形线性图标，替代文字圆。"""
+    avatar = QLabel()
+    avatar.setFixedSize(size, size)
+    avatar.setAlignment(Qt.AlignCenter)
+    avatar.setStyleSheet(
+        f"QLabel{{background:qlineargradient(x1:0,y1:0,x2:1,y2:1,"
+        f"stop:0:#4E8FD9,stop:1:#2B5FA8);border-radius:{size // 2}px;}}")
+    fg = _nav_icon_pixmap("数字人", "#FFFFFF", int(size * 0.52))
+    avatar.setPixmap(fg)
+    return avatar
+
+
+def _nav_icon_qicon(icon_name, color, size=16):
+    """v4.115：SVG 图标转 QIcon（按钮 setIcon 用），复用 _nav_icon_pixmap 渲染。"""
+    return QIcon(_nav_icon_pixmap(icon_name, color, size))
+
+
+# v4.114：交付物 tag 莫兰迪低饱和配色（淡底 + 深字，替代高饱和实底）
+DELIVERY_TAG_STYLES = {
+    "image": ("rgba(26,115,232,0.10)", "#3B6FB5"),
+    "img":   ("rgba(26,115,232,0.10)", "#3B6FB5"),
+    "video": ("rgba(167,139,250,0.14)", "#7C6BB8"),
+    "doc":   ("rgba(52,168,83,0.10)", "#4E8A5F"),
+    "md":    ("rgba(52,168,83,0.10)", "#4E8A5F"),
+    "code":  ("rgba(240,150,60,0.12)", "#A97B3C"),
+    "py":    ("rgba(240,150,60,0.12)", "#A97B3C"),
+    "js":    ("rgba(240,150,60,0.12)", "#A97B3C"),
+    "html":  ("rgba(240,150,60,0.12)", "#A97B3C"),
+    "css":   ("rgba(240,150,60,0.12)", "#A97B3C"),
+    "file":  ("rgba(120,130,150,0.12)", "#6B7689"),
+}
+DELIVERY_TAG_FALLBACK = ("rgba(120,130,150,0.12)", "#6B7689")
+
+# v4.112 P2：交付物 kind → 图标；v4.115 改 SVG 图标名（_NAV_ICONS key），
+# tag 渲染时经 _nav_icon_pixmap 上色，彻底去 emoji
+DELIVERY_ICONS = {
+    "image": "生图", "img": "生图", "video": "生视频", "doc": "文档", "md": "文档",
+    "code": "代码", "py": "代码", "js": "代码", "html": "代码", "css": "设计",
+    "file": "附件",
+}
+DELIVERY_ICON_FALLBACK = "附件"
+
+
+# v4.115：技能 id → _NAV_ICONS 图标名映射（显示层用，emoji 数据字段保留兼容旧技能）
+SKILL_ICON_MAP = {
+    "xiaohongshu": "设计", "gzh": "文档", "novel": "文档", "shortvideo": "生视频",
+    "translate": "对话", "summarize": "清单", "rewrite": "编辑", "weekly": "清单",
+    "officecli": "文档", "pycode": "代码", "data": "代码", "batchfile": "附件",
+    "cmd": "工具",
+}
+SKILL_ICON_FALLBACK = "技能"
+
+
+def _skill_icon_name(sk):
+    """技能 → _NAV_ICONS 图标名：先按 id 映射，再按名字精确匹配，最后兜底。"""
+    n = str(sk.get("id", "") or sk.get("name", ""))
+    if n in SKILL_ICON_MAP:
+        return SKILL_ICON_MAP[n]
+    name = str(sk.get("name", "") or sk.get("display_name", "") or "")
+    if name in _NAV_ICONS:
+        return name
+    return SKILL_ICON_FALLBACK
+
 
 class _GenThread(QThread):
     """后台跑阻塞型生成（生图/生视频），结果经信号回主线程。"""
@@ -336,7 +452,7 @@ class OrchestrateWorker(QThread):
             "（悬念/反转/信息差/情绪爆发）；番茄小说节奏快、章末必须留悬念。\n"
             "3. 交付：番茄一稿一投（一次性成稿、不反复折腾）；场景化叙事、show-don't-tell。\n"
             "4. 纯虚构：严禁把作者的真实家庭成员或本人写进角色"
-            "（例如『大哥』『葱头』『小臭』『雪糕』『xyb』等——这些只是作者的私人信息，与小说无关；"
+            "（例如作者的真实称呼、家人昵称等——这些只是作者的私人信息，与小说无关；"
             "除非作者明确要求，否则不得作为角色名、原型或背景人物出现）。角色、地名、机构一律原创。\n"
             "5. 各司其职：严格按当前流水线环节的要求输出，不越界、不提前做后续环节的事。\n"
             "6. 短篇必须写完整：开头→发展→高潮→结局四段齐备，收尾干净、人物命运有交代，"
@@ -1043,8 +1159,8 @@ class SessionManagerDialog(QDialog):
         self.sel_all.stateChanged.connect(self._toggle_all)
         bottom.addWidget(self.sel_all)
         bottom.addStretch(1)
-        bulk = QPushButton("🗑 批量删除")
-        bulk.setFixedHeight(32)
+        bulk = QPushButton("批量删除")
+        bulk.setFixedHeight(34)
         bulk.setStyleSheet(
             f"QPushButton{{background:{THEME['card']};color:{THEME['danger']};"
             f"border:1px solid {THEME['border']};border-radius:8px;padding:0 14px;font-size:13px;}}"
@@ -1053,7 +1169,7 @@ class SessionManagerDialog(QDialog):
         bottom.addWidget(bulk)
         done = QPushButton("完成")
         done.setDefault(True)
-        done.setFixedHeight(32)
+        done.setFixedHeight(34)
         done.setStyleSheet(
             f"QPushButton{{background:{THEME['accent']};color:#FFFFFF;border:none;"
             f"border-radius:8px;padding:0 18px;font-size:13px;font-weight:500;}}"
@@ -1557,10 +1673,9 @@ class ChatWindow(QMainWindow):
         self._follow_bottom = True          # True=新内容来时滚到底；用户上滑看历史置 False
         self._scroll_seq = 0                # 滚底请求序号：每次渲染 +1，过期的延迟滚底请求自动作废
         self._last_view_change = 0.0        # 时间戳哨兵：程序改 chat_view 的时间戳，屏蔽异步 valueChanged 误判
-        # ---- 头像素材：Qt 富文本表格单元格内 div 的固定 height 被忽略并撑满行高（实测头像
-        #      被拉成贯穿整条消息的蓝条），改用 <img>（replaced element，Qt 尊重固有尺寸），
-        #      PNG 在首次启动时生成到 APP_DIR/avatars/，后续直接复用磁盘文件。----
-        self._ensure_avatars()
+        # ---- 头像素材（v4.113 已停用）：气泡去头像去名字后不再生成 PNG；
+        #      _ensure_avatars/_avatar_img_html 方法保留作降级回滚用 ----
+        # self._ensure_avatars()
         # ---- 语音（实时语音：ASR 识别 + TTS 朗读，移植自数字分身）----
         self.speech_enabled = bool(self.cfg.get("voice", {}).get("speech_enabled", True))
         self.recorder = voice_mod.Recorder()
@@ -1592,6 +1707,38 @@ class ChatWindow(QMainWindow):
         self._fit_window_to_screen()
         self.setMinimumSize(480, 520)  # 允许缩得更小，但避免窗口碎成不可用
         self.setWindowFlags(Qt.FramelessWindowHint)
+        self._apply_round_corners()
+
+    def showEvent(self, e):
+        """v4.113：窗口首次/重新显示时重贴 DWM 圆角。
+        根因：_init_ui 阶段 winId() 触发生成的原生句柄，在窗口真正 show 时
+        可能被 Qt 重建（frameless + 标志变更场景），导致 DWMWCP_ROUND 落在
+        旧句柄上失效——外框呈现方角。showEvent 里 hwnd 已是最终句柄，重贴即稳。"""
+        super().showEvent(e)
+        try:
+            self._apply_round_corners()
+        except Exception:
+            pass  # 圆角是纯视觉增强，任何异常都不影响主流程
+
+    def _apply_round_corners(self):
+        """Win11 DWM 圆角窗（v4.112 UI 美化）：无边框窗同样支持 DWMWCP_ROUND。
+        非 Win11 / 调用失败一律静默降级为方角；最大化时 DWM 自动回方角（预期行为）。"""
+        try:
+            if sys.platform != "win32":
+                return
+            # 强制创建原生窗口句柄，否则 winId() 返回占位值
+            self.winId()
+            hwnd = int(self.winId())
+            if not hwnd:
+                return
+            DWMWA_WINDOW_CORNER_PREFERENCE = 33
+            DWMWCP_ROUND = 2  # 圆角（WIN11 自绘小圆角，非大弧度）
+            pref = ctypes.c_int(DWMWCP_ROUND)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
+                ctypes.byref(pref), ctypes.sizeof(pref))
+        except Exception:
+            pass  # 圆角纯属视觉增强，绝不能影响主流程
 
         # 全局样式
         self.setStyleSheet(f"""
@@ -1855,32 +2002,35 @@ class ChatWindow(QMainWindow):
         new_btn.clicked.connect(self._new_session)
         hb.addWidget(new_btn)
 
-        rename_btn = QPushButton("✏️")
+        rename_btn = QPushButton()
         rename_btn.setFixedSize(32, 32)
         rename_btn.setToolTip("重命名当前对话")
+        rename_btn.setIcon(_nav_icon_qicon("编辑", THEME["dim"], 15))
         rename_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
-            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;font-size:13px;}}"
+            f"QPushButton{{background:{THEME['card']};"
+            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;}}"
             f"QPushButton:hover{{border-color:{THEME['accent']};}}")
         rename_btn.clicked.connect(self._rename_session)
         hb.addWidget(rename_btn)
 
-        del_btn = QPushButton("🗑")
+        del_btn = QPushButton()
         del_btn.setFixedSize(32, 32)
         del_btn.setToolTip("删除当前对话")
+        del_btn.setIcon(_nav_icon_qicon("删除", THEME["danger"], 15))
         del_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['card']};color:{THEME['danger']};"
-            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;font-size:13px;}}"
+            f"QPushButton{{background:{THEME['card']};"
+            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;}}"
             f"QPushButton:hover{{border-color:{THEME['danger']};background:#FCE8E6;}}")
         del_btn.clicked.connect(self._delete_active_session)
         hb.addWidget(del_btn)
 
-        mgr_btn = QPushButton("📋")
+        mgr_btn = QPushButton()
         mgr_btn.setFixedSize(32, 32)
         mgr_btn.setToolTip("会话管理")
+        mgr_btn.setIcon(_nav_icon_qicon("清单", THEME["dim"], 15))
         mgr_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
-            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;font-size:13px;}}"
+            f"QPushButton{{background:{THEME['card']};"
+            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;}}"
             f"QPushButton:hover{{border-color:{THEME['accent']};}}")
         mgr_btn.clicked.connect(self._open_session_manager)
         hb.addWidget(mgr_btn)
@@ -1897,19 +2047,20 @@ class ChatWindow(QMainWindow):
         # hb.addWidget(self.mic_combo)
 
         # 刷新麦克风按钮（实例保留，不在 header 显示）
-        self.mic_refresh_btn = QPushButton("🔄")
+        self.mic_refresh_btn = QPushButton()
         self.mic_refresh_btn.setFixedHeight(32)
         self.mic_refresh_btn.setFixedWidth(32)
         self.mic_refresh_btn.setToolTip("刷新麦克风列表")
+        self.mic_refresh_btn.setIcon(_nav_icon_qicon("刷新", THEME["dim"], 15))
         self.mic_refresh_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:8px;color:{THEME['dim']};font-size:13px;}}"
-            f"QPushButton:hover{{border-color:{THEME['border_hover']};color:{THEME['text']};}}")
+            f"QPushButton{{background:{THEME['card']};"
+            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;}}"
+            f"QPushButton:hover{{border-color:{THEME['border_hover']};}}")
         self.mic_refresh_btn.clicked.connect(self._fill_mics)
         # hb.addWidget(self.mic_refresh_btn)
 
-        # 语音开关（🔊：开/关，控制回复朗读）
-        self.speech_chk = QPushButton("🔊")
+        # 语音开关（v4.115：SVG 喇叭图标，开/关态切换，控制回复朗读）
+        self.speech_chk = QPushButton()
         self.speech_chk.setFixedSize(32, 32)
         self.speech_chk.setToolTip("语音朗读开关")
         self.speech_chk.setCheckable(True)
@@ -1918,48 +2069,52 @@ class ChatWindow(QMainWindow):
         hb.addWidget(self.speech_chk)
         self._style_voice_switch(self.speech_chk, self.speech_enabled)
 
-        # 技能管理器按钮（🧩）：呼出可视化技能面板
-        self.skill_mgr_btn = QPushButton("🧩")
+        # 技能管理器按钮：呼出可视化技能面板
+        self.skill_mgr_btn = QPushButton()
         self.skill_mgr_btn.setFixedSize(32, 32)
         self.skill_mgr_btn.setToolTip("技能管理器（Ctrl+Alt+S）")
+        self.skill_mgr_btn.setIcon(_nav_icon_qicon("技能", THEME["text"], 15))
         self.skill_mgr_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
-            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;font-size:13px;}}"
+            f"QPushButton{{background:{THEME['card']};"
+            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;}}"
             f"QPushButton:hover{{border-color:{THEME['accent']};}}")
         self.skill_mgr_btn.clicked.connect(self._open_skill_manager)
         hb.addWidget(self.skill_mgr_btn)
 
-        # 技能市场按钮（🛍）：呼出技能市场发现 UI
-        self.market_btn = QPushButton("🛍")
+        # 技能市场按钮：呼出技能市场发现 UI
+        self.market_btn = QPushButton()
         self.market_btn.setFixedSize(32, 32)
         self.market_btn.setToolTip("技能市场（发现并安装新技能）")
+        self.market_btn.setIcon(_nav_icon_qicon("市场", THEME["text"], 15))
         self.market_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
-            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;font-size:13px;}}"
+            f"QPushButton{{background:{THEME['card']};"
+            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;}}"
             f"QPushButton:hover{{border-color:{THEME['accent']};}}")
         self.market_btn.clicked.connect(self._open_skill_market)
         hb.addWidget(self.market_btn)
 
-        # 工作流模板按钮（⚙️）：呼出可视化工作流面板
-        self.wf_mgr_btn = QPushButton("⚙️")
+        # 工作流模板按钮：呼出可视化工作流面板
+        self.wf_mgr_btn = QPushButton()
         self.wf_mgr_btn.setFixedSize(32, 32)
         self.wf_mgr_btn.setToolTip("工作流模板（Ctrl+Alt+W）")
+        self.wf_mgr_btn.setIcon(_nav_icon_qicon("设置", THEME["text"], 15))
         self.wf_mgr_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
-            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;font-size:13px;}}"
+            f"QPushButton{{background:{THEME['card']};"
+            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;}}"
             f"QPushButton:hover{{border-color:{THEME['accent']};}}")
         self.wf_mgr_btn.clicked.connect(self._open_workflow_manager)
         hb.addWidget(self.wf_mgr_btn)
 
         hb.addStretch(1)
 
-        # 导出按钮（📤）：呼出富格式导出（MD/HTML/PDF/DOCX）
-        self.export_btn = QPushButton("📤")
+        # 导出按钮：呼出富格式导出（MD/HTML/PDF/DOCX）
+        self.export_btn = QPushButton()
         self.export_btn.setFixedSize(32, 32)
         self.export_btn.setToolTip("导出当前对话（Markdown/HTML/PDF/Word）")
+        self.export_btn.setIcon(_nav_icon_qicon("导出", THEME["text"], 15))
         self.export_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
-            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;font-size:13px;}}"
+            f"QPushButton{{background:{THEME['card']};"
+            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;}}"
             f"QPushButton:hover{{border-color:{THEME['accent']};}}")
         self.export_btn.clicked.connect(self.export_session)
         hb.addWidget(self.export_btn)
@@ -2094,7 +2249,7 @@ class ChatWindow(QMainWindow):
             f"color:{THEME['faint']};font-size:11px;min-height:12px;")
         _top_lay.addWidget(self.status_label, 1)
         self.chat_model_combo = QComboBox()
-        self.chat_model_combo.setFixedHeight(24)
+        self.chat_model_combo.setFixedHeight(28)
         self.chat_model_combo.setMinimumWidth(150)
         self.chat_model_combo.setMaximumWidth(280)
         self.chat_model_combo.setToolTip(
@@ -2132,88 +2287,91 @@ class ChatWindow(QMainWindow):
         ia_lay.addWidget(self.skill_bar)
 
         input_frame = QFrame()
+        # v4.112 UI 美化：输入卡 = 白底悬浮卡 + 16px 大圆角 + 柔和阴影边。
+        # Qt QSS 不支持 :focus-within（旧写法无效已移除），焦点反馈改由
+        # _on_input_focus 联动边框色实现。
+        input_frame.setObjectName("inputCard")
         input_frame.setStyleSheet(
             f"QFrame#inputCard{{"
-            f"background:{THEME['panel2']};"
-            f"border:1px solid {THEME['border']};"
-            f"border-radius:10px;"
-            f"padding:6px 8px;"
+            f"background:{THEME['surface']};"
+            f"border:1.5px solid {THEME['border']};"
+            f"border-radius:16px;"
+            f"padding:4px 6px;"
             f"margin:0;"
-            f"}}"
-            f"QFrame#inputCard:focus-within{{"
-            f"border-color:{THEME['accent']};"
-            f"border-width:1.5px;"
             f"}}")
-        input_frame.setObjectName("inputCard")
+        self._input_frame = input_frame  # 供焦点联动换边框色
         ifl = QHBoxLayout(input_frame)
-        ifl.setContentsMargins(4, 4, 4, 4)
-        ifl.setSpacing(8)
+        ifl.setContentsMargins(6, 6, 6, 6)
+        ifl.setSpacing(6)
 
         attach_btn = QPushButton("+")
-        attach_btn.setFixedSize(32, 32)
+        attach_btn.setFixedSize(34, 34)
         attach_btn.setToolTip("选择文件（拖拽也支持）")
+        attach_btn.setCursor(Qt.PointingHandCursor)
         attach_btn.setStyleSheet(
-            f"QPushButton{{background:transparent;color:{THEME['dim']};"
-            f"border:none;font-size:15px;}}"
-            f"QPushButton:hover{{color:{THEME['text']};}}")
+            f"QPushButton{{background:{THEME['panel2']};color:{THEME['dim']};"
+            f"border:none;border-radius:17px;font-size:17px;font-weight:500;}}"
+            f"QPushButton:hover{{background:{THEME['card_blue_bg']};color:{THEME['accent']};}}")
         attach_btn.clicked.connect(self._on_attach_file)
         ifl.addWidget(attach_btn, 0, Qt.AlignBottom)
 
         self.input_box = MultiLineInput()
-        self.input_box.setPlaceholderText("输入自然语言指令 | Enter发送 | Shift+Enter换行")
+        self.input_box.setPlaceholderText("输入自然语言指令…")
         self.input_box.sendRequested.connect(self.send)
         self.input_box.setStyleSheet(
-            f"QTextEdit{{background:transparent;border:none;padding:8px 4px 8px 14px;"
+            f"QTextEdit{{background:transparent;border:none;padding:8px 2px;"
             f"font-size:14px;color:{THEME['text']};line-height:1.5;}}"
             f"QTextEdit:focus{{outline:none;}}")
         self.input_box.textChanged.connect(self._on_input_changed)
+        # 焦点进入/离开 → 输入卡边框高亮（替代不生效的 :focus-within）
+        self.input_box.installEventFilter(self)
         ifl.addWidget(self.input_box, 1)
 
         # 按住说话（实时语音输入）
-        self.talk_btn = QPushButton("🎤 按住说话")
+        self.talk_btn = QPushButton("按住说话")
         self.talk_btn.setFixedHeight(34)
         self.talk_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['card']};color:{THEME['dim']};"
-            f"border:1px solid {THEME['border']};border-radius:6px;font-size:13px;}}"
-            f"QPushButton:hover{{border-color:{THEME['border_hover']};color:{THEME['text']};}}"
-            f"QPushButton:pressed{{background:{THEME['accent']};color:#FFFFFF;"
-            f"border-color:{THEME['accent']};}}")
+            f"QPushButton{{background:transparent;color:{THEME['dim']};"
+            f"border:none;border-radius:17px;font-size:13px;padding:0 8px;}}"
+            f"QPushButton:hover{{background:{THEME['panel2']};color:{THEME['text']};}}"
+            f"QPushButton:pressed{{background:{THEME['accent']};color:#FFFFFF;}}")
         self.talk_btn.pressed.connect(self._start_talk)
         self.talk_btn.released.connect(self._stop_talk)
         ifl.addWidget(self.talk_btn, 0, Qt.AlignBottom)
 
-        self.send_btn = QPushButton("→")
+        self.send_btn = QPushButton("↑")
         self.send_btn.setFixedSize(34, 34)
         self.send_btn.setEnabled(False)
+        self.send_btn.setCursor(Qt.PointingHandCursor)
         self.send_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['accent']};color:#FFFFFF;"
-            f"border:none;border-radius:6px;font-size:16px;font-weight:600;}}"
+            f"border:none;border-radius:17px;font-size:16px;font-weight:600;}}"
             f"QPushButton:hover{{background:{THEME['accent_hover']};}}"
             f"QPushButton:disabled{{background:{THEME['border']};color:{THEME['faint']};}}")
         self.send_btn.clicked.connect(self.send)
         ifl.addWidget(self.send_btn, 0, Qt.AlignBottom)
 
         # 停止按钮（Agent 执行中可见，随时中止等待中的轮次/工具）
-        self.stop_btn = QPushButton("⏹ 停止")
+        self.stop_btn = QPushButton("停止")
         self.stop_btn.setFixedHeight(34)
         self.stop_btn.setFixedWidth(60)
         self.stop_btn.setVisible(False)
         self.stop_btn.setStyleSheet(
             f"QPushButton{{background:{THEME.get('danger', '#d93025')};color:#FFFFFF;"
-            f"border:none;border-radius:6px;font-size:13px;font-weight:600;}}"
+            f"border:none;border-radius:17px;font-size:13px;font-weight:600;}}"
             f"QPushButton:hover{{background:#b3261e;}}"
             f"QPushButton:disabled{{background:{THEME['border']};color:{THEME['faint']};}}")
         self.stop_btn.clicked.connect(self._request_agent_stop)
         ifl.addWidget(self.stop_btn, 0, Qt.AlignBottom)
 
         # v4.101：任务暂停后「继续上次任务」入口（普通 Agent 断点续传）
-        self.resume_agent_btn = QPushButton("▶ 继续上次任务")
+        self.resume_agent_btn = QPushButton("继续上次任务")
         self.resume_agent_btn.setFixedHeight(34)
         self.resume_agent_btn.setFixedWidth(120)
         self.resume_agent_btn.setVisible(False)
         self.resume_agent_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['accent']};color:#FFFFFF;"
-            f"border:none;border-radius:6px;font-size:13px;font-weight:600;}}"
+            f"border:none;border-radius:17px;font-size:13px;font-weight:600;}}"
             f"QPushButton:hover{{background:{THEME['accent_hover']};}}")
         self.resume_agent_btn.clicked.connect(self._resume_agent_task)
         ifl.addWidget(self.resume_agent_btn, 0, Qt.AlignBottom)
@@ -2221,23 +2379,39 @@ class ChatWindow(QMainWindow):
         ia_lay.addWidget(input_frame)
 
         input_hint = QLabel("Enter 发送 · Shift+Enter 换行")
-        input_hint.setStyleSheet(f"color:{THEME['placeholder']};font-size:11px;padding-left:4px;")
+        input_hint.setStyleSheet(f"color:{THEME['placeholder']};font-size:11px;padding-left:8px;")
         ia_lay.addWidget(input_hint)
 
         return input_area
 
+    def eventFilter(self, obj, event):
+        """输入框焦点联动：聚焦时输入卡边框变主色（替代 QSS 不支持的 :focus-within）。"""
+        if getattr(self, "_input_frame", None) is not None and obj is getattr(self, "input_box", None):
+            from PySide6.QtCore import QEvent
+            if event.type() == QEvent.FocusIn:
+                self._input_frame.setStyleSheet(
+                    f"QFrame#inputCard{{background:{THEME['surface']};"
+                    f"border:1.5px solid {THEME['accent']};border-radius:16px;padding:4px 6px;margin:0;}}")
+            elif event.type() == QEvent.FocusOut:
+                self._input_frame.setStyleSheet(
+                    f"QFrame#inputCard{{background:{THEME['surface']};"
+                    f"border:1.5px solid {THEME['border']};border-radius:16px;padding:4px 6px;margin:0;}}")
+        return super().eventFilter(obj, event)
+
     # ============ 实时语音（移植自数字分身）============
     def _style_voice_switch(self, btn, on):
-        """语音开关视觉态：开=蓝底白字，关=灰底弱字。"""
+        """语音开关视觉态：开=蓝底白喇叭图标，关=灰底弱化图标。"""
+        btn.setIcon(_nav_icon_qicon("语音" if on else "静音",
+                                    "#FFFFFF" if on else THEME["dim"], 15))
         if on:
             btn.setStyleSheet(
-                f"QPushButton{{background:{THEME['accent']};color:#FFFFFF;border:none;"
-                f"border-radius:8px;padding:0;font-size:15px;font-weight:600;}}")
+                f"QPushButton{{background:{THEME['accent']};border:none;"
+                f"border-radius:8px;padding:0;}}")
         else:
             btn.setStyleSheet(
-                f"QPushButton{{background:{THEME['card']};color:{THEME['dim']};"
+                f"QPushButton{{background:{THEME['card']};"
                 f"border:1px solid {THEME['border']};border-radius:8px;"
-                f"padding:0;font-size:15px;font-weight:500;}}")
+                f"padding:0;}}")
 
     def _fill_mics(self):
         import tempfile as _tf
@@ -2485,7 +2659,7 @@ class ChatWindow(QMainWindow):
         lay.addWidget(head)
         sub = QLabel("精简流水线（3Phase+2检查）：爆款雷达 → 选题验证 → 写手成稿 → 虚拟编辑审稿 → 终稿定稿"
                      "（节点间传递上文，结果写入下方日志）。短篇按「字数」一次性写满；长篇按章生成，"
-                     "跑完点「续写下一章」出下一章。\n⚠️ 爆款雷达出 3 个切入点后【会停下等你选定】，运行中可随时点「暂停/插入意见」改方向。")
+                     "跑完点「续写下一章」出下一章。\n注意：爆款雷达出 3 个切入点后【会停下等你选定】，运行中可随时点「暂停/插入意见」改方向。")
         sub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
         lay.addWidget(sub)
 
@@ -2603,12 +2777,12 @@ class ChatWindow(QMainWindow):
         custom_row = QHBoxLayout()
         self.orch_choice_custom = QLineEdit()
         self.orch_choice_custom.setPlaceholderText("都不满意？在此自填切入点方向，再点右侧按钮")
-        self.orch_choice_custom.setFixedHeight(32)
+        self.orch_choice_custom.setFixedHeight(34)
         self.orch_choice_custom.setStyleSheet(
             f"QLineEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
             f"border-radius:8px;padding:0 10px;font-size:13px;color:{THEME['text']};}}")
         self.orch_choice_custom_btn = QPushButton("用我的输入")
-        self.orch_choice_custom_btn.setFixedHeight(32)
+        self.orch_choice_custom_btn.setFixedHeight(34)
         self.orch_choice_custom_btn.setStyleSheet(self._primary_btn_style())
         self.orch_choice_custom_btn.clicked.connect(self._on_orch_choice_custom)
         custom_row.addWidget(self.orch_choice_custom, 1)
@@ -2631,12 +2805,12 @@ class ChatWindow(QMainWindow):
         pf_row = QHBoxLayout()
         self.orch_feedback = QLineEdit()
         self.orch_feedback.setPlaceholderText("例如：第二主角动机再强点 / 换个大女主 / 节奏放慢…（留空则直接继续）")
-        self.orch_feedback.setFixedHeight(32)
+        self.orch_feedback.setFixedHeight(34)
         self.orch_feedback.setStyleSheet(
             f"QLineEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
             f"border-radius:8px;padding:0 10px;font-size:13px;color:{THEME['text']};}}")
         self.orch_resume_btn = QPushButton("继续 ▶")
-        self.orch_resume_btn.setFixedHeight(32)
+        self.orch_resume_btn.setFixedHeight(34)
         self.orch_resume_btn.setStyleSheet(self._primary_btn_style())
         self.orch_resume_btn.clicked.connect(self._on_orch_resume)
         pf_row.addWidget(self.orch_feedback, 1)
@@ -2838,12 +3012,12 @@ class ChatWindow(QMainWindow):
         bl.addWidget(auto_cb)
         tid = cp.get("_task_id")
         resume_btn = QPushButton("继续 ▶")
-        resume_btn.setFixedHeight(30)
+        resume_btn.setFixedHeight(34)
         resume_btn.setStyleSheet(self._primary_btn_style())
         resume_btn.clicked.connect(lambda: self._resume_from_checkpoint(tid))
         bl.addWidget(resume_btn)
         discard_btn = QPushButton("丢弃")
-        discard_btn.setFixedHeight(30)
+        discard_btn.setFixedHeight(34)
         discard_btn.setStyleSheet(self._secondary_btn_style())
         discard_btn.clicked.connect(lambda: self._discard_resume(tid))
         bl.addWidget(discard_btn)
@@ -3002,7 +3176,7 @@ class ChatWindow(QMainWindow):
 
         row = QHBoxLayout()
         gen = QPushButton("生成图片")
-        gen.setFixedHeight(36)
+        gen.setFixedHeight(34)
         gen.setStyleSheet(self._primary_btn_style())
         gen.clicked.connect(self._gen_image)
         row.addWidget(gen)
@@ -3333,7 +3507,7 @@ class ChatWindow(QMainWindow):
 
         # 技能市场入口
         market_row = QHBoxLayout()
-        market_btn = QPushButton("🛍 浏览技能市场")
+        market_btn = QPushButton("浏览技能市场")
         market_btn.setFixedHeight(34)
         market_btn.setCursor(Qt.PointingHandCursor)
         market_btn.setStyleSheet(
@@ -3370,7 +3544,8 @@ class ChatWindow(QMainWindow):
             r += 1
             col = 0
             for sk in cats[c]:
-                btn = QPushButton(f"{sk.get('emoji','')}  {sk.get('name','')}")
+                btn = QPushButton(f"  {sk.get('name','')}")
+                btn.setIcon(_nav_icon_qicon(_skill_icon_name(sk), THEME["accent"], 17))
                 btn.setFixedHeight(64)
                 btn.setCursor(Qt.PointingHandCursor)
                 btn.setStyleSheet(
@@ -3428,18 +3603,18 @@ class ChatWindow(QMainWindow):
 
         btn_row = QHBoxLayout()
         open_btn = QPushButton("打开设置弹层")
-        open_btn.setFixedHeight(36)
+        open_btn.setFixedHeight(34)
         open_btn.setStyleSheet(self._primary_btn_style())
         open_btn.clicked.connect(lambda: self._show_popup(self._settings_popup))
         btn_row.addWidget(open_btn)
 
         export_btn = QPushButton("导出当前对话")
-        export_btn.setFixedHeight(36)
+        export_btn.setFixedHeight(34)
         export_btn.setStyleSheet(self._secondary_btn_style())
         export_btn.clicked.connect(self.export_session)
         btn_row.addWidget(export_btn)
         diag_btn = QPushButton("导出诊断包")
-        diag_btn.setFixedHeight(36)
+        diag_btn.setFixedHeight(34)
         diag_btn.setStyleSheet(self._secondary_btn_style())
         diag_btn.clicked.connect(self.export_diagnostic)
         btn_row.addWidget(diag_btn)
@@ -3469,14 +3644,16 @@ class ChatWindow(QMainWindow):
         ml.addWidget(self.mem_view)
         mbtns = QHBoxLayout()
         mrefresh = QPushButton("刷新")
-        mrefresh.setFixedHeight(32)
+        mrefresh.setFixedHeight(34)
         mrefresh.setStyleSheet(self._secondary_btn_style())
         mrefresh.clicked.connect(self._refresh_memory_view)
         mclear = QPushButton("清空记忆")
-        mclear.setFixedHeight(32)
-        mclear.setStyleSheet("QPushButton{background:#dc2626;color:#fff;border:none;"
-                             "border-radius:8px;padding:0 14px;font-size:13px;font-weight:600;}"
-                             "QPushButton:hover{background:#b91c1c;}")
+        mclear.setFixedHeight(34)
+        # v4.112 UI 美化：危险操作改「红描边」次级样式——警示但不抢视觉重心
+        mclear.setStyleSheet(
+            "QPushButton{background:transparent;color:#dc2626;border:1px solid #f3b6b1;"
+            "border-radius:8px;padding:0 14px;font-size:13px;font-weight:500;}"
+            "QPushButton:hover{background:#fdecea;border-color:#dc2626;font-weight:600;}")
         mclear.clicked.connect(self._clear_memory)
         mbtns.addWidget(mrefresh)
         mbtns.addWidget(mclear)
@@ -3512,7 +3689,7 @@ class ChatWindow(QMainWindow):
                                           f"color:{THEME['text']};font-family:'Microsoft YaHei','ui-monospace','Menlo','Consolas',monospace;")
         etok_row.addWidget(self.ext_token_edit, 1)
         ecopy = QPushButton("复制")
-        ecopy.setFixedHeight(32)
+        ecopy.setFixedHeight(34)
         ecopy.setStyleSheet(self._secondary_btn_style())
         ecopy.clicked.connect(self._copy_ext_token)
         etok_row.addWidget(ecopy)
@@ -3626,13 +3803,8 @@ class ChatWindow(QMainWindow):
 
         tb_layout.addStretch(1)
 
-        # ---- 右侧头像 ----
-        self.user_avatar = QLabel("xyb")
-        self.user_avatar.setFixedSize(34, 34)
-        self.user_avatar.setAlignment(Qt.AlignCenter)
-        self.user_avatar.setStyleSheet(
-            f"QLabel{{background:{THEME['accent']};color:#FFFFFF;border-radius:17px;"
-            f"font-size:13px;font-weight:600;}}")
+        # ---- 右侧头像（v4.114：渐变底人形图标）----
+        self.user_avatar = _make_avatar_label(34)
         tb_layout.addWidget(self.user_avatar)
 
         # ---- 系统按钮 ----
@@ -3746,11 +3918,11 @@ class ChatWindow(QMainWindow):
         cards_row.setSpacing(16)
 
         card_data = [
-            ("blue",   "✏️", "写文章",
+            ("blue",   "编辑", "写文章",
              "知乎短故事、头条评论、小红书笔记，AI帮你写"),
-            ("green",  "💻", "写代码",
+            ("green",  "代码", "写代码",
              "修Bug、加功能、调样式，交给Agent搞定"),
-            ("orange", "🎨", "做设计",
+            ("orange", "设计", "做设计",
              "生成配图、改页面UI、出HTML排版"),
         ]
 
@@ -3785,9 +3957,10 @@ class ChatWindow(QMainWindow):
             card_lay.setContentsMargins(0, 0, 0, 0)
             card_lay.setSpacing(8)
 
-            icon_lbl = QLabel(icon_str)
-            icon_lbl.setStyleSheet(
-                f"font-size:22px;background:transparent;border:none;color:{card_icon_color};")
+            icon_lbl = QLabel()
+            icon_lbl.setFixedSize(22, 22)
+            icon_lbl.setPixmap(_nav_icon_pixmap(icon_str, card_icon_color, 22))
+            icon_lbl.setStyleSheet("background:transparent;border:none;")
             card_lay.addWidget(icon_lbl)
 
             title_lbl = QLabel(card_title)
@@ -3855,10 +4028,47 @@ class ChatWindow(QMainWindow):
                   if s.messages and s.sid != self.store.active_sid][:5]
 
         if not recent:
-            empty_lbl = QLabel("暂无对话记录")
-            empty_lbl.setStyleSheet(
-                f"color:{THEME['placeholder']};font-size:13px;padding:12px 0;")
-            self.welcome_recent_layout.addWidget(empty_lbl)
+            # v4.112：空态占位卡（图标徽章 + 主/副文案 + 新建对话按钮）
+            card = QWidget()
+            card.setStyleSheet("background:transparent;")
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(0, 8, 0, 8)
+            cl.setSpacing(6)
+            cl.setAlignment(Qt.AlignHCenter)
+
+            # 圆形图标徽章（v4.115：emoji 改 SVG 线性图标）
+            badge = QLabel()
+            badge.setFixedSize(44, 44)
+            badge.setAlignment(Qt.AlignCenter)
+            badge.setPixmap(_nav_icon_pixmap("对话", THEME["accent"], 20))
+            badge.setStyleSheet(
+                f"background:{THEME['card_blue_bg']};border-radius:22px;")
+            cl.addWidget(badge, 0, Qt.AlignHCenter)
+
+            main_lbl = QLabel("还没有对话")
+            main_lbl.setAlignment(Qt.AlignCenter)
+            main_lbl.setStyleSheet(
+                f"color:{THEME['dim']};font-size:13px;font-weight:600;padding-top:2px;")
+            cl.addWidget(main_lbl)
+
+            sub_lbl = QLabel("点击下方开始你的第一条对话")
+            sub_lbl.setAlignment(Qt.AlignCenter)
+            sub_lbl.setStyleSheet(
+                f"color:{THEME['placeholder']};font-size:12px;")
+            cl.addWidget(sub_lbl)
+
+            new_btn = QPushButton("新建对话")
+            new_btn.setCursor(Qt.PointingHandCursor)
+            new_btn.setFixedHeight(32)
+            new_btn.setFixedWidth(116)
+            new_btn.setStyleSheet(
+                f"QPushButton{{background:{THEME['accent']};color:#FFFFFF;border:none;"
+                f"border-radius:16px;font-size:12px;font-weight:600;padding:0 16px;}}"
+                f"QPushButton:hover{{background:{THEME['accent_hover']};}}")
+            new_btn.clicked.connect(self._new_session)
+            cl.addWidget(new_btn, 0, Qt.AlignHCenter)
+
+            self.welcome_recent_layout.addWidget(card)
             return
 
         dot_colors = [THEME["accent"], THEME["ok"], THEME["tool_running"]]
@@ -3974,23 +4184,47 @@ class ChatWindow(QMainWindow):
         #   中按同一相对位置 addWidget 一个 QWidget 并调用其 _build_*_page；
         #   ③ _build_*_page 内懒导入对应面板模块（如 digital_twin_panel）委托构建。
         #   _switch_nav(idx) -> main_stack.setCurrentIndex(idx+1) 自动保持同步。
+        # v4.114：icon 字段改为 _NAV_ICONS 的中文 key（SVG 渲染），不再用 emoji
         nav_defs = [
-            ("对话", "💬"),
-            ("编排", "🔀"),
-            ("生图", "🖼"),
-            ("生视频", "🎬"),
-            ("数字人", "🧑"),
-            ("导演台", "🎥"),
-            ("工具", "🛠"),
-            ("任务", "⏰"),
-            ("设置", "⚙"),
+            ("对话", "对话"),
+            ("编排", "编排"),
+            ("生图", "生图"),
+            ("生视频", "生视频"),
+            ("数字人", "数字人"),
+            ("导演台", "导演台"),
+            ("工具", "工具"),
+            ("任务", "任务"),
+            ("设置", "设置"),
         ]
         nav_container = QWidget()
         nav_lay = QVBoxLayout(nav_container)
         nav_lay.setContentsMargins(0, 0, 0, 0)
         nav_lay.setSpacing(4)
         for i, (label, icon) in enumerate(nav_defs):
-            btn = QPushButton(f"{icon}  {label}")
+            # v4.114：SVG 线性图标替代 emoji——矢量描边风格统一，基线天然齐平，
+            # 选中态由 _update_nav_styles 重新渲染为白色
+            btn = QPushButton()
+            box = QWidget(btn)
+            box.setStyleSheet("background:transparent;")
+            il = QHBoxLayout(box)
+            il.setContentsMargins(16, 0, 8, 0)
+            il.setSpacing(8)
+            icon_lbl = QLabel()
+            icon_lbl.setFixedSize(18, 18)
+            icon_lbl.setAlignment(Qt.AlignCenter)
+            icon_lbl.setStyleSheet("background:transparent;")
+            icon_lbl.setPixmap(_nav_icon_pixmap(icon, THEME["dim"], 18))
+            text_lbl = QLabel(label)
+            text_lbl.setStyleSheet(
+                f"font-size:14px;font-weight:500;color:{THEME['dim']};background:transparent;")
+            il.addWidget(icon_lbl)
+            il.addWidget(text_lbl, 1)
+            bl = QVBoxLayout(btn)
+            bl.setContentsMargins(0, 0, 0, 0)
+            bl.addWidget(box)
+            btn.setProperty("iconLbl", icon_lbl)
+            btn.setProperty("textLbl", text_lbl)
+            btn.setProperty("navIcon", icon)
             btn.setFixedHeight(44)
             btn.setCursor(Qt.PointingHandCursor)
             btn.clicked.connect(lambda _, idx=i: self._switch_nav(idx))
@@ -4000,16 +4234,11 @@ class ChatWindow(QMainWindow):
 
         sb.addStretch(1)
 
-        # ---- 用户区 ----
+        # ---- 用户区（v4.114：渐变底人形图标头像）----
         user_row = QHBoxLayout()
-        avatar = QLabel("xyb")
-        avatar.setFixedSize(34, 34)
-        avatar.setAlignment(Qt.AlignCenter)
-        avatar.setStyleSheet(
-            f"QLabel{{background:{THEME['accent']};color:#FFFFFF;border-radius:17px;"
-            f"font-size:13px;font-weight:600;}}")
+        avatar = _make_avatar_label(34)
         user_row.addWidget(avatar)
-        uname = QLabel("xyb")
+        uname = QLabel("User")
         uname.setStyleSheet(
             f"font-size:14px;font-weight:500;color:{THEME['text']};background:transparent;")
         user_row.addWidget(uname, 1)
@@ -4022,18 +4251,31 @@ class ChatWindow(QMainWindow):
         self._update_nav_styles(-1)
 
     def _update_nav_styles(self, active):
-        """刷新导航 pill 选中态：active=-1 表示首页(无选中)。"""
+        """刷新导航 pill 选中态：active=-1 表示首页(无选中)。v4.114 SVG 图标同步换色。"""
         for i, btn in enumerate(self.nav_buttons):
+            text_lbl = btn.property("textLbl")
+            icon_lbl = btn.property("iconLbl")
+            icon_name = btn.property("navIcon")
             if i == active:
                 btn.setStyleSheet(
                     f"QPushButton{{background:{THEME['accent']};color:#FFFFFF;border:none;"
-                    f"border-radius:24px;padding:0 16px;font-size:14px;font-weight:500;text-align:left;}}"
+                    f"border-radius:24px;}}"
                     f"QPushButton:hover{{background:{THEME['accent_hover']};color:#FFFFFF;}}")
+                if text_lbl:
+                    text_lbl.setStyleSheet(
+                        f"font-size:14px;font-weight:600;color:#FFFFFF;background:transparent;")
+                if icon_lbl and icon_name:
+                    icon_lbl.setPixmap(_nav_icon_pixmap(icon_name, "#FFFFFF", 18))
             else:
                 btn.setStyleSheet(
                     f"QPushButton{{background:transparent;color:{THEME['dim']};border:none;"
-                    f"border-radius:24px;padding:0 16px;font-size:14px;font-weight:500;text-align:left;}}"
+                    f"border-radius:24px;}}"
                     f"QPushButton:hover{{background:{THEME['blue_hover']};color:{THEME['text']};}}")
+                if text_lbl:
+                    text_lbl.setStyleSheet(
+                        f"font-size:14px;font-weight:500;color:{THEME['dim']};background:transparent;")
+                if icon_lbl and icon_name:
+                    icon_lbl.setPixmap(_nav_icon_pixmap(icon_name, THEME["dim"], 18))
 
     def _switch_nav(self, index):
         """导航切换：nav 序号 -> 主栈页面(nav+1，首页占0)。"""
@@ -4305,11 +4547,9 @@ class ChatWindow(QMainWindow):
                 esc = "…"
             return (
                 '<div class="msg-row user">'
-                '<div class="col"><div class="who">You</div>'
-                f'<div class="bubble">{esc}</div></div>'
-                f'{self._avatar_img_html("user")}'
+                '<div class="col"><div class="bubble">{esc}</div></div>'
                 '</div>'
-            )
+            ).format(esc=esc)
         # assistant：Markdown 交给页面内 marked.js 渲染（HTML 属性转义即可，
         # 浏览器 getAttribute 解码回原文；属性内合法保留换行）
         raw = text if (text and str(text).strip()) else "…"
@@ -4318,17 +4558,16 @@ class ChatWindow(QMainWindow):
         if idx is not None:
             actions = (
                 '<div class="actions">'
-                f'<a href="app://regen/{idx}">🔄 重新生成</a>'
-                f'<a href="app://edit/{idx}">✏️ 改写问题</a>'
+                f'<a href="app://regen/{idx}">重新生成</a>'
+                f'<a href="app://edit/{idx}">改写问题</a>'
                 f'<span class="sep">|</span>'
-                f'<a href="app://fb_up/{idx}">👍</a>'
-                f'<a href="app://fb_down/{idx}">👎</a>'
+                f'<a href="app://fb_up/{idx}">▲</a>'
+                f'<a href="app://fb_down/{idx}">▼</a>'
                 '</div>'
             )
         return (
             '<div class="msg-row ai">'
-            f'{self._avatar_img_html("ai")}'
-            '<div class="col"><div class="who">Agent</div>'
+            '<div class="col">'
             f'<div class="bubble"><div class="md" data-md="{md_attr}"></div></div>'
             f'{actions}'
             '</div></div>'
@@ -5006,16 +5245,14 @@ class ChatWindow(QMainWindow):
                 if m.get("role") == "user":
                     bubble = (
                         '<div class="msg-row user">'
-                        '<div class="col"><div class="who">You</div>'
+                        '<div class="col">'
                         f'<div class="bubble">{inner}</div></div>'
-                        f'{self._avatar_img_html("user")}'
                         '</div>'
                     )
                 else:
                     bubble = (
                         '<div class="msg-row ai">'
-                        f'{self._avatar_img_html("ai")}'
-                        '<div class="col"><div class="who">Agent</div>'
+                        '<div class="col">'
                         f'<div class="bubble">{inner}</div></div>'
                         '</div>'
                     )
@@ -5087,7 +5324,7 @@ class ChatWindow(QMainWindow):
         # v4.86 修复：打开「真正的产物文件夹」= config.PRODUCTS_DIR
         # （~/Documents/小臭玩AI/产物，图片/截图/视频/workspace 统一落点），
         # 而非小臭程序目录 APP_DIR。
-        open_dir_btn = QPushButton("📂  打开产物文件夹")
+        open_dir_btn = QPushButton("打开产物文件夹")
         open_dir_btn.setFixedHeight(38)
         open_dir_btn.setStyleSheet(
             f"QPushButton{{"
@@ -5103,17 +5340,18 @@ class ChatWindow(QMainWindow):
         open_dir_btn.clicked.connect(self._on_open_products_dir)
         dv.addWidget(open_dir_btn)
 
-        clear_btn = QPushButton("🗑  清空")
+        clear_btn = QPushButton("清空")
         clear_btn.setFixedHeight(38)
+        # v4.116：描边式降视觉权重——浅红细描边 + 红字，hover 才升满红
         clear_btn.setStyleSheet(
             f"QPushButton{{"
             f"background:transparent;"
-            f"border:1.5px solid {THEME['border']};"
+            f"border:1px solid rgba(239,68,68,0.35);"
             f"border-radius:10px;"
             f"color:{THEME['danger']};font-size:13px;font-weight:500;"
             f"padding:0 14px;text-align:left;"
             f"}}"
-            f"QPushButton:hover{{background:rgba(239,68,68,0.1);"
+            f"QPushButton:hover{{background:rgba(239,68,68,0.06);"
             f"border-color:{THEME['danger']};}}"
         )
         clear_btn.clicked.connect(self._on_deliverables_clear)
@@ -5157,17 +5395,28 @@ class ChatWindow(QMainWindow):
             desc = d.get("desc", rel)
 
             color_key, tag_color_key = DELIVERY_COLORS.get(kind, ("delivery_blue", "accent"))
-            border_color = THEME.get(color_key, THEME["accent"])
-            tag_bg = THEME.get(tag_color_key, THEME["accent"])
+            # v4.114：色条/色点用莫兰迪深色（与 tag 前景同源），替代高饱和纯色
+            tag_bg, tag_fg = DELIVERY_TAG_STYLES.get(kind, DELIVERY_TAG_FALLBACK)
+            border_color = tag_fg
 
             # 交付物卡片（参考设计稿 .delivery-item）
             card_item = QWidget()
             card_item.setCursor(Qt.PointingHandCursor)
+            # v4.112 P2：hover 反馈（QSS :hover，无需事件过滤器）
             card_item.setStyleSheet(
                 f"QWidget#dvCard{{"
                 f"background:{THEME['surface_raised']};"
                 f"border-radius:10px;"
                 f"border-left:3px solid {border_color};"
+                f"}}"
+                f"QWidget#dvCard:hover{{"
+                f"background:{THEME['blue_hover']};"
+                f"}}"
+                # tooltip 是独立顶层窗口，不继承主窗口 QSS，必须在控件级样式里给规则
+                f"QToolTip{{"
+                f"background:{THEME['card']};color:{THEME['text']};"
+                f"border:1px solid {THEME['border']};border-radius:8px;"
+                f"padding:6px 10px;font-size:12px;"
                 f"}}")
             card_item.setObjectName("dvCard")
 
@@ -5175,10 +5424,19 @@ class ChatWindow(QMainWindow):
             ci_lay.setContentsMargins(14, 14, 14, 12)
             ci_lay.setSpacing(4)
 
+            # v4.112 P2：名称行加 kind 色点，视觉锚点更清晰
+            name_row = QHBoxLayout()
+            name_row.setSpacing(6)
+            dot = QLabel()
+            dot.setFixedSize(8, 8)
+            dot.setStyleSheet(
+                f"background:{border_color};border-radius:4px;")
+            name_row.addWidget(dot)
             name_lbl = QLabel(name if len(name) <= 24 else name[:23] + "…")
             name_lbl.setStyleSheet(
                 f"font-size:13px;font-weight:600;color:{THEME['text']};background:transparent;")
-            ci_lay.addWidget(name_lbl)
+            name_row.addWidget(name_lbl, 1)
+            ci_lay.addLayout(name_row)
 
             if desc:
                 desc_text = desc if len(desc) <= 40 else desc[:39] + "…"
@@ -5188,14 +5446,29 @@ class ChatWindow(QMainWindow):
                     f"font-size:12px;color:{THEME['dim']};line-height:1.4;background:transparent;")
                 ci_lay.addWidget(desc_lbl)
 
-            tag_lbl = QLabel(kind.upper() if len(kind) <= 8 else kind[:7].upper())
-            ut2 = THEME["user_text"]
+            # v4.114：tag 改莫兰迪淡底深字胶囊；v4.115 前缀 emoji 改 SVG 小图标
+            tag_text = kind.upper() if len(kind) <= 8 else kind[:7].upper()
+            tag_wrap = QWidget()
+            tag_wrap_lay = QHBoxLayout(tag_wrap)
+            tag_wrap_lay.setContentsMargins(0, 0, 0, 0)
+            tag_wrap_lay.setSpacing(4)
+            tag_wrap_lay.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            tag_icon_name = DELIVERY_ICONS.get(kind, DELIVERY_ICON_FALLBACK)
+            tag_icon_lbl = QLabel()
+            tag_icon_lbl.setFixedSize(11, 11)
+            tag_icon_lbl.setPixmap(_nav_icon_pixmap(tag_icon_name, tag_fg, 11))
+            tag_icon_lbl.setStyleSheet("background:transparent;")
+            tag_wrap_lay.addWidget(tag_icon_lbl)
+            tag_lbl = QLabel(tag_text)
             tag_lbl.setStyleSheet(
-                f"font-size:10px;color:{ut2};background:{tag_bg};"
-                f"border-radius:4px;padding:1px 6px;")
-            tag_lbl.setFixedHeight(16)
-            ci_lay.addWidget(tag_lbl)
+                f"font-size:10px;font-weight:600;color:{tag_fg};background:{tag_bg};"
+                f"border-radius:8px;padding:2px 8px;")
+            tag_lbl.setFixedHeight(18)
+            tag_wrap_lay.addWidget(tag_lbl)
+            tag_wrap_lay.addStretch()
+            ci_lay.addWidget(tag_wrap)
 
+            card_item.setToolTip(f"{rel}\n{name}")
             card_item.mousePressEvent = lambda e, r=rel: self._on_deliverable_open(r)
             self.dv_list_layout.insertWidget(self.dv_list_layout.count() - 1, card_item)
 
@@ -5293,10 +5566,14 @@ class ChatWindow(QMainWindow):
         popup, layout = self._popup_base(300)
         self._popup_title(layout, "设置")
 
+        # v4.112 P2：弹层组卡片统一风格（与设置页 info card 对齐：radius 10 + padding 16）
+        group_style = (
+            f"QFrame{{background:{THEME['elev']};border:1px solid {THEME['border']};"
+            f"border-radius:10px;padding:16px;}}")
+
         # ---- 模型组 ----
         group_model = QFrame()
-        group_model.setStyleSheet(
-            f"QFrame{{background:{THEME['elev']};border:none;border-radius:10px;padding:12px;}}")
+        group_model.setStyleSheet(group_style)
         gml = QVBoxLayout(group_model)
         gml.setContentsMargins(12, 12, 12, 12)
         gml.setSpacing(6)
@@ -5316,7 +5593,7 @@ class ChatWindow(QMainWindow):
         # ---- API Key 组 ----
         group_apikey = QFrame()
         group_apikey.setStyleSheet(
-            f"QFrame{{background:{THEME['elev']};border:none;border-radius:10px;padding:12px;}}")
+            f"QFrame{{background:{THEME['elev']};border:1px solid {THEME['border']};border-radius:10px;padding:16px;}}")
         gakl = QVBoxLayout(group_apikey)
         gakl.setContentsMargins(12, 12, 12, 12)
         gakl.setSpacing(6)
@@ -5352,7 +5629,7 @@ class ChatWindow(QMainWindow):
         # ---- 记忆加密（v4.75） ----
         group_enc = QFrame()
         group_enc.setStyleSheet(
-            f"QFrame{{background:{THEME['elev']};border:none;border-radius:10px;padding:12px;}}")
+            f"QFrame{{background:{THEME['elev']};border:1px solid {THEME['border']};border-radius:10px;padding:16px;}}")
         encl = QVBoxLayout(group_enc)
         encl.setContentsMargins(12, 12, 12, 12)
         encl.setSpacing(6)
@@ -5372,7 +5649,7 @@ class ChatWindow(QMainWindow):
         self.enc_pw_edit.returnPressed.connect(self._save_enc_passphrase)
         enc_row.addWidget(self.enc_pw_edit, 1)
         enc_save = QPushButton("保存")
-        enc_save.setFixedHeight(30)
+        enc_save.setFixedHeight(32)
         enc_save.setStyleSheet(
             f"QPushButton{{background:{THEME['accent']};border:none;border-radius:8px;"
             f"padding:0 14px;font-size:12px;color:#fff;}}"
@@ -5385,7 +5662,7 @@ class ChatWindow(QMainWindow):
         # ---- 功能开关组 ----
         group_toggles = QFrame()
         group_toggles.setStyleSheet(
-            f"QFrame{{background:{THEME['elev']};border:none;border-radius:10px;padding:12px;}}")
+            f"QFrame{{background:{THEME['elev']};border:1px solid {THEME['border']};border-radius:10px;padding:16px;}}")
         gtl = QVBoxLayout(group_toggles)
         gtl.setContentsMargins(12, 12, 12, 12)
         gtl.setSpacing(8)
@@ -5446,7 +5723,7 @@ class ChatWindow(QMainWindow):
         _mode_hint.setWordWrap(True)
         _mode_hint.setStyleSheet(f"font-size:10px;color:{THEME['faint']};padding-left:4px;padding-bottom:4px;")
         gtl.addWidget(_mode_hint)
-        _trust_btn = QPushButton("✅ 本次会话全部信任（危险操作不再逐个问）")
+        _trust_btn = QPushButton("本次会话全部信任（危险操作不再逐个问）")
         _trust_btn.setFixedHeight(34)
         _trust_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['elev']};border:none;border-radius:8px;"
@@ -5459,7 +5736,7 @@ class ChatWindow(QMainWindow):
         # ---- 自动备份（v4.76，OS 级任务计划程序） ----
         group_backup = QFrame()
         group_backup.setStyleSheet(
-            f"QFrame{{background:{THEME['elev']};border:none;border-radius:10px;padding:12px;}}")
+            f"QFrame{{background:{THEME['elev']};border:1px solid {THEME['border']};border-radius:10px;padding:16px;}}")
         bkl = QVBoxLayout(group_backup)
         bkl.setContentsMargins(12, 12, 12, 12)
         bkl.setSpacing(6)
@@ -5492,7 +5769,7 @@ class ChatWindow(QMainWindow):
         bkl.addLayout(bk_row)
         bk_btn_row = QHBoxLayout()
         ab_apply = QPushButton("应用计划")
-        ab_apply.setFixedHeight(30)
+        ab_apply.setFixedHeight(32)
         ab_apply.setStyleSheet(
             f"QPushButton{{background:{THEME['accent']};border:none;border-radius:8px;"
             f"padding:0 14px;font-size:12px;color:#fff;}}"
@@ -5500,7 +5777,7 @@ class ChatWindow(QMainWindow):
         ab_apply.clicked.connect(self._save_autobackup_settings)
         bk_btn_row.addWidget(ab_apply)
         ab_now = QPushButton("立即备份")
-        ab_now.setFixedHeight(30)
+        ab_now.setFixedHeight(32)
         ab_now.setStyleSheet(
             f"QPushButton{{background:{THEME['elev']};border:1px solid {THEME['border']};"
             f"border-radius:8px;padding:0 14px;font-size:12px;color:{THEME['text']};}}"
@@ -5514,7 +5791,7 @@ class ChatWindow(QMainWindow):
         # ---- 版本 / 更新（v4.76） ----
         group_ver = QFrame()
         group_ver.setStyleSheet(
-            f"QFrame{{background:{THEME['elev']};border:none;border-radius:10px;padding:12px;}}")
+            f"QFrame{{background:{THEME['elev']};border:1px solid {THEME['border']};border-radius:10px;padding:16px;}}")
         vl = QVBoxLayout(group_ver)
         vl.setContentsMargins(12, 12, 12, 12)
         vl.setSpacing(6)
@@ -5527,7 +5804,7 @@ class ChatWindow(QMainWindow):
         vl.addWidget(vinfo)
         vrow = QHBoxLayout()
         chk_btn = QPushButton("检查更新")
-        chk_btn.setFixedHeight(30)
+        chk_btn.setFixedHeight(32)
         chk_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['elev']};border:1px solid {THEME['border']};"
             f"border-radius:8px;padding:0 14px;font-size:12px;color:{THEME['text']};}}"
@@ -5547,7 +5824,7 @@ class ChatWindow(QMainWindow):
             import perf_baseline as _pb
             group_perf = QFrame()
             group_perf.setStyleSheet(
-                f"QFrame{{background:{THEME['elev']};border:none;border-radius:10px;padding:12px;}}")
+                f"QFrame{{background:{THEME['elev']};border:1px solid {THEME['border']};border-radius:10px;padding:16px;}}")
             pl = QVBoxLayout(group_perf)
             pl.setContentsMargins(12, 12, 12, 12)
             pl.setSpacing(6)
@@ -5573,11 +5850,11 @@ class ChatWindow(QMainWindow):
                 f"border-radius:8px;padding:0 14px;font-size:12px;color:{THEME['text']};}}"
                 f"QPushButton:hover{{background:{THEME['border_highlight']};}}")
             run_btn = QPushButton("跑性能基线")
-            run_btn.setFixedHeight(30)
+            run_btn.setFixedHeight(32)
             run_btn.setStyleSheet(btn_style)
             run_btn.clicked.connect(lambda: self._run_perf(False))
             set_btn = QPushButton("设为当前基线")
-            set_btn.setFixedHeight(30)
+            set_btn.setFixedHeight(32)
             set_btn.setStyleSheet(btn_style)
             set_btn.clicked.connect(lambda: self._run_perf(True))
             prow.addWidget(run_btn)
@@ -5590,7 +5867,7 @@ class ChatWindow(QMainWindow):
 
         # ---- 导出 ----
         export_btn = QPushButton("导出当前对话")
-        export_btn.setFixedHeight(36)
+        export_btn.setFixedHeight(32)
         export_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['elev']};border:none;border-radius:8px;"
             f"padding:6px 8px;font-size:13px;color:{THEME['text']};text-align:left;}}"
@@ -5916,7 +6193,7 @@ class ChatWindow(QMainWindow):
             return
         sk = self._current_skill()
         if sk:
-            self.skill_name_label.setText(f"当前技能：{sk.get('emoji', '')} {sk.get('name', '')}")
+            self.skill_name_label.setText(f"当前技能：{sk.get('name', '')}")
             bar.setVisible(True)
         else:
             bar.setVisible(False)
@@ -5937,8 +6214,9 @@ class ChatWindow(QMainWindow):
                 f"padding-left:4px;margin-top:2px;background:transparent;")
             layout.addWidget(cat_lbl)
             for sk in cats[cat]:
-                btn = QPushButton(f'{sk.get("emoji", "")}  {sk.get("name", "")}')
-                btn.setFixedHeight(30)
+                btn = QPushButton(f'  {sk.get("name", "")}')
+                btn.setIcon(_nav_icon_qicon(_skill_icon_name(sk), THEME["dim"], 14))
+                btn.setFixedHeight(32)
                 btn.setStyleSheet(self._skill_btn_style(False))
                 btn.setToolTip(sk.get("desc", ""))
                 btn.clicked.connect(lambda _=False, sid=sk["id"]: self._on_skill_pick(sid))
@@ -5955,7 +6233,7 @@ class ChatWindow(QMainWindow):
             tray = getattr(self, "tray_app", None)
             action = getattr(tray, "_skill_review_action", None) if tray else None
             if action is not None:
-                action.setText(f"📝 技能审核 ({n})" if n else "📝 技能审核")
+                action.setText(f"技能审核 ({n})" if n else "技能审核")
         except Exception:
             pass
 
@@ -6033,7 +6311,7 @@ class ChatWindow(QMainWindow):
                 f"border-radius:10px;padding:10px;}}")
             bl = QVBoxLayout(box)
             bl.setContentsMargins(10, 8, 10, 8)
-            title = QLabel(f"{sk.get('emoji','⚡')} {sk.get('display_name', sk.get('name',''))}   "
+            title = QLabel(f"{sk.get('display_name', sk.get('name',''))}   "
                            f"[{sk.get('category','自动生成')}]   {sk.get('created','')}")
             title.setStyleSheet(f"font-size:13px;font-weight:600;color:{THEME['text']};")
             bl.addWidget(title)
@@ -6044,10 +6322,10 @@ class ChatWindow(QMainWindow):
             row = QHBoxLayout()
             row.addStretch(1)
             reject_btn = QPushButton("拒绝 ✗")
-            reject_btn.setFixedHeight(30)
+            reject_btn.setFixedHeight(32)
             reject_btn.setStyleSheet(self._secondary_btn_style())
             approve_btn = QPushButton("通过 ✓")
-            approve_btn.setFixedHeight(30)
+            approve_btn.setFixedHeight(32)
             approve_btn.setStyleSheet(self._primary_btn_style())
             name = sk.get("name", "")
             reject_btn.clicked.connect(
@@ -6193,7 +6471,7 @@ class ChatWindow(QMainWindow):
         parts = [f"<h1>{html_mod.escape(session.title or '会话')}</h1>",
                  f"<p class='meta'>导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}</p>"]
         if sk:
-            parts.append(f"<p class='meta'>当前技能：{sk.get('emoji', '')} "
+            parts.append(f"<p class='meta'>当前技能："
                          f"{html_mod.escape(str(sk.get('name', '')))}</p>")
         if getattr(session, "deliverables", None):
             parts.append("<p class='meta'><b>交付物：</b></p><ul>")
@@ -6225,7 +6503,7 @@ class ChatWindow(QMainWindow):
                  f"> 导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}", ""]
         sk = self._current_skill()
         if sk:
-            lines.append(f"> 当前技能：{sk.get('emoji', '')} {sk.get('name', '')}\n")
+            lines.append(f"> 当前技能：{sk.get('name', '')}\n")
         if getattr(session, "deliverables", None):
             lines.append("> **交付物：**")
             for d in session.deliverables:
@@ -6278,7 +6556,7 @@ class ChatWindow(QMainWindow):
         doc.add_paragraph(f"导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
         sk = self._current_skill()
         if sk:
-            doc.add_paragraph(f"当前技能：{sk.get('emoji', '')} {sk.get('name', '')}")
+            doc.add_paragraph(f"当前技能：{sk.get('name', '')}")
         for m in session.messages:
             if m.get("role") == "tool_log":
                 p = doc.add_paragraph()
@@ -7919,18 +8197,18 @@ class TrayApp:
         menu = QMenu()
         show_action = QAction("显示 / 隐藏", app)
         show_action.triggered.connect(self.toggle)
-        skill_action = QAction("🧩 技能管理器", app)
+        skill_action = QAction("技能管理器", app)
         skill_action.triggered.connect(self._open_skill_manager)
-        tool_action = QAction("🧰 工具管理器", app)   # v4.111：工具白名单（省 token）
+        tool_action = QAction("工具管理器", app)   # v4.111：工具白名单（省 token）
         tool_action.triggered.connect(self._open_tool_manager)
-        market_action = QAction("🛍 技能市场", app)
+        market_action = QAction("技能市场", app)
         market_action.triggered.connect(self._open_skill_market)
-        wf_action = QAction("⚙️ 工作流模板", app)
+        wf_action = QAction("工作流模板", app)
         wf_action.triggered.connect(self._open_workflow_manager)
-        review_action = QAction("📝 技能审核", app)
+        review_action = QAction("技能审核", app)
         review_action.triggered.connect(lambda: self.window._open_skill_review_dialog())
         self._skill_review_action = review_action  # v4.84：动态更新待审数量
-        diag_action = QAction("📦 诊断包", app)
+        diag_action = QAction("诊断包", app)
         diag_action.triggered.connect(self.export_diagnostic)
         quit_action = QAction("退出", app)
         quit_action.triggered.connect(self.quit)

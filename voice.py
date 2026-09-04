@@ -20,14 +20,18 @@ import edge_tts
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# ffmpeg：优先用本机 winget 安装路径，否则退回 PATH 上的 ffmpeg
-FFMPEG = (
-    r"C:\Users\xyb\AppData\Local\Microsoft\WinGet\Packages"
-    r"\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe"
-    r"\ffmpeg-8.1-full_build\bin\ffmpeg.exe"
-)
-if not os.path.exists(FFMPEG):
-    FFMPEG = "ffmpeg"
+# ffmpeg：优先用本机 winget 安装路径（动态探测，不硬编码用户名），否则退回 PATH 上的 ffmpeg
+def _find_winget_ffmpeg():
+    local = os.environ.get("LOCALAPPDATA", "")
+    if not local:
+        return ""
+    import glob as _glob
+    hits = _glob.glob(os.path.join(local, "Microsoft", "WinGet", "Packages",
+                                   "Gyan.FFmpeg*", "ffmpeg-*", "bin", "ffmpeg.exe"))
+    return sorted(hits)[-1] if hits else ""
+
+
+FFMPEG = _find_winget_ffmpeg() or "ffmpeg"
 
 
 # ===================== ASR（语音识别）=====================

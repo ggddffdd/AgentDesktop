@@ -417,7 +417,7 @@ def _make_card(app, task):
 
     # 第二行：调度摘要 + 下次运行
     row2 = QHBoxLayout()
-    sched = QLabel("🗓 " + auto.schedule_summary(task))
+    sched = QLabel(auto.schedule_summary(task))
     sched.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
     row2.addWidget(sched)
     row2.addStretch(1)

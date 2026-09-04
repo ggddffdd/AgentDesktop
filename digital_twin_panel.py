@@ -172,7 +172,7 @@ def build_twin_panel(app):
     add_btn.setStyleSheet(_btn_style())
     add_btn.clicked.connect(lambda: _twin_add_portrait(app))
     btn_row.addWidget(add_btn)
-    del_btn = QPushButton("🗑 删除选中")
+    del_btn = QPushButton("删除选中")
     del_btn.setFixedHeight(32)
     del_btn.setCursor(Qt.PointingHandCursor)
     del_btn.setStyleSheet(
@@ -262,7 +262,7 @@ def build_twin_panel(app):
         f"border:1px solid {THEME['accent']};}}")
     opt.addWidget(app.twin_keep_bg)
 
-    gen_btn = QPushButton("🎬 生成分身口播视频")
+    gen_btn = QPushButton("生成分身口播视频")
     gen_btn.setFixedHeight(36)
     gen_btn.setCursor(Qt.PointingHandCursor)
     gen_btn.setStyleSheet(_btn_accent_style())
@@ -445,7 +445,7 @@ def _twin_context_menu(app, pos):
     # 右键同时选中该项
     lw.setCurrentItem(item)
     menu = QMenu(lw)
-    del_act = QAction("🗑 删除此照片", lw)
+    del_act = QAction("删除此照片", lw)
     del_act.triggered.connect(lambda: _twin_delete_portrait(app))
     menu.addAction(del_act)
     menu.exec(lw.mapToGlobal(pos))

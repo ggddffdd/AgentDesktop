@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QSpinBox,
     QComboBox, QGroupBox, QFileDialog, QCheckBox, QListWidget, QListWidgetItem,
     QStackedWidget, QScrollArea, QWidget, QGridLayout, QFrame, QSizePolicy,
-    QInputDialog, QDialog,
+    QInputDialog, QDialog, QRadioButton,
 )
 from PySide6.QtGui import QPixmap, QIcon, QDesktopServices
 from PySide6.QtCore import Qt, QSize, QThread, Signal, QUrl, QObject
@@ -36,6 +36,7 @@ from config import APP_DIR
 from director_web import (
     DirectorWebView, register_localres_scheme,
     clip_card_html, keyframe_card_html, character_card_html, merge_card_html,
+    clue_card_html,
 )
 
 
@@ -136,6 +137,35 @@ def _chk_style():
             f"QCheckBox::indicator{{width:16px;height:16px;}}")
 
 
+def _chip_style():
+    """v4.112 UI 美化：增强选项改「圆角芯片」——无原生方块指示框，选中=蓝底胶囊。
+    仅改视觉，isChecked() 语义零变化。"""
+    return (
+        f"QCheckBox{{background:{THEME['card']};color:{THEME['dim']};"
+        f"border:1px solid {THEME['border']};border-radius:12px;"
+        f"padding:4px 12px;font-size:12px;}}"
+        f"QCheckBox:hover{{border-color:{THEME['border_highlight']};color:{THEME['text']};}}"
+        f"QCheckBox:checked{{background:{THEME['accent']};color:#FFFFFF;"
+        f"border-color:{THEME['accent']};font-weight:600;}}"
+        f"QCheckBox::indicator{{width:0;height:0;}}")
+
+
+def _segment_style(checked=False):
+    """v4.112 UI 美化：「剧情短片 / 本人形象口播」互斥分段钮（QRadioButton）。
+    checked=左侧首选段。仅改视觉，isChecked() 语义零变化。"""
+    side_r = "border-top-right-radius:8px;border-bottom-right-radius:8px;" if not checked else ""
+    side_l = "border-top-left-radius:8px;border-bottom-left-radius:8px;" if checked else ""
+    if checked:
+        return (f"QRadioButton{{background:{THEME['accent']};color:#FFFFFF;border:1px solid {THEME['accent']};"
+                f"{side_l}padding:5px 14px;font-size:12px;font-weight:600;}}"
+                f"QRadioButton::indicator{{width:0;height:0;}}")
+    return (f"QRadioButton{{background:{THEME['card']};color:{THEME['dim']};"
+            f"border:1px solid {THEME['border']};border-left:none;"
+            f"{side_r}padding:5px 14px;font-size:12px;}}"
+            f"QRadioButton:hover{{color:{THEME['text']};border-color:{THEME['border_highlight']};}}"
+            f"QRadioButton::indicator{{width:0;height:0;}}")
+
+
 def _line_style():
     return (f"QLineEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
             f"border-radius:6px;padding:4px 8px;font-size:12px;color:{THEME['text']};}}"
@@ -149,6 +179,7 @@ class DirectorThread(QThread):
     story_ready = Signal(str)
     shots_ready = Signal(object)
     characters_ready = Signal(object)
+    clues_ready = Signal(object)
     keyframes_ready = Signal(object)
     clip_ready = Signal(int, str)
     clip_failed = Signal(int, str)
@@ -180,6 +211,16 @@ class DirectorThread(QThread):
             elif self.task == "characters":
                 p.gen_characters(feedback=self.feedback)
                 self.characters_ready.emit(p.characters)
+            elif self.task == "clues":
+                # 关键道具 / 场景资产追踪（抗崩坏 v3）
+                p.gen_clues(feedback=self.feedback)
+                self.clues_ready.emit(p.clues)
+            elif self.task == "clue_one":
+                name, image = p.regenerate_clue(self.idx, feedback=self.feedback)
+                if image:
+                    self.clues_ready.emit(p.clues)
+                else:
+                    self.error.emit(f"道具/资产「{name or self.idx + 1}」参考图重生成失败")
             elif self.task == "keyframes":
                 p.gen_keyframes(feedback=self.feedback)
                 self.keyframes_ready.emit(p.keyframes)
@@ -351,9 +392,35 @@ def build_director_panel(app):
     app.director_inputs.append(app.director_style)
 
     row2.addSpacing(20)
-    # 复选框紧凑横排
+    # v4.112 UI 美化：模式二选一分段钮（剧情短片 / 本人形象口播）。
+    # portrait 改用 QRadioButton，isChecked()/setChecked() 接口与 QCheckBox 一致，
+    # 下游读取点（L1087/L1921/L2057）语义零变化。
     app.director_dialogue = QCheckBox("台词")
-    app.director_portrait = QCheckBox("本人形象口播")
+    app.director_portrait = QRadioButton("本人形象口播")
+    mode_seg = QWidget()
+    seg_lay = QHBoxLayout(mode_seg)
+    seg_lay.setContentsMargins(0, 0, 0, 0)
+    seg_lay.setSpacing(0)
+    app.director_mode_film = QRadioButton("剧情短片")
+    app.director_mode_film.setChecked(True)
+    app.director_mode_film.setStyleSheet(_segment_style(checked=True))
+    app.director_mode_film.setCursor(Qt.PointingHandCursor)
+    app.director_mode_film.setToolTip("AI 编故事 + 分镜，走完整导演流水线")
+    app.director_portrait.setStyleSheet(_segment_style(checked=False))
+    app.director_portrait.setCursor(Qt.PointingHandCursor)
+    app.director_portrait.setToolTip("锁本人照片做口播形象，跳过三视图/关键帧人物生成，台词走原稿直通")
+    seg_lay.addWidget(app.director_mode_film)
+    seg_lay.addWidget(app.director_portrait)
+    # 两枚 QRadioButton 同父（mode_seg）默认互斥，无需手动联动；
+    # 默认态在布局挂载后统一设置（挂载前 setChecked 会被父级互斥组重置）
+    app.director_mode_film.setChecked(True)
+    row2.addWidget(mode_seg)
+    mode_hint = QLabel("模式")
+    mode_hint.setStyleSheet(f"font-size:11px;color:{THEME['faint']};")
+    row2.addWidget(mode_hint)
+
+    row2.addSpacing(14)
+    # 内容/增强项 → 圆角芯片
     app.director_relay = QCheckBox("尾帧接力")
     app.director_relay.setChecked(True)
     app.director_subtitle = QCheckBox("烧录字幕")
@@ -366,18 +433,25 @@ def build_director_panel(app):
         "生成关键帧后用 DeepSeek 视觉模型审查人物/场景是否崩坏，"
         "不通过自动带诊断重生成（每镜最多重试 2 次）。\n"
         "会产生 DeepSeek 调用费用并延长生成时间；关闭后仅靠参考图锁定。")
-    for c in (app.director_dialogue, app.director_portrait, app.director_relay,
-              app.director_subtitle, app.director_vision_review):
-        c.setStyleSheet(_chk_style())
+    app.director_dialogue.setToolTip("让画面人物开口说台词（口播模式恒开，无需勾选）")
+    app.director_dialogue.setStyleSheet(_chip_style())
+    for c in (app.director_relay, app.director_subtitle, app.director_vision_review):
+        c.setStyleSheet(_chip_style())
         row2.addWidget(c)
         app.director_inputs.append(c)
     row2.addStretch(1)
     pl.addLayout(row2)
 
+    # --- 2.5 行：模式/内容开关灰字说明 ---
+    app.director_mode_hint = QLabel(
+        "剧情短片：AI 编故事分镜，走完整流水线 · 本人形象口播：锁照片说话，台词默认直通（台词芯片仅在短片模式下生效）")
+    app.director_mode_hint.setStyleSheet(f"font-size:11px;color:{THEME['faint']};padding-left:2px;")
+    pl.addWidget(app.director_mode_hint)
+
     # --- 第三行：参考图 ---
     ref = QHBoxLayout()
     ref.setSpacing(12)
-    app.director_ref_btn = QPushButton("📎 选择参考图（首帧锁定 / 口播形象）")
+    app.director_ref_btn = QPushButton("选择参考图（首帧锁定 / 口播形象）")
     app.director_ref_btn.setFixedHeight(34)
     app.director_ref_btn.setCursor(Qt.PointingHandCursor)
     app.director_ref_btn.setStyleSheet(_btn_style())
@@ -403,13 +477,13 @@ def build_director_panel(app):
     # 动作行（开始 / 停止 / 重新开始 / 状态）
     act = QHBoxLayout()
     act.setSpacing(12)
-    app.director_go = QPushButton("🎬 开始导演")
+    app.director_go = QPushButton("开始导演")
     app.director_go.setFixedHeight(38)
     app.director_go.setCursor(Qt.PointingHandCursor)
     app.director_go.setStyleSheet(_btn_accent_style())
     app.director_go.clicked.connect(lambda: _director_start(app))
     act.addWidget(app.director_go)
-    app.director_stop = QPushButton("■ 停止")
+    app.director_stop = QPushButton("停止")
     app.director_stop.setFixedHeight(38)
     app.director_stop.setCursor(Qt.PointingHandCursor)
     app.director_stop.setStyleSheet(_btn_style())
@@ -477,8 +551,24 @@ def build_director_panel(app):
     app.director_characters_web = DirectorWebView(THEME, lambda s: _on_web_action(app, s))
     characters_scroll.setWidget(app.director_characters_web)
     cl0.addWidget(characters_scroll, 1)
+    # 线索子区：关键道具 / 场景资产（clue，抗崩坏 v3，参考 ArcReel）
+    clue_hint = QLabel("附加·可选：关键道具 / 场景资产。人物锁只锁人，跨镜复用的道具与陈设"
+                       "（同一把剑、同一块招牌）照样会漂移。抽取后每件生成一张参考图，"
+                       "并写进逐镜提示词与参考图；不抽取则完全不影响原流程。")
+    clue_hint.setWordWrap(True)
+    clue_hint.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    cl0.addWidget(clue_hint)
+    app.director_clues_web = DirectorWebView(THEME, lambda s: _on_web_action(app, s))
+    app.director_clues_web.setMinimumHeight(200)
+    app.director_clues_web.render_empty("尚未抽取关键道具 / 场景资产（可选）")
+    cl0.addWidget(app.director_clues_web)
+
     cbtns = QHBoxLayout()
     cbtns.setSpacing(12)
+    app.director_clues_btn = QPushButton("🔎 抽取关键道具/场景资产")
+    app.director_clues_btn.setFixedHeight(36)
+    app.director_clues_btn.setStyleSheet(_btn_style())
+    app.director_clues_btn.clicked.connect(lambda: _gen_clues(app))
     app.director_characters_revise = QPushButton("✎ 重新生成人物（可附意见）")
     app.director_characters_revise.setFixedHeight(36)
     app.director_characters_revise.setStyleSheet(_btn_style())
@@ -489,6 +579,7 @@ def build_director_panel(app):
     app.director_characters_adopt.setStyleSheet(_btn_accent_style())
     app.director_characters_adopt.clicked.connect(lambda: _adopt_characters(app))
     cbtns.addWidget(app.director_characters_revise)
+    cbtns.addWidget(app.director_clues_btn)
     cbtns.addStretch(1)
     cbtns.addWidget(app.director_characters_adopt)
     cl0.addLayout(cbtns)
@@ -614,7 +705,7 @@ def build_director_panel(app):
     app.director_merge_web.render_empty("尚未合成")
     mbtns = QHBoxLayout()
     mbtns.setSpacing(12)
-    app.director_merge_btn = QPushButton("🎬 合成成片")
+    app.director_merge_btn = QPushButton("合成成片")
     app.director_merge_btn.setFixedHeight(38)
     app.director_merge_btn.setCursor(Qt.PointingHandCursor)
     app.director_merge_btn.setStyleSheet(_btn_accent_style())
@@ -794,6 +885,12 @@ def _agent_status(app):
              "desc": (c.get("desc") or "")[:80],
              "views_ok": sum(1 for v in (c.get("views") or []) if v)}
             for j, c in enumerate(getattr(p, "characters", None) or [])],
+        "clues": [
+            {"i": j + 1, "name": (c.get("name") or ""),
+             "kind": (c.get("kind") or "prop"),
+             "desc": (c.get("desc") or "")[:80],
+             "image": "有" if c.get("image") else "无"}
+            for j, c in enumerate(getattr(p, "clues", None) or [])],
         "shots": [
             {"i": i + 1, "zh": (s.get("zh") or "")[:60],
              "keyframe": ("有" if (i < len(kfs) and kfs[i]) else "无"),
@@ -935,6 +1032,77 @@ def agent_director_command(app, cmd):
         _run_thread(app, "character_one", idx=idx, feedback=note)
         return None
 
+    if action == "gen_clues":
+        if getattr(p, "portrait_mode", False):
+            return {"ok": False, "msg": "口播模式没有跨镜道具（画面已锁定本人形象）"}
+        if not getattr(p, "story", ""):
+            return {"ok": False, "msg": "还没有剧本，无法抽取道具/场景资产"}
+        note = (cmd.get("note") or "").strip() or None
+        _set_status(app, "[对话框指令] 正在抽取关键道具 / 场景资产…")
+        _log(app, f"🔎 [对话框] 抽取关键道具/场景资产：{note or '（无修改意见）'}")
+        _run_thread(app, "clues", feedback=note)
+        return None
+
+    if action == "revise_clue":
+        try:
+            idx = int(cmd.get("idx", 0)) - 1
+        except Exception:
+            return {"ok": False, "msg": "道具序号格式不对"}
+        clues = getattr(p, "clues", None) or []
+        if not clues:
+            return {"ok": False, "msg": "还没有道具/场景资产（先执行 gen_clues）"}
+        if not (0 <= idx < len(clues)):
+            return {"ok": False, "msg": f"道具序号超出范围（共 {len(clues)} 件）"}
+        note = (cmd.get("note") or "").strip() or None
+        name = clues[idx].get("name") or f"道具{idx + 1}"
+        _set_status(app, f"[对话框指令] 正在重生成「{name}」参考图…")
+        _log(app, f"✎ [对话框] 重生成道具/资产「{name}」：{note or '（无修改意见）'}")
+        _run_thread(app, "clue_one", idx=idx, feedback=note)
+        return None
+
+    if action in ("rollback_clip", "rollback_keyframe", "rollback_character",
+                  "rollback_clue"):
+        kind = action.split("_", 1)[1]  # clip / keyframe / character / clue
+        try:
+            idx = int(cmd.get("idx", 0)) - 1  # 用户视角从 1 数
+        except Exception:
+            return {"ok": False, "msg": "序号格式不对"}
+        try:
+            version = int(cmd.get("version", -1))
+        except Exception:
+            version = -1
+        if kind == "clip":
+            if not (0 <= idx < len(p.shots or [])):
+                return {"ok": False, "msg": f"分镜号超出范围（共 {len(p.shots or [])} 镜）"}
+            res = p.rollback_clip(idx, version)
+        elif kind == "keyframe":
+            if getattr(p, "portrait_mode", False):
+                return {"ok": False, "msg": "口播模式没有关键帧（画面已锁定本人形象）"}
+            if not (0 <= idx < len(p.shots or [])):
+                return {"ok": False, "msg": f"分镜号超出范围（共 {len(p.shots or [])} 镜）"}
+            res = p.rollback_keyframe(idx, version)
+        elif kind == "clue":
+            if getattr(p, "portrait_mode", False):
+                return {"ok": False, "msg": "口播模式没有跨镜道具（画面已锁定本人形象）"}
+            clues = getattr(p, "clues", None) or []
+            if not (0 <= idx < len(clues)):
+                return {"ok": False, "msg": f"道具序号超出范围（共 {len(clues)} 件）"}
+            res = p.rollback_clue(idx, version)
+        else:  # character
+            if getattr(p, "portrait_mode", False):
+                return {"ok": False, "msg": "口播模式没有人物三视图（形象已锁定本人照片）"}
+            chars = getattr(p, "characters", None) or []
+            if not (0 <= idx < len(chars)):
+                return {"ok": False, "msg": f"角色序号超出范围（共 {len(chars)} 个角色）"}
+            res = p.rollback_character(idx, version)
+        if not res:
+            return {"ok": False, "msg": "该条目没有可回滚的历史版本（或历史文件已丢失）"}
+        label = {"clip": f"镜{idx + 1}", "keyframe": f"镜{idx + 1} 关键帧",
+                 "character": f"角色「{res}」", "clue": f"道具/资产「{res}」"}[kind]
+        _set_status(app, f"[对话框指令] {label} 已回滚到上一版本")
+        _log(app, f"↩ [对话框] {label} 回滚")
+        return {"ok": True, "restored": label}
+
     if action == "merge":
         clips = getattr(p, "clip_paths", None) or []
         if not any(clips):
@@ -1048,6 +1216,7 @@ def _run_thread(app, task, feedback=None, idx=None, note=None):
     th.story_ready.connect(lambda t: _on_story_ready(app, t))
     th.shots_ready.connect(lambda s: _on_shots_ready(app, s))
     th.characters_ready.connect(lambda c: _on_characters_ready(app, c))
+    th.clues_ready.connect(lambda c: _on_clues_ready(app, c))
     th.keyframes_ready.connect(lambda k: _on_keyframes_ready(app, k))
     th.clip_ready.connect(lambda i, p: _on_clip_ready(app, i, p))
     th.clip_failed.connect(lambda i, r: _on_clip_failed(app, i, r))
@@ -1116,6 +1285,62 @@ def _revise_characters(app):
     _set_status(app, "正在按意见重新生成人物三视图…")
     _log(app, "✎ 重新生成人物三视图…")
     _run_thread(app, "characters", feedback=text.strip() or None)
+
+
+@_safe
+def _gen_clues(app):
+    """抽取（或按意见重抽）关键道具 / 场景资产。"""
+    p = getattr(app, "director_pipeline", None)
+    if p is None:
+        _set_status(app, "流程未初始化，请先点「开始导演」。", err=True)
+        return
+    if getattr(p, "portrait_mode", False):
+        _set_status(app, "口播模式没有跨镜道具（画面已锁定本人形象）。", err=True)
+        return
+    if not getattr(p, "story", ""):
+        _set_status(app, "请先生成并采用剧本。", err=True)
+        return
+    feedback = None
+    if getattr(p, "clues", None):
+        text, ok = QInputDialog.getText(
+            app, "重新抽取道具/场景资产", "输入修改意见（可留空直接重抽）：", text="")
+        if not ok:
+            return
+        feedback = text.strip() or None
+    _set_status(app, "正在抽取关键道具 / 场景资产…")
+    _log(app, f"🔎 抽取关键道具/场景资产…{('（意见：' + feedback + '）') if feedback else ''}")
+    _run_thread(app, "clues", feedback=feedback)
+
+
+@_safe
+def _on_clues_ready(app, clues):
+    _build_clue_cards(app, clues)
+    n = len(clues or [])
+    if n:
+        _set_status(app, f"关键道具/场景资产已就绪（{n} 件）。逐镜生成时会自动锁定它们。")
+        _log(app, f"✅ 关键道具/场景资产完成（{n} 件）。")
+    else:
+        _set_status(app, "本剧本没有跨镜复用的关键道具/场景资产（不影响后续流程）。")
+        _log(app, "ℹ️ 未抽出跨镜道具/场景资产，本次不做道具锁定。")
+    _set_busy(app, False)
+    _save_session(app)
+
+
+def _build_clue_cards(app, clues):
+    """把每件关键道具/场景资产渲染成网页卡片（含重生成 / 回滚按钮）。"""
+    web = getattr(app, "director_clues_web", None)
+    if web is None:
+        return
+    p = getattr(app, "director_pipeline", None)
+    vers = (getattr(p, "clue_versions", {}) or {}) if p is not None else {}
+    html = "".join(
+        clue_card_html(i, c, can_rollback=bool(vers.get(i)))
+        for i, c in enumerate(clues or [])
+    )
+    if not html:
+        web.render_empty("未抽出跨镜复用的道具 / 场景资产（可选，不影响流程）")
+        return
+    web.render_cards(html)
 
 
 @_safe
@@ -1305,15 +1530,66 @@ def _prepare_clip_cards(app, n):
     _render_clips(app)
 
 
+def _versions_of(app, attr):
+    """取 pipeline 上某类历史版本栈（缺失时返回空 dict），供卡片决定是否显示回滚按钮。"""
+    p = getattr(app, "director_pipeline", None)
+    if p is None:
+        return {}
+    return getattr(p, attr, {}) or {}
+
+
 def _render_clips(app):
     """全量重渲染分镜网格（逐镜生成完/失败时调用）。"""
     cards = getattr(app, "director_clips_state", []) or []
+    vers = _versions_of(app, "clip_versions")
     html = "".join(
         clip_card_html(i, c.get("status", "queued"), c.get("path"),
-                       c.get("kf"), c.get("error", ""), c.get("info"))
+                       c.get("kf"), c.get("error", ""), c.get("info"),
+                       can_rollback=bool(vers.get(i)))
         for i, c in enumerate(cards)
     )
     app.director_clips_web.render_cards(html)
+
+
+# 网页回滚按钮 kind → 对话指令 action（复用 agent_director_command 里已验证的回滚逻辑）
+_ROLLBACK_KINDS = {
+    "rollback_clip": "rollback_clip",
+    "rollback_kf": "rollback_keyframe",
+    "rollback_char": "rollback_character",
+    "rollback_clue": "rollback_clue",
+}
+
+
+@_safe
+def _rollback_from_web(app, kind, idx):
+    """卡片上的「↩回滚」：走同一套回滚校验逻辑，成功后重渲染对应预览区。"""
+    action = _ROLLBACK_KINDS.get(kind)
+    if not action:
+        return
+    res = agent_director_command(app, {"action": action, "idx": idx + 1})
+    if not isinstance(res, dict) or not res.get("ok"):
+        msg = (res or {}).get("msg") if isinstance(res, dict) else None
+        _set_status(app, msg or "回滚失败（没有历史版本）", err=True)
+        return
+    p = getattr(app, "director_pipeline", None)
+    if p is None:
+        return
+    if kind == "rollback_clip":
+        cards = getattr(app, "director_clips_state", None) or []
+        path = p.clip_paths[idx] if idx < len(p.clip_paths or []) else None
+        if idx < len(cards) and path:
+            kf = p.keyframe(path)
+            cards[idx].update({"status": "done", "path": path, "error": "",
+                               "kf": kf if (kf and os.path.isfile(kf)) else None,
+                               "info": f"镜{idx + 1} · ↩ 已回滚上一版"})
+        _render_clips(app)
+    elif kind == "rollback_kf":
+        _build_keyframe_cards(app, getattr(p, "keyframes", []) or [])
+    elif kind == "rollback_char":
+        _build_character_cards(app, getattr(p, "characters", []) or [])
+    elif kind == "rollback_clue":
+        _build_clue_cards(app, getattr(p, "clues", []) or [])
+    _save_session(app)
 
 
 def _on_web_action(app, sig):
@@ -1325,8 +1601,8 @@ def _on_web_action(app, sig):
         idx = int(idx_s)
     except ValueError:
         return
-    # 运行期防重入：生成中只允许查看提示词，禁止改/重生成
-    if kind in ("mod", "regen") and getattr(app, "director_busy", False):
+    # 运行期防重入：生成中只允许查看提示词/播放，禁止改/重生成/回滚
+    if kind not in ("view", "play") and getattr(app, "director_busy", False):
         _set_status(app, "正在生成中，请稍候再操作。", err=True)
         return
     if kind == "mod":
@@ -1340,11 +1616,29 @@ def _on_web_action(app, sig):
             _play_video(app, getattr(app, "director_final_path", None))
         else:
             _play_clip(app, idx)
+    elif kind in _ROLLBACK_KINDS:
+        _rollback_from_web(app, kind, idx)
+    elif kind == "regen_kf":
+        _set_status(app, f"正在重生成 镜{idx + 1} 关键帧…")
+        _log(app, f"↻ 重生成 镜{idx + 1} 关键帧…")
+        _run_thread(app, "keyframe_one", idx=idx)
+    elif kind == "regen_char":
+        _set_status(app, f"正在重生成 角色{idx + 1} 三视图…")
+        _log(app, f"↻ 重生成 角色{idx + 1} 三视图…")
+        _run_thread(app, "character_one", idx=idx)
+    elif kind == "regen_clue":
+        _set_status(app, f"正在重生成 道具/资产{idx + 1} 参考图…")
+        _log(app, f"↻ 重生成 道具/资产{idx + 1} 参考图…")
+        _run_thread(app, "clue_one", idx=idx)
 
 
 def _build_character_cards(app, characters):
     """把每个角色的三视图渲染成网页卡片（可点击灯箱放大，看清人物会不会崩）。"""
-    html = "".join(character_card_html(c) for c in (characters or []))
+    vers = _versions_of(app, "character_versions")
+    html = "".join(
+        character_card_html(c, idx=i, can_rollback=bool(vers.get(i)))
+        for i, c in enumerate(characters or [])
+    )
     if not html:
         html = '<div class="empty">无角色</div>'
     app.director_characters_web.render_cards(html)
@@ -1353,8 +1647,9 @@ def _build_character_cards(app, characters):
 def _build_keyframe_cards(app, keyframes):
     """把每镜关键帧+场景图渲染成网页缩略图卡片（含 VLM 质检状态，可灯箱放大）。"""
     notes = (getattr(app.director_pipeline, "review_notes", {}) or {}) if getattr(app, "director_pipeline", None) else {}
+    vers = _versions_of(app, "keyframe_versions")
     html = "".join(
-        keyframe_card_html(i, kf, notes.get(i, ""))
+        keyframe_card_html(i, kf, notes.get(i, ""), can_rollback=bool(vers.get(i)))
         for i, kf in enumerate(keyframes or [])
     )
     if not html:
@@ -1638,6 +1933,7 @@ def _director_reset(app):
     app.director_clips_web.render_empty("尚未生成")
     app.director_keyframes_web.render_empty("尚未生成")
     app.director_characters_web.render_empty("尚未生成")
+    app.director_clues_web.render_empty("尚未抽取关键道具 / 场景资产（可选）")
     app.director_merge_web.render_empty("尚未合成")
     app.director_log.clear()
     _set_step(app, 0)
@@ -1711,11 +2007,18 @@ def _save_session(app):
                 "shots": getattr(p, "shots", []),
                 "characters": getattr(p, "characters", []),
                 "character_lock": getattr(p, "character_lock", ""),
+                "clues": getattr(p, "clues", []),
+                "clue_lock": getattr(p, "clue_lock", ""),
                 "keyframes": getattr(p, "keyframes", []),
                 # scene_images 的 key 是场景号(int)，JSON 只认字符串键，存时转 str、读时转回 int
                 "scene_images": {str(k): v for k, v in getattr(p, "scene_images", {}).items()},
                 "review_notes": {str(k): v for k, v in getattr(p, "review_notes", {}).items()},
                 "clip_paths": getattr(p, "clip_paths", []),
+                # 版本回滚历史栈（键是镜号/序号 int，JSON 只认字符串键 → 存 str、读转回 int）
+                "clip_versions": {str(k): v for k, v in getattr(p, "clip_versions", {}).items()},
+                "keyframe_versions": {str(k): v for k, v in getattr(p, "keyframe_versions", {}).items()},
+                "character_versions": {str(k): v for k, v in getattr(p, "character_versions", {}).items()},
+                "clue_versions": {str(k): v for k, v in getattr(p, "clue_versions", {}).items()},
                 "last_prompts": {str(k): v for k, v in getattr(p, "last_prompts", {}).items()},
                 "last_errors": {str(k): v for k, v in getattr(p, "last_errors", {}).items()},
             },
@@ -1767,7 +2070,8 @@ def _load_session(app):
     for key in ("topic", "n", "duration", "style_key", "style_prompt", "ref_image_path",
                 "portrait_mode", "with_dialogue", "relay", "transition", "transition_dur",
                 "burn_subtitles", "passthrough_script", "width", "height", "project_dir",
-                "story", "shots", "characters", "character_lock", "keyframes"):
+                "story", "shots", "characters", "character_lock", "keyframes",
+                "clues", "clue_lock"):
         if key in pl:
             setattr(p, key, pl[key])
     p.clip_paths = pl.get("clip_paths", [None] * len(pl.get("shots", [])))
@@ -1778,10 +2082,22 @@ def _load_session(app):
                       if str(k).lstrip("-").isdigit()}
     p.review_notes = {int(k): v for k, v in (pl.get("review_notes") or {}).items()
                       if str(k).lstrip("-").isdigit()}
+    # 版本回滚：历史栈键转回 int
+    for _attr in ("clip_versions", "keyframe_versions",
+                  "character_versions", "clue_versions"):
+        setattr(p, _attr, {int(k): v for k, v in (pl.get(_attr) or {}).items()
+                           if str(k).lstrip("-").isdigit()})
     # 工程目录可能已被清理，确保存在（关键帧预览/重生成要用）
     if p.project_dir:
         try:
             os.makedirs(p.project_dir, exist_ok=True)
+        except Exception:
+            pass
+        # versions/ 只在 prepare 里建过，续跑时必须补上，
+        # 否则 _backup_file 因 versions_dir=None 静默不存版本 → 回滚永远无历史
+        p.versions_dir = os.path.join(p.project_dir, "versions")
+        try:
+            os.makedirs(p.versions_dir, exist_ok=True)
         except Exception:
             pass
     app.director_pipeline = p
@@ -1839,6 +2155,8 @@ def _load_session(app):
         app.director_story_edit.setPlainText(p.story or "")
     if step >= 2 and p.characters:
         _build_character_cards(app, p.characters)
+    if step >= 2 and getattr(p, "clues", None):
+        _build_clue_cards(app, p.clues)
     if step >= 3:
         _build_shot_rows(app, p.shots or [])
     if step >= 4 and p.keyframes:

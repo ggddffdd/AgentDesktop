@@ -297,6 +297,11 @@ def main():
         pass
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    # v4.117：tooltip 是独立顶层窗口，不继承主窗口 QSS，全局规则必须挂在 QApplication 上
+    # （否则交付物卡片/顶栏按钮 tooltip 走系统默认黑底，浅色主题下看不清）
+    app.setStyleSheet(
+        "QToolTip { background: #FFFFFF; color: #1F2937; border: 1px solid #D5DBE3;"
+        " border-radius: 8px; padding: 6px 10px; font-size: 12px; }")
     perf_baseline.mark("qapp")
 
     # 保活后台 Obsidian worker（局部变量可能被 GC 导致线程被腰斩）

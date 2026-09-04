@@ -44,6 +44,10 @@ apply_agnes_migration.py
 test_*.py
 verify_*.py
 verify_v*.py
+_verify_*.py
+_test_*.py
+_real_*.py
+_diag_*.py
 _verify_dbg.py
 
 # ===== 临时 / 无用文件 =====

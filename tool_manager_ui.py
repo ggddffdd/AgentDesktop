@@ -103,7 +103,7 @@ class ToolManagerWindow(QMainWindow):
         self.setCentralWidget(central)
         main = QVBoxLayout(central)
 
-        title = QLabel("🧰 工具管理器")
+        title = QLabel("工具管理器")
         title.setFont(QFont("Microsoft YaHei", 18, QFont.Bold))
         main.addWidget(title)
 
@@ -134,7 +134,7 @@ class ToolManagerWindow(QMainWindow):
         self.sort_combo.currentTextChanged.connect(self._apply_filter)
         bar.addWidget(self.sort_combo, 1)
 
-        refresh_btn = QPushButton("🔄 刷新")
+        refresh_btn = QPushButton("刷新")
         refresh_btn.clicked.connect(self.load_tools)
         bar.addWidget(refresh_btn)
         main.addLayout(bar)

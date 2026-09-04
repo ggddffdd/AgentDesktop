@@ -157,9 +157,9 @@ class TemplateEditor(QDialog):
         layout.addWidget(self.step_list, 1)
 
         step_btn = QHBoxLayout()
-        b_add = QPushButton("➕ 添加步骤")
-        b_edit = QPushButton("✏️ 编辑")
-        b_del = QPushButton("🗑 删除")
+        b_add = QPushButton("添加步骤")
+        b_edit = QPushButton("编辑")
+        b_del = QPushButton("删除")
         b_up = QPushButton("↑ 上移")
         b_down = QPushButton("↓ 下移")
         b_add.clicked.connect(self._add_step)
@@ -248,7 +248,7 @@ class WorkflowManagerWindow(QWidget):
         self.main_window = main_window
         self._templates = load_templates()
         self._current_id = None
-        self.setWindowTitle("⚙️ 工作流模板")
+        self.setWindowTitle("工作流模板")
         self.resize(820, 560)
         self._build_ui()
         self._refresh_list()
@@ -283,13 +283,13 @@ class WorkflowManagerWindow(QWidget):
 
         # 底部按钮栏
         bar = QHBoxLayout()
-        b_new = QPushButton("➕ 新建")
-        b_edit = QPushButton("✏️ 编辑")
-        b_del = QPushButton("🗑 删除")
-        b_imp = QPushButton("📥 导入")
-        b_exp = QPushButton("📤 导出")
-        b_dir = QPushButton("📂 打开目录")
-        b_prod = QPushButton("📂 打开产物")
+        b_new = QPushButton("新建")
+        b_edit = QPushButton("编辑")
+        b_del = QPushButton("删除")
+        b_imp = QPushButton("导入")
+        b_exp = QPushButton("导出")
+        b_dir = QPushButton("打开目录")
+        b_prod = QPushButton("打开产物")
         b_new.clicked.connect(self._new_template)
         b_edit.clicked.connect(self._edit_template)
         b_del.clicked.connect(self._delete_template)
@@ -305,7 +305,8 @@ class WorkflowManagerWindow(QWidget):
         self.list_widget.blockSignals(True)
         self.list_widget.clear()
         for t in self._templates:
-            item = QListWidgetItem(f"{t.get('emoji', '⚙️')} {t.get('name', '未命名')}")
+            # v4.115：显示层剥离 emoji（数据字段保留兼容旧模板）
+            item = QListWidgetItem(str(t.get('name', '未命名')))
             item.setData(Qt.UserRole, t.get("id"))
             item.setToolTip(f"分类：{t.get('category', '')}｜{t.get('description', '')}")
             self.list_widget.addItem(item)
@@ -352,7 +353,7 @@ class WorkflowManagerWindow(QWidget):
         if not t:
             self.detail_layout.addWidget(QLabel("（未选择模板）"))
             return
-        title = QLabel(f"<h3 style='margin:0'>{t.get('emoji', '⚙️')} {t.get('name', '未命名')}</h3>")
+        title = QLabel(f"<h3 style='margin:0'>{t.get('name', '未命名')}</h3>")
         self.detail_layout.addWidget(title)
         meta = QLabel(f"<span style='color:#888'>分类：{t.get('category', '')}｜步骤数：{len(t.get('steps', []))}</span>")
         self.detail_layout.addWidget(meta)
@@ -459,14 +460,13 @@ class WorkflowManagerWindow(QWidget):
         if isinstance(data, dict) and "steps" in data:
             tpl = data
         elif isinstance(data, list):
-            tpl = {"id": str(uuid.uuid4()), "name": "导入模板", "emoji": "⚙️",
+            tpl = {"id": str(uuid.uuid4()), "name": "导入模板",
                    "category": "其他", "description": "", "steps": data}
         else:
             QMessageBox.warning(self, "导入失败", "文件格式不对")
             return
         tpl["id"] = str(uuid.uuid4())
         tpl.setdefault("name", "导入模板")
-        tpl.setdefault("emoji", "⚙️")
         tpl.setdefault("category", "其他")
         tpl.setdefault("description", "")
         tpl.setdefault("steps", [])

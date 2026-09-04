@@ -216,8 +216,17 @@ class DirectorWebView(QWebEngineView):
 
 # ---------- 卡片模板 ----------
 
-def clip_card_html(i, status, path=None, kf=None, error="", info_text=None):
+def _rb_btn(kind, idx, can_rollback, label="↩回滚"):
+    """回滚按钮：只有真的存在历史版本时才渲染，避免点了没反应的死按钮。"""
+    if not can_rollback:
+        return ""
+    return f'<a onclick="act(\'{kind}\',{idx})" title="回退到上一版">{label}</a>'
+
+
+def clip_card_html(i, status, path=None, kf=None, error="", info_text=None,
+                   can_rollback=False):
     """分镜卡：视频内嵌播放（status=done）、排队/失败占位。idx 从 0 计。"""
+    rb = _rb_btn("rollback_clip", i, can_rollback)
     if status == "done" and path and os.path.isfile(path):
         poster = f' poster="{_localres_url(kf)}"' if (kf and os.path.isfile(kf)) else ""
         thumb = (f'<div class="thumb"><video src="{_localres_url(path)}" '
@@ -228,13 +237,14 @@ def clip_card_html(i, status, path=None, kf=None, error="", info_text=None):
                 f'<a onclick="act(\'mod\',{i})">✎改</a>'
                 f'<a onclick="act(\'regen\',{i})">↻</a>'
                 f'<a onclick="act(\'view\',{i})">🔍</a>'
+                f'{rb}'
                 f'</div>')
         return f'<div class="card">{thumb}<div class="info">{_esc(info)}</div>{btns}</div>'
     if status == "fail":
         thumb = '<div class="thumb"><div class="ph">❌ 生成失败</div></div>'
         info = info_text or f"镜{i+1} · ❌ 失败"
         btns = (f'<div class="btns"><a onclick="act(\'view\',{i})">🔍看原因</a>'
-                f'<a onclick="act(\'regen\',{i})">↻重生成</a></div>')
+                f'<a onclick="act(\'regen\',{i})">↻重生成</a>{rb}</div>')
         return f'<div class="card">{thumb}<div class="info">{_esc(info)}</div>{btns}</div>'
     # queued / generating
     thumb = '<div class="thumb"><div class="ph">⏳ 排队中…</div></div>'
@@ -242,7 +252,7 @@ def clip_card_html(i, status, path=None, kf=None, error="", info_text=None):
     return f'<div class="card">{thumb}<div class="info">{_esc(info)}</div></div>'
 
 
-def keyframe_card_html(i, kf, note=""):
+def keyframe_card_html(i, kf, note="", can_rollback=False):
     """关键帧卡：首帧图片 + 质检状态；图片可点击灯箱放大。"""
     if kf and os.path.isfile(kf):
         thumb = (f'<div class="thumb"><img src="{_localres_url(kf)}" '
@@ -257,11 +267,14 @@ def keyframe_card_html(i, kf, note=""):
         label = "⚠️ 质检未通过" if failed else "✅ 质检通过"
         cls = "qc fail" if failed else "qc"
         qc = f'<div class="{cls}">{_esc(label)}</div>'
-    return f'<div class="card">{thumb}<div class="info">{_esc(info)}</div>{qc}</div>'
+    btns = (f'<div class="btns"><a onclick="act(\'regen_kf\',{i})">↻重生成</a>'
+            f'{_rb_btn("rollback_kf", i, can_rollback)}</div>')
+    return (f'<div class="card">{thumb}<div class="info">{_esc(info)}</div>'
+            f'{qc}{btns}</div>')
 
 
-def character_card_html(c):
-    """角色卡：三视图横排（可灯箱）+ 名称 + 描述。"""
+def character_card_html(c, idx=None, can_rollback=False):
+    """角色卡：三视图横排（可灯箱）+ 名称 + 描述（idx 给出时挂重生成/回滚按钮）。"""
     name = _esc(c.get("name", "角色"))
     desc = _esc(c.get("desc", ""))
     views = c.get("views") or []
@@ -274,11 +287,33 @@ def character_card_html(c):
             imgs += '<div class="ph" style="height:120px;width:84px;">无</div>'
     if not imgs:
         imgs = '<div class="ph" style="height:120px;">无三视图</div>'
+    btns = ""
+    if idx is not None:
+        btns = (f'<div class="btns"><a onclick="act(\'regen_char\',{idx})">↻重生成</a>'
+                f'{_rb_btn("rollback_char", idx, can_rollback)}</div>')
     return (f'<div class="card">'
             f'<div class="info"><b>{name}</b></div>'
             f'<div class="desc">{desc}</div>'
             f'<div style="display:flex;gap:6px;padding:8px;flex-wrap:wrap;">{imgs}</div>'
-            f'</div>')
+            f'{btns}</div>')
+
+
+def clue_card_html(idx, c, can_rollback=False):
+    """线索卡（关键道具 / 场景资产）：参考图 + 名称 + 英文视觉描述 + 重生成/回滚。"""
+    name = _esc(c.get("name", "道具"))
+    desc = _esc(c.get("desc", ""))
+    kind = "场景资产" if str(c.get("kind", "")).lower() == "set" else "道具"
+    img = c.get("image")
+    if img and os.path.isfile(img):
+        thumb = (f'<div class="thumb"><img src="{_localres_url(img)}" '
+                 f'onclick="zoom(this.src)" alt="{name} 参考图"></div>')
+    else:
+        thumb = '<div class="thumb"><div class="ph">无参考图</div></div>'
+    btns = (f'<div class="btns"><a onclick="act(\'regen_clue\',{idx})">↻重生成</a>'
+            f'{_rb_btn("rollback_clue", idx, can_rollback)}</div>')
+    return (f'<div class="card">{thumb}'
+            f'<div class="info"><b>{name}</b> · {kind}</div>'
+            f'<div class="desc">{desc}</div>{btns}</div>')
 
 
 def merge_card_html(path, kf=None):

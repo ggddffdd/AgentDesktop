@@ -17,9 +17,10 @@ import time
 import urllib.request
 import urllib.parse
 
-# 系统 Python（运行 Playwright 的执行体）。顺序：配置 > 已知路径 > 通用名。
+# 系统 Python（运行 Playwright 的执行体）。顺序：配置 > 通用名兜底。
+# 注：Windows 常见安装路径（如 %LOCALAPPDATA%\Programs\Python\Python3XX\python.exe）
+# 由下方 _find_python() 动态探测，不在源码硬编码。
 _DEFAULT_PY = [
-    r"C:\Users\xyb\AppData\Local\Programs\Python\Python312\python.exe",
     "python3",
     "python",
 ]
@@ -56,6 +57,17 @@ def _find_python(cfg):
     cand = (cfg or {}).get("browser_python")
     if cand and os.path.exists(cand):
         return cand
+    # 动态探测 Windows 常见 Python 安装位置（不硬编码用户名）
+    local = os.environ.get("LOCALAPPDATA", "")
+    if local:
+        import glob as _glob
+        for pat in (
+            os.path.join(local, "Programs", "Python", "Python3*", "python.exe"),
+            os.path.join(local, "Programs", "Python", "Python3*", "scripts", "python.exe"),
+        ):
+            hits = sorted(_glob.glob(pat), reverse=True)
+            if hits:
+                return hits[0]
     for p in _DEFAULT_PY:
         if os.path.exists(p):
             return p

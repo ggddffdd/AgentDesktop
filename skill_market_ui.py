@@ -103,7 +103,7 @@ class SkillMarketWindow(QMainWindow):
 
         # 标题栏
         title_row = QHBoxLayout()
-        title = QLabel("🛍 技能市场")
+        title = QLabel("技能市场")
         title.setFont(QFont("Microsoft YaHei", 18, QFont.Bold))
         title_row.addWidget(title)
         title_row.addStretch(1)
@@ -114,7 +114,7 @@ class SkillMarketWindow(QMainWindow):
         self.search_online_btn.clicked.connect(self._online_search)
         title_row.addWidget(self.search_online_btn)
 
-        self.refresh_btn = QPushButton("🔄 刷新")
+        self.refresh_btn = QPushButton("刷新")
         self.refresh_btn.setFixedHeight(32)
         self.refresh_btn.clicked.connect(self.reload)
         title_row.addWidget(self.refresh_btn)
@@ -149,11 +149,11 @@ class SkillMarketWindow(QMainWindow):
         self.link_edit = QLineEdit()
         self.link_edit.setPlaceholderText("粘贴 GitHub 仓库页 / blob / tree / raw SKILL.md 直链")
         link_row.addWidget(self.link_edit, 1)
-        self.link_btn = QPushButton("⬇️ 安装")
+        self.link_btn = QPushButton("安装")
         self.link_btn.setFixedHeight(32)
         self.link_btn.clicked.connect(self._install_from_link)
         link_row.addWidget(self.link_btn)
-        self.add_catalog_btn = QPushButton("➕ 加入清单")
+        self.add_catalog_btn = QPushButton("加入清单")
         self.add_catalog_btn.setFixedHeight(32)
         self.add_catalog_btn.setToolTip("把当前链接存到 skills_catalog.json，常驻市场")
         self.add_catalog_btn.clicked.connect(self._add_link_to_catalog)
@@ -346,7 +346,7 @@ class SkillMarketWindow(QMainWindow):
         act.addStretch(1)
         if e.get("installed"):
             if e.get("removable"):
-                uninst = QPushButton("🗑 卸载")
+                uninst = QPushButton("卸载")
                 uninst.setFixedHeight(30)
                 uninst.setStyleSheet(
                     "QPushButton{background:#fff;color:#c0392b;border:1px solid #e6b0aa;"
@@ -356,7 +356,7 @@ class SkillMarketWindow(QMainWindow):
                 act.addWidget(uninst)
         else:
             url = e.get("source_url") or e.get("html_url") or ""
-            install_btn = QPushButton("⬇️ 安装")
+            install_btn = QPushButton("安装")
             install_btn.setFixedHeight(30)
             install_btn.setEnabled(bool(url))
             install_btn.setToolTip(url or "无来源链接（在线搜索结果需用仓库链接安装）")

@@ -58,7 +58,7 @@ DEFAULT_CONFIG = {
     "model": "deepseek-chat",
     "hotkey": "ctrl+shift+d",
     "system_prompt": (
-        "你是「小臭玩AI」—— 大哥(xyb)的 Windows 本地桌面工作台。\n\n"
+        "你是「小臭玩AI」—— 一个 Windows 本地桌面工作台。\n\n"
         "## 强制路由表 — 命中以下关键词必须调用对应工具，禁止只给文字回答\n"
         "| 场景/关键词 | 必须调用 | 说明 |\n"
         "|------------|---------|------|\n"
@@ -86,14 +86,14 @@ DEFAULT_CONFIG = {
         "## 全部能力速查\n"
         "联网搜索(web_search) | 网页抓取(web_fetch) | 文件读写(read_file/write_file) | "
         "命令(run_command) | Python(run_python) | 生图(image_gen) | 生视频(video_gen) | "
-        "定时(schedule) | 自动化任务(create_automation/list_automation/delete_automation) | 截图(screenshot) | 知识库RAG(rag_index/rag_search，Obsidian Vault: C:\\Users\\xyb\\Documents\\_mybase) | "
+        "定时(schedule) | 自动化任务(create_automation/list_automation/delete_automation) | 截图(screenshot) | 知识库RAG(rag_index/rag_search，Obsidian Vault 可在设置中配置) | "
         "数据库(db_insert/db_query/db_update/db_delete：notes/todos/assets) | 图表(chart_gen) | "
         "日志(log_query) | 上下文(context_compress/context_summary) | "
         "Webhook(webhook_start/events/stop，端口9000) | 技能(use_skill/skill_search/skill_install) | "
         "ASR(SenseVoiceSmall) | TTS(edge-tts) | 浏览器(browser_open/click/fill/read) | "
         "系统控制(system_*：剪贴板/窗口/进程/输入) | 软件控制(software_*：pywinauto) | 长期记忆(remember)\n\n"
         "## 模型\n"
-        "默认 Agnes（agnes-2.5-flash，永久免费）；DeepSeek 为大哥付费主力通道。\n\n"
+        "默认 Agnes（agnes-2.5-flash，永久免费）；DeepSeek 为可选付费通道。\n\n"
         "## 硬约束\n"
         "1. 命中路由表关键词→直接调工具，禁止纯文字回答\n"
         "2. 时间/事实性问题→调 web_search，禁止凭模型知识猜测\n"
@@ -103,7 +103,7 @@ DEFAULT_CONFIG = {
         "6. 「再来/重新/重做/regenerate」→重新调工具，禁止复用历史结果\n"
         "7. 产物路径统一到 ~/Documents/小臭玩AI/ 对应子目录\n"
         "8. **禁止承诺式循环**：禁止连续多轮只输出「我现在开始做/马上做/下一步执行」之类的承诺而不真去调工具。每一步要么调工具、要么给出最终成品，否则算任务失败。\n"
-        "9. **用户意图优先**：用户原话意图明确时，禁止跳到不相关技能/工具（如「清空回收站」→调 system_clean_recycle_bin，不许跑去调 ppt-generator）。\n"
+        "9. **用户意图优先**：用户原话意图明确时，禁止跳到不相关技能/工具（如「清空回收站」→调 system_clean_recycle_bin，不许跑去调 PPT生成）。\n"
         "10. **选题/盘点/列方向 类需求优先用训练知识直接出文本**（见下方【爆款选题与盘点模板】），"
         "仅在用户明确说「去搜/查最新/爬数据/看实时榜单」时才调 web_search。"
         "「搜索」一词在该语境下指的是「检索联网最新数据」，不是「列选题方向」——"
@@ -124,7 +124,7 @@ DEFAULT_CONFIG = {
     "sd_webui_url": "http://127.0.0.1:7860",
     "gateway_url": "http://127.0.0.1:8000",
     "gateway_autostart": True,   # v4.79：识图后端(free-api-gateway)随 APP 自动拉起
-    "gateway_dir": r"C:\Users\xyb\WorkBuddy\2026-07-06-23-07-12\free-api-gateway",  # 网关项目目录（含 run_gateway.bat / app/main.py）
+    "gateway_dir": "",  # 网关项目目录（识图后端 free-api-gateway，含 run_gateway.bat / app/main.py）；留空则跳过自启
     "harness_notes_path": os.path.join(USER_DATA_DIR, "harness_notes.json"),  # v4.80：可自我 refine+版本回滚的操作经验库（借鉴 Prime-Agent Continual Harness）
     "task_resume_dir": os.path.join(USER_DATA_DIR, "task_resume"),  # v4.81：长任务断点续跑/心跳检查点目录（借鉴 Prime-Agent daemon 续跑）
     "orch_auto_resume": True,  # v4.82：长任务断点自动续跑（崩溃/强杀后重开 APP 自动从断点继续，无需手动点「继续」）
@@ -139,8 +139,7 @@ DEFAULT_CONFIG = {
             "name": "filesystem",
             "command": "npx",
             "args": ["-y", "@modelcontextprotocol/server-filesystem",
-                     "C:/Users/xyb/WorkBuddy/2026-07-11-22-26-49/deepseek-desktop",
-                     "C:/Users/xyb/Documents/小臭玩AI"],
+                     "~/Documents"],
             "enabled": True
         }
     ],
