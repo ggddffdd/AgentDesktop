@@ -9,7 +9,9 @@ hiddenimports = ['PySide6', 'PySide6.QtPrintSupport', 'PySide6.QtWebEngineWidget
                # 静态分析扫不到，必须显式登记，否则打包后点菜单报 ModuleNotFoundError。
                'tool_manager_ui',
                # 统一内核桥接 + video-agent/core 包（让 PyInstaller 静态收集 core.*）
-               'core_agnes', 'core', 'core.agnes', 'core.media', 'core.config', 'core.models', 'core.pipeline', 'core.script', 'core.__init__']
+               'core_agnes', 'core', 'core.agnes', 'core.media', 'core.config', 'core.models', 'core.pipeline', 'core.script', 'core.__init__',
+               # v4.120.1 补漏：数字人分身 + 视频导演台共用的 VLM QC 模块，打包前缺失导致启动崩溃
+               'vision_qc']
 
 
 a = Analysis(

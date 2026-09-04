@@ -71,7 +71,7 @@ import config
 from config import (
     APP_DIR, CONFIG_PATH, load_config, load_skills,
     AGENT_SYS_APPEND, TOOL_RESULT_LIMIT, load_dynamic_skills,
-    get_app_icon, APP_VERSION,
+    get_app_icon, APP_VERSION, MAX_RENDERED_MSGS,
 )
 from session import SessionStore
 import search as search_mod
@@ -5112,7 +5112,21 @@ class ChatWindow(QMainWindow):
         rendered = getattr(self, "_rendered_msg_count", 0)
         if rendered == 0 or not msgs or rendered > len(msgs):
             # 首次渲染 / 会话切换 / 重生成 → 全量重建
-            parts = self._build_parts(msgs)
+            # v4.120：全量重建只渲染最近 MAX_RENDERED_MSGS 条——长会话（1000+ 条）
+            # 一次性塞进 DOM 会把渲染进程撑到 OOM 崩溃（白屏真凶）。增量追加不受限，
+            # idx 保持原消息序号（对话内搜索跳转定位不错位）。
+            if len(msgs) > MAX_RENDERED_MSGS:
+                _skipped = len(msgs) - MAX_RENDERED_MSGS
+                parts = [
+                    f'<div style="text-align:center;color:{THEME["faint"]};'
+                    f'font-size:12px;margin:10px 0;">'
+                    f'—— 更早的 {_skipped} 条消息已折叠（仅渲染最近 '
+                    f'{MAX_RENDERED_MSGS} 条，保护渲染进程）——</div>'
+                ]
+                parts += self._build_parts(msgs[-MAX_RENDERED_MSGS:],
+                                           start_idx=_skipped)
+            else:
+                parts = self._build_parts(msgs)
             # v4.104 fix：全量重建也要带上流式内容，否则流式首帧（count=0 时）
             # 不显示，等第一帧文本来了才冒出来，观感突兀。
             if self._streaming and self._streaming_text:
@@ -5192,10 +5206,11 @@ class ChatWindow(QMainWindow):
         bubble = self._fmt_bubble("assistant", self._streaming_text)
         self.chat_view.update_stream(bubble)
 
-    def _build_parts(self, msgs):
-        """构建完整 HTML 片段列表（仅 setHtml 时使用）。"""
+    def _build_parts(self, msgs, start_idx=0):
+        """构建完整 HTML 片段列表（仅 setHtml 时使用）。
+        v4.120：start_idx 供「只渲染最近 N 条」场景保持原消息序号（搜索跳转不错位）。"""
         parts = []
-        for i, m in enumerate(msgs):
+        for i, m in enumerate(msgs, start=start_idx):
             bubble = self._fmt_single_message(m, i)
             if bubble:
                 parts.append(bubble)
@@ -5206,6 +5221,11 @@ class ChatWindow(QMainWindow):
         idx：消息序号，传入后外层包 <div id="msg_{idx}"> 供搜索跳转定位。"""
         # v4.60o：内部注入指令（如"记住能力"时要求调 remember）不渲染成气泡
         if m.get("_internal"):
+            return ""
+        # v4.120：role=tool 是 Agent 断点续跑的上下文数据（v4.108 回写，全量结果
+        # ≤6000 字），不是展示数据——渲染成气泡会与 tool_log 卡片重复（同一次调用
+        # 看两遍），且把 DOM 撑到 OOM（白屏真凶）。界面只渲染 tool_log 卡片。
+        if m.get("role") == "tool":
             return ""
         if m.get("role") == "tool_log":
             name = m.get("name", "")

@@ -1075,7 +1075,11 @@ def _save_gen_image(app_dir, data_or_path, is_bytes=False):
     """将生图结果存入产物目录「图片」子目录，返回 (rel, 'image', name)。"""
     img_dir = os.path.join(PRODUCTS_DIR, "图片")
     os.makedirs(img_dir, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    # v4.120：并发生图同秒撞名互相覆盖（实测两次 image_gen 同秒完成 →
+    # 用户看到两张一样的图）——毫秒 + 4 位随机后缀保证唯一。
+    import uuid as _uuid
+    stamp = (datetime.now().strftime("%Y%m%d%H%M%S%f")[:-3]
+             + "_" + _uuid.uuid4().hex[:4])
     fpath = os.path.join(img_dir, f"img_{stamp}.png")
     if is_bytes:
         with open(fpath, "wb") as f:

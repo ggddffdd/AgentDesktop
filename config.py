@@ -23,8 +23,21 @@ else:
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.119"
+APP_VERSION = "v4.120.1"
 APP_BUILD_DATE = "2026-09-04"
+# v4.120（2026-09-04）白屏真凶+对话逻辑修复（基于 sessions.json 实锤）：
+# ① 聊天区不再渲染 role=tool 气泡（v4.108 断点回写的全量工具结果 ≤6000 字，
+#    与 tool_log 卡片重复显示、且撑爆 DOM——1204 条会话全量渲染致渲染进程 OOM，
+#    这才是 v4.119 禁 GPU 后白屏仍复发的真凶）；② 全量重建只渲染最近 300 条；
+# ③ 心跳探活容错：None（页面忙/流式中）不再误判死页，False 才立即重建、
+#    None 连击 2 次才重建（旧逻辑每分钟白屏闪一次的风险源）；
+# ④ chat_web 诊断日志落 logs/webengine_debug.log（版本/flags/崩溃/探活/重建全记录）；
+# ⑤ image_gen 同秒并发文件名撞车互相覆盖 → 毫秒+随机后缀；
+# ⑥ Agent 批内完全重复调用（同名同参，实测 8ms 双发）自动去重并补占位回执；
+# ⑦ 系统提示新增：执行任务前禁止先调 sys_info 自检（实测生图任务连续两轮乱入）；
+# ⑧ main.py flags 去掉 --disable-software-rasterizer（诊断日志实锤：与 --disable-gpu
+#    叠加后 SwiftShader 也被禁 → GL 上下文 kFatalFailure → renderer 启动即 Killed、
+#    崩溃-重建死循环）；崩溃自愈加熔断（60s 内 >3 次停手，防死循环吃满 CPU）。
 # v4.119（2026-09-04）聊天区白屏治本：main.py 在 import PySide6 之前设
 # QTWEBENGINE_CHROMIUM_FLAGS 禁 GPU 合成（Windows 上 GPU 加速撞显卡驱动/HDR/高DPI →
 # renderer 周期性崩溃约 1 分钟一次，v4.118 自愈只是崩后重建治标不治本）。
@@ -286,6 +299,8 @@ AGENT_SYS_APPEND = (
     "- 禁止自问自答、禁止复述步骤、禁止「我先做 X 然后做 Y 然后…」式的计划播报，"
     "直接执行并汇报结果。\n"
     "- 调工具前想清楚：这一步调用后能否离目标更近？不能就不调。\n"
+    "- sys_info 仅当用户明确问「系统状态/能力盘点/你有哪些工具」时才可调用；"
+    "执行生图/搜索/文件/技能等具体任务前禁止先自检——直接动手，别浪费轮次。\n"
     "- 最终回答只给结论和必要信息（产物路径/关键数字），不要重复工具过程。\n"
     "\n## 工具调用补充规则\n"
     "【重要】你运行在 Windows 系统上（PowerShell），不是 Linux / macOS。"
@@ -517,6 +532,9 @@ AGENT_RESUME_STEPS = 20
 AGENT_RESUME_ROUNDS = 2
 TOOL_READ_LIMIT = 8000
 TOOL_RESULT_LIMIT = 6000
+# v4.120：聊天区全量重建最多渲染最近 N 条消息——长会话（1000+ 条含大段工具结果）
+# 一次性塞进 DOM 会把渲染进程撑到 OOM 崩溃（白屏真凶）。增量追加不受限。
+MAX_RENDERED_MSGS = 300
 
 
 def get_agent_step_budget(cfg=None):

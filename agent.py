@@ -1160,6 +1160,10 @@ class AgentWorker(QThread):
         """串行执行工具调用（含危险操作确认），统一走权限引擎决策。"""
         engine = mw.permission_engine
         total = len(tool_calls)
+        # v4.120：批内完全重复调用（同名+同参数）去重——小模型偶发把同一 tool_call
+        # 发两遍（实测 use_skill/image_gen 毫秒级双发），重复执行既浪费又产生双倍
+        # tool_log/交付物。跳过的调用必须补占位 tool 回执，否则下轮 API 400（会话带毒）。
+        _seen_sigs = set()
         for _seq_idx, tc in enumerate(tool_calls):
             fn = tc.get("function", {})
             name = fn.get("name", "")
@@ -1167,6 +1171,14 @@ class AgentWorker(QThread):
                 args = json.loads(fn.get("arguments", "{}") or "{}")
             except Exception:
                 args = {}
+            _sig = (name, json.dumps(args, sort_keys=True, ensure_ascii=False))
+            if _sig in _seen_sigs:
+                log.info("批内重复调用已去重: %s", name)
+                self._handle_tool_result(tc, name, fn,
+                                         "（与本次批内上一调用完全重复，已自动去重）",
+                                         [], None)
+                continue
+            _seen_sigs.add(_sig)
             # v4.108 M-25：卡片 id 用全局单调序号；started/finished 同值配对
             idx = self._next_tool_index()
             if self._stop_requested:
@@ -1280,6 +1292,7 @@ class AgentWorker(QThread):
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {}
+            _seen_sigs = set()  # v4.120：批内完全重复调用去重（同 _run_serial）
             for _seq_idx, tc in enumerate(tool_calls):
                 fn = tc.get("function", {})
                 name = fn.get("name", "")
@@ -1287,6 +1300,14 @@ class AgentWorker(QThread):
                     args = json.loads(fn.get("arguments", "{}") or "{}")
                 except Exception:
                     args = {}
+                _sig = (name, json.dumps(args, sort_keys=True, ensure_ascii=False))
+                if _sig in _seen_sigs:
+                    log.info("批内重复调用已去重: %s", name)
+                    self._handle_tool_result(
+                        tc, name, fn,
+                        "（与本次批内上一调用完全重复，已自动去重）", [], None)
+                    continue
+                _seen_sigs.add(_sig)
                 # v4.108 M-25：卡片 id 用全局单调序号（并发批内各工具唯一）
                 idx = self._next_tool_index()
                 if self._stop_requested:

@@ -12,10 +12,13 @@ from datetime import datetime
 # Windows 上 GPU 硬件加速撞显卡驱动/HDR/高 DPI 缩放 → Chromium renderer 周期性崩溃
 # （约 1 分钟一次），v4.118 的 renderProcessTerminated 自愈只是崩后重建（每分钟闪一次）。
 # 禁 GPU 后走软件光栅化，聊天/Markdown 渲染无感知差异。setdefault 不覆盖用户已设值。
+# v4.120 修正：去掉 --disable-software-rasterizer——它和 --disable-gpu 叠加后
+# SwiftShader 软件 GL 也被禁，Qt AA_ShareOpenGLContexts 拿不到任何 GL 上下文
+# （kFatalFailure: Failed to create shared context）→ renderer 启动即被 Killed、
+# 崩溃-重建死循环（诊断日志实锤）。保留 SwiftShader 兜底，禁 GPU 才安全。
 os.environ.setdefault(
     "QTWEBENGINE_CHROMIUM_FLAGS",
-    "--disable-gpu --disable-gpu-compositing --disable-software-rasterizer "
-    "--disable-dev-shm-usage",
+    "--disable-gpu --disable-gpu-compositing --disable-dev-shm-usage",
 )
 
 from PySide6.QtWidgets import QApplication
