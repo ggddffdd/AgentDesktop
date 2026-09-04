@@ -324,6 +324,7 @@ class ChatWebView(QWebEngineView):
         # renderProcessTerminated）或 DOM 被意外清空时兜底重建。
         self._probe_inflight = False
         self._probe_fails = 0  # v4.120：探活连击计数（None 误报容错，见 _on_probe_result）
+        self._load_fail_count = 0  # v4.120.3：首屏加载失败重试计数（封顶防空转）
         self._probe_timer = QTimer(self)
         self._probe_timer.setInterval(60_000)
         self._probe_timer.timeout.connect(self._probe_alive)
@@ -352,6 +353,12 @@ class ChatWebView(QWebEngineView):
         self._crash_times.append(now)
         if len(self._crash_times) > 3:
             _we_diag(f"crash loop detected ({len(self._crash_times)}/60s) -> stop auto-rebuild")
+            # v4.120.3 P0-1 修复：熔断前渲染进程已死，必须把状态同步为「未就绪」，
+            # 否则 _ready 停在 True 会让 _breaker_retry（if self._ready: return）永远
+            # 被挡回、探活因 _probe_inflight 卡死而早退、JS 调用全部静默丢失 → 永久白屏。
+            self._ready = False
+            self._probe_inflight = False  # 放掉可能随死进程丢失的探活锁
+            self._rebuilding = True       # 恢复后走 pageReloaded 全量重渲染
             # 熔断不死锁：60s 后若页面仍未就绪，给一次冷静重试（仍崩则由窗口继续熔断）
             QTimer.singleShot(60_000, self._breaker_retry)
             return
@@ -376,6 +383,7 @@ class ChatWebView(QWebEngineView):
             self.page().runJavaScript(
                 "!!document.getElementById('container')",
                 0, self._on_probe_result)
+            QTimer.singleShot(5000, self._probe_timeout)  # v4.120.3 P1-1：回调超时未归位则强制放锁
         except Exception:
             self._probe_inflight = False
 
@@ -396,6 +404,15 @@ class ChatWebView(QWebEngineView):
         self._ready = False
         self._rebuilding = True
         self.setHtml(_build_html(self._theme), QUrl("file:///"))
+
+    def _probe_timeout(self):
+        """v4.120.3 P1-1：探活回调看门狗。runJavaScript 发出后若渲染进程在回调返回前
+        死亡/重建，PySide6 会丢弃回调，导致 _probe_inflight 永远卡 True、心跳永久早退。
+        5s 内回调未归位则强制放锁并按可疑计 1 分，走既有容错。"""
+        if self._probe_inflight:  # 回调一直没回来
+            self._probe_inflight = False
+            self._probe_fails += 1
+            _we_diag(f"probe callback timeout -> unlock + fail#{self._probe_fails}")
 
     def _on_load_finished(self, ok):
         if ok:
@@ -419,10 +436,13 @@ class ChatWebView(QWebEngineView):
                 _we_diag("first load finished -> emit ready")
                 self.ready.emit()
         else:
-            _we_diag(f"loadFinished(False) ever_ready={self._ever_ready}")
-            # 加载失败：仅首次未就绪时延迟重试一次（避免信号风暴）
-            if not self._ever_ready:
+            self._load_fail_count += 1
+            _we_diag(f"loadFinished(False) fail#{self._load_fail_count} ever_ready={self._ever_ready}")
+            # 加载失败：仅首次未就绪时延迟重试，封顶 5 次（~4s）防极端环境空转烧 CPU
+            if not self._ever_ready and self._load_fail_count <= 5:
                 QTimer.singleShot(800, self._retry_load)
+            elif not self._ever_ready:
+                _we_diag("load failed 5 times, stop retry; waiting for probe/watchdog")
 
     def _retry_load(self):
         if not self._ever_ready:
