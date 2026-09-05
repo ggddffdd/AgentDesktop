@@ -172,7 +172,9 @@ DEFAULT_CONFIG = {
         "智谱 GLM": {"base_url": "https://open.bigmodel.cn/api/paas/v4", "model": "glm-4-flash", "api_key": ""},
         "腾讯混元": {"base_url": "https://api.hunyuan.cloud.tencent.com/v1", "model": "hunyuan-lite", "api_key": ""},
         "免费网关 free-api-gw": {"base_url": "http://127.0.0.1:8000/v1", "model": "zhipu", "api_key": ""},
-        "魔搭 ModelScope": {"base_url": "https://api.modelscope.cn/v1", "model": "qwen2.5-7b-instruct", "api_key": ""},
+        # 端点修正：api.modelscope.cn 域名已无法解析（getaddrinfo failed），必须用
+        # api-inference 子域；原 model qwen2.5-7b-instruct 也已下线（has no provider supported）。
+        "魔搭 ModelScope": {"base_url": "https://api-inference.modelscope.cn/v1", "model": "Qwen/Qwen3.5-27B", "api_key": ""},
         "Agnes": {"base_url": "https://apihub.agnes-ai.cn/v1", "model": "agnes-2.5-flash", "api_key": ""},
     },
     # v4.109：模型下拉选择。""=Auto 智能路由（默认行为，等同 v4.108）；
