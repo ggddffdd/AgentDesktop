@@ -2733,6 +2733,17 @@ class ChatWindow(QMainWindow):
         clear_btn.setStyleSheet(self._secondary_btn_style())
         clear_btn.clicked.connect(lambda: self.orch_log.clear())
         cfg_row.addWidget(clear_btn)
+
+        # v4.121：Agent 军团 —— 可自定义团队角色的多项目编排，与小说流水线并列，
+        # 不局限于文案创作（数据层 legion.py / 执行器 legion_worker.py / 界面 legion_ui.py）
+        legion_btn = QPushButton("⚔️ Agent 军团")
+        legion_btn.setFixedHeight(34)
+        legion_btn.setToolTip("自定义团队角色的多项目军团：自己配角色、分工、波次，不局限于文案")
+        legion_btn.setStyleSheet(
+            f"QPushButton{{background:{THEME['panel2']};color:{THEME['accent']};"
+            f"border:1px solid {THEME['accent']};border-radius:6px;padding:0 10px;}}")
+        legion_btn.clicked.connect(self._open_legion)
+        cfg_row.addWidget(legion_btn)
         lay.addLayout(cfg_row)
 
         node_colors = {"blue": THEME['accent'], "green": THEME['ok'],
@@ -2834,6 +2845,32 @@ class ChatWindow(QMainWindow):
         self._scan_orch_resume()
         # 技能审核队列扫描（模型自动创建的技能待人工通过才生效）
         self._scan_skill_review()
+
+    def _open_legion(self):
+        """v4.121：打开 Agent 军团面板（可自定义团队角色的多项目编排）。
+
+        防御式 import：军团是新增旁路功能，模块加载/窗口构建失败只弹提示，
+        绝不让异常冒泡到主窗口构造流程（旁路底线：自己死也不拖垮主程序）。
+        """
+        try:
+            import legion_ui
+        except Exception as e:
+            try:
+                QMessageBox.warning(self, "军团面板不可用", f"模块加载失败：{e}")
+            except Exception:
+                pass
+            return
+        try:
+            if getattr(self, "_legion_win", None) is None:
+                self._legion_win = legion_ui.LegionWindow(mw=self, parent=self)
+            self._legion_win.show()
+            self._legion_win.raise_()
+            self._legion_win.activateWindow()
+        except Exception as e:
+            try:
+                QMessageBox.warning(self, "军团面板打开失败", str(e))
+            except Exception:
+                pass
 
     def _run_orchestrate(self):
         topic = self.orch_topic.text().strip()
