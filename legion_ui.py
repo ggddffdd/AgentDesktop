@@ -92,16 +92,24 @@ class RoleEditor(QDialog):
         self.e_selfcheck.setFixedHeight(52)
         self.e_selfcheck.setPlaceholderText("交付前自检哪几项")
 
-        # ---- ⑧ 挂载技能（v4.121.3 新增；v4.121.4 拆分两段：已安装 + 已下架）----
+        # ---- ⑧ 挂载技能（v4.121.3 新增；v4.121.4 拆分两段；v4.121.5 归档元素带快照名）----
         # 运行时扫 skills 目录，不持久化。新建/改 SKILL.md 后重开编辑器立即可见。
         # 已挂载但被卸载的 slug 从成员 archived_skills 读，分两段展示：
         #   - 段 1：✓ 当前可挂载（已安装技能）
         #   - 段 2：⚠ 已下架但本项目仍挂着（灰显、可取消勾选=主动移除）
+        # v4.121.5：archived_skills 元素从裸 slug 升级为 {slug, name, emoji} 字典，
+        # UI 直接用存档里的 name/emoji 显示，不再用 _load_skill_prompt 拿（路径已无）。
         self._all_skills = legion.scan_available_skills()
         self.e_skills = QListWidget()
         self.e_skills.setSelectionMode(QAbstractItemView.MultiSelection)
         mounted = set(r.get("skills") or [])
-        archived = list(r.get("archived_skills") or [])
+        # 规范化 archived_skills：旧数据是 slug 字符串，新数据是 dict
+        archived_raw = r.get("archived_skills") or []
+        archived_norm = []
+        for e in archived_raw:
+            n = legion._normalize_archived_entry(e)
+            if n:
+                archived_norm.append(n)
         # 已安装技能段
         _add_skill_section_header(self.e_skills, "✓ 当前可挂载")
         for sk in self._all_skills:
@@ -121,20 +129,25 @@ class RoleEditor(QDialog):
             if slug in mounted:
                 it.setSelected(True)
         # 已下架技能段（仅当成员 archived_skills 非空时才出现）
-        if archived:
+        if archived_norm:
             _add_skill_section_header(self.e_skills, "⚠ 已下架但本项目仍挂着")
-            for slug in archived:
-                # 拿不到 SKILL.md 就用 slug 当显示名；前置 ⚠ 是视觉提示
-                info = legion._load_skill_prompt(slug)
-                if info:
-                    emoji = info.get("emoji", "") or ""
-                    name = info.get("name") or slug
-                else:
-                    emoji = ""
-                    name = slug
-                label = f"⚠ {emoji} {name}".strip()
+            for entry in archived_norm:
+                slug = entry.get("slug", "")
+                # 显示名解析优先级：v4.121.5 存档快照 → 运行时扫（重装回来）→ slug
+                name = entry.get("name") or slug
+                emoji = entry.get("emoji") or ""
+                if name == slug or not emoji:
+                    info = legion._load_skill_prompt(slug)
+                    if info:
+                        name = info.get("name") or name
+                        emoji = emoji or (info.get("emoji") or "")
+                # 真正拿不到就用 ⚠ 前缀（极端情况：旧数据 + 未重装）
+                if name == slug and not emoji:
+                    name = f"⚠ {slug}"
+                label = f"{emoji} {name}".strip()
                 it = QListWidgetItem(label)
-                it.setData(Qt.UserRole, ("archived", slug))
+                # v4.121.5：payload 改为整个 dict，get_role 时整存回去名字不丢
+                it.setData(Qt.UserRole, ("archived", entry))
                 it.setForeground(QBrush(QColor("#a0a0a0")))
                 it.setToolTip(
                     f"slug: {slug}\n"
@@ -198,20 +211,26 @@ class RoleEditor(QDialog):
         )
         # 挂载技能：v4.121.4 起按两段分拣
         # - ('installed', slug) 勾选 → 进 skills（运行时拼入 prompt）
-        # - ('archived', slug)  勾选 → 保留在 archived_skills（运行时忽略）
-        # - ('archived', slug)  未勾 → 主动移除（不写回任何字段）
+        # - ('archived', entry)  勾选 → 保留在 archived_skills（运行时忽略）
+        #   v4.121.5 起 entry 是 {slug, name, emoji} 字典，整存回去避免名字丢失
+        # - ('archived', entry)  未勾 → 主动移除（不写回任何字段）
         new_skills, new_archived = [], []
         for it in self.e_skills.selectedItems():
             payload = it.data(Qt.UserRole)
             if not (isinstance(payload, tuple) and len(payload) == 2):
                 continue
-            kind, slug = payload
-            if not isinstance(slug, str) or not slug.strip():
-                continue
+            kind, value = payload
             if kind == "installed":
-                new_skills.append(slug)
+                if isinstance(value, str) and value.strip():
+                    new_skills.append(value)
             elif kind == "archived":
-                new_archived.append(slug)
+                # 兼容旧数据 / 极端情况：value 可能不是 dict
+                if isinstance(value, dict):
+                    slug = value.get("slug", "")
+                    if isinstance(slug, str) and slug.strip():
+                        new_archived.append(value)
+                elif isinstance(value, str) and value.strip():
+                    new_archived.append({"slug": value, "name": value, "emoji": ""})
         role["skills"] = new_skills
         role["archived_skills"] = new_archived
         return role
@@ -442,8 +461,20 @@ class LegionWindow(QWidget):
     def _cur_project(self):
         return legion.find_project(self.data, self.cur_project_id)
 
-    def _resolve_skill_name(self, slug: str) -> str:
-        """slug → "emoji name"，进程内缓存（避免每次刷新都全扫 skills 目录）。"""
+    def _resolve_skill_name(self, slug) -> str:
+        """slug → "emoji name"，进程内缓存（避免每次刷新都全扫 skills 目录）。
+
+        v4.121.5 起也能接受 {slug, name, emoji} 字典元素（archived_skills 用）：
+        - 字典里的 name/emoji 是归档时的快照，优先用；磁盘重装回来后仍稳定显示原名
+        - 兜底：缓存里没有时再走 _load_skill_prompt 拿最新
+        """
+        # v4.121.5: archived 元素是 dict，直接读快照
+        snap_emoji = ""
+        snap_name = ""
+        if isinstance(slug, dict):
+            snap_name = slug.get("name") or ""
+            snap_emoji = slug.get("emoji") or ""
+            slug = slug.get("slug", "")
         if not slug:
             return ""
         if slug not in self._skill_cache:
@@ -454,7 +485,11 @@ class LegionWindow(QWidget):
                 self._skill_cache[slug] = f"{emoji} {name}".strip() if emoji else name
             else:
                 self._skill_cache[slug] = f"⚠ {slug}"   # 找不到的标记一下
-        return self._skill_cache[slug]
+        cached = self._skill_cache[slug]
+        # 如果字典里有快照而缓存里没 emoji（说明磁盘已无此 skill），优先用快照
+        if snap_name and (cached.startswith("⚠") or " " not in cached.strip()):
+            return f"{snap_emoji} {snap_name}".strip()
+        return cached
 
     # ---- 项目列表 ----
     def _refresh_projects(self, select_id=None):

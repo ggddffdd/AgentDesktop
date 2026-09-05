@@ -372,19 +372,53 @@ def _fill_preset_roles(data):
         log.warning("补齐预置角色失败: %s", e)
 
 
+def _normalize_archived_entry(entry) -> dict:
+    """把 archived_skills 元素统一成 {slug, name, emoji} 形态。
+
+    v4.121.5 起元素升级为对象（之前是裸 slug 字符串），保留归档时刻的
+    emoji/name 快照，UI 不再依赖运行时扫文件就能显示友好名字。
+    兼容旧数据：字符串 slug → {slug, name=slug, emoji=""}。
+    """
+    if isinstance(entry, dict):
+        slug = entry.get("slug") or entry.get("id") or ""
+        if not slug:
+            return {}
+        out = {"slug": slug}
+        # 旧 dict 可能没有 name/emoji 字段——补默认
+        out["name"] = entry.get("name") or slug
+        out["emoji"] = entry.get("emoji") or ""
+        return out
+    if isinstance(entry, str) and entry.strip():
+        return {"slug": entry, "name": entry, "emoji": ""}
+    return {}
+
+
 def _archive_uninstalled_skills(data, skills_dir: str = None):
-    """v4.121.4 新增：把成员 skills[] 里扫描不到的 slug 自动移到 archived_skills[]。
+    """v4.121.4 新增；v4.121.5 升级：归档元素从裸 slug 改为 {slug, name, emoji}。
+
+    把成员 skills[] 里扫描不到的 slug 自动移到 archived_skills[]。
 
     设计：
     - skills = 当前可用的挂载（运行时会被拼到 system prompt 末尾）
     - archived_skills = 曾经挂载但技能已卸载的归档（运行时忽略，仅 UI 提示）
+      v4.121.5 起元素是 {slug, name, emoji} 字典，name/emoji 是归档时的快照，
+      卸载后目录删了 UI 仍能显示「💥 选题碰撞」而不是「topic-collision」。
     - 加载时一次性同步，JSON 始终干净；用户主动从 archived 移除（编辑时取消勾选）
       后下次加载 archived_skills 就会清空该项。
 
     幂等：重复调用不会重复归档（archived_skills 里的不会再被处理）。
     """
     try:
-        available = {s.get("slug") for s in scan_available_skills(skills_dir)}
+        # v4.121.5: 扫描时建 name/emoji 映射，归档时把当时显示名一起存档
+        available = {}  # slug -> {name, emoji}
+        for s in scan_available_skills(skills_dir):
+            slug = s.get("slug")
+            if not slug:
+                continue
+            available[slug] = {
+                "name": s.get("name") or slug,
+                "emoji": s.get("emoji") or "",
+            }
         for p in data.get("projects", []) or []:
             if not isinstance(p, dict):
                 continue
@@ -395,7 +429,16 @@ def _archive_uninstalled_skills(data, skills_dir: str = None):
                     if not isinstance(m, dict):
                         continue
                     skills = m.get("skills") or []
-                    archived = m.get("archived_skills") or []
+                    archived_raw = m.get("archived_skills") or []
+                    # 规范化已有归档项（兼容旧 slug 字符串数据）
+                    archived = []
+                    archived_slug_set = set()
+                    for e in archived_raw:
+                        norm = _normalize_archived_entry(e)
+                        slug = norm.get("slug", "")
+                        if slug and slug not in archived_slug_set:
+                            archived.append(norm)
+                            archived_slug_set.add(slug)
                     keep = []
                     moved = []
                     for slug in skills:
@@ -404,16 +447,21 @@ def _archive_uninstalled_skills(data, skills_dir: str = None):
                         # 已在归档区的 slug 一律不回 skills（保守：用户已确认归档，
                         # 技能重装也不自动恢复）。否则同一 slug 会同时出现在 skills 和
                         # archived_skills，UI 两段各显示一次造成视觉错乱。
-                        if slug in archived:
+                        if slug in archived_slug_set:
                             continue
                         if slug in available:
                             keep.append(slug)
                         else:
-                            # 已卸载：移到归档（去重，不重复加）
-                            moved.append(slug)
-                    if moved or len(keep) != len(skills):
+                            # 已卸载：移到归档（带 name/emoji 快照；去重，不重复加）
+                            snap = {"slug": slug, "name": slug, "emoji": ""}
+                            moved.append(snap)
+                    new_archived = archived + moved
+                    # v4.121.5 写回条件：新增归档 / skills 变化 / archived 长度变化
+                    # / 旧字符串 slug 未规范化（任意非 dict 元素就强制写一次盘）
+                    has_legacy_str = any(isinstance(e, str) for e in archived_raw)
+                    if moved or len(keep) != len(skills) or len(new_archived) != len(archived) or has_legacy_str:
                         m["skills"] = keep
-                        m["archived_skills"] = list(archived) + moved
+                        m["archived_skills"] = new_archived
     except Exception as e:
         log.warning("归档未安装技能失败: %s", e)
 
