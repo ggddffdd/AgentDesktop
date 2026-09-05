@@ -23,8 +23,8 @@ else:
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.121"
-APP_BUILD_DATE = "2026-09-04"
+APP_VERSION = "v4.121.2"
+APP_BUILD_DATE = "2026-09-05"
 # v4.120（2026-09-04）白屏真凶+对话逻辑修复（基于 sessions.json 实锤）：
 # ① 聊天区不再渲染 role=tool 气泡（v4.108 断点回写的全量工具结果 ≤6000 字，
 #    与 tool_log 卡片重复显示、且撑爆 DOM——1204 条会话全量渲染致渲染进程 OOM，

@@ -176,6 +176,61 @@ def default_role_library():
             quality="每步都要有可交付的产出物，没有产出物的步骤删掉",
             self_check="检查是否每步都能判断「做完了没有」",
         ),
+        # ---- 电商自动运营军团专用（大哥 09-05 新增）----
+        new_role(
+            name="选品官", emoji="🛒",
+            mission="从市场趋势、需求缺口、利润空间三维度，选出有潜力且可落地的商品",
+            constraints="只基于已有调研材料或常识判断，不凭空编造数据；区分「趋势」与「跟风」",
+            tools=[],
+            output_format="候选商品 3-5 个，每个含【市场趋势】【目标人群】【利润预估】【风险点】",
+            quality="每个候选必须给出至少 1 条可辩护的支撑理由，禁止「感觉不错」",
+            self_check="逐条检查是否都有依据，无依据的候选删掉",
+        ),
+        new_role(
+            name="竞品分析师", emoji="⚔️",
+            mission="拆解竞品/对标账号的商品、内容、价格与打法，找出可借鉴处与差异化机会",
+            constraints="只做事实拆解与中立对比，不贬低对手；信息来源需标注",
+            tools=["web_search", "web_fetch"],
+            output_format="竞品画像（每个：定位/核心卖点/价格/内容风格/可借鉴处/差异化机会）",
+            quality="每个竞品至少指出 1 点可借鉴 + 1 点差异化机会",
+            self_check="检查是否有主观拉踩描述，一律改成立中陈述",
+        ),
+        new_role(
+            name="带货文案", emoji="✍️",
+            mission="把商品卖点写成能打动目标人群、可直接发布的带货文案或口播稿",
+            constraints="不夸大功效、不虚假承诺、符合广告合规；语气口语化、去 AI 味",
+            tools=["write_file", "read_file"],
+            output_format="标题钩子 + 正文（痛点-卖点-信任-行动）+ 适用人群 / 慎用人群",
+            quality="前 3 秒有钩子，每个卖点有依据，结尾有明确行动指令",
+            self_check="通读检查是否有夸大或违禁词，有就改写",
+        ),
+        new_role(
+            name="主图策划", emoji="🖼️",
+            mission="把商品卖点转成能直接生图/出素材的视觉方案与生图提示词",
+            constraints="只输出视觉方案与提示词，不输出成图解释；风格全篇统一",
+            tools=["image_gen"],
+            output_format="每张素材 1 条完整提示词（风格+主体+构图+光线+卖点可视化）",
+            quality="提示词具体到能直接出图，卖点要可视化而非抽象形容词堆砌",
+            self_check="检查每条是否含风格+主体+卖点，缺一补上",
+        ),
+        new_role(
+            name="投放运营", emoji="📈",
+            mission="基于商品与人群，制定流量投放/起量策略与数据复盘框架",
+            constraints="不承诺具体 ROI 数字；区分策略与执行；标注关键前提假设",
+            tools=["web_search", "read_file"],
+            output_format="人群分层 / 渠道匹配 / 预算分配 / 关键指标与复盘模板",
+            quality="每个渠道给出适用场景与理由；复盘要有清晰 KPI，可落地",
+            self_check="检查是否承诺了不切实际的数字，是就改为区间或条件",
+        ),
+        new_role(
+            name="转化话术师", emoji="💬",
+            mission="设计售前/私域/客服转化的沟通话术与常见异议应答",
+            constraints="不催单不骚扰、不承诺售后之外的事项；语气真诚不油腻",
+            tools=[],
+            output_format="开场话术 / 常见异议应答（问-答）/ 促单边界话术",
+            quality="每个异议给出话术+适用场景+要避免踩的坑",
+            self_check="检查是否有过度承诺或骚扰式话术，有就删除",
+        ),
     ]
 
 
@@ -220,6 +275,13 @@ def default_legion():
     }
 
 
+# 预置角色名清单：加载时若角色库缺这些名字，自动从默认库补齐（保留用户对已有同名的定制）
+PRESET_ROLE_NAMES = [
+    "研究员", "分析师", "写手", "配图师", "审校", "策划",
+    "选品官", "竞品分析师", "带货文案", "主图策划", "投放运营", "转化话术师",
+]
+
+
 # ============ 持久化 ============
 def load_legion():
     """读取军团数据；文件不存在/损坏则回落默认（不抛异常拖垮主程序）。"""
@@ -235,6 +297,9 @@ def load_legion():
         data.setdefault("version", SCHEMA_VERSION)
         data.setdefault("role_library", default_role_library())
         data.setdefault("projects", [])
+        # 预置角色缺失自动补齐：旧数据升级能拿到新增预置角色（如电商标），
+        # 已存在的同名角色保留用户定制，绝不覆盖。
+        _fill_preset_roles(data)
         # 结构自愈：项目/波次字段缺失补齐，避免旧数据炸 UI
         for p in data["projects"]:
             if not isinstance(p, dict):
@@ -255,6 +320,23 @@ def load_legion():
     except Exception as e:
         log.warning("读取军团数据失败，回落到默认: %s", e)
         return default_legion()
+
+
+def _fill_preset_roles(data):
+    """按 PRESET_ROLE_NAMES 补齐缺失的预置角色。仅补缺，不动已有同名。"""
+    try:
+        lib = data.get("role_library") or []
+        if not isinstance(lib, list):
+            lib = []
+        existing = {r.get("name") for r in lib if isinstance(r, dict)}
+        defaults = {r["name"]: r for r in default_role_library()}
+        for name in PRESET_ROLE_NAMES:
+            if name not in existing and name in defaults:
+                lib.append(copy.deepcopy(defaults[name]))
+        if lib:
+            data["role_library"] = lib
+    except Exception as e:
+        log.warning("补齐预置角色失败: %s", e)
 
 
 def save_legion(data):

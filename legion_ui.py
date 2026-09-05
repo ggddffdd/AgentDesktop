@@ -233,9 +233,32 @@ class LegionWindow(QWidget):
         self.cur_project_id = None
         self.worker = None
         self.setWindowTitle("Agent 军团 · 自定义团队")
+        # 必须是独立窗口：否则会当成父窗口里的子控件，落在左上角盖住编排页，
+        # 且没有自己的标题栏/关闭按钮。Qt.Window 让它带标题栏 + 关闭 X。
+        self.setWindowFlags(self.windowFlags() | Qt.Window)
         self.resize(1040, 720)
         self._build_ui()
         self._refresh_projects()
+        self._center_on_parent()
+
+    def _center_on_parent(self):
+        """首次打开时把窗口居中（相对父窗口，无父则居中屏幕）。只执行一次。"""
+        try:
+            parent = self.parentWidget() if self.parent() else None
+            if parent is not None:
+                geo = parent.frameGeometry()
+                x = geo.x() + (geo.width() - self.width()) // 2
+                y = geo.y() + (geo.height() - self.height()) // 2
+            else:
+                scr = self.screen()
+                if scr is None:
+                    return
+                avail = scr.availableGeometry()
+                x = avail.x() + (avail.width() - self.width()) // 2
+                y = avail.y() + (avail.height() - self.height()) // 2
+            self.move(max(0, x), max(0, y))
+        except Exception:
+            pass
 
     # ---- UI 骨架 ----
     def _build_ui(self):
