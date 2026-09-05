@@ -170,7 +170,10 @@ DEFAULT_CONFIG = {
         # 正确端点是 api/paas/v4。这是写入新用户 config.json 的默认值，必须保持可用
         # （老用户需自行改 ~/Documents/小臭玩AI/config.json，默认值不会覆盖已有配置）。
         "智谱 GLM": {"base_url": "https://open.bigmodel.cn/api/paas/v4", "model": "glm-4-flash", "api_key": ""},
-        "腾讯混元": {"base_url": "https://api.hunyuan.cloud.tencent.com/v1", "model": "hunyuan-lite", "api_key": ""},
+        # 端点修正：混元 2026-06-22 已迁移 TokenHub，旧平台域名 api.hunyuan.cloud.tencent.com
+        # 连同 hunyuan-lite 一起下线——旧端点拿同一把 key 会报 401 invalid_api_key，
+        # 极易误判成"key 失效"。新端点 + 新模型名配对才通（实测 1.5s 返回）。
+        "腾讯混元": {"base_url": "https://tokenhub.tencentmaas.com/v1", "model": "hy3-preview", "api_key": ""},
         "免费网关 free-api-gw": {"base_url": "http://127.0.0.1:8000/v1", "model": "zhipu", "api_key": ""},
         # 端点修正：api.modelscope.cn 域名已无法解析（getaddrinfo failed），必须用
         # api-inference 子域；原 model qwen2.5-7b-instruct 也已下线（has no provider supported）。
