@@ -15,6 +15,7 @@
 数据存 ~/Documents/小臭玩AI/legion.json（独立文件，不污染 config.json）。
 """
 import os
+import re
 import json
 import uuid
 import copy
@@ -24,6 +25,8 @@ log = logging.getLogger("legion")
 
 LEGION_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI")
 LEGION_PATH = os.path.join(LEGION_DIR, "legion.json")
+# 技能 SKILL.md 默认扫描根目录（不持久化进 legion.json，每次现扫）
+DEFAULT_SKILLS_DIR = os.path.join(LEGION_DIR, "skills")
 
 # 项目分类（沿用 workflow_manager_ui 的分类习惯，另补军团专属）
 CATEGORIES = ["内容创作", "视频创作", "小说创作", "营销运营", "调研分析", "日常助手", "其他"]
@@ -85,11 +88,13 @@ def new_wave():
     return {"members": []}
 
 
-# ============ 角色 → system prompt（7 要素拼装）============
-def build_role_prompt(role: dict) -> str:
-    """把角色 7 要素拼成 system prompt。
+# ============ 角色 → system prompt（7 要素 + 可选挂载技能）============
+def build_role_prompt(role: dict, skills_dir: str = None) -> str:
+    """把角色 7 要素 + 挂载的技能拼成 system prompt。
 
     只拼非空字段，避免把一堆空标题塞进上下文白烧 token。
+    挂载的技能（role.skills[]）按 slug 去 skills_dir 读 SKILL.md 正文，
+    拼在末尾 —— 这是「角色身份 + 方法论」组合的关键。
     """
     if not role:
         return ""
@@ -112,6 +117,23 @@ def build_role_prompt(role: dict) -> str:
     _add("输出格式", "output_format")
     _add("质量标准", "quality")
     _add("自检", "self_check")
+
+    # ---- 挂载的技能 / 方法论（v4.121.3 新增）----
+    skill_slugs = [s for s in (role.get("skills") or []) if isinstance(s, str) and s.strip()]
+    if skill_slugs:
+        skills_dir = skills_dir or DEFAULT_SKILLS_DIR
+        parts.append("\n【挂载的技能 / 方法论】\n以下是本角色本次任务需要遵循的方法论/工作流：")
+        for slug in skill_slugs:
+            sk = _load_skill_prompt(slug, skills_dir)
+            if sk:
+                emoji = sk.get("emoji", "")
+                sname = sk.get("name") or slug
+                body = (sk.get("prompt") or "").strip()
+                if body:
+                    parts.append(f"\n### {emoji} {sname}\n{body}")
+            else:
+                parts.append(f"\n### ⚠️ {slug}\n（技能文件未找到，跳过）")
+
     return "\n".join(parts)
 
 
@@ -316,6 +338,10 @@ def load_legion():
             for w in p["waves"]:
                 if isinstance(w, dict):
                     w.setdefault("members", [])
+                    # 成员自愈：补 skills 字段（v4.121.3 新增，按需挂载技能）
+                    for m in w.get("members", []):
+                        if isinstance(m, dict):
+                            m.setdefault("skills", [])
         return data
     except Exception as e:
         log.warning("读取军团数据失败，回落到默认: %s", e)
@@ -380,3 +406,76 @@ def project_summary(project):
     waves = wave_members(project)
     n_members = sum(len(w) for w in waves)
     return f"{len(waves)} 个波次 · {n_members} 位成员"
+
+
+# ============ 技能扫描（运行时，不持久化）============
+# SKILL.md frontmatter 是 4 行 key: value 块，简单 regex 拆即可，无需引入 yaml 库。
+_FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
+_KV_RE = re.compile(r"^([a-zA-Z_]+)\s*:\s*(.*)$")
+
+
+def _parse_skill_md(path: str):
+    """读一份 SKILL.md，返回 {name, emoji, description, category, prompt}；失败返 None。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return None
+    m = _FM_RE.match(text)
+    if not m:
+        # 没有 frontmatter 也允许：name=目录名，prompt=全文
+        return {"name": "", "emoji": "", "description": "", "category": "", "prompt": text.strip()}
+    fm, body = m.group(1), m.group(2)
+    out = {"name": "", "emoji": "", "description": "", "category": "", "prompt": body.strip()}
+    for line in fm.splitlines():
+        km = _KV_RE.match(line.strip())
+        if not km:
+            continue
+        key = km.group(1).lower()
+        val = km.group(2).strip().strip('"').strip("'")
+        if key in out:
+            out[key] = val
+    # 兜底：emoji 从正文首行标题里抓（"# xxx emoji xxx" 这种）
+    if not out["emoji"]:
+        hh = re.match(r"^#\s+(.+)", body.strip())
+        if hh:
+            for ch in hh.group(1):
+                if ord(ch) > 127 and ord(ch) > 0x1F300:  # 命中第一个非 ASCII 字符（粗略）
+                    out["emoji"] = ch
+                    break
+    return out
+
+
+def scan_available_skills(skills_dir: str = None):
+    """扫描 skills 目录，返回 [{slug, name, emoji, description, category, prompt, path}]。
+
+    路径不存在或为空 → 返回 []。每次现扫，不缓存，方便新建/修改 SKILL.md 后立即可用。
+    """
+    skills_dir = skills_dir or DEFAULT_SKILLS_DIR
+    out = []
+    if not os.path.isdir(skills_dir):
+        return out
+    try:
+        for slug in sorted(os.listdir(skills_dir)):
+            md_path = os.path.join(skills_dir, slug, "SKILL.md")
+            if not os.path.isfile(md_path):
+                continue
+            info = _parse_skill_md(md_path)
+            if not info:
+                continue
+            info["slug"] = slug
+            info["path"] = md_path
+            out.append(info)
+    except Exception as e:
+        log.warning("扫描技能目录失败: %s", e)
+    return out
+
+
+def _load_skill_prompt(slug: str, skills_dir: str = None):
+    """按 slug 单文件读取，返回 dict（与 _parse_skill_md 一致）；失败返 None。"""
+    skills_dir = skills_dir or DEFAULT_SKILLS_DIR
+    md_path = os.path.join(skills_dir, slug, "SKILL.md")
+    info = _parse_skill_md(md_path)
+    if info:
+        info["slug"] = slug
+    return info

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QListWidget,
     QListWidgetItem, QLineEdit, QPushButton, QLabel, QTextEdit, QComboBox,
     QMessageBox, QGroupBox, QScrollArea, QDialogButtonBox, QAbstractItemView,
+    QSizePolicy,
 )
 from PySide6.QtCore import Qt
 
@@ -33,7 +34,7 @@ class RoleEditor(QDialog):
     def __init__(self, role=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("团队成员 · 角色定义")
-        self.resize(620, 720)
+        self.resize(640, 820)
         r = role or legion.new_role()
 
         self.e_emoji = QLineEdit(r.get("emoji", ""))
@@ -77,6 +78,34 @@ class RoleEditor(QDialog):
         self.e_selfcheck.setFixedHeight(52)
         self.e_selfcheck.setPlaceholderText("交付前自检哪几项")
 
+        # ---- ⑧ 挂载技能（v4.121.3 新增）----
+        # 运行时扫 skills 目录，不持久化。新建/改 SKILL.md 后重开编辑器立即可见。
+        self._all_skills = legion.scan_available_skills()
+        self.e_skills = QListWidget()
+        self.e_skills.setSelectionMode(QAbstractItemView.MultiSelection)
+        mounted = set(r.get("skills") or [])
+        for sk in self._all_skills:
+            slug = sk.get("slug", "")
+            name = sk.get("name") or slug
+            emoji = sk.get("emoji", "")
+            label = f"{emoji} {name}".strip() if emoji else name
+            it = QListWidgetItem(label)
+            it.setData(Qt.UserRole, slug)
+            tip = sk.get("description", "") or ""
+            if tip:
+                tip = tip[:120] + ("…" if len(tip) > 120 else "")
+                it.setToolTip(f"slug: {slug}\n{tip}")
+            else:
+                it.setToolTip(f"slug: {slug}")
+            self.e_skills.addItem(it)
+            if slug in mounted:
+                it.setSelected(True)
+        self.e_skills.setFixedHeight(140)
+        self.e_skills.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self.e_skills.setToolTip(
+            "可多选。技能 = 方法论 / 工作流，挂载后会拼进该角色的 system prompt 末尾。"
+            "目录：~/Documents/小臭玩AI/skills/<slug>/SKILL.md，新建或修改后重开本对话框即生效。")
+
         form = QFormLayout()
         form.addRow("图标 + 角色名", row_name)
         form.addRow("① 使命", self.e_mission)
@@ -86,6 +115,7 @@ class RoleEditor(QDialog):
         form.addRow("⑤ 输出格式", self.e_output)
         form.addRow("⑥ 质量标准", self.e_quality)
         form.addRow("⑦ 自检", self.e_selfcheck)
+        form.addRow("⑧ 挂载技能", self.e_skills)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.button(QDialogButtonBox.Ok).setText("确定")
@@ -94,8 +124,14 @@ class RoleEditor(QDialog):
         btns.rejected.connect(self.reject)
 
         lay = QVBoxLayout(self)
-        lay.addLayout(form)
-        lay.addWidget(QLabel("说明：只有勾选的工具会注入该角色，其余工具对它一律不可见。"))
+        # 滚动窗口包住表单：技能列表可能很长
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        host = QWidget()
+        host.setLayout(form)
+        scroll.setWidget(host)
+        lay.addWidget(scroll, 1)
+        lay.addWidget(QLabel("说明：只有勾选的工具会注入该角色；勾选的技能会在执行时拼进 system prompt 末尾。"))
         lay.addWidget(btns)
 
     def _on_ok(self):
@@ -105,7 +141,7 @@ class RoleEditor(QDialog):
         self.accept()
 
     def get_role(self):
-        return legion.new_role(
+        role = legion.new_role(
             name=self.e_name.text().strip(),
             emoji=self.e_emoji.text().strip(),
             mission=self.e_mission.toPlainText().strip(),
@@ -116,6 +152,9 @@ class RoleEditor(QDialog):
             quality=self.e_quality.toPlainText().strip(),
             self_check=self.e_selfcheck.toPlainText().strip(),
         )
+        # 挂载技能：按 slug 列表存进成员对象（v4.121.3 新增）
+        role["skills"] = [i.data(Qt.UserRole) for i in self.e_skills.selectedItems() if i.data(Qt.UserRole)]
+        return role
 
 
 # ============ 成员挑选器 ============
@@ -301,6 +340,9 @@ class LegionWindow(QWidget):
         self.scroll.setWidget(self.waves_host)
         rv.addWidget(self.scroll, 1)
 
+        # 成员行的技能摘要：slug → "emoji name"，按需缓存（一次扫描复用多次）
+        self._skill_cache = {}
+
         row_w = QHBoxLayout()
         b_wave = QPushButton("+ 添加波次")
         b_wave.clicked.connect(self._add_wave)
@@ -339,6 +381,20 @@ class LegionWindow(QWidget):
 
     def _cur_project(self):
         return legion.find_project(self.data, self.cur_project_id)
+
+    def _resolve_skill_name(self, slug: str) -> str:
+        """slug → "emoji name"，进程内缓存（避免每次刷新都全扫 skills 目录）。"""
+        if not slug:
+            return ""
+        if slug not in self._skill_cache:
+            info = legion._load_skill_prompt(slug)
+            if info:
+                emoji = info.get("emoji", "") or ""
+                name = info.get("name") or slug
+                self._skill_cache[slug] = f"{emoji} {name}".strip() if emoji else name
+            else:
+                self._skill_cache[slug] = f"⚠ {slug}"   # 找不到的标记一下
+        return self._skill_cache[slug]
 
     # ---- 项目列表 ----
     def _refresh_projects(self, select_id=None):
@@ -451,10 +507,18 @@ class LegionWindow(QWidget):
                 name_l = QLabel(f"{m.get('emoji', '')} {m.get('name', '')}".strip())
                 name_l.setFixedWidth(140)
                 tools = m.get("tools") or []
-                tool_l = QLabel(("工具：" + "、".join(tools)) if tools else "不用工具 · 纯输出")
-                tool_l.setStyleSheet("color:#777;")
+                skills = m.get("skills") or []
+                # 工具 + 技能两段拼接展示（v4.121.3 新增技能摘要）
+                tool_txt = ("工具：" + "、".join(tools)) if tools else "不用工具 · 纯输出"
+                skill_txt = ""
+                if skills:
+                    names = [self._resolve_skill_name(s) for s in skills]
+                    skill_txt = " | 技能：" + "、".join(n for n in names if n)
+                info_l = QLabel(tool_txt + skill_txt)
+                info_l.setStyleSheet("color:#777;")
+                info_l.setWordWrap(True)
                 row.addWidget(name_l)
-                row.addWidget(tool_l, 1)
+                row.addWidget(info_l, 1)
 
                 b_up = QPushButton("↑")
                 b_up.setFixedWidth(32)
