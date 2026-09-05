@@ -166,7 +166,10 @@ DEFAULT_CONFIG = {
     "model_profiles": {
         "DeepSeek 官方": {"base_url": "https://api.deepseek.com", "model": "deepseek-v4-flash-vision-exp", "api_key": ""},
         "硅基流动": {"base_url": "https://api.siliconflow.cn/v1", "model": "deepseek-ai/DeepSeek-V3", "api_key": ""},
-        "智谱 GLM": {"base_url": "https://open.bigmodel.cn/api/ai/v1", "model": "glm-4-flash", "api_key": ""},
+        # 端点修正：api/ai/v1 实测返回 HTTP 200 但 body 是 {"code":500,"msg":"404 NOT_FOUND"}，
+        # 正确端点是 api/paas/v4。这是写入新用户 config.json 的默认值，必须保持可用
+        # （老用户需自行改 ~/Documents/小臭玩AI/config.json，默认值不会覆盖已有配置）。
+        "智谱 GLM": {"base_url": "https://open.bigmodel.cn/api/paas/v4", "model": "glm-4-flash", "api_key": ""},
         "腾讯混元": {"base_url": "https://api.hunyuan.cloud.tencent.com/v1", "model": "hunyuan-lite", "api_key": ""},
         "免费网关 free-api-gw": {"base_url": "http://127.0.0.1:8000/v1", "model": "zhipu", "api_key": ""},
         "魔搭 ModelScope": {"base_url": "https://api.modelscope.cn/v1", "model": "qwen2.5-7b-instruct", "api_key": ""},
