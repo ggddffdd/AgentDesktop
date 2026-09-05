@@ -339,9 +339,16 @@ def load_legion():
                 if isinstance(w, dict):
                     w.setdefault("members", [])
                     # 成员自愈：补 skills 字段（v4.121.3 新增，按需挂载技能）
+                    # + archived_skills 字段（v4.121.4 新增，挂载但技能被卸载的归档区）
                     for m in w.get("members", []):
                         if isinstance(m, dict):
                             m.setdefault("skills", [])
+                            m.setdefault("archived_skills", [])
+        # v4.121.4 新增：成员挂载的技能如已被卸载（skills 目录里扫不到 SKILL.md），
+        # 从 skills[] 自动移到 archived_skills[]，避免运行时 build_role_prompt
+        # 反复输出「⚠️ slug（技能文件未找到，跳过）」占位段。
+        # 已在 archived_skills 里的 slug 不再处理（用户已确认归档）。
+        _archive_uninstalled_skills(data)
         return data
     except Exception as e:
         log.warning("读取军团数据失败，回落到默认: %s", e)
@@ -363,6 +370,52 @@ def _fill_preset_roles(data):
             data["role_library"] = lib
     except Exception as e:
         log.warning("补齐预置角色失败: %s", e)
+
+
+def _archive_uninstalled_skills(data, skills_dir: str = None):
+    """v4.121.4 新增：把成员 skills[] 里扫描不到的 slug 自动移到 archived_skills[]。
+
+    设计：
+    - skills = 当前可用的挂载（运行时会被拼到 system prompt 末尾）
+    - archived_skills = 曾经挂载但技能已卸载的归档（运行时忽略，仅 UI 提示）
+    - 加载时一次性同步，JSON 始终干净；用户主动从 archived 移除（编辑时取消勾选）
+      后下次加载 archived_skills 就会清空该项。
+
+    幂等：重复调用不会重复归档（archived_skills 里的不会再被处理）。
+    """
+    try:
+        available = {s.get("slug") for s in scan_available_skills(skills_dir)}
+        for p in data.get("projects", []) or []:
+            if not isinstance(p, dict):
+                continue
+            for w in p.get("waves", []) or []:
+                if not isinstance(w, dict):
+                    continue
+                for m in w.get("members", []) or []:
+                    if not isinstance(m, dict):
+                        continue
+                    skills = m.get("skills") or []
+                    archived = m.get("archived_skills") or []
+                    keep = []
+                    moved = []
+                    for slug in skills:
+                        if not isinstance(slug, str) or not slug.strip():
+                            continue
+                        # 已在归档区的 slug 一律不回 skills（保守：用户已确认归档，
+                        # 技能重装也不自动恢复）。否则同一 slug 会同时出现在 skills 和
+                        # archived_skills，UI 两段各显示一次造成视觉错乱。
+                        if slug in archived:
+                            continue
+                        if slug in available:
+                            keep.append(slug)
+                        else:
+                            # 已卸载：移到归档（去重，不重复加）
+                            moved.append(slug)
+                    if moved or len(keep) != len(skills):
+                        m["skills"] = keep
+                        m["archived_skills"] = list(archived) + moved
+    except Exception as e:
+        log.warning("归档未安装技能失败: %s", e)
 
 
 def save_legion(data):

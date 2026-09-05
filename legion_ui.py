@@ -20,11 +20,25 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QBrush, QColor
 
 import legion
 from legion_worker import LegionWorker
 
 log = logging.getLogger("legion")
+
+
+def _add_skill_section_header(lst: QListWidget, text: str):
+    """在 QListWidget 加一行不可勾选的分组标题（用于技能挂载的两段展示）。"""
+    it = QListWidgetItem(text)
+    # 不可选中 + 不可点：用户点上去没反应，视觉上像 header
+    flags = it.flags() & ~Qt.ItemIsSelectable & ~Qt.ItemIsEnabled
+    it.setFlags(flags)
+    it.setForeground(QBrush(QColor("#666")))
+    # 禁用样式加重一点：灰底
+    it.setBackground(QBrush(QColor("#f3f3f3")))
+    lst.addItem(it)
+    return it
 
 
 # ============ 角色编辑器（7 要素）============
@@ -78,19 +92,25 @@ class RoleEditor(QDialog):
         self.e_selfcheck.setFixedHeight(52)
         self.e_selfcheck.setPlaceholderText("交付前自检哪几项")
 
-        # ---- ⑧ 挂载技能（v4.121.3 新增）----
+        # ---- ⑧ 挂载技能（v4.121.3 新增；v4.121.4 拆分两段：已安装 + 已下架）----
         # 运行时扫 skills 目录，不持久化。新建/改 SKILL.md 后重开编辑器立即可见。
+        # 已挂载但被卸载的 slug 从成员 archived_skills 读，分两段展示：
+        #   - 段 1：✓ 当前可挂载（已安装技能）
+        #   - 段 2：⚠ 已下架但本项目仍挂着（灰显、可取消勾选=主动移除）
         self._all_skills = legion.scan_available_skills()
         self.e_skills = QListWidget()
         self.e_skills.setSelectionMode(QAbstractItemView.MultiSelection)
         mounted = set(r.get("skills") or [])
+        archived = list(r.get("archived_skills") or [])
+        # 已安装技能段
+        _add_skill_section_header(self.e_skills, "✓ 当前可挂载")
         for sk in self._all_skills:
             slug = sk.get("slug", "")
             name = sk.get("name") or slug
             emoji = sk.get("emoji", "")
             label = f"{emoji} {name}".strip() if emoji else name
             it = QListWidgetItem(label)
-            it.setData(Qt.UserRole, slug)
+            it.setData(Qt.UserRole, ("installed", slug))
             tip = sk.get("description", "") or ""
             if tip:
                 tip = tip[:120] + ("…" if len(tip) > 120 else "")
@@ -100,11 +120,35 @@ class RoleEditor(QDialog):
             self.e_skills.addItem(it)
             if slug in mounted:
                 it.setSelected(True)
-        self.e_skills.setFixedHeight(140)
+        # 已下架技能段（仅当成员 archived_skills 非空时才出现）
+        if archived:
+            _add_skill_section_header(self.e_skills, "⚠ 已下架但本项目仍挂着")
+            for slug in archived:
+                # 拿不到 SKILL.md 就用 slug 当显示名；前置 ⚠ 是视觉提示
+                info = legion._load_skill_prompt(slug)
+                if info:
+                    emoji = info.get("emoji", "") or ""
+                    name = info.get("name") or slug
+                else:
+                    emoji = ""
+                    name = slug
+                label = f"⚠ {emoji} {name}".strip()
+                it = QListWidgetItem(label)
+                it.setData(Qt.UserRole, ("archived", slug))
+                it.setForeground(QBrush(QColor("#a0a0a0")))
+                it.setToolTip(
+                    f"slug: {slug}\n"
+                    f"状态：技能已下架（skills/{slug}/SKILL.md 不存在或读不动）\n"
+                    f"默认勾选 = 保留在 archived_skills；取消勾选 = 主动移除")
+                self.e_skills.addItem(it)
+                # 默认勾选：用户原始意图是"留着"
+                it.setSelected(True)
+        self.e_skills.setFixedHeight(180)
         self.e_skills.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.e_skills.setToolTip(
             "可多选。技能 = 方法论 / 工作流，挂载后会拼进该角色的 system prompt 末尾。"
-            "目录：~/Documents/小臭玩AI/skills/<slug>/SKILL.md，新建或修改后重开本对话框即生效。")
+            "目录：~/Documents/小臭玩AI/skills/<slug>/SKILL.md，新建或修改后重开本对话框即生效。"
+            "已下架段：保留 = 该技能回到 active 后会自动复活；取消勾选 = 主动移除。")
 
         form = QFormLayout()
         form.addRow("图标 + 角色名", row_name)
@@ -152,8 +196,24 @@ class RoleEditor(QDialog):
             quality=self.e_quality.toPlainText().strip(),
             self_check=self.e_selfcheck.toPlainText().strip(),
         )
-        # 挂载技能：按 slug 列表存进成员对象（v4.121.3 新增）
-        role["skills"] = [i.data(Qt.UserRole) for i in self.e_skills.selectedItems() if i.data(Qt.UserRole)]
+        # 挂载技能：v4.121.4 起按两段分拣
+        # - ('installed', slug) 勾选 → 进 skills（运行时拼入 prompt）
+        # - ('archived', slug)  勾选 → 保留在 archived_skills（运行时忽略）
+        # - ('archived', slug)  未勾 → 主动移除（不写回任何字段）
+        new_skills, new_archived = [], []
+        for it in self.e_skills.selectedItems():
+            payload = it.data(Qt.UserRole)
+            if not (isinstance(payload, tuple) and len(payload) == 2):
+                continue
+            kind, slug = payload
+            if not isinstance(slug, str) or not slug.strip():
+                continue
+            if kind == "installed":
+                new_skills.append(slug)
+            elif kind == "archived":
+                new_archived.append(slug)
+        role["skills"] = new_skills
+        role["archived_skills"] = new_archived
         return role
 
 
@@ -508,12 +568,17 @@ class LegionWindow(QWidget):
                 name_l.setFixedWidth(140)
                 tools = m.get("tools") or []
                 skills = m.get("skills") or []
-                # 工具 + 技能两段拼接展示（v4.121.3 新增技能摘要）
+                archived = m.get("archived_skills") or []
+                # 工具 + 技能 + 已下架 三段拼接展示（v4.121.4 加已下架段）
                 tool_txt = ("工具：" + "、".join(tools)) if tools else "不用工具 · 纯输出"
                 skill_txt = ""
                 if skills:
                     names = [self._resolve_skill_name(s) for s in skills]
                     skill_txt = " | 技能：" + "、".join(n for n in names if n)
+                if archived:
+                    # _resolve_skill_name 对不存在的 slug 会前缀 ⚠，正好做视觉提示
+                    names = [self._resolve_skill_name(s) for s in archived]
+                    skill_txt += " | 已下架：" + "、".join(n for n in names if n)
                 info_l = QLabel(tool_txt + skill_txt)
                 info_l.setStyleSheet("color:#777;")
                 info_l.setWordWrap(True)
