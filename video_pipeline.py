@@ -25,7 +25,7 @@ import subprocess
 import urllib.request
 
 from tools import (_agnes_creds, _build_video_prompt, tool_video_gen,
-                   tool_image_gen, PRODUCTS_DIR)
+                   tool_image_gen, PRODUCTS_DIR, is_silent_clip)
 # 参考图硬上限：Agnes reference 模式实测 6 张报 400，固定 5。
 # （原为 tools 导出，视频统一内核后归 video_pipeline 自管，避免悬空依赖 tools）
 AGNES_MAX_REF_IMAGES = 5
@@ -1574,6 +1574,15 @@ class VideoPipeline:
                 rel, kind, name = res
                 clip = os.path.join(self.app_dir, rel)
                 if os.path.isfile(clip):
+                    # 天生无声的素材（智谱兜底等）登记下来：合成自检据此区分
+                    # 「设计无声（空镜）」与「哑弹 BUG（有声素材被合成没声）」。
+                    try:
+                        if is_silent_clip(rel):
+                            if not hasattr(self, "silent_shots"):
+                                self.silent_shots = set()
+                            self.silent_shots.add(idx)
+                    except Exception:
+                        pass
                     return clip
                 res = f"保存路径不存在：{clip}"
             last_err = f"{res}"
@@ -1784,10 +1793,13 @@ class VideoPipeline:
         m = len(segs)
         vparts, aparts, seg_str, sub_segs = [], [], [], []
         t = 0.0
+        # 记录每段实测音轨情况，供合成后自检判断「成片该不该有声」
+        self._seg_audio = []
         for k, s in enumerate(segs):
             # 每段对应一个输入文件（视频即输入 k）；分镜自带音轨优先沿用，
             # 转场/无音轨片段用静音轨补齐，确保 concat 每段音视频齐全。
             ha = self._probe_has_audio(s["path"]) if use_clip_audio else False
+            self._seg_audio.append(bool(ha))
             vparts.append(
                 f"[{k}:v]scale={W}:{H}:force_original_aspect_ratio=decrease,"
                 f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24[v{k}]")
@@ -1863,21 +1875,67 @@ class VideoPipeline:
                 or "invalid stream specifier" in d
                 or "does not contain any stream" in d)
 
-    def _check_audio_level(self, path):
-        """合成后自检成片音量；静音则明确告警，防止无声问题再次静默发生。"""
+    def _expect_silent(self, segs):
+        """判断成片「按设计就该无声」——只有此时无声才不是 BUG。
+
+        两个信号取并集（任一命中即算该镜预期无声）：
+          ① 素材被显式标记为天生无声（智谱兜底等，tools.VIDEO_SILENT_MARK）；
+          ② 实测该片段没有音轨（_seg_audio）。
+        全部分镜都预期无声 → 返回 (True, 无声镜数, 分镜总数)；否则 (False, ...)。
+        注意：只要有一镜预期有声，就照常自检——否则「哑弹」（有声素材被合成没声）
+        又会从后门溜走。ffprobe 不可用时 _probe_has_audio 乐观返回 True（保守按有声）。
+        """
+        marked = getattr(self, "silent_shots", set()) or set()
+        audio = list(getattr(self, "_seg_audio", []) or [])
+        n_clip = n_silent = 0
+        for k, s in enumerate(segs or []):
+            if s.get("kind") != "clip":
+                continue  # 转场片段本就是静音轨，不参与判定
+            n_clip += 1
+            idx = s.get("shot_idx")
+            has_track = audio[k] if k < len(audio) else True
+            if (idx in marked) or (not has_track):
+                n_silent += 1
+        if n_clip == 0:
+            return False, 0, 0
+        return (n_silent == n_clip), n_silent, n_clip
+
+    def _check_audio_level(self, path, expect_silent=False, n_silent=0, n_clip=0):
+        """合成后自检成片音量——「预期有声却无声」才报警。
+
+        2026-09-06 修：原逻辑无条件「峰值 < -60dB 即疑似静音」，而智谱兜底片段
+        天生无音轨、合成时铺 anullsrc（约 -91dB），全空镜成片会被 100% 误报成
+        「哑弹 BUG」。现改为预期驱动：整片素材本来就没有声音 → 无声是设计，跳过；
+        只要有一镜预期有声 → 照旧做峰值检测，漏报的代价远大于误报。
+        """
+        if expect_silent:
+            self.log(f"  🔇 成片自检：{n_silent}/{n_clip} 个素材为静音素材"
+                     f"（空镜/智谱兜底，无音轨）→ 成片按设计无声，跳过静音告警")
+            return
         try:
             _rc, _o, err = self._run_ff(
                 [self.ffmpeg, "-i", path, "-af", "volumedetect", "-f", "null", "-"],
                 timeout=300)
             mt = re.search(r"max_volume:\s*([-\d.]+)\s*dB", err)
             if not mt:
+                # 拿不到峰值通常意味着成片压根没有音轨——比「静音」更严重。
+                # 旧版在这里静默 return，等于漏报；预期有声时必须报出来。
+                try:
+                    if not self._probe_has_audio(path):
+                        self.log("  ⚠️ 成片自检：成片没有音轨！"
+                                 "（预期有声，请查 _merge_exec 是否误铺 anullsrc）")
+                except Exception:
+                    pass
                 return
             mx = float(mt.group(1))
             if mx < -60.0:
-                self.log(f"  ⚠️ 成片自检：音轨峰值 {mx} dB，疑似静音！"
-                         f"（分镜有声却合成无声时请查 _probe_has_audio）")
+                extra = (f"（另有 {n_silent}/{n_clip} 镜为静音素材已排除）"
+                         if n_silent else "")
+                self.log(f"  ⚠️ 成片自检：音轨峰值 {mx} dB，疑似静音！{extra}"
+                         f"（预期有声却无声时请查 _probe_has_audio）")
             else:
-                self.log(f"  🔊 成片自检：音轨峰值 {mx} dB（正常）")
+                extra = (f"，其中 {n_silent}/{n_clip} 镜为静音素材" if n_silent else "")
+                self.log(f"  🔊 成片自检：音轨峰值 {mx} dB（正常{extra}）")
         except Exception:
             pass
 
@@ -1889,7 +1947,9 @@ class VideoPipeline:
         ok, detail = self._merge_exec(segs, shots, out_path, burn_subtitles,
                                       use_clip_audio=True)
         if ok:
-            self._check_audio_level(out_path)
+            exp_silent, n_sil, n_clip = self._expect_silent(segs)
+            self._check_audio_level(out_path, expect_silent=exp_silent,
+                                    n_silent=n_sil, n_clip=n_clip)
             return True, ""
         # v4.108 M-06：被「停止」中断（cancel_check 命中 kill）不算失败，
         # 直接返回取消文案，不再触发静音轨降级重试（避免取消后白跑一次合并）。
@@ -1901,7 +1961,8 @@ class VideoPipeline:
             ok2, detail2 = self._merge_exec(segs, shots, out_path, burn_subtitles,
                                             use_clip_audio=False)
             if ok2:
-                self.log("  ⚠️ 已按静音轨降级合成：成片无声（片段无可用音轨）")
+                self.log("  ⚠️ 已按静音轨降级合成：成片无声"
+                         "（素材本身无可用音轨，非合成 BUG；空镜/智谱兜底属预期）")
                 return True, ""
             return False, detail2
         return False, detail

@@ -20,6 +20,13 @@ os.environ.setdefault(
     "QTWEBENGINE_CHROMIUM_FLAGS",
     "--disable-gpu --disable-gpu-compositing --disable-dev-shm-usage",
 )
+# v4.121.6：关 Chromium 沙箱——必须在 import PySide6 之前设置。
+# 实测（2026-09-07 冻结 exe）：不带开关时 QtWebEngineProcess 启动即被 Killed
+# （exit_code=1），聊天区 renderProcessTerminated 崩溃-重建死循环（日志 9 次/60s）；
+# 设了之后同机立刻拉起 6 个渲染进程、页面正常。这是 Qt 官方支持的开关，
+# 本地桌面应用不加载外部不可信页面，关闭沙箱无实际安全损失。
+# setdefault：用户若已显式设置则尊重其值。
+os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QThread, Signal, QObject, QAbstractNativeEventFilter, Qt
@@ -63,17 +70,24 @@ class ObsidianInitWorker(QThread):
 
     配合 config.init_obsidian 的 timeout 护栏与 obsidian_enabled 开关，
     实现「异步 + 短超时 + 可跳过」三件套。主线程只 dispatch，UI 先出来。
+
+    v4.122.1：新增 delay 参数（秒）——延迟到启动空闲后再跑，错开启动期网络；
+    默认 0（立即），由 config 的 obsidian_index_delay_sec 控制。
     """
     finished = Signal(object)  # 回传结果字符串
 
-    def __init__(self, cfg, store, timeout):
+    def __init__(self, cfg, store, timeout, delay=0):
         super().__init__()
         self.cfg = cfg
         self.store = store
         self.timeout = timeout
+        self.delay = delay
 
     def run(self):
         try:
+            if self.delay > 0:
+                import time
+                time.sleep(self.delay)
             import config  # 本模块顶层未 import config，缺这行会 NameError（沉默吞掉知识库索引）
             result = config.init_obsidian(self.cfg, self.store, timeout=self.timeout)
         except Exception as e:
@@ -288,12 +302,17 @@ def main():
     # 现改为后台线程跑，主路径只 dispatch（mark 近似 0），UI 先出来。
     obsidian_worker = None
     if cfg.get("obsidian_enabled", True):
-        obsidian_worker = ObsidianInitWorker(cfg, config.rag_store, timeout=15.0)
+        try:
+            obsidian_delay = max(0, int(cfg.get("obsidian_index_delay_sec", 0)))
+        except (TypeError, ValueError):
+            obsidian_delay = 0
+        obsidian_worker = ObsidianInitWorker(cfg, config.rag_store, timeout=15.0,
+                                             delay=obsidian_delay)
         obsidian_worker.finished.connect(
             lambda r: log.info("Obsidian(异步完成): %s", r)
         )
         obsidian_worker.start()
-        log.info("Obsidian 初始化已在后台启动（超时 15s，不阻塞界面）")
+        log.info("Obsidian 初始化已在后台启动（超时 15s，延迟 %d s，不阻塞界面）", obsidian_delay)
     else:
         log.info("Obsidian 已禁用（obsidian_enabled=false），跳过初始化")
     perf_baseline.mark("obsidian")

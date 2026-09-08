@@ -29,11 +29,22 @@ try:
     import route_log   # v4.110：旁路埋点（路由/用量/技能），只写不读
 except Exception:      # 旁路模块缺失绝不能拖垮工具模块（冻结环境 import 失败必炸）
     route_log = None
-from chart_generator import ChartGenerator
-chart_gen = ChartGenerator()
+# chart_generator（matplotlib 重库，含查中文字体 ~0.9s）v4.122.1 改为延迟加载：
+# 不再在模块级 import+实例化，首次真正生成图表时才初始化，避免冷启动连坐 matplotlib。
 from context_manager import get_context_manager
 from database_tools import DatabaseTools
 db_tools = DatabaseTools()
+
+_chart_gen = None
+
+
+def _get_chart_gen():
+    """懒加载 ChartGenerator 单例（ChartGenerator.__init__ 会查中文字体，很贵）。"""
+    global _chart_gen
+    if _chart_gen is None:
+        from chart_generator import ChartGenerator
+        _chart_gen = ChartGenerator()
+    return _chart_gen
 
 log = logging.getLogger("dsdesktop")
 
@@ -143,6 +154,144 @@ def _h_read_file(cfg, app_dir, args, progress=None):
     return (tool_read_file(app_dir, args.get("path", ""),
                            offset=args.get("offset", 0), limit=args.get("limit")), [], None)
 
+
+# ---- 军团调度三件套 v4.122：项目经理的「眼睛」----
+# 数据来自 legion 模块内的运行时状态仓（执行器边跑边写），不落 legion.json。
+_LEGION_NO_RUN = "当前没有军团执行记录（这三个工具只在「⚔️ Agent 军团」运行时有数据）。"
+
+
+def _legion_run_safe(run_id=None):
+    """取执行状态；取不到返回 None（调用方统一提示，不让工具抛异常打断 agent 循环）。"""
+    try:
+        import legion as _lg
+        return _lg.get_run(run_id)
+    except Exception as _e:
+        log.warning("读取军团执行状态失败: %s", _e)
+        return None
+
+
+@register_tool("legion_list_outputs", risk="read")
+def _h_legion_list_outputs(cfg, app_dir, args, progress=None):
+    run = _legion_run_safe(args.get("run_id") or None)
+    if not run:
+        return (_LEGION_NO_RUN, [], None)
+    preview = int(args.get("preview_chars") or 200)
+    outs = run.get("outputs") or []
+    if not outs:
+        return (f"执行批次 {run['run_id']}（{run['project']}）目前还没有任何成员产出。"
+                f"可能本波还没跑完，或成员全部失败 —— 用 legion_read_log 查执行过程。", [], None)
+    lines = [f"执行批次 {run['run_id']} · 项目「{run['project']}」· 任务：{run['task'][:60]}"]
+    lines.append(f"共 {len(outs)} 份产出：")
+    for i, o in enumerate(outs, 1):
+        txt = (o.get("text") or "").replace("\n", " ")
+        pv = txt[:preview] + ("…" if len(txt) > preview else "")
+        lines.append(
+            f"\n[{i}] 第{o.get('wave')}波 · 第{o.get('attempt')}次 · {o.get('role')} "
+            f"· {o.get('chars')}字\n    摘要：{pv or '（空）'}")
+    lines.append("\n读全文请用 legion_get_output(role=『成员名』或 wave=波次序号)。")
+    return ("\n".join(lines), [], None)
+
+
+@register_tool("legion_get_output", risk="read")
+def _h_legion_get_output(cfg, app_dir, args, progress=None):
+    run = _legion_run_safe(args.get("run_id") or None)
+    if not run:
+        return (_LEGION_NO_RUN, [], None)
+    max_chars = int(args.get("max_chars") or 6000)
+    role_q = (args.get("role") or "").strip()
+    wave_q = args.get("wave")
+    outs = run.get("outputs") or []
+    if not outs:
+        return ("本次执行还没有任何成员产出，无法读取。", [], None)
+
+    hits = []
+    if role_q:
+        hits = [o for o in outs if role_q in (o.get("role") or "")]
+    elif wave_q is not None:
+        try:
+            hits = [o for o in outs if int(o.get("wave")) == int(wave_q)]
+        except (TypeError, ValueError):
+            hits = []
+    else:
+        hits = outs
+    if not hits:
+        avail = "、".join(sorted({o.get("role") or "?" for o in outs}))
+        return (f"没有匹配到产出（查询条件 role={role_q!r} wave={wave_q!r}）。"
+                f"现有成员：{avail}", [], None)
+
+    parts = []
+    for o in hits:
+        txt = (o.get("text") or "").strip()
+        if len(txt) > max_chars:
+            txt = txt[:max_chars] + f"\n…(已截断，原文 {o.get('chars')} 字)"
+        parts.append(f"### 第{o.get('wave')}波 · 第{o.get('attempt')}次 · {o.get('role')}\n\n"
+                     f"{txt or '（该成员没有产出内容）'}")
+    return ("\n\n---\n\n".join(parts), [], None)
+
+
+@register_tool("legion_read_log", risk="read")
+def _h_legion_read_log(cfg, app_dir, args, progress=None):
+    run = _legion_run_safe(args.get("run_id") or None)
+    if not run:
+        return (_LEGION_NO_RUN, [], None)
+    n = int(args.get("lines") or 80)
+    log_lines = run.get("log") or []
+    if not log_lines:
+        return (f"执行批次 {run['run_id']} 暂无日志。", [], None)
+    tail = log_lines[-n:]
+    head = (f"执行批次 {run['run_id']} · 项目「{run['project']}」· 状态 {run['status']}\n"
+            f"共 {len(log_lines)} 行，以下是最近 {len(tail)} 行：\n\n")
+    return (head + "\n".join(tail), [], None)
+
+
+@register_tool("legion_board", risk="read")
+def _h_legion_board(cfg, app_dir, args, progress=None):
+    """读项目的**共享任务板**：各节点干到哪了、最近发生了什么。
+
+    任务板挂在**项目**上，不挂在某个角色身上 —— 换成员、换项目经理、重启程序
+    都不丢。项目经理靠它知道每个成员干到哪了，才能调度。
+    """
+    import legion
+    pid = (args.get("project_id") or "").strip()
+    if not pid:
+        return ("缺少 project_id。任务板按项目 ID 存；不知道 ID 时可先跑一次军团，"
+                "或从执行日志里找 project_id。", [], None)
+    board = legion.board_get(pid)
+    nodes = board.get("nodes") or {}
+    n_events = int(args.get("events") or 30)
+    if not nodes:
+        return (f"任务板 {pid} 还是空的（本项目尚未执行过，或任务板被清空）。", [], None)
+
+    lines = [f"任务板 · 项目「{board.get('project_name') or pid}」（{pid}）",
+             f"共 {len(nodes)} 个节点："]
+    for key in sorted(nodes):
+        nd = nodes[key] or {}
+        status = nd.get("status") or "?"
+        role = nd.get("role") or ""
+        wave = nd.get("wave")
+        summ = (nd.get("summary") or "").replace("\n", " ")[:80]
+        seg = f"  · {key}"
+        if role:
+            seg += f" [{role}]"
+        if wave:
+            seg += f" 第{wave}波"
+        seg += f" → {status}"
+        if nd.get("pm_verdict"):
+            seg += f"（PM 建议 {nd['pm_verdict']}）"
+        if summ:
+            seg += f"  {summ}"
+        lines.append(seg)
+
+    evs = (board.get("events") or [])[-n_events:]
+    if evs:
+        lines.append(f"\n最近 {len(evs)} 条事件：")
+        for e in evs:
+            lines.append(f"  {e.get('time','--:--:--')} {e.get('node')} → "
+                         f"{e.get('status') or e.get('pm_verdict') or ''}")
+    lines.append("\n状态说明：pending 待跑 / running 执行中 / done 已完成 / "
+                 "error 失败 / await_approval 等你授权 / approved 已放行 / rejected 已打回")
+    return ("\n".join(lines), [], None)
+
 @register_tool("write_file", dangerous=True)
 def _h_write_file(cfg, app_dir, args, progress=None):
     p = args.get("path", "")
@@ -175,6 +324,7 @@ def _h_video_gen(cfg, app_dir, args, progress=None):
                          image=args.get("image"),
                          first_frame=args.get("first_frame"),
                          last_frame=args.get("last_frame"),
+                         images=args.get("images"),
                          dialogue=args.get("dialogue"),
                          progress=progress)
     if isinstance(res, tuple):
@@ -335,7 +485,7 @@ def _h_log_query(cfg, app_dir, args, progress=None):
 
 @register_tool("chart_gen")
 def _h_chart_gen(cfg, app_dir, args, progress=None):
-    res = chart_gen.generate(chart_type=args.get("chart_type"), data=args.get("data", {}),
+    res = _get_chart_gen().generate(chart_type=args.get("chart_type"), data=args.get("data", {}),
                              title=args.get("title", "图表"), palette=args.get("palette", "default"),
                              output_path=args.get("output_path"))
     if res.get("status") == "success":
@@ -547,8 +697,8 @@ def tool_web_search(cfg, query):
                         if results:
                             break
             if not results:
-                # 境外兜底（你网络环境多半连不通，仅作最后尝试；连不通秒退不浪费）
-                results = search_mod.search_ddg(subq, top_k)
+                # 境外兜底：英文 query 走 en Accept-Language（v4.124.4）
+                results = search_mod.search_ddg(subq, top_k, lang="en" if search_mod._is_english_query(subq) else "zh")
             if not results:
                 continue
             blocks.append(f"\n【角度{i}：{suf.strip()}】")
@@ -589,8 +739,10 @@ def tool_web_search(cfg, query):
             for i, r in enumerate(_r[:top_k], 1):
                 lines.append(f"{i}. {r['title']}\n   {r['snippet']}\n   {r['url']}")
             return "\n".join(lines)
-    # 无付费 key：先走国内免费引擎链（Bing/百度/搜狗，你网络可通），再 DuckDuckGo 境外兜底
-    chain = search_mod.provider_chain(cfg.get("search_provider", "auto"))
+    # 无付费 key：先走 query 语言感知路由（v4.124.4：英文 query 自动切到英文优先链
+    # 'duckduckgo_en→bing_en→wikipedia_en'，避免 baidu 把 'pet hair' 拆成塑料瓶/达州时差，
+    # 详见 search.py:_is_english_query / provider_chain 说明）。
+    chain = search_mod.provider_chain(cfg.get("search_provider", "auto"), query=query)
     last_err = ""
     for provider in chain:
         try:
@@ -605,8 +757,8 @@ def tool_web_search(cfg, query):
             for i, r in enumerate(results[:top_k], 1):
                 lines.append(f"{i}. {r['title']}\n   {r['snippet']}\n   {r['url']}")
             return "\n".join(lines)
-    # 国内链全空 → 境外 DuckDuckGo 最后兜底（你网络多半连不通，秒退不浪费）
-    _r = search_mod.search_ddg(query, top_k)
+    # 国内链全空 → 境外 DuckDuckGo 最后兜底（英文 query 走 en Accept-Language）
+    _r = search_mod.search_ddg(query, top_k, lang="en" if search_mod._is_english_query(query) else "zh")
     if _r:
         lines = [f"搜索「{query}」结果（来源：DuckDuckGo 境外兜底）："]
         for i, r in enumerate(_r[:top_k], 1):
@@ -981,11 +1133,11 @@ def tool_rag_index(cfg, app_dir, args, progress=None):
         return f"路径不存在: {path}", [], []
     results = []
     if p.is_file():
-        results.append(cfg_mod.rag_store.index_file(str(p)))
+        results.append(cfg_mod.rag_store.index_file(str(p), force=True))
     else:
         for f in p.rglob("*"):
             if f.is_file() and f.suffix.lower() in ('.txt', '.md', '.py', '.pdf', '.docx'):
-                results.append(cfg_mod.rag_store.index_file(str(f)))
+                results.append(cfg_mod.rag_store.index_file(str(f), force=True))
     return f"索引完成:\n" + "\n".join(f"  - {r}" for r in results if r), [], []
 
 
@@ -1238,6 +1390,12 @@ def _agnes_creds(cfg):
     return base.rstrip("/"), key
 
 
+def _zhipu_key(cfg):
+    """取智谱 key（视频兜底通道：Agnes 挂掉时 text 模式自动降级 CogVideoX-Flash）。"""
+    prof = (cfg.get("model_profiles") or {}).get("智谱 GLM") or {}
+    return prof.get("api_key") or ""
+
+
 _AGNES_TIERS = ((3400, "4K"), (2500, "3K"), (1700, "2K"))
 _AGNES_RATIOS = {
     "1:1": 1.0, "4:3": 4 / 3, "3:4": 3 / 4, "16:9": 16 / 9,
@@ -1410,6 +1568,20 @@ def _image_to_payload_value(value, app_dir):
     return value
 
 
+# 视频素材「天生无声」登记表：rel 路径 -> True（2026-09-06）
+# 智谱兜底（CogVideoX-Flash）产出的片段无音轨，属设计而非故障。合成自检读这张表，
+# 全片都是静音素材时跳过「疑似静音」告警，避免把正常空镜误报成「哑弹 BUG」。
+VIDEO_SILENT_MARK = {}
+
+
+def is_silent_clip(rel):
+    """查该视频素材是否被标记为天生无声（智谱兜底等）。未知按有声处理（保守）。"""
+    try:
+        return bool(VIDEO_SILENT_MARK.get(str(rel)))
+    except Exception:
+        return False
+
+
 def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=None,
                    image=None, first_frame=None, last_frame=None, dialogue=None,
                    progress=None, images=None):
@@ -1417,6 +1589,11 @@ def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=
 
     与网页版 / director_panel 共用同一套 core/，根除两份 Agnes 视频客户端。
     模型固定 agnes-video-2.5-flash（720P，seconds 4-12，三模式 text/keyframe/reference）。
+
+    ⚠️ 画幅必选意识（2026-09-06 踩坑）：aspect 默认 portrait(9:16) 竖版。
+    漫剧分镜、横版影视内容**必须显式传 aspect="landscape"**，否则横版构图
+    会被塞进竖容器（横版内容竖着播）。竖版 text 模式由内核自动走 3:4
+    中转兜底（Agnes 服务端 9:16 旋转 bug 规避），无需调用方关心。
 
     返回 (rel, 'video', name) 交付物元组，或错误字符串。
     duration: 秒，自动钳制到 [4,12]；aspect: 'landscape'/'portrait'；
@@ -1467,7 +1644,8 @@ def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=
     os.makedirs(v_dir, exist_ok=True)
     dest_path = os.path.join(v_dir, f"video_{stamp}.mp4")
     try:
-        client = AgnesClient(api_key=key, base_url=base, video_model="agnes-video-2.5-flash")
+        client = AgnesClient(api_key=key, base_url=base, video_model="agnes-video-2.5-flash",
+                             zhipu_key=_zhipu_key(cfg))
         path = client.generate_video(
             prompt=prompt,
             seconds=secs,
@@ -1490,6 +1668,12 @@ def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=
     if not path or not os.path.isfile(path):
         return "视频生成未返回本地文件"
     rel = _safe_relpath(path, app_dir)
+    # 记录素材来源：智谱兜底 = 天生无声，供合成自检区分「设计无声」与「哑弹 BUG」
+    try:
+        if getattr(client, "last_source", "agnes") == "zhipu":
+            VIDEO_SILENT_MARK[rel] = True
+    except Exception:
+        pass
     return (rel, "video", os.path.basename(rel))
 
 

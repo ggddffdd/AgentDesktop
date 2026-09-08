@@ -47,6 +47,11 @@ class AgentNode:
         "image_gen": "用 AI 生成图片",
         "search_memory": "搜索长期记忆库",
         "remember": "写入长期记忆",
+        # 军团调度三件套（v4.122）：项目经理做验收/调度时读产出与日志
+        "legion_list_outputs": "列出军团各波次成员的产出清单（含字数与摘要）",
+        "legion_get_output": "读取军团某位成员或某一波的完整产出原文",
+        "legion_read_log": "读取本次军团执行的过程日志",
+        "legion_board": "读取项目共享任务板（各节点状态与最近事件）",
     }
 
     def __init__(self, name: str, role_prompt: str,

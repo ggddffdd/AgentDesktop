@@ -65,7 +65,9 @@ sys.argv = ['pyinstaller', '--noconfirm', '--distpath', distpath, spec_file]
 # 若改 subprocess 包一层，子进程不继承补丁会被沙箱拦截导致打包失败。Windows 无 SIGALRM，
 # 用 daemon Timer 做软超时：正常打包 494s 远小于 900s，run() 返回后 finally 取消 Timer，不会触发；
 # 仅当真正卡死（超过 900s）才 os._exit 保命。
-BUILD_TIMEOUT_SEC = 900
+# 2026-09-06 v4.121.6 实测：COLLECT 阶段（拷贝 _internal 数千个文件）单独就要 10 分钟以上，
+# 全流程 ~19 分钟，900s 会把正常打包误杀在 COLLECT 中途（dist 半新半旧）。放宽到 1800s。
+BUILD_TIMEOUT_SEC = 1800
 
 def _build_timeout_kill():
     sys.stderr.write(f"\n[build_safe] 打包超过 {BUILD_TIMEOUT_SEC}s 仍未结束，疑似卡死，强制退出。\n")

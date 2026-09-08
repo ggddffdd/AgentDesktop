@@ -188,17 +188,97 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "video_gen",
-            "description": "用 Agnes 生成短视频（文生视频/图生视频），不经过本地网关。Agnes 视频模型支持【内置中文口播】：把台词填到 dialogue 参数，即可生成带真人中文语音+对口型的视频（无需后期配音）。传入画面描述到 prompt，需要人物说话/口播/带货时务必填 dialogue；可选 duration(秒)/aspect(横版/竖版)/image(图生视频源图)。【重要流程】只需调用本工具一次：工具内部会自动完成『提交任务→轮询至完成→下载到工作区』全流程，不要把它拆成『先提交』『再轮询』多步，也不要臆测 Agnes 不能出声——口播靠 dialogue 参数，纯画面无声则是不填 dialogue 导致。",
+            "description": "用 Agnes 生成短视频（文生视频/图生视频），不经过本地网关。Agnes 视频模型支持【内置中文口播】：把台词填到 dialogue 参数，即可生成带真人中文语音+对口型的视频（无需后期配音）。传入画面描述到 prompt，需要人物说话/口播/带货时务必填 dialogue；可选 duration(秒)/aspect(横版/竖版)/image(单图)/images(多参考图,最多5张)。【三种图片模式，互斥】① images 传1-5张参考图 → reference 参考图模式（模型参考这些图的风格/人物/场景来生成，多图优先）；② first_frame 或 last_frame → keyframe 首尾帧模式（首帧锁定/首尾帧过渡）；③ 都不传 → text 纯文生视频。【重要流程】只需调用本工具一次：工具内部会自动完成『提交任务→轮询至完成→下载到工作区』全流程，不要把它拆成『先提交』『再轮询』多步，也不要臆测 Agnes 不能出声——口播靠 dialogue 参数，纯画面无声则是不填 dialogue 导致。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "prompt": {"type": "string", "description": "视频画面描述，建议含主体、动作、镜头、光线、风格"},
                     "dialogue": {"type": "string", "description": "口播台词（中文）。填写后 Agnes 会用中文合成语音并对口型，视频自带人声；不填则纯画面无声。做口播/带货/人物说话类视频必填。若用户没给台词，请先自行写好中文台词再填这里。"},
                     "duration": {"type": "number", "description": "视频时长（秒），4-16，默认约12秒"},
-                    "aspect": {"type": "string", "description": "画幅：portrait 竖版(768x1152) 或 landscape 横版(1152x768)，默认竖版（抖音/视频号/小红书等竖屏平台请保持竖版）"},
-                    "image": {"type": "string", "description": "图生视频源图：可传图片URL，也可传本地图片路径（如 incoming/xxx.png）或 base64 data URI（data:image/png;base64,XXXX），工具会自动读取并转换，无需图床。用户附带了图片时直接传其路径/图片即可。留空则文生视频。"}
+                    "aspect": {"type": "string", "description": "画幅：portrait 竖版(768x1152) 或 landscape 横版(1152x768)，默认竖版（抖音/视频号/小红书等竖屏平台请保持竖版）。横版内容（漫剧分镜/影视画面）必须显式传 landscape，否则横版构图会被塞进竖容器。"},
+                    "image": {"type": "string", "description": "图生视频源图（单张）：可传图片URL，也可传本地图片路径（如 incoming/xxx.png）或 base64 data URI（data:image/png;base64,XXXX），工具会自动读取并转换，无需图床。用户附带了图片时直接传其路径/图片即可。留空则文生视频。多图请改用 images。"},
+                    "images": {"type": "array", "description": "参考图列表（reference 模式，最多 5 张，超出会自动截断）。用于让模型参考这些图的【人物形象/服装/场景/画风】来生成视频，适合：固定角色形象跨镜头一致、指定场景与美术风格、多角度同人物。每项可为图片URL、本地路径（如 incoming/xxx.png）或 data URI。传了 images 就走参考图模式，会覆盖 first_frame/last_frame。"},
+                    "first_frame": {"type": "string", "description": "首帧图（keyframe 模式）：URL/本地路径/data URI。只传首帧=首帧锁定，模型从这张图开始演绎。"},
+                    "last_frame": {"type": "string", "description": "尾帧图（keyframe 模式）：URL/本地路径/data URI。与 first_frame 同传=精确首尾帧过渡。"}
                 },
                 "required": ["prompt"]
+            },
+        },
+    },
+    # ---- 军团调度三件套（v4.122）：项目经理的「眼睛」----
+    {
+        "type": "function",
+        "function": {
+            "name": "legion_list_outputs",
+            "description": (
+                "列出本次 Agent 军团执行中各波次成员的产出清单（哪位成员、第几波、第几次尝试、"
+                "字数、内容摘要）。**验收/调度前先调它**，知道有什么可读，再用 "
+                "legion_get_output 读全文。仅在军团运行中可调，平时调用会提示暂无执行。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "run_id": {"type": "string", "description": "执行批次 ID，留空=当前/最近一次"},
+                    "preview_chars": {"type": "integer", "description": "每位成员产出的摘要字数，默认 200"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "legion_get_output",
+            "description": (
+                "读取军团某位成员（或某一波）的完整产出原文。**做验收判断必须基于这里读到的内容**，"
+                "禁止凭感觉或脑补。可按成员名（如『研究员』，支持模糊匹配）或 wave 序号定位。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "role": {"type": "string", "description": "成员角色名，支持模糊匹配，如『研究员』"},
+                    "wave": {"type": "integer", "description": "波次序号（从 1 开始），与 role 二选一；只给 wave 则返回该波全部成员产出"},
+                    "run_id": {"type": "string", "description": "执行批次 ID，留空=当前/最近一次"},
+                    "max_chars": {"type": "integer", "description": "单篇最多返回字数，默认 6000"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "legion_read_log",
+            "description": (
+                "读取本次军团执行的过程日志（谁在跑、跑没跑完、报没报错、验收结论）。"
+                "判断『这波到底执行成功没有』时用它，比只看产出可靠。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "lines": {"type": "integer", "description": "返回最近多少行，默认 80"},
+                    "run_id": {"type": "string", "description": "执行批次 ID，留空=当前/最近一次"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "legion_board",
+            "description": (
+                "读取项目的**共享任务板**：每个节点（成员 / 验收节点）当前状态、最近事件流水。"
+                "任务板挂在**项目**上而非某个角色身上，换成员或换项目经理都不丢，"
+                "所以『谁干到哪了』要以任务板为准。调度前先查它。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string", "description": "项目 ID（必填）"},
+                    "events": {"type": "integer", "description": "返回最近多少条事件，默认 30"},
+                },
+                "required": ["project_id"],
             },
         },
     },

@@ -92,3 +92,11 @@ _probe_ref.png
 # 生成产物目录
 _real_img_test/
 incoming/
+
+# ===== 调试 / 剖析 / 构建辅助脚本（内部工具，非用户功能，不进版本库） =====
+X
+_build_*.py
+_minimal_*.py
+_profile_*.py
+_perf_*.py
+*.pyc.dis

@@ -23,7 +23,7 @@ else:
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.121.5"
+APP_VERSION = "v4.124.6"
 APP_BUILD_DATE = "2026-09-05"
 # v4.120（2026-09-04）白屏真凶+对话逻辑修复（基于 sessions.json 实锤）：
 # ① 聊天区不再渲染 role=tool 气泡（v4.108 断点回写的全量工具结果 ≤6000 字，
@@ -197,6 +197,7 @@ DEFAULT_CONFIG = {
     "vision_model": "OpenGVLab/InternVL2-8B",  # 图片/视频帧理解的视觉模型（硅基流动 VLM，免费）
     "obsidian_vault_path": "",  # Obsidian 仓库路径，留空自动检测
     "obsidian_enabled": True,   # Obsidian 集成总开关（false 完全跳过，加速启动）
+    "obsidian_index_delay_sec": 0,  # 增量索引延迟秒数（>0 则启动后延迟到空闲再跑，错开启动期网络；默认 0 立即）
     "skills_dir": "",       # 动态技能目录，默认 {APP_DIR}/skills
     # 剪贴板自动监听（模块1）
     "clipboard_enabled": True,
@@ -945,6 +946,7 @@ def init_obsidian(cfg, store, timeout=15.0):
 
     results = []
     count = 0
+    skipped = 0
     start = time.perf_counter()
     try:
         for f in vault.rglob("*.md"):
@@ -962,10 +964,13 @@ def init_obsidian(cfg, store, timeout=15.0):
             if result:
                 count += 1
                 results.append(result)
+            else:
+                # None = 增量索引判定「未变化」，跳过不重复 embedding
+                skipped += 1
     except Exception as e:
         log.warning("Obsidian 索引遍历异常（已安全中止）: %s", e)
 
-    return f"已索引 Obsidian 仓库 ({vault_path}): {count} 个文件"
+    return f"已索引 Obsidian 仓库 ({vault_path}): {count} 个文件（{skipped} 个未变化跳过）"
 
 
 # ---------- 图标 ----------

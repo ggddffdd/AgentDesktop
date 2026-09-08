@@ -25,6 +25,9 @@ class RAGStore:
         self.store_dir.mkdir(parents=True, exist_ok=True)
         self._index_path = self.store_dir / "index.json"
         self._chunks: list[dict] = []   # [{id, source, text, embedding}]
+        self._chunk_counter = 0          # chunk id 计数器（原依赖 _load_index 初始化，补进 __init__ 更健壮）
+        self._files: dict = {}          # source -> {"mtime_ns": int, "size": int}（增量索引元数据）
+        self._src_set: set = set()      # 已索引 source 集合（迁移兼容旧索引，无 files 元数据）
         self.collection = self           # 兼容旧接口引用
         self.client = self
         self.model = None
@@ -80,17 +83,22 @@ class RAGStore:
                     data = json.load(f)
                 self._chunks = data.get("chunks", [])
                 self._chunk_counter = data.get("next_id", len(self._chunks))
+                self._files = data.get("files", {})
             except Exception:
                 self._chunks = []
                 self._chunk_counter = 0
+                self._files = {}
         else:
             self._chunks = []
             self._chunk_counter = 0
+            self._files = {}
+        self._src_set = {c.get("source") for c in self._chunks if c.get("source")}
 
     def _save_index(self):
         try:
             with open(self._index_path, "w", encoding="utf-8") as f:
-                json.dump({"chunks": self._chunks, "next_id": self._chunk_counter}, f, ensure_ascii=False)
+                json.dump({"chunks": self._chunks, "next_id": self._chunk_counter,
+                           "files": self._files}, f, ensure_ascii=False)
         except Exception as e:
             log.warning("保存 RAG 索引失败: %s", e)
 
@@ -142,15 +150,34 @@ class RAGStore:
             start = end - overlap
         return chunks
 
-    def index_file(self, file_path):
-        """索引单个文件。"""
+    def index_file(self, file_path, force=False):
+        """索引单个文件。
+
+        force=False 时做增量判断：mtime 与 size 均未变则跳过（返回 None），
+        避免每次启动对未修改文件重复调用 embedding API（省 token）。
+        """
         try:
             p = Path(file_path)
+            key = str(file_path)
             try:
-                if p.stat().st_size > MAX_INDEX_BYTES:
-                    return f"文件过大已跳过(>{MAX_INDEX_BYTES // 1_000_000}MB): {p.name}"
+                st = p.stat()
             except OSError:
-                pass
+                return f"无法读取文件状态: {p.name}"
+
+            if st.st_size > MAX_INDEX_BYTES:
+                return f"文件过大已跳过(>{MAX_INDEX_BYTES // 1_000_000}MB): {p.name}"
+
+            # ---- 增量索引（v4.122.1）：未变化则跳过，不重烧 embedding token ----
+            if not force:
+                meta = self._files.get(key)
+                if meta is not None:
+                    if meta.get("mtime_ns") == st.st_mtime_ns and meta.get("size") == st.st_size:
+                        return None
+                elif key in self._src_set:
+                    # 迁移兼容：旧索引无 files 元数据但已有 chunk —— 补记 mtime，不重 embedding
+                    self._files[key] = {"mtime_ns": st.st_mtime_ns, "size": st.st_size}
+                    self._save_index()
+                    return None
 
             ext = p.suffix.lower()
             text = ""
@@ -289,6 +316,8 @@ class RAGStore:
                     self._chunk_counter += 1
                     ok += 1
 
+            self._files[key] = {"mtime_ns": st.st_mtime_ns, "size": st.st_size}
+            self._src_set.add(key)
             self._save_index()
             return f"已索引: {fname} ({ok} chunks)"
         except MemoryError:

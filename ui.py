@@ -1707,7 +1707,9 @@ class ChatWindow(QMainWindow):
         self._fit_window_to_screen()
         self.setMinimumSize(480, 520)  # 允许缩得更小，但避免窗口碎成不可用
         self.setWindowFlags(Qt.FramelessWindowHint)
-        self._apply_round_corners()
+        # v4.122.1：不再在 _init_ui 阶段贴圆角——此时 winId() 会强制创建原生句柄，
+        # 而该句柄在窗口真正 show 时可能被 Qt 重建（frameless+标志变更），圆角贴到旧
+        # 句柄上失效；且 winId() 冷启动实测 ~1s。圆角统一交给 showEvent（最终句柄）贴。
 
     def showEvent(self, e):
         """v4.113：窗口首次/重新显示时重贴 DWM 圆角。
@@ -1726,8 +1728,7 @@ class ChatWindow(QMainWindow):
         try:
             if sys.platform != "win32":
                 return
-            # 强制创建原生窗口句柄，否则 winId() 返回占位值
-            self.winId()
+            # v4.122.1：winId() 首次调用即强制创建原生句柄并返回，不必先调一次「触发」再取一次
             hwnd = int(self.winId())
             if not hwnd:
                 return
@@ -3357,8 +3358,60 @@ class ChatWindow(QMainWindow):
         lay.addLayout(_frame_row("尾帧", self.video_last,
                                  "尾帧图 URL，或点“浏览”选本地图（与首帧同选=首尾帧过渡）"))
 
-        hint = QLabel("提示：仅选首帧→单图首帧锁定；首尾都选→精确首尾帧过渡；都不选→纯文生视频。")
+        # ---- 参考图（reference 模式，最多 5 张）----
+        # 2026-09-06 新增：agnes-video-2.5-flash 支持 ≤5 张参考图（内核会自动切 reference 模式），
+        # 适合固定角色形象/场景/画风跨镜头一致。与首尾帧互斥（多图优先）。
+        self._video_refs = []          # 元素为 data URI 或 http(s) URL
+        _ref_btn_style = (
+            f"QPushButton{{background:{THEME['card']};border:1px solid {THEME['border']};"
+            f"border-radius:8px;font-size:13px;color:{THEME['text']};}}"
+            f"QPushButton:hover{{background:{THEME['elev']};}}")
+        ref_row = QHBoxLayout()
+        ref_lbl = QLabel("参考图")
+        ref_lbl.setFixedWidth(36)
+        ref_lbl.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
+        ref_row.addWidget(ref_lbl)
+        self.video_ref_input = QLineEdit()
+        self.video_ref_input.setPlaceholderText("粘贴图片 URL 或本地路径，点“添加”加入（最多 5 张）")
+        self.video_ref_input.setFixedHeight(34)
+        self.video_ref_input.setStyleSheet(
+            f"QLineEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
+            f"border-radius:8px;padding:0 12px;font-size:12px;color:{THEME['text']};}}")
+        self.video_ref_input.returnPressed.connect(self._add_video_ref)
+        ref_row.addWidget(self.video_ref_input, 1)
+        ref_add = QPushButton("添加")
+        ref_add.setFixedHeight(34)
+        ref_add.setFixedWidth(52)
+        ref_add.setStyleSheet(_ref_btn_style)
+        ref_add.clicked.connect(self._add_video_ref)
+        ref_row.addWidget(ref_add)
+        ref_pick = QPushButton("浏览…")
+        ref_pick.setFixedHeight(34)
+        ref_pick.setFixedWidth(64)
+        ref_pick.setStyleSheet(_ref_btn_style)
+        ref_pick.clicked.connect(self._pick_video_refs)
+        ref_row.addWidget(ref_pick)
+        ref_clear = QPushButton("清空")
+        ref_clear.setFixedHeight(34)
+        ref_clear.setFixedWidth(52)
+        ref_clear.setStyleSheet(_ref_btn_style)
+        ref_clear.clicked.connect(self._clear_video_refs)
+        ref_row.addWidget(ref_clear)
+        lay.addLayout(ref_row)
+
+        self.video_ref_list = QListWidget()
+        self.video_ref_list.setFixedHeight(76)
+        self.video_ref_list.setToolTip("已添加的参考图（最多 5 张），双击某项可移除")
+        self.video_ref_list.setStyleSheet(
+            f"QListWidget{{background:{THEME['card']};border:1px solid {THEME['border']};"
+            f"border-radius:8px;padding:4px;font-size:12px;color:{THEME['text']};}}")
+        self.video_ref_list.itemDoubleClicked.connect(self._remove_video_ref)
+        lay.addWidget(self.video_ref_list)
+
+        hint = QLabel("模式：① 加了参考图→参考图模式（≤5 张，模型参考其人物/场景/画风，多图优先）"
+                      "；② 只加首帧或首尾帧→关键帧模式（首帧锁定/首尾过渡）；③ 都没加→纯文生视频。")
         hint.setStyleSheet(f"font-size:11px;color:{THEME['dim']};")
+        hint.setWordWrap(True)
         lay.addWidget(hint)
 
         self.video_status = QLabel("")
@@ -3379,13 +3432,23 @@ class ChatWindow(QMainWindow):
             self.video_status.setText("请输入视频描述")
             return
         res = self.video_resolution.currentData() or "768x1152"
+        # 画幅从选定分辨率推导（宽>高=横版）。此前 UI 恒传 None → 永远走默认竖版，
+        # 选了「横屏 1920×1080」却仍出竖版，是个静默 bug（2026-09-06 顺手修）。
+        try:
+            _w, _h = (int(x) for x in str(res).lower().split("x"))
+            aspect = "landscape" if _w > _h else "portrait"
+        except Exception:
+            aspect = "portrait"
         first = self.video_first.text().strip() or None
         last = self.video_last.text().strip() or None
-        self.video_status.setText("提交任务中…（可能需数分钟）")
+        refs = list(self._video_refs) if getattr(self, "_video_refs", None) else None
+        mode_txt = ("参考图模式" if refs else
+                    ("首尾帧模式" if (first or last) else "文生视频"))
+        self.video_status.setText(f"提交任务中…（{mode_txt}；可能需数分钟）")
         self._video_thread = _GenThread(
             tools_mod.tool_video_gen, self.cfg, APP_DIR, prompt,
-            self.video_duration.value(), None, resolution=res,
-            first_frame=first, last_frame=last)
+            self.video_duration.value(), aspect, resolution=res,
+            first_frame=first, last_frame=last, images=refs)
         self._video_thread.result.connect(self._on_video_result)
         self._video_thread.start()
 
@@ -3401,6 +3464,76 @@ class ChatWindow(QMainWindow):
             self.video_status.setText(f"已载入帧图：{os.path.basename(path)}")
         else:
             self.video_status.setText("图片读取失败")
+
+    # ---------- 参考图（reference 模式，≤5 张）----------
+    def _refresh_video_ref_list(self):
+        """重绘参考图列表（data URI 过长，只显示体积；URL 截断显示）。"""
+        self.video_ref_list.clear()
+        for i, v in enumerate(self._video_refs, 1):
+            if v.startswith("data:image"):
+                kb = max(1, len(v) * 3 // 4 // 1024)
+                label = f"{i}. 本地图（约 {kb} KB）"
+            else:
+                label = f"{i}. {v if len(v) <= 60 else v[:57] + '…'}"
+            self.video_ref_list.addItem(label)
+
+    def _push_video_ref(self, value):
+        """加入一张参考图（URL / 本地路径 / data URI），返回 (ok, msg)。"""
+        value = (value or "").strip()
+        if not value:
+            return False, "请输入图片 URL 或路径"
+        if len(self._video_refs) >= 5:
+            return False, "参考图最多 5 张（Agnes 上限）"
+        if value.startswith(("data:image", "http://", "https://")):
+            item = value
+        else:
+            p = value
+            if not os.path.isabs(p):
+                p2 = os.path.join(APP_DIR, p)
+                if os.path.isfile(p2):
+                    p = p2
+            if not os.path.isfile(p):
+                return False, f"找不到图片：{value}"
+            item = self._file_to_datauri(p)
+            if not item:
+                return False, "图片读取失败"
+        self._video_refs.append(item)
+        self._refresh_video_ref_list()
+        return True, f"已添加参考图 {len(self._video_refs)}/5"
+
+    def _add_video_ref(self):
+        ok, msg = self._push_video_ref(self.video_ref_input.text())
+        if ok:
+            self.video_ref_input.clear()
+        self.video_status.setText(msg)
+
+    def _pick_video_refs(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "选择参考图（可多选，最多 5 张）", "",
+            "图片 (*.png *.jpg *.jpeg *.webp *.bmp)")
+        if not paths:
+            return
+        ok_n, last_msg = 0, ""
+        for p in paths:
+            ok, msg = self._push_video_ref(p)
+            if ok:
+                ok_n += 1
+            else:
+                last_msg = msg
+        self.video_status.setText(
+            f"已添加 {ok_n} 张参考图（共 {len(self._video_refs)}/5）" + (f"；{last_msg}" if last_msg else ""))
+
+    def _remove_video_ref(self, item):
+        row = self.video_ref_list.row(item)
+        if 0 <= row < len(self._video_refs):
+            self._video_refs.pop(row)
+            self._refresh_video_ref_list()
+            self.video_status.setText(f"已移除，当前 {len(self._video_refs)}/5 张")
+
+    def _clear_video_refs(self):
+        self._video_refs = []
+        self._refresh_video_ref_list()
+        self.video_status.setText("已清空参考图")
 
     @staticmethod
     def _file_to_datauri(path):

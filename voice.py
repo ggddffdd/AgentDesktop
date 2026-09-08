@@ -16,8 +16,8 @@ import tempfile
 import urllib.request
 import urllib.error
 
-import edge_tts
-
+# edge_tts 是重库（含 aiohttp），v4.122.1 改为延迟 import：只在 TTS 合成时才加载，
+# 避免冷启动 import voice 时连坐 aiohttp/edge_tts 拖慢启动（实测 ~0.5s）。
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ffmpeg：优先用本机 winget 安装路径（动态探测，不硬编码用户名），否则退回 PATH 上的 ffmpeg
@@ -106,6 +106,7 @@ def _split_text(text, limit=800):
 
 
 async def _tts_async(text, voice, out_path, rate, volume):
+    import edge_tts  # 延迟 import：见模块顶部注释，TTS 合成时才加载
     comm = edge_tts.Communicate(text, voice, rate=rate, volume=volume)
     await comm.save(out_path)
 
