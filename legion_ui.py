@@ -63,6 +63,33 @@ from ui import THEME
 log = logging.getLogger("legion")
 
 
+# ---- 审计修复 A6 残余：UI 保存统一走三方合并 ----
+# legion.save_legion_merged 的 base 契约 = "UI 上次落盘时的自身快照"（不是盘内容）：
+# 每次保存后把 self.data 深拷贝存档，下次落盘时锁内重读最新盘做三方合并——
+# UI 没碰的键保留 worker 并发写（briefing/能力档案/新角色不再被旧快照覆盖），
+# UI 改过的键以 UI 为准。self.data 本身不回灌（避免 Qt 子组件持嵌套引用被换尸），
+# 展示侧陈旧是既有行为，无回退风险。
+_LEGION_UI_BASE = {"snap": None}
+
+
+def _ui_reset_legion_base(data):
+    """重新 load_legion 后调用：base 跟随新视图重置。"""
+    try:
+        _LEGION_UI_BASE["snap"] = copy.deepcopy(data)
+    except Exception:
+        _LEGION_UI_BASE["snap"] = None
+
+
+def _ui_save_legion(data):
+    try:
+        ok, _merged = legion.save_legion_merged(data, _LEGION_UI_BASE["snap"])
+    except Exception as e:
+        log.warning("军团数据合并保存异常，退化为整体覆盖: %s", e)
+        ok = legion.save_legion(data)
+    _ui_reset_legion_base(data)
+    return ok
+
+
 class _NoWheelCombo(QComboBox):
     """v4.149.0：滚轮不切档的 QComboBox（军团编排页用）。
 
@@ -608,7 +635,7 @@ class TeamBuildDialog(QDialog):
         n, msg = legion.adopt_missing_roles(self.data, picked)
         if n:
             self.library = self.data.get("role_library") or self.library
-            legion.save_legion(self.data)
+            _ui_save_legion(self.data)
         QMessageBox.information(self, "缺角入库", msg)
         if n:
             # 已入库的角色从缺角区移除，方案里对应的成员下次就能匹配上
@@ -1328,7 +1355,7 @@ class SkillGapCandidateDialog(QDialog):
                 attach_msg = "｜" + _m
                 if _waves:
                     try:
-                        legion.save_legion(self.data)
+                        _ui_save_legion(self.data)
                         parent = self.parent()
                         if parent is not None and hasattr(parent, "_rebuild_waves"):
                             parent._rebuild_waves()
@@ -1500,6 +1527,7 @@ class LegionWindow(QWidget):
         # 布局交给主窗口）；False → 保持独立窗口（旧行为，兼容 _open_legion 兜底与冒烟测试）。
         self.embedded = bool(embedded)
         self.data = legion.load_legion()
+        _ui_reset_legion_base(self.data)  # 审计修复 A6 残余：base 与初始视图对齐
         self.cur_project_id = None
         self.worker = None
         # v4.137：正在执行的 worker 所属项目 id。用来识别「僵尸任务」——
@@ -2041,7 +2069,7 @@ class LegionWindow(QWidget):
         for k in ("locked_target", "dead_directions", "manual_files"):
             np.pop(k, None)
         self.data.setdefault("projects", []).append(np)
-        legion.save_legion(self.data)
+        _ui_save_legion(self.data)
         self._refresh_projects(select_id=np["id"])
         self._refresh_teams_page()
         QMessageBox.information(
@@ -2437,7 +2465,7 @@ class LegionWindow(QWidget):
         p = legion.new_project(name=d["name"], emoji=d["emoji"],
                                description=d["description"], category=d["category"])
         self.data.setdefault("projects", []).append(p)
-        legion.save_legion(self.data)
+        _ui_save_legion(self.data)
         self._refresh_projects(select_id=p["id"])
 
     def _auto_team(self):
@@ -2459,7 +2487,7 @@ class LegionWindow(QWidget):
                 self.data["projects"] = [
                     x for x in self.data.get("projects", []) if x is not p]
             return
-        legion.save_legion(self.data)
+        _ui_save_legion(self.data)
         self._refresh_projects(select_id=p.get("id"))
         self._rebuild_waves()
 
@@ -2502,7 +2530,7 @@ class LegionWindow(QWidget):
         role_name = roster[labels.index(pick)]["name"]
         _waves, msg = legion.attach_skill_to_project(p, slug, role_name)
         if _waves:
-            legion.save_legion(self.data)
+            _ui_save_legion(self.data)
             self._rebuild_waves()
         self.log_view.append(msg)
         QMessageBox.information(self, "挂载结果", msg)
@@ -2516,7 +2544,7 @@ class LegionWindow(QWidget):
         if dlg.exec() != QDialog.Accepted:
             return
         p.update(dlg.get_data())
-        legion.save_legion(self.data)
+        _ui_save_legion(self.data)
         self._refresh_projects(select_id=p["id"])
 
     def _dup_project(self):
@@ -2528,7 +2556,7 @@ class LegionWindow(QWidget):
         np["id"] = str(__import__("uuid").uuid4())
         np["name"] = p.get("name", "") + " 副本"
         self.data.setdefault("projects", []).append(np)
-        legion.save_legion(self.data)
+        _ui_save_legion(self.data)
         self._refresh_projects(select_id=np["id"])
 
     def _del_project(self):
@@ -2571,7 +2599,7 @@ class LegionWindow(QWidget):
         self.data["projects"] = [x for x in self.data.get("projects", [])
                                  if x.get("id") != p.get("id")]
         self.cur_project_id = None
-        legion.save_legion(self.data)
+        _ui_save_legion(self.data)
         self._refresh_projects()
 
     # ---- 波次编排 ----
@@ -2771,7 +2799,7 @@ class LegionWindow(QWidget):
                 p["auto_pass_max"] = max(0, int(auto_max))
             except (TypeError, ValueError):
                 pass
-        legion.save_legion(self.data)
+        _ui_save_legion(self.data)
         # v4.124.1 修复：不再在 valueChanged 派发栈上同步重建（会销毁 sender），
         # 推到下一轮事件循环，并防抖（用户连续点箭头/输入时只重建一次）。
         self._schedule_waves_rebuild()
@@ -2832,7 +2860,7 @@ class LegionWindow(QWidget):
             QMessageBox.information(self, "未选择项目", "先选一个项目。")
             return
         p.setdefault("waves", []).append(legion.new_wave())
-        legion.save_legion(self.data)
+        _ui_save_legion(self.data)
         self._rebuild_waves()
         self._refresh_head()
 
@@ -2851,7 +2879,7 @@ class LegionWindow(QWidget):
         waves.pop(wi)
         if not waves:
             waves.append(legion.new_wave())
-        legion.save_legion(self.data)
+        _ui_save_legion(self.data)
         self._rebuild_waves()
         self._refresh_head()
 
@@ -2881,7 +2909,7 @@ class LegionWindow(QWidget):
                 "开启「调度与授权」后，它会自动参与每一波（不消耗成员位）。")
             return
         p["waves"][wi].setdefault("members", []).append(role)
-        legion.save_legion(self.data)
+        _ui_save_legion(self.data)
         self._rebuild_waves()
         self._refresh_head()
 
@@ -2897,7 +2925,7 @@ class LegionWindow(QWidget):
         if dlg.exec() != QDialog.Accepted:
             return
         p["waves"][wi]["members"][mi] = dlg.get_role()
-        legion.save_legion(self.data)
+        _ui_save_legion(self.data)
         self._rebuild_waves()
 
     def _del_member(self, wi, mi):
@@ -2912,7 +2940,7 @@ class LegionWindow(QWidget):
         if r != QMessageBox.Yes:
             return
         p["waves"][wi]["members"].pop(mi)
-        legion.save_legion(self.data)
+        _ui_save_legion(self.data)
         self._rebuild_waves()
         self._refresh_head()
 
@@ -2943,7 +2971,7 @@ class LegionWindow(QWidget):
         else:
             waves[tw].setdefault("members", []).insert(ti, member)
 
-        legion.save_legion(self.data)
+        _ui_save_legion(self.data)
         self._rebuild_waves()
         self._refresh_head()
 
@@ -3599,7 +3627,7 @@ class LegionWindow(QWidget):
             if rid:
                 v = legion.parse_verdict(text or "")
                 legion.mark_recipe_result(self.data, rid, ok=bool(v.get("pass")))
-                legion.save_legion(self.data)
+                _ui_save_legion(self.data)
         except Exception as e:
             log.warning("回填班子战绩失败: %s", e)
         # v4.135：跑批检测到的技能缺口 → 自动去 GitHub 找候选，弹「你批了才装」面板，

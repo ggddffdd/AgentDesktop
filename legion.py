@@ -3685,8 +3685,135 @@ def save_legion(data):
             return False
 
 
+# ============ A6 残余：UI 长驻快照的三方合并落盘 ============
+# UI（LegionWindow 等）全程持有 self.data 内存快照，20+ 个编辑点直接
+# save_legion(self.data) 整簿回写。A6 的 IO 锁只保证"整段不被穿插"，锁内
+# 重读打补丁的 6 个 helper 与 worker 都已改为"读最新盘→改→写"，唯独 UI
+# 这条路径仍是拿**旧快照**覆盖：长 run 期间 UI 一保存，就会把 worker 先前
+# 写进盘的 briefing/能力档案/新角色静默覆盖回旧值。
+# 解法：UI 侧改走 save_legion_merged(new, base)——base 是"UI 上次落盘时的
+# 自身快照"，锁内重读最新盘 cur，按三方合并（new vs base vs cur）打补丁：
+#   - UI 改过的键 → UI 为准（用户显式操作最优先）
+#   - UI 没碰、worker 改过的键 → 盘为准（保住并发写）
+#   - 双方都改 → 字典递归合并；列表按 id/name/slug 对齐逐元素递归；
+#     其余不可分型冲突 UI 为准（不整簿覆盖即已达目的）
+# base 契约 = "调用方上次落盘时的自身快照"（见 legion_ui._ui_save_legion），
+# merged 为最终落盘内容一并返回，供想要同步视图的调用方使用。
+
+_MISSING = object()
+
+_ID_KEYS = ("id", "name", "slug")
+
+
+def _entity_key(el):
+    if isinstance(el, dict):
+        for k in _ID_KEYS:
+            v = el.get(k)
+            if isinstance(v, str) and v:
+                return v
+    return None
+
+
+def _merge_by_key(new, base, cur):
+    """列表元素带稳定标识（id/name/slug）时逐元素三方合并，否则整体 UI 优先。"""
+    keyed = (all(_entity_key(x) is not None for x in new) and
+             all(_entity_key(x) is not None for x in cur) and
+             all(_entity_key(x) is not None for x in base) and
+             len({_entity_key(x) for x in new}) == len(new) and
+             len({_entity_key(x) for x in cur}) == len(cur) and
+             len({_entity_key(x) for x in base}) == len(base))
+    if not keyed:
+        return new  # 无法安全对齐：整体以 UI 视图为准（至少是用户当前所见）
+    b_map = {_entity_key(x): x for x in base}
+    c_map = {_entity_key(x): x for x in cur}
+    n_keys = {_entity_key(x) for x in new}
+    out = []
+    for el in new:
+        k = _entity_key(el)
+        b_el = b_map.get(k, _MISSING)
+        c_el = c_map.get(k, _MISSING)
+        m_el = _merge_val(el, b_el, c_el)
+        if m_el is not _MISSING:   # 合并判定为"删除"（双方都删/盘删而 UI 未动）
+            out.append(m_el)
+    # 盘上新增（cur 有、base 无、new 无）→ worker 并发写入，保留
+    for el in cur:
+        k = _entity_key(el)
+        if k not in n_keys and k not in b_map:
+            out.append(el)
+    return out
+
+
+def _merge_val(new, base, cur):
+    if new is _MISSING and cur is _MISSING:
+        return _MISSING
+    if new is _MISSING:            # UI 删了该键
+        # 盘上仍是 base 值 → 跟随删除；盘上也改了 → 数据冲突，UI 的删除意图仍优先
+        return _MISSING
+    if cur is _MISSING:            # 盘删了；UI 还留着
+        if base is _MISSING or new == base:
+            return _MISSING        # UI 没动 → 尊重盘的删除
+        return new                 # UI 改过 → UI 为准
+    if new == cur:
+        return new
+    if base is not _MISSING and new == base:
+        return cur                 # UI 没碰 → 盘（worker）为准
+    if base is _MISSING and not isinstance(new, (dict, list)):
+        return new                 # UI 新增标量 → UI 为准
+    if base is _MISSING:
+        # UI 新增容器、盘上也有同名（worker 并发新增）：能递归就合，否则 UI 为准
+        if isinstance(new, dict) and isinstance(cur, dict):
+            return _merge_val_deep(new, {}, cur)
+        return new
+    if isinstance(new, dict) and isinstance(cur, dict) and isinstance(base, dict):
+        return _merge_val_deep(new, base, cur)
+    if isinstance(new, list) and isinstance(cur, list) and isinstance(base, list):
+        return _merge_by_key(new, base, cur)
+    return new                     # 不可分型冲突：UI 为准
+
+
+def _merge_val_deep(new, base, cur):
+    out = {}
+    for k in new:
+        v = _merge_val(new[k], base.get(k, _MISSING), cur.get(k, _MISSING))
+        if v is not _MISSING:
+            out[k] = v
+    for k, v in cur.items():
+        # base 无 + new 无 + cur 有 = worker 并发的**新增键** → 保留；
+        # （base 有而 new 无 = UI 显式删除，上面已跳过，这里不得复活）
+        if k not in new and k not in out and base.get(k, _MISSING) is _MISSING:
+            out[k] = v
+    return out
+
+
+def save_legion_merged(new_data, base_data):
+    """审计修复 A6 残余：锁内重读最新盘做三方合并再原子写。返回 (ok, merged)。
+
+    base_data 须是"上次 load/save 时调用方自身的快照"；传 None 退化为整体覆盖
+    （旧语义）。merged 为最终落盘内容；UI 侧（legion_ui）不回灌 self.data，
+    仅按契约刷新 base。
+    """
+    if not isinstance(new_data, dict):
+        return save_legion(new_data), new_data
+    with _LEGION_IO_LOCK:
+        if not isinstance(base_data, dict):
+            ok = save_legion(new_data)
+            return ok, new_data
+        try:
+            cur = _load_legion_inner()
+        except Exception as e:
+            log.warning("合并落盘读盘失败，退化为整体覆盖: %s", e)
+            ok = save_legion(new_data)
+            return ok, new_data
+        merged = _merge_val(new_data, copy.deepcopy(base_data), cur)
+        if not isinstance(merged, dict):
+            merged = new_data
+        ok = save_legion(merged)
+        return ok, merged
+
+
 # ============ 查询辅助 ============
 def find_project(data, project_id):
+    """按 id 取项目（审计修复 A6 残余：恢复被合并逻辑插入时误吞的函数头）。"""
     for p in (data or {}).get("projects", []):
         if p.get("id") == project_id:
             return p
