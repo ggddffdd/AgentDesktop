@@ -118,15 +118,24 @@ def _concat_audio(files, out_path):
     with open(list_path, "w", encoding="utf-8") as f:
         for fp in files:
             f.write(f"file '{fp}'\n")
-    subprocess.run(
-        [FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", out_path],
-        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        creationflags=_NO_WINDOW,
-    )
+    # 审计修复 F3：加 timeout（原无上限，ffmpeg 被占用文件/坏 list 卡死即永久阻塞
+    # TTS 线程；同文件 dshow 探测都有 timeout=20）；check=True 的 CalledProcessError
+    # 转 RuntimeError 带可读信息；临时 list 文件失败路径也清理。
     try:
-        os.remove(list_path)
-    except Exception:
-        pass
+        subprocess.run(
+            [FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", out_path],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=120, creationflags=_NO_WINDOW,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("音频合成超时（ffmpeg >120s 未返回，可能目标文件被播放器占用）")
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"音频合成失败（ffmpeg 退出码 {e.returncode}）")
+    finally:
+        try:
+            os.remove(list_path)
+        except Exception:
+            pass
 
 
 def synthesize(text, tts, out_path=None):

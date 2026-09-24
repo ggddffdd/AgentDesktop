@@ -3,6 +3,7 @@
 
 import sys
 import os
+import copy  # 审计修复 F1：DEFAULT_CONFIG 含嵌套可变对象，浅拷贝会污染进程级默认值
 import json
 import logging
 import threading
@@ -1510,8 +1511,11 @@ def load_config():
                 with open(CONFIG_PATH, "w", encoding="utf-8") as f_new:
                     json.dump(cfg_data, f_new, ensure_ascii=False, indent=2)
                 log.info("已从旧位置迁移配置到 %s", CONFIG_PATH)
+                # 审计修复 F1：deepcopy 防止返回的 cfg 与 DEFAULT_CONFIG 共享
+                # 嵌套可变对象（mcp_servers/model_profiles/enabled_skills 等），
+                # 调用方原地改嵌套结构会污染进程级默认值。
                 for k, v in DEFAULT_CONFIG.items():
-                    cfg_data.setdefault(k, v)
+                    cfg_data.setdefault(k, copy.deepcopy(v))
                 return cfg_data
             except Exception as e:
                 log.warning("迁移旧配置失败，按首次运行处理: %s", e)
@@ -1528,14 +1532,16 @@ def load_config():
                             json.dump(cfg_data, f_dst, ensure_ascii=False, indent=2)
                         log.info("Copied config.json from _internal to %s", CONFIG_PATH)
                         for k, v in DEFAULT_CONFIG.items():
-                            cfg_data.setdefault(k, v)
+                            cfg_data.setdefault(k, copy.deepcopy(v))
                         return cfg_data
                     except Exception as e:
                         log.warning("Failed to copy config.json: %s", e)
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(DEFAULT_CONFIG, f, ensure_ascii=False, indent=2)
         log.info("Created default config.json")
-        return dict(DEFAULT_CONFIG)
+        # 审计修复 F1：dict() 浅拷贝共享 mcp_servers/model_profiles 等嵌套可变对象，
+        # 调用方原地修改即污染进程级 DEFAULT_CONFIG。深拷贝返回。
+        return copy.deepcopy(DEFAULT_CONFIG)
     # 审计修复 A1：读取失败/坏档时**绝不落盘**。原实现 cfg={} 填默认后，
     # 迁移分支会立即 save_config，把用户配置（API key 等）永久覆盖成默认值。
     parse_failed = False
@@ -1554,7 +1560,7 @@ def load_config():
             pass
         cfg = {}
     for k, v in DEFAULT_CONFIG.items():
-        cfg.setdefault(k, v)
+        cfg.setdefault(k, copy.deepcopy(v))  # 审计修复 F1：同上，深拷贝填充
     if parse_failed:
         return cfg  # 仅在内存返回默认值，本次禁止任何写盘
 

@@ -194,8 +194,11 @@ class BrowserBridgeServer:
         self._thread = None
 
     def start(self):
+        # 审计修复 F10：已在运行属幂等成功。原返回 False 被调用方
+        # （browser_bridge_start 的 `r is not True`）当启动失败 → 重复点"启动桥接"
+        # 明明服务活着却返回 None，且新 token 丢失，扩展拿旧 token 鉴权失败。
         if self._server:
-            return False
+            return True
         try:
             # 仅绑 127.0.0.1，拒绝外部访问。
             # v4.125 N-04：TCPServer → ThreadingHTTPServer——单线程下慢请求

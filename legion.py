@@ -115,6 +115,12 @@ def start_run(project_name="", task=""):
         # 超量清理：按创建顺序丢最老的
         while len(_RUNTIME["runs"]) > _MAX_RUNS:
             _RUNTIME["runs"].pop(next(iter(_RUNTIME["runs"])))
+    # 审计修复 F7：_ISSUES 原来只在 clear_issues/验收时 pop 当前 run，异常终止或
+    # 从未被读的旧 run 条目跨 run 永久累积。开新 run 时按插入序裁掉最老的（留 20）。
+    # 单独加锁放在 _RUNTIME_LOCK 之外，避免与 report_issue 的锁顺序纠缠。
+    with _ISSUE_LOCK:
+        while len(_ISSUES) > 20:
+            _ISSUES.pop(next(iter(_ISSUES)), None)
     return rid
 
 
@@ -308,6 +314,11 @@ def reset_runtime():
     with _RUNTIME_LOCK:
         _RUNTIME["current_run_id"] = None
         _RUNTIME["runs"].clear()
+    # 审计修复 F7：重置必须连成员上报池一起清（_ISSUES/_ISSUE_LOCK 定义在后，
+    # 名字在调用时才解析，无加载顺序问题）。原来 reset 后旧 run 的问题仍会被
+    # wave_issues/issues_block 的 current_run_id 之外的路径间接带出，且永占内存。
+    with _ISSUE_LOCK:
+        _ISSUES.clear()
 
 
 # ============ 断点续传 checkpoint（v4.124.5）============
@@ -1768,11 +1779,32 @@ _FOCUS_FALLBACK = {
 }
 
 
+# 审计修复 F2：角色库是约 1400 行纯静态数据重建（new_role 全表 + 三类兜底遍历 +
+# 读盘叠加成长库），原实现每次调用都整体重做——_role_card_tools / role_menu /
+# load_legion 等热路径单次 run 触发几十次，纯 CPU 浪费且反复读 role_library_override.json。
+# 改为模块级缓存 + 显式失效：role_grow 写成长库后作废，下次调用重建。
+_ROLE_LIB_CACHE = None
+_ROLE_LIB_LOCK = threading.Lock()
+
+
+def _invalidate_role_library_cache():
+    global _ROLE_LIB_CACHE
+    with _ROLE_LIB_LOCK:
+        _ROLE_LIB_CACHE = None
+
+
 def default_role_library():
     """开箱即用的角色库（大哥可直接用，也可改）。
 
     工具名与 agent_node._TOOL_DESC / config.get_all_tools 对齐。
     """
+    global _ROLE_LIB_CACHE
+    with _ROLE_LIB_LOCK:
+        _cached = _ROLE_LIB_CACHE
+    if _cached is not None:
+        # 返回深拷贝：调用方有就地改写习惯（兜底表/_member 复制），共享缓存不能被污染。
+        # 字符串不可变、deepcopy 直接复用对象，成本远低于整体重建。
+        return copy.deepcopy(_cached)
     _lib = [
         new_role(
             name="研究员", emoji="🔍",
@@ -3200,6 +3232,9 @@ def default_role_library():
     for _r in _lib:
         if isinstance(_r, dict):
             apply_role_override(_r, _ov.get(str(_r.get("name") or "").strip()))
+    # 审计修复 F2：整体建好后缓存一份快照（含成长库叠加结果）
+    with _ROLE_LIB_LOCK:
+        _ROLE_LIB_CACHE = copy.deepcopy(_lib)
     return _lib
 
 
@@ -5472,13 +5507,22 @@ JSDELIVR = "https://cdn.jsdelivr.net/gh"
 _UA = {"User-Agent": "XiaoChou-AI-Legion", "Accept": "application/vnd.github+json"}
 
 
-def _http_get(url, timeout=20, headers=None):
-    """统一 GET，返回 (bytes|None, err)。不做重试，失败交给上层提示。"""
+def _http_get(url, timeout=20, headers=None, max_bytes=None):
+    """统一 GET，返回 (bytes|None, err)。不做重试，失败交给上层提示。
+
+    审计修复 F8：新增 max_bytes 读取上限——原实现 resp.read() 把整个响应一次性
+    读进内存，GitHub 上恶意/膨胀的仓库文件可造成内存 DoS。超上限直接报错丢弃。
+    """
     import urllib.request
     import urllib.error
     req = urllib.request.Request(url, headers=headers or _UA)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if max_bytes is not None:
+                data = resp.read(int(max_bytes) + 1)
+                if len(data) > int(max_bytes):
+                    return None, "响应超过大小上限（%d 字节），已拒绝接收" % int(max_bytes)
+                return data, None
             return resp.read(), None
     except Exception as e:
         return None, "%s" % e
@@ -5697,7 +5741,9 @@ def github_fetch_raw(repo, branch, path, timeout=25):
     ]
     errs = []
     for u in tries:
-        body, err = _http_get(u, timeout=timeout, headers={"User-Agent": _UA["User-Agent"]})
+        # 审计修复 F8：SKILL.md 属小文本文件，1MB 硬上限防巨型响应吃内存
+        body, err = _http_get(u, timeout=timeout, headers={"User-Agent": _UA["User-Agent"]},
+                              max_bytes=1_000_000)
         if not err and body:
             txt = body.decode("utf-8", "replace")
             if txt.strip():
@@ -5761,6 +5807,11 @@ def install_skill_from_github(repo, path, branch=None, skills_dir=None,
     txt, err = github_fetch_raw(repo, branch, path, timeout=timeout)
     if err or not txt:
         return False, err or "下载内容为空。"
+    # 审计修复 F8：SKILL.md 会被全文注入成员 system prompt——超大文件既非正常技能，
+    # 也是提示词/上下文炸弹，装前直接拒收。
+    if len(txt) > 200_000:
+        return False, ("SKILL.md 过大（%d 字符 > 200000），疑似非技能文件或提示词炸弹，"
+                       "拒绝安装。" % len(txt))
     # v4.134.1：装前先过**内容级静态安全审计**（与主链 skill_install 同一标准）。
     # 刻意放在写盘之前 —— P0 命中时压根不碰磁盘，不留「先落盘再回滚」的中间态。
     _lvl, _why = audit_skill_text(txt)
@@ -6195,7 +6246,10 @@ def role_grow(role_name, skill_slug, tools=None):
         entry["tools"] = tl
     ov[role_name] = entry
     if changed:
-        _cm_json_save(ROLE_OVERRIDE_PATH, ov)
+        ok = _cm_json_save(ROLE_OVERRIDE_PATH, ov)
+        if ok:
+            # 审计修复 F2：成长库已变，角色库缓存必须作废（下次读重建）
+            _invalidate_role_library_cache()
     return changed
 
 

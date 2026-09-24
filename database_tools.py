@@ -9,6 +9,7 @@
 """
 
 import sqlite3
+import contextlib  # 审计修复 F4：连接统一 closing 包裹，提前 return/异常不再泄漏句柄
 import json
 import logging
 from pathlib import Path
@@ -51,20 +52,20 @@ class DatabaseTools:
         return conn
 
     def _init_tables(self):
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        # 审计修复 F4：迁移 SQL 抛错也要关连接（初始化泄漏会占用整进程生命周期）
+        with contextlib.closing(self._get_connection()) as conn:
+            cursor = conn.cursor()
 
-        # 版本标记，避免重复迁移
-        cursor.execute('CREATE TABLE IF NOT EXISTS _meta (k TEXT PRIMARY KEY, v TEXT)')
-        cursor.execute("SELECT v FROM _meta WHERE k='schema_ver'")
-        row = cursor.fetchone()
-        if row is None or row[0] != SCHEMA_VER:
-            self._migrate(cursor)
-            cursor.execute("INSERT OR REPLACE INTO _meta (k, v) VALUES ('schema_ver', ?)",
-                           (SCHEMA_VER,))
+            # 版本标记，避免重复迁移
+            cursor.execute('CREATE TABLE IF NOT EXISTS _meta (k TEXT PRIMARY KEY, v TEXT)')
+            cursor.execute("SELECT v FROM _meta WHERE k='schema_ver'")
+            row = cursor.fetchone()
+            if row is None or row[0] != SCHEMA_VER:
+                self._migrate(cursor)
+                cursor.execute("INSERT OR REPLACE INTO _meta (k, v) VALUES ('schema_ver', ?)",
+                               (SCHEMA_VER,))
 
-        conn.commit()
-        conn.close()
+            conn.commit()
 
     def _migrate(self, cursor):
         """一次性迁移：notes/todos 保持原样，assets 强制新 schema（保留数据）。"""
@@ -184,14 +185,13 @@ class DatabaseTools:
         placeholders = ','.join(['?' for _ in columns])
         column_str = ','.join(columns)
 
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            f"INSERT INTO {table} ({column_str}) VALUES ({placeholders})",
-            [data[c] for c in columns])
-        conn.commit()
-        record_id = cursor.lastrowid
-        conn.close()
+        with contextlib.closing(self._get_connection()) as conn:  # 审计修复 F4
+            cursor = conn.cursor()
+            cursor.execute(
+                f"INSERT INTO {table} ({column_str}) VALUES ({placeholders})",
+                [data[c] for c in columns])
+            conn.commit()
+            record_id = cursor.lastrowid
         return {"status": "success", "id": record_id}
 
     def query(self, table, where=None, order_by=None, limit=50, offset=0):
@@ -199,26 +199,27 @@ class DatabaseTools:
         if table not in self._SCHEMA:
             return {"status": "error", "message": f"未知表: {table}（仅支持 notes/todos/assets）"}
         cols = self._SCHEMA[table]["columns"]
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        # 审计修复 F4：原实现 where 非法字段提前 return 与 execute 抛错路径都不关连接，
+        # Windows 下泄漏句柄使 xiaochou.db 被占用、WAL 无法回收。closing 包住全程。
+        with contextlib.closing(self._get_connection()) as conn:
+            cursor = conn.cursor()
 
-        query = f"SELECT * FROM {table} WHERE 1=1"
-        params = []
-        if where:
-            for key, value in where.items():
-                if key not in cols:
-                    return {"status": "error",
-                            "message": f"{table} 表无字段: {key}（合法: {', '.join(cols)}）"}
-                query += f" AND {key} = ?"
-                params.append(value)
-        if order_by:
-            query += f" ORDER BY {order_by}"
-        query += " LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+            query = f"SELECT * FROM {table} WHERE 1=1"
+            params = []
+            if where:
+                for key, value in where.items():
+                    if key not in cols:
+                        return {"status": "error",
+                                "message": f"{table} 表无字段: {key}（合法: {', '.join(cols)}）"}
+                    query += f" AND {key} = ?"
+                    params.append(value)
+            if order_by:
+                query += f" ORDER BY {order_by}"
+            query += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
 
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-        conn.close()
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
         return [dict(row) for row in rows]
 
     def update(self, table, record_id, data):
@@ -238,13 +239,12 @@ class DatabaseTools:
         set_clause = ','.join([f"{key} = ?" for key in data.keys()])
         values = list(data.values())
         values.append(record_id)
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            f"UPDATE {table} SET {set_clause} WHERE id = ?", values)
-        conn.commit()
-        affected = cursor.rowcount
-        conn.close()
+        with contextlib.closing(self._get_connection()) as conn:  # 审计修复 F4
+            cursor = conn.cursor()
+            cursor.execute(
+                f"UPDATE {table} SET {set_clause} WHERE id = ?", values)
+            conn.commit()
+            affected = cursor.rowcount
         return {"status": "success" if affected > 0 else "no_change",
                 "affected": affected}
 
@@ -252,12 +252,11 @@ class DatabaseTools:
         """删除记录"""
         if table not in ("notes", "todos", "assets"):
             return {"status": "error", "message": f"未知表: {table}"}
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute(f"DELETE FROM {table} WHERE id = ?", (record_id,))
-        conn.commit()
-        affected = cursor.rowcount
-        conn.close()
+        with contextlib.closing(self._get_connection()) as conn:  # 审计修复 F4
+            cursor = conn.cursor()
+            cursor.execute(f"DELETE FROM {table} WHERE id = ?", (record_id,))
+            conn.commit()
+            affected = cursor.rowcount
         return {"status": "success" if affected > 0 else "not_found",
                 "affected": affected}
 
@@ -267,12 +266,11 @@ class DatabaseTools:
             return {"status": "error", "message": f"未知表: {table}"}
         if not fields:
             fields = ["title", "content", "description", "tags", "name"]
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        conditions = " OR ".join([f"{field} LIKE ?" for field in fields])
-        query = f"SELECT * FROM {table} WHERE {conditions}"
-        params = [f"%{keyword}%" for _ in fields]
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-        conn.close()
+        with contextlib.closing(self._get_connection()) as conn:  # 审计修复 F4
+            cursor = conn.cursor()
+            conditions = " OR ".join([f"{field} LIKE ?" for field in fields])
+            query = f"SELECT * FROM {table} WHERE {conditions}"
+            params = [f"%{keyword}%" for _ in fields]
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
         return [dict(row) for row in rows]

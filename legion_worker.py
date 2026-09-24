@@ -84,7 +84,8 @@ class LegionWorker(QThread):
     """按项目波次跑一个军团任务，结果以纯文本归并后经 done 信号抛出。"""
 
     log_line = Signal(str)              # 进度/日志文本（追加到日志框）
-    node_status = Signal(str, str)      # (task_id, status) status ∈ running / done / error
+    # 审计修复 G1：删除 node_status = Signal(str, str) —— 全工程零 .connect，
+    # 且三处 emit 均与 _board()（同步写任务板的真实状态通道）逐点重复，属纯死代码。
     done = Signal(str)                  # 归并后的完整结果文本
     # 授权请求（宪法第二章）：(标题, 详情) -> 主线程弹框，结果经 set_auth_result 回传
     auth_request = Signal(str, str)
@@ -370,7 +371,6 @@ class LegionWorker(QThread):
     # ---- 内部：包装 executor 让 UI 能看到每个成员的起止（状态同步写任务板）----
     def _wrap(self, agent, tid, board_key=None, role_name="", wave_no=0):
         def _exec(state):
-            self.node_status.emit(tid, "running")
             self._board(board_key, role=role_name, wave=wave_no, status="running")
             # v4.131：抓取留痕归属 —— 本线程内的 web_search / web_fetch 全记到这位
             # 成员名下。必须线程局部（波内并行），全局会串到别的成员头上。
@@ -380,7 +380,6 @@ class LegionWorker(QThread):
                 pass
             try:
                 r = agent.run(state)
-                self.node_status.emit(tid, "done")
                 try:
                     out_txt = ""
                     if isinstance(r, dict):
@@ -392,7 +391,6 @@ class LegionWorker(QThread):
                     self._board(board_key, status="done")
                 return r
             except Exception as e:
-                self.node_status.emit(tid, "error")
                 self.log_line.emit(f"  [{tid}] 成员执行异常：{e}\n")
                 self._board(board_key, role=role_name, wave=wave_no, status="error",
                             summary=str(e)[:80])

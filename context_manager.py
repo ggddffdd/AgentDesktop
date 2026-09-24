@@ -14,12 +14,17 @@ import logging
 import os
 import re
 import threading
+import time
 import urllib.request
 import urllib.error
 from datetime import datetime
 from pathlib import Path
 
 log = logging.getLogger("context_manager")
+
+# 审计修复 F5：key_info 落盘节流最小间隔（秒）。原实现每条 add_message
+# 全量写一次 JSON，长会话 O(n²) IO；节流后间隙置脏标记，由压缩/读取/退出前 flush。
+_KEY_SAVE_MIN_INTERVAL = 5.0
 
 
 def _user_data_dir():
@@ -46,6 +51,9 @@ class ContextManager:
         }
         # v4.125 M-16：持久化三件套——RLock 防并发丢更新 + 原子写防截断。
         self._lock = threading.RLock()
+        # 审计修复 F5：key_info 落盘节流——脏标记 + 最小间隔，进程退出时统一 flush。
+        self._ki_dirty = False
+        self._ki_last_save = 0.0
         self._load()
 
     # ---------- 持久化 ----------
@@ -78,12 +86,28 @@ class ContextManager:
             except Exception as e:
                 log.warning("摘要落盘失败 %s: %s", self.summary_path, e)
 
-    def _save_key_info(self):
+    def _save_key_info(self, force=False):
+        """审计修复 F5：节流落盘。原实现每条 add_message 全量写一次 JSON
+        （长会话 O(n²) 磁盘 IO）；改为距上次实写 <5s 时只置脏标记，
+        由下一次到期写 / 压缩事件 / 工具读取快照 / 进程退出 flush 兜底。"""
         with self._lock:
+            now = time.monotonic()
+            if (not force and self._ki_last_save
+                    and now - self._ki_last_save < _KEY_SAVE_MIN_INTERVAL):
+                self._ki_dirty = True
+                return
             try:
                 self._atomic_write(self.key_info_path, self.key_info)
+                self._ki_last_save = now
+                self._ki_dirty = False
             except Exception as e:
                 log.warning("密钥信息落盘失败 %s: %s", self.key_info_path, e)
+
+    def flush(self):
+        """强制落盘待写 key_info（退出前/关键事件调用）。"""
+        with self._lock:
+            if self._ki_dirty:
+                self._save_key_info(force=True)
 
     # ---------- 核心 ----------
     def add_message(self, role, content, metadata=None):
@@ -175,6 +199,7 @@ class ContextManager:
         另一线程 append 导致 dict/list changed size 异常）。
         """
         with self._lock:
+            self.flush()  # F5：读快照前把节流欠账落盘，保证磁盘与返回内容一致
             return {
                 "recent_messages": list(self.messages),
                 "key_info": {k: list(v) for k, v in self.key_info.items()},
@@ -203,6 +228,7 @@ class ContextManager:
             self.messages = []
             self.summaries = []
             self._save_summaries()
+            self._save_key_info(force=True)  # F5：关键事件强制落盘
 
 
 _MGRS = {}
@@ -247,6 +273,20 @@ def get_context_manager(sid=None):
         mgr = ContextManager(summary_path=summary_path, key_info_path=key_info_path)
         _MGRS[key] = mgr
     return mgr
+
+
+def flush_all():
+    """审计修复 F5：进程退出前统一 flush 所有管理器的节流欠账
+    （atexit 注册 + ui.closeEvent 显式调用，防脏 key_info 丢失）。"""
+    for mgr in list(_MGRS.values()):
+        try:
+            mgr.flush()
+        except Exception:
+            log.warning("退出前 flush 上下文键信息失败（已忽略）", exc_info=True)
+
+
+import atexit as _atexit  # noqa: E402  F5：兜底 flush（正常退出路径）
+_atexit.register(flush_all)
 
 
 def _call_summary_llm(prompt, cfg=None):

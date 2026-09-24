@@ -2670,14 +2670,17 @@ def tool_send_email(cfg, to, subject, body, progress=None):
     msg["To"] = to
     try:
         port = cfg.get("smtp_port", 587)
+        # 审计修复 F9：原实现 quit() 只在成功路径执行，login/starttls/send_message
+        # 任一失败即抛，SMTP 连接（socket）泄漏。改用 with 上下文，连接必关。
         if port == 465:
-            s = smtplib.SMTP_SSL(smtp_host, port, timeout=15)
+            with smtplib.SMTP_SSL(smtp_host, port, timeout=15) as s:
+                s.login(smtp_user, smtp_pass)
+                s.send_message(msg)
         else:
-            s = smtplib.SMTP(smtp_host, port, timeout=15)
-            s.starttls()
-        s.login(smtp_user, smtp_pass)
-        s.send_message(msg)
-        s.quit()
+            with smtplib.SMTP(smtp_host, port, timeout=15) as s:
+                s.starttls()
+                s.login(smtp_user, smtp_pass)
+                s.send_message(msg)
         return f"邮件已发送到 {to}"
     except Exception as e:
         return f"邮件发送失败：{e}"

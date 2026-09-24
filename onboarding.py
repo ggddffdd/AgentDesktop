@@ -4,7 +4,8 @@
 设计要点：
 - 纯 PySide6，无额外依赖；主题色由 main.py 传入的 THEME 字典决定（避免 import ui 造成循环依赖）。
 - 5 步：欢迎 → 怎么聊 → 记忆与加密 → 技能市场 → 快捷键&完成。
-- 无论「开始使用」「跳过」还是直接关窗，都写回 cfg["onboarded"]=True，避免反复弹窗。
+- 退出（「开始使用」「跳过」/关窗）按「不再显示此引导」勾选框落盘：勾选才永久不再弹
+  （审计修复 G2：原为无条件 onboarded=True，勾选项形同虚设）。
 """
 
 from PySide6.QtWidgets import (
@@ -158,13 +159,19 @@ class OnboardingWizard(QDialog):
         self._show_step(self.idx - 1)
 
     def _finish(self):
+        # 审计修复 G2：「不再显示此引导」勾选框原是装饰件——_finish 无条件写
+        # onboarded=True，用户不勾也永远不再弹。现在按其意愿落盘：勾选=不再弹，
+        # 未勾=下次启动仍显示引导。
         try:
-            self.cfg["onboarded"] = True
+            self.cfg["onboarded"] = bool(self.no_more.isChecked())
             config.save_config(self.cfg)
         except Exception as e:
             # 写回失败不应阻塞（下次仍会弹，可接受）
             print("onboarding save failed:", e)
-        self.accept()
+        # closeEvent 已调过一次时防止 QDialog.close() 回调重入导致 accept/reject 双弹
+        if not getattr(self, "_finishing", False):
+            self._finishing = True
+            self.accept()
 
     def closeEvent(self, event):
         # 用户点 X 关闭也视为看过，避免反复弹

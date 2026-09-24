@@ -9843,6 +9843,12 @@ class ChatWindow(QMainWindow):
         except Exception:
             pass
         try:
+            # 审计修复 F5：flush 上下文管理器的节流欠账（key_info 5s 窗口内的脏数据）
+            import context_manager as _cm
+            _cm.flush_all()
+        except Exception:
+            pass
+        try:
             self._clear_ghost()
         except Exception:
             pass
