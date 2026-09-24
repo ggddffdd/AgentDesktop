@@ -10,8 +10,11 @@
 
 import sqlite3
 import json
+import logging
 from pathlib import Path
 from datetime import datetime
+
+log = logging.getLogger("database_tools")
 
 
 def _user_data_dir():
@@ -90,13 +93,48 @@ class DatabaseTools:
             )
         ''')
         # 素材库表：若已存在则温和迁移到含 link 的新 schema（保留数据）
+        # 审计修复 A3：原实现固定列名 INSERT...SELECT，旧表缺列即抛 no such column；
+        # 失败残留 _assets_old 会让下次启动 RENAME 撞名，构造函数每次抛错 →
+        # db_* 全部工具永久不可用。现改为：残留恢复 → 仅旧 schema 才迁 →
+        # 列交集搬运 → 事务包裹，失败回滚保原表。
+        conn = cursor.connection
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='assets'")
         if cursor.fetchone():
-            cursor.execute("ALTER TABLE assets RENAME TO _assets_old")
-            cursor.execute(ASSETS_DDL)
-            cols = "id, name, type, file_path, url, tags, description, created_at"
-            cursor.execute(f"INSERT INTO assets ({cols}) SELECT {cols} FROM _assets_old")
-            cursor.execute("DROP TABLE _assets_old")
+            # 审计修复 A3（崩溃残局）：上次中途崩溃可能留下「真数据困在 _assets_old、
+            # assets 是空壳」——且空壳往往已是含 url 的新 schema，仅靠 url 检查会漏掉
+            # 这个恢复分支，故残局恢复无条件先行。
+            if cursor.execute("SELECT name FROM sqlite_master "
+                              "WHERE type='table' AND name='_assets_old'").fetchone():
+                n_new = cursor.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
+                n_old = cursor.execute("SELECT COUNT(*) FROM _assets_old").fetchone()[0]
+                if n_new == 0 and n_old > 0:
+                    cursor.execute("DROP TABLE assets")
+                    cursor.execute("ALTER TABLE _assets_old RENAME TO assets")
+                    log.warning("检测到迁移中断残留 _assets_old（%d 条），已还原为 assets", n_old)
+                else:
+                    # 新旧表都有数据：自动合并/取舍不安全，改名留证，
+                    # 同时避免下面 RENAME assets→_assets_old 撞名。
+                    cursor.execute("ALTER TABLE _assets_old RENAME TO _assets_old_residue")
+                    log.warning("检测到 _assets_old 残留（旧 %d 条/现 %d 条），"
+                                "已改名 _assets_old_residue 留证，请人工核对素材库", n_old, n_new)
+            old_cols = {r[1] for r in cursor.execute("PRAGMA table_info(assets)")}
+            if "url" not in old_cols:  # 仅旧 schema 需要迁移，新库直接跳过（幂等）
+                new_cols = ["id", "name", "type", "file_path", "url",
+                            "tags", "description", "created_at"]
+                shared = [c for c in new_cols if c in old_cols]
+                cols = ", ".join(shared)
+                conn.commit()  # 结束隐式事务，保证下面 BEGIN 合法
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    conn.execute("DROP TABLE IF EXISTS _assets_old")
+                    conn.execute("ALTER TABLE assets RENAME TO _assets_old")
+                    conn.execute(ASSETS_DDL)
+                    conn.execute(f"INSERT INTO assets ({cols}) SELECT {cols} FROM _assets_old")
+                    conn.execute("DROP TABLE _assets_old")
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    log.warning("assets 表迁移失败，已回滚保留原表: %s", e)
         else:
             cursor.execute(ASSETS_DDL)
 

@@ -1536,14 +1536,27 @@ def load_config():
             json.dump(DEFAULT_CONFIG, f, ensure_ascii=False, indent=2)
         log.info("Created default config.json")
         return dict(DEFAULT_CONFIG)
+    # 审计修复 A1：读取失败/坏档时**绝不落盘**。原实现 cfg={} 填默认后，
+    # 迁移分支会立即 save_config，把用户配置（API key 等）永久覆盖成默认值。
+    parse_failed = False
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             cfg = json.load(f)
+        if not isinstance(cfg, dict):
+            raise ValueError("config.json 顶层不是对象")
     except Exception as e:
         log.error("Failed to read config.json: %s", e)
+        parse_failed = True
+        try:  # 留存坏档取证，便于用户手工找回
+            os.replace(CONFIG_PATH,
+                       CONFIG_PATH + ".bad." + time.strftime("%Y%m%d_%H%M%S"))
+        except OSError:
+            pass
         cfg = {}
     for k, v in DEFAULT_CONFIG.items():
         cfg.setdefault(k, v)
+    if parse_failed:
+        return cfg  # 仅在内存返回默认值，本次禁止任何写盘
 
     # v4.84 迁移：自进化默认开启（轨迹自动提炼）。仅对仍处旧默认 False 的存量配置一次性打开，
     # 之后再尊重用户手动开关（标记置位后不再翻回）。

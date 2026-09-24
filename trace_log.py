@@ -15,10 +15,23 @@ import os
 import re
 import json
 import uuid
+import threading
 import datetime
 import logging
 
 log = logging.getLogger("trace_log")
+
+# 审计修复 A5：本模块原为全仓唯一未迁原子写的持久层——截断式 open('w') 崩溃留
+# 半截 JSON → load 失败返回 [] → 下次写入把整个轨迹库覆盖光。现统一走
+# _atomic_write_json（tmp+os.replace），且「读-改-写」全程持锁防多线程互丢记录。
+_WRITE_LOCK = threading.Lock()
+
+
+def _atomic_write_json(path, obj):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
 
 
 DEFAULT_DIR_NAME = "task_traces"
@@ -62,18 +75,18 @@ def capture_trace(cfg, trace, max_keep=None):
         cfg = {}
     max_keep = max_keep or cfg.get("orch_trace_max", 200)
     _ensure_dir(cfg)
-    traces = load_traces(cfg)
-    rec = dict(trace) if isinstance(trace, dict) else {}
-    rec["id"] = rec.get("id") or (datetime.datetime.now().strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8])
-    rec["ts"] = datetime.datetime.now().isoformat(timespec="seconds")
-    traces.append(rec)
-    if max_keep and len(traces) > max_keep:
-        traces = traces[-max_keep:]
-    try:
-        with open(_path(cfg), "w", encoding="utf-8") as f:
-            json.dump({"version": 1, "traces": traces}, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    with _WRITE_LOCK:
+        traces = load_traces(cfg)
+        rec = dict(trace) if isinstance(trace, dict) else {}
+        rec["id"] = rec.get("id") or (datetime.datetime.now().strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8])
+        rec["ts"] = datetime.datetime.now().isoformat(timespec="seconds")
+        traces.append(rec)
+        if max_keep and len(traces) > max_keep:
+            traces = traces[-max_keep:]
+        try:
+            _atomic_write_json(_path(cfg), {"version": 1, "traces": traces})
+        except Exception:
+            pass
     return rec.get("id")
 
 
@@ -185,15 +198,15 @@ def prune(cfg, max_keep=None):
     if not isinstance(cfg, dict):
         cfg = {}
     max_keep = max_keep or cfg.get("orch_trace_max", 200)
-    traces = load_traces(cfg)
-    if len(traces) > max_keep:
-        traces = traces[-max_keep:]
-        _ensure_dir(cfg)
-        try:
-            with open(_path(cfg), "w", encoding="utf-8") as f:
-                json.dump({"version": 1, "traces": traces}, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            log.warning("轨迹裁剪落盘失败 %s: %s", _path(cfg), e)
+    with _WRITE_LOCK:
+        traces = load_traces(cfg)
+        if len(traces) > max_keep:
+            traces = traces[-max_keep:]
+            _ensure_dir(cfg)
+            try:
+                _atomic_write_json(_path(cfg), {"version": 1, "traces": traces})
+            except Exception as e:
+                log.warning("轨迹裁剪落盘失败 %s: %s", _path(cfg), e)
 
 
 # ==================== v4.102 fix12：Agent 任务级轨迹写回 ====================
@@ -251,31 +264,30 @@ def append_task_trajectory(cfg, task, outcome="success", pattern=None, pitfall=N
         cfg = {}
     max_keep = max_keep or cfg.get("agent_trace_max", AGENT_TRACE_MAX)
     _ensure_dir(cfg)
-    traces = load_agent_traces(cfg)
-    rec = {
-        "id": (datetime.datetime.now().strftime("%Y%m%d_%H%M%S_")
-               + uuid.uuid4().hex[:8]),
-        "ts": datetime.datetime.now().isoformat(timespec="seconds"),
-        "task": str(task or "")[:200],
-        "outcome": outcome,
-        "success_pattern": (str(pattern)[:400] if pattern else "") or None,
-        "pitfall": (str(pitfall)[:400] if pitfall else "") or None,
-        "tools_used": [str(t) for t in (tools or [])][:30],
-        "tokens": int(tokens or 0),
-        "steps": int(steps or 0),
-        "duration_s": round(float(duration_s or 0), 1),
-        "model": str(model or ""),
-        "source": "agent_task",
-    }
-    traces.append(rec)
-    if max_keep and len(traces) > max_keep:
-        traces = traces[-max_keep:]
-    try:
-        with open(_agent_path(cfg), "w", encoding="utf-8") as f:
-            json.dump({"version": 1, "traces": traces}, f,
-                      ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    with _WRITE_LOCK:
+        traces = load_agent_traces(cfg)
+        rec = {
+            "id": (datetime.datetime.now().strftime("%Y%m%d_%H%M%S_")
+                   + uuid.uuid4().hex[:8]),
+            "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+            "task": str(task or "")[:200],
+            "outcome": outcome,
+            "success_pattern": (str(pattern)[:400] if pattern else "") or None,
+            "pitfall": (str(pitfall)[:400] if pitfall else "") or None,
+            "tools_used": [str(t) for t in (tools or [])][:30],
+            "tokens": int(tokens or 0),
+            "steps": int(steps or 0),
+            "duration_s": round(float(duration_s or 0), 1),
+            "model": str(model or ""),
+            "source": "agent_task",
+        }
+        traces.append(rec)
+        if max_keep and len(traces) > max_keep:
+            traces = traces[-max_keep:]
+        try:
+            _atomic_write_json(_agent_path(cfg), {"version": 1, "traces": traces})
+        except Exception:
+            pass
     return rec.get("id")
 
 

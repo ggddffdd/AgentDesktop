@@ -1005,19 +1005,22 @@ class LegionWorker(QThread):
             self._capability_audit = audit
             # 存进项目档案（便于复盘/UI 展示），不覆盖用户数据其它字段
             try:
-                _d = legion.load_legion()
-                _pid = self.project.get("id") if isinstance(self.project, dict) else None
-                for _p in (_d.get("projects") or []):
-                    if isinstance(_p, dict) and _p.get("id") == _pid:
-                        _p["capability_audit"] = {
-                            "coverage": audit.get("coverage"),
-                            "critical": [g["cap"] for g in (audit.get("critical") or [])],
-                            "important": [g["cap"] for g in (audit.get("important") or [])],
-                            "report_text": audit.get("report_text", ""),
-                            "ts": __import__("time").strftime("%Y-%m-%d %H:%M"),
-                        }
-                        legion.save_legion(_d)
-                        break
+                # 审计修复 A6：与 UI/其它 helper 同锁，load→改→save 整段原子，
+                # 防长 run 期间与 UI 编辑互相覆盖丢 briefing/能力档案。
+                with legion._LEGION_IO_LOCK:
+                    _d = legion.load_legion()
+                    _pid = self.project.get("id") if isinstance(self.project, dict) else None
+                    for _p in (_d.get("projects") or []):
+                        if isinstance(_p, dict) and _p.get("id") == _pid:
+                            _p["capability_audit"] = {
+                                "coverage": audit.get("coverage"),
+                                "critical": [g["cap"] for g in (audit.get("critical") or [])],
+                                "important": [g["cap"] for g in (audit.get("important") or [])],
+                                "report_text": audit.get("report_text", ""),
+                                "ts": __import__("time").strftime("%Y-%m-%d %H:%M"),
+                            }
+                            legion.save_legion(_d)
+                            break
             except Exception:
                 pass
             self._log("")

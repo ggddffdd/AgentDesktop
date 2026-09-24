@@ -1191,47 +1191,51 @@ def lock_target(project_id, text, task=""):
     if not text:
         return False
     try:
-        data = load_legion()
-        p = find_project(data, project_id)
-        if not p:
-            return False
-        old = p.get("locked_target")
-        old_text = old.get("text", "") if isinstance(old, dict) else (old or "")
-        if old_text.strip() != text:
-            p["locked_target"] = {
-                "text": text,
-                "task": (task or "").strip(),
-                "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
-            }
-            save_legion(data)
-        return True
+        # 审计修复 A6：整段 load→改→save 持锁，防与 UI/worker 的读改写互相覆盖
+        with _LEGION_IO_LOCK:
+            data = load_legion()
+            p = find_project(data, project_id)
+            if not p:
+                return False
+            old = p.get("locked_target")
+            old_text = old.get("text", "") if isinstance(old, dict) else (old or "")
+            if old_text.strip() != text:
+                p["locked_target"] = {
+                    "text": text,
+                    "task": (task or "").strip(),
+                    "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                save_legion(data)
+            return True
     except Exception:
         return False
 
 
 def clear_target_memory(project_id, what="all"):
     """清空标的记忆。what: "target" / "dead" / "lessons" / "all"。返回清除项描述。"""
-    data = load_legion()
-    p = find_project(data, project_id)
-    if not p:
-        return ""
-    did = []
-    if what in ("target", "all") and p.get("locked_target"):
-        p.pop("locked_target", None)
-        did.append("锁定标的")
-    if what in ("dead", "all") and p.get("dead_directions"):
-        p.pop("dead_directions", None)
-        did.append("否决黑名单")
-    if what in ("lessons", "all"):
-        lp = _lessons_path(project_id)
-        if os.path.exists(lp):
-            try:
-                os.remove(lp)
-                did.append("项目教训本")
-            except Exception:
-                pass
-    if did:
-        save_legion(data)
+    # 审计修复 A6：load→改→save 整段持锁（含早期 return，锁随退出释放）
+    with _LEGION_IO_LOCK:
+        data = load_legion()
+        p = find_project(data, project_id)
+        if not p:
+            return ""
+        did = []
+        if what in ("target", "all") and p.get("locked_target"):
+            p.pop("locked_target", None)
+            did.append("锁定标的")
+        if what in ("dead", "all") and p.get("dead_directions"):
+            p.pop("dead_directions", None)
+            did.append("否决黑名单")
+        if what in ("lessons", "all"):
+            lp = _lessons_path(project_id)
+            if os.path.exists(lp):
+                try:
+                    os.remove(lp)
+                    did.append("项目教训本")
+                except Exception:
+                    pass
+        if did:
+            save_legion(data)
     return "、".join(did)
 
 
@@ -1244,22 +1248,24 @@ def kill_direction(project_id, text):
     if not names:
         return False
     try:
-        data = load_legion()
-        p = find_project(data, project_id)
-        if not p:
-            return False
-        lst = p.setdefault("dead_directions", [])
-        if not isinstance(lst, list):
-            lst = p["dead_directions"] = []
-        changed = False
-        for n in names:
-            if n not in lst:
-                lst.append(n)
-                changed = True
-        if changed:
-            del lst[:-_DEAD_DIR_MAX]
-            save_legion(data)
-        return True
+        # 审计修复 A6：load→改→save 整段持锁，防并发丢更新
+        with _LEGION_IO_LOCK:
+            data = load_legion()
+            p = find_project(data, project_id)
+            if not p:
+                return False
+            lst = p.setdefault("dead_directions", [])
+            if not isinstance(lst, list):
+                lst = p["dead_directions"] = []
+            changed = False
+            for n in names:
+                if n not in lst:
+                    lst.append(n)
+                    changed = True
+            if changed:
+                del lst[:-_DEAD_DIR_MAX]
+                save_legion(data)
+            return True
     except Exception:
         return False
 
@@ -1346,23 +1352,25 @@ def _manual_path(name):
 
 def attach_manual_file(project_id, name, on=True):
     """把补录文件挂载/卸载到指定项目（写进项目 config）。"""
-    data = load_legion()
-    p = find_project(data, project_id)
-    if not p:
-        return False
-    lst = p.setdefault("manual_files", [])
-    if not isinstance(lst, list):
-        lst = p["manual_files"] = []
-    name = os.path.basename(name)
-    changed = False
-    if on and name not in lst:
-        lst.append(name)
-        changed = True
-    elif not on and name in lst:
-        lst.remove(name)
-        changed = True
-    if changed:
-        save_legion(data)
+    # 审计修复 A6：load→改→save 整段持锁，防并发丢更新
+    with _LEGION_IO_LOCK:
+        data = load_legion()
+        p = find_project(data, project_id)
+        if not p:
+            return False
+        lst = p.setdefault("manual_files", [])
+        if not isinstance(lst, list):
+            lst = p["manual_files"] = []
+        name = os.path.basename(name)
+        changed = False
+        if on and name not in lst:
+            lst.append(name)
+            changed = True
+        elif not on and name in lst:
+            lst.remove(name)
+            changed = True
+        if changed:
+            save_legion(data)
     return changed
 
 
@@ -3357,8 +3365,26 @@ def _upgrade_preset_role_cards(data):
     return n, details
 
 
+# 审计修复 A6：legion.json 是整文件读-改-写，此前无 IO 锁 —— UI 的 20+ 处
+# save_legion(self.data) 与 worker 线程的 load→改→save 交错互相覆盖（旧快照
+# 挤掉新数据），且两线程同写一个 LEGION_PATH+".tmp" 会互踩替换源（整库损坏
+# = 全部角色/项目/班子档案不可逆丢失）。用 RLock：load_legion 内部缺文件时
+# 会回落 save_legion，需同线程可重入。
+_LEGION_IO_LOCK = threading.RLock()
+
+
 def load_legion():
-    """读取军团数据；文件不存在/损坏则回落默认（不抛异常拖垮主程序）。"""
+    """读取军团数据；文件不存在/损坏则回落默认（不抛异常拖垮主程序）。
+
+    审计修复 A6：全程持 IO 锁读一致快照；外部「load→改→save」序列应在同线程
+    持 _LEGION_IO_LOCK 调用本函数（RLock 重入不死锁），保证整段序列原子。
+    """
+    with _LEGION_IO_LOCK:
+        return _load_legion_inner()
+
+
+def _load_legion_inner():
+    """读取军团数据（无锁内核，由 load_legion 持锁调用）。"""
     try:
         if not os.path.exists(LEGION_PATH):
             data = default_legion()
@@ -3596,21 +3622,24 @@ def save_legion(data):
     此前是 open("w") 裸写 —— 同模块的 checkpoint / 任务板 / 教训本都做了原子写，
     唯独这个最核心的数据文件（全部角色 + 项目 + 班子档案）没做：
     写一半崩溃 = 整个军团数据全毁且无备份。
+    审计修复 A6：再叠加 _LEGION_IO_LOCK —— 原子写只防"写一半"，防不了两线程
+    同写同一个固定名 .tmp（A 的半截内容混进 B 的 tmp 再被 replace 即为全库损坏）。
     """
-    try:
-        os.makedirs(LEGION_DIR, exist_ok=True)
-        tmp = LEGION_PATH + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, LEGION_PATH)
-        return True
-    except Exception as e:
-        log.warning("保存军团数据失败: %s", e)
-        # v4.134.9：异常分支不再 os.remove(tmp)（同 save_config 理由）。
-        # tmp = LEGION_PATH + ".tmp" 是固定名，下次成功写入 open("w") 覆盖，不累积。
-        return False
+    with _LEGION_IO_LOCK:
+        try:
+            os.makedirs(LEGION_DIR, exist_ok=True)
+            tmp = LEGION_PATH + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, LEGION_PATH)
+            return True
+        except Exception as e:
+            log.warning("保存军团数据失败: %s", e)
+            # v4.134.9：异常分支不再 os.remove(tmp)（同 save_config 理由）。
+            # tmp = LEGION_PATH + ".tmp" 是固定名，下次成功写入 open("w") 覆盖，不累积。
+            return False
 
 
 # ============ 查询辅助 ============

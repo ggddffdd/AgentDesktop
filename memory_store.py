@@ -170,48 +170,120 @@ def _write_text_file(path, text):
 
 
 def encrypt_existing(passphrase):
-    """启用加密：把当前明文记忆转为加密（先读明文→设 cipher→写加密）。"""
+    """启用加密：把当前明文记忆转为加密（先读明文→设 cipher→写加密）。
+
+    审计修复 A4：原实现在明文读取失败（静默返回 ""）甚至加密启用失败
+    （_cipher=None，写回仍是明文）时，仍会照删明文 memory.md/memory.db，
+    静默毁库。现改为：cipher 未就绪整体中止；每个明文删除前先验证对应
+    .enc 已真实落盘且非空，未验证的一律保留并记错。
+    """
     mem = _read_text_file(MEMORY_PATH)
     pinned = _read_text_file(PINNED_PATH)
     set_encryption(passphrase)
-    if mem:
-        _write_text_file(MEMORY_PATH, mem)
-    if pinned:
-        _write_text_file(PINNED_PATH, pinned)
-    if os.path.exists(MEMORY_DB_PATH):
+    if _cipher is None:
+        log.error("启用加密失败（口令为空或 cryptography 不可用），中止迁移，明文全部保留")
+        return
+
+    def _plaintext_has_bytes(p):
+        try:
+            return os.path.isfile(p) and os.path.getsize(p) > 0
+        except OSError:
+            return False
+
+    def _enc_ready(p):
+        try:
+            ep = p + ".enc"
+            return os.path.isfile(ep) and os.path.getsize(ep) > 0
+        except OSError:
+            return False
+
+    for path, text in ((MEMORY_PATH, mem), (PINNED_PATH, pinned)):
+        if not os.path.exists(path):
+            continue                     # 无明文可迁
+        if not text and _plaintext_has_bytes(path):
+            log.error("%s 读取失败但文件非空，保留明文不删、不覆盖", path)
+            continue
+        try:
+            _write_text_file(path, text)  # 写 .enc（内部原子）
+        except Exception as e:
+            log.error("写加密文件失败 %s: %s，保留明文", path, e)
+            continue
+        if _enc_ready(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        else:
+            log.error("%s.enc 未生成，保留明文 %s", path, path)
+
+    # 记忆数据库：_with_db 在加密模式下负责解密→加密→清明文；前置校验 .enc 就绪
+    db_plain = os.path.exists(MEMORY_DB_PATH)
+    db_enc = _enc_ready(MEMORY_DB_PATH)
+    if db_plain or db_enc:
         try:
             _with_db(lambda c: None)
-        except Exception:
-            pass
-    for p in (MEMORY_PATH, PINNED_PATH, MEMORY_DB_PATH):
-        if os.path.exists(p):
-            try:
-                os.remove(p)
-            except Exception:
-                pass
+        except Exception as e:
+            log.error("记忆DB加密迁移失败，保留现有文件: %s", e)
+        if _enc_ready(MEMORY_DB_PATH):
+            for ext in ("", "-wal", "-shm"):
+                p = MEMORY_DB_PATH + ext
+                if os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
 
 
 def decrypt_existing():
-    """关闭加密：把加密记忆转回明文。"""
+    """关闭加密：把加密记忆转回明文。
+
+    审计修复 A4（解密侧镜像）：原实现先把 _cipher 置 None 再调 _with_db ——
+    加密模式的“解密 .enc→明文”分支依赖 _cipher，置空后等于凭空开了个空库，
+    随后照旧删除 memory.db.enc（唯一含数据的副本）→ 关闭加密那一刻 FTS5
+    记忆库不可逆丢失。现改为：趁 _cipher 仍在先解密落盘，验证成功才删 .enc；
+    文本文件同理，读不到又不敢确定时保留密文留证（宁多一个文件，不少一份数据）。
+    """
     global _cipher
     mem = _read_text_file(MEMORY_PATH)
     pinned = _read_text_file(PINNED_PATH)
-    _cipher = None
-    if mem:
-        _write_text_file(MEMORY_PATH, mem)
-    if pinned:
-        _write_text_file(PINNED_PATH, pinned)
-    if os.path.exists(MEMORY_DB_PATH + ".enc"):
+    ep = MEMORY_DB_PATH + ".enc"
+    # 1) 记忆库：必须在清除 _cipher 之前完成 .enc → 明文解密落盘
+    db_ok = True
+    if _cipher is not None and os.path.exists(ep):
         try:
-            _with_db(lambda c: None)
-        except Exception:
+            with open(ep, "rb") as f:
+                raw = _cipher.decrypt(f.read())
+            tmp = MEMORY_DB_PATH + ".tmp"
+            with open(tmp, "wb") as f:
+                f.write(raw)
+            os.replace(tmp, MEMORY_DB_PATH)
+        except Exception as e:
+            db_ok = False
+            log.error("记忆DB解密失败，保留 %s 待人工处理: %s", ep, e)
+    _cipher = None
+    # 2) 文本记忆/置顶：明文模式写回；解密失败或写盘失败一律保留 .enc
+    for path, text in ((MEMORY_PATH, mem), (PINNED_PATH, pinned)):
+        enc = path + ".enc"
+        if not os.path.exists(enc):
+            continue
+        if not text and os.path.isfile(enc) and os.path.getsize(enc) > 0:
+            log.error("%s 解密失败但文件非空，保留密文取证", enc)
+            continue
+        try:
+            _write_text_file(path, text)  # _cipher 已置 None → 写明文（原子）
+        except Exception as e:
+            log.error("写明文 %s 失败: %s，保留密文", path, e)
+            continue
+        try:
+            os.remove(enc)
+        except OSError:
             pass
-    for p in (MEMORY_PATH + ".enc", PINNED_PATH + ".enc", MEMORY_DB_PATH + ".enc"):
-        if os.path.exists(p):
-            try:
-                os.remove(p)
-            except Exception:
-                pass
+    # 3) 仅当明文库已验证落盘才删 .enc
+    if db_ok and os.path.exists(ep):
+        try:
+            os.remove(ep)
+        except OSError:
+            pass
 
 
 def _backup_dir():
