@@ -38,13 +38,13 @@ from PySide6.QtWebEngineCore import QWebEnginePage
 # 落 USER_DATA_DIR/logs/webengine_debug.log（不打包、不影响主流程，任何异常吞掉）。
 def _we_diag(msg):
     try:
-        from config import USER_DATA_DIR, APP_VERSION
+        # v4.134.6：改走 config.append_log_line（超限滚成 .1）—— 此前裸 open 追加，
+        # 白屏排查期刷得很凶时无上限增长。
+        from config import USER_DATA_DIR, APP_VERSION, append_log_line
         from datetime import datetime
-        log_dir = os.path.join(USER_DATA_DIR, "logs")
-        os.makedirs(log_dir, exist_ok=True)
-        with open(os.path.join(log_dir, "webengine_debug.log"), "a", encoding="utf-8") as f:
-            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
-                    f"[{APP_VERSION}] {msg}\n")
+        p = os.path.join(USER_DATA_DIR, "logs", "webengine_debug.log")
+        append_log_line(p, f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+                           f"[{APP_VERSION}] {msg}\n")
     except Exception:
         pass
 

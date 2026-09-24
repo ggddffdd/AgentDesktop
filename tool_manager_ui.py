@@ -32,13 +32,14 @@ import os
 import logging
 
 import config
+from ui import THEME
 
 log = logging.getLogger(__name__)
 
 # 视觉配色（与技能管理器保持一致）
-_COLOR_ON = QColor("#1b7a3d")    # 启用：绿
-_COLOR_OFF = QColor("#9aa0a6")   # 禁用：灰
-_COLOR_HOT = QColor("#b45309")   # 体积大又没人用：橙
+_COLOR_ON = QColor(THEME["on_green"])    # 启用：绿
+_COLOR_OFF = QColor(THEME["faint"])   # 禁用：灰
+_COLOR_HOT = QColor(THEME["warn_orange"])   # 体积大又没人用：橙
 
 # 体积/token 估算系数，与 tool_budget.py 保持一致
 CHARS_PER_TOK = 2.0

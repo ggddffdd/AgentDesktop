@@ -52,13 +52,13 @@ class OnboardingWizard(QDialog):
         return self.theme.get(key, fallback)
 
     def _build_ui(self):
-        bg = self._c("bg", "#FFFFFF")
-        card = self._c("card", "#F5F5F7")
-        border = self._c("border", "#E0E0E0")
-        text = self._c("text", "#1A1A1A")
-        dim = self._c("dim", "#666666")
-        accent = self._c("accent", "#2E7CF6")
-        accent_hover = self._c("accent_hover", "#1B6AE0")
+        bg = self.theme["bg"]
+        card = self.theme["card"]
+        border = self.theme["border"]
+        text = self.theme["text"]
+        dim = self.theme["dim"]
+        accent = self.theme["accent"]
+        accent_hover = self.theme["accent_hover"]
 
         self.setStyleSheet(f"QDialog{{background:{bg};}}")
 
@@ -125,7 +125,7 @@ class OnboardingWizard(QDialog):
         self.next_btn.setFixedHeight(36)
         self.next_btn.setDefault(True)
         self.next_btn.setStyleSheet(
-            f"QPushButton{{background:{accent};color:#FFFFFF;border:none;"
+            f"QPushButton{{background:{accent};color:white;border:none;"
             f"border-radius:8px;padding:0 20px;font-size:13px;font-weight:500;}}"
             f"QPushButton:hover{{background:{accent_hover};}}")
         self.next_btn.clicked.connect(self._next)
@@ -141,7 +141,7 @@ class OnboardingWizard(QDialog):
         # 指示点高亮
         for k, d in enumerate(self.dot_widgets):
             d.setStyleSheet(
-                f"color:{'%s' % self._c('accent', '#2E7CF6') if k == self.idx else self._c('border', '#E0E0E0')};"
+                f"color:{'%s' % (self.theme['accent'] if k == self.idx else self.theme['border'])};"
                 f"font-size:10px;")
         # 按钮态
         self.back_btn.setVisible(self.idx > 0)

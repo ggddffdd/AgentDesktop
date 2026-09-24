@@ -17,6 +17,8 @@ v5 Codex UI 改版重设计：
 
 import sys
 import os
+import subprocess  # v4.125 M-14：子进程统一无黑窗
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 import re
 import base64
 import ctypes
@@ -25,7 +27,7 @@ import json
 import logging
 import urllib.parse
 import time
-from datetime import datetime
+from datetime import datetime, timedelta  # v4.129：timedelta 用于交付物「昨天」分组判定
 from pathlib import Path
 
 # 长任务断点续跑 / 心跳（纯标准库模块，无 Qt 依赖）
@@ -91,6 +93,7 @@ THEME = {
     "sidebar": "#EEF1F8",      # 侧栏底
     "surface": "#FFFFFF",
     "surface_raised": "#FFFFFF",
+    "white": "#FFFFFF",         # 纯白：供 Python 上下文（QColor / _nav_icon_pixmap 参数）引用，与 QSS 的 white 关键字等价
     "card": "#FFFFFF",         # 所有浮卡/顶栏/状态条/输入框
 
     # ---- Panels ----
@@ -165,6 +168,65 @@ THEME = {
     "secondary_btn_hover": "#F1F3F4",
     "secondary_btn_press": "#E8EAED",
 
+    # ---- 状态色（批2 从裸 hex 收编：值取代码精确值，零视觉变化，单一事实源）----
+    "danger_text": "#EF4444",        # 错误/删除态红（导演台/删除按钮）
+    "danger_red2": "#DC2626",        # 删除红描边（ui.py 删除按钮）
+    "danger_brown": "#C0392B",       # 删除红（技能市场）
+    "danger_text_dark": "#991B1B",   # 深红文字（数字分身错误态）
+    "danger_bg": "#FDECEA",          # 错误态浅红底
+    "danger_bg2": "#FEE2E2",         # 错误态浅红底2
+    "danger_border": "#FCA5A5",      # 错误态浅红描边
+    "danger_border2": "#F3B6B1",     # 错误态浅红描边2
+    "danger_hover_bg": "#FECACA",    # 错误态 hover 浅红底
+    "on_green": "#1B7A3D",           # 启用绿（技能/工具）
+    "on_green2": "#1A7F37",          # 推荐/启用绿
+    "live_green": "#22C55E",         # 在线/成功绿
+    "warn_gold": "#B8860B",          # 警告琥珀（技能市场/工具）
+    "warn_gold2": "#9A6700",         # 慎装琥珀（legion_ui 推荐）
+    "warn_amber": "#D97706",         # 警告橙（导演台）
+    "warn_orange": "#B45309",        # 警告橙（工具管理器）
+    "accent_violet": "#6C5CE7",      # 技能市场强调紫
+    "accent_violet_light": "#8A6FE8", # 紫高亮
+    "accent_violet_dark": "#5A4BD4",  # 紫按下
+    "accent_violet_bg": "#CFC8EF",   # 紫禁用底
+    "accent_violet_bg2": "#F0EEFB",  # 紫标签浅底
+    "text_dark": "#1A1A1A",          # 深文本
+    "text_dark2": "#1F2328",         # 深文本（tooltip/HTML）
+    "gray2": "#A0A0A0",              # 浅灰（行前景）
+    "bg_alt": "#F6F7F9",             # 浅底（技能市场滚动区）
+
+    # ---- 数据/特征色（批3 从裸 hex 收编；带前缀命名，表明是特征局部语义，非全局通用色）----
+    "role_green": "#2E7D32",         # 角色色：大哥（绿）
+    "role_pm_blue": "#1565C0",       # 角色色：项目经理（蓝）
+    "role_sys_gray": "#8A8A8A",      # 角色色：系统/日志（灰）
+    "role_purple": "#6A1B9A",        # 角色色：成果（紫）
+    "role_wave_gray": "#555555",     # 角色色：波次分隔条（深灰）
+    "role_default_gray": "#333333",  # 角色色：未知角色兜底（深灰）
+    "role_alert_red": "#C62828",     # 角色色：系统警示红（失败/拦截/缺口）
+    "tag_red": "#B91C1C",            # legion_ui 推荐标签：不推（红）
+    "row_gray_bg": "#F3F3F3",        # legion_ui 禁用行浅灰底
+    "danger_hover_dark": "#3A1F1F",  # 导演台危险按钮 hover 深红底
+    "tooltip_text": "#1F2937",       # 全局 tooltip 文字（main）
+    "tooltip_border": "#D5DBE3",     # 全局 tooltip 描边（main）
+    "card_red_border": "#E6B0AA",    # 技能市场删除按钮浅红描边
+    "card_border": "#E6E8EB",        # 技能市场卡片边框
+
+    # ---- 导出/模板/特征色（批4 从裸 hex 收编：HTML 导出模板 + QSS 头像渐变/危险 hover/置顶/标记）----
+    "tpl_asst_bubble": "#F1F3F5",  # 导出 HTML：助手气泡底
+    "tpl_tool_bg": "#FAFAFA",      # 导出 HTML：工具块底
+    "tpl_tool_role": "#2563EB",    # 导出 HTML：工具角色名色
+    "tpl_pre_bg": "#0F172A",       # 导出 HTML：<pre> 代码块底
+    "tpl_pre_text": "#E2E8F0",     # 导出 HTML：<pre> 代码文字
+    "tpl_code_bg": "#F1F1F1",      # 导出 HTML：<code> 行内代码底
+    "tpl_avatar_grad1": "#4E8FD9", # 头像徽标渐变浅端
+    "tpl_avatar_grad2": "#2B5FA8", # 头像徽标渐变深端
+    "danger_hover_red": "#FCE8E6", # 危险按钮 hover 浅红底（批量删除/删除会话）
+    "pinned_color": "#F4B400",     # 置顶星标金
+    "btn_delete_hover": "#B3261E", # 停止按钮 hover 深红
+    "tpl_marker_ai": "#6366F1",    # 默认 AI 头像标记蓝紫
+    "tpl_marker_user": "#6B7280",  # 默认用户头像标记灰
+    "tpl_hl_bg": "#FFD54F",        # 关键词高亮底
+
     # ---- Prism 虹彩渐变 (保留兼容，新版未使用) ----
     "prism": "qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #FF6B9D,stop:0.2 #C44569,stop:0.4 #F8B500,stop:0.6 #00D2FF,stop:0.8 #7B68EE,stop:1 #FF69B4)",
     "prism_soft": "qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 rgba(255,107,157,0.14),stop:0.5 rgba(0,210,255,0.10),stop:1 rgba(123,104,238,0.14))",
@@ -190,6 +252,7 @@ DELIVERY_COLORS = {
 _NAV_ICONS = {
     "对话":   '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
     "编排":   '<polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="20"/><line x1="21" y1="20" x2="21" y2="13"/><polyline points="21 16 21 13 18 13"/><line x1="4" y1="4" x2="9" y2="4"/><polyline points="11 8 11 5 8 5"/>',
+    "军团":   '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
     "生图":   '<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>',
     "生视频": '<polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>',
     "数字人": '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
@@ -244,8 +307,8 @@ def _make_avatar_label(size=34):
     avatar.setAlignment(Qt.AlignCenter)
     avatar.setStyleSheet(
         f"QLabel{{background:qlineargradient(x1:0,y1:0,x2:1,y2:1,"
-        f"stop:0:#4E8FD9,stop:1:#2B5FA8);border-radius:{size // 2}px;}}")
-    fg = _nav_icon_pixmap("数字人", "#FFFFFF", int(size * 0.52))
+        f"stop:0:{THEME['tpl_avatar_grad1']},stop:1:{THEME['tpl_avatar_grad2']});border-radius:{size // 2}px;}}")
+    fg = _nav_icon_pixmap("数字人", THEME["white"], int(size * 0.52))
     avatar.setPixmap(fg)
     return avatar
 
@@ -300,6 +363,34 @@ def _skill_icon_name(sk):
     if name in _NAV_ICONS:
         return name
     return SKILL_ICON_FALLBACK
+
+
+class _NoWheelCombo(QComboBox):
+    """v4.148.8：滚轮不切档的 QComboBox（防「模型被静默切走」）。
+
+    为什么必须加：QComboBox **默认响应鼠标滚轮** —— 光标滑过就静默切换档位，并触发
+    currentTextChanged / currentIndexChanged；而模型下拉的处理器会**一路写进 config.json**。
+    实测（2026-09-14）：大哥的 `model` 被切成「免费网关 free-api-gw」
+    （`zhipu` + `http://127.0.0.1:8000/v1`）——该档指向**本地网关进程**，服务没起时模型
+    直接不可用；而它恰好是档位列表的**最后一项**，往下滚到底就切到它，极易误触、且零提示。
+
+    策略：**未获得焦点时忽略滚轮**（`ignore()` 让事件冒泡，页面继续滚动），
+    想用滚轮换档就先点一下让它聚焦。
+
+    v4.149.0 补充（别把希望全押在这一个类上）：滚轮只是**两个触发源之一**。
+    真正的洞在**信号选错**——档位下拉原先连的是 `currentTextChanged`，
+    它对「滚轮滑过 / 键盘上下 / 打字跳到某字母 / 任何程序化 setCurrentIndex」都会触发，
+    而处理器会把 base_url+model+api_key **整套写进 config.json**；再加上启动时
+    「匹配不到档位 → 强制切到列表第一项并落盘」的 `for...else` 兜底 ——
+    两条路都能在**用户毫无意图**的情况下换掉主模型。故 v4.149.0 同时收口：
+    只认 `activated`（用户真选）+ 兜底不再落盘（见 `_on_model_change` / `_init_settings_model_combo`）。
+    """
+
+    def wheelEvent(self, event):
+        if not self.hasFocus():
+            event.ignore()
+            return
+        super().wheelEvent(event)
 
 
 class _GenThread(QThread):
@@ -953,7 +1044,7 @@ class ConfirmDialog(ThemedDialog):
         no.clicked.connect(self.reject)
         yes = QPushButton("允许")
         yes.setFixedHeight(34)
-        yes.setStyleSheet(self._btn_style(THEME["accent"], "#ffffff"))
+        yes.setStyleSheet(self._btn_style(THEME["accent"], THEME["white"]))
         yes.clicked.connect(self._on_yes)
         row.addWidget(no)
         row.addWidget(yes)
@@ -1000,7 +1091,7 @@ class RenameDialog(ThemedDialog):
         no.clicked.connect(self.reject)
         yes = QPushButton("保存")
         yes.setFixedHeight(34)
-        yes.setStyleSheet(self._btn_style(THEME["accent"], "#ffffff"))
+        yes.setStyleSheet(self._btn_style(THEME["accent"], THEME["white"]))
         yes.clicked.connect(self._on_ok)
         row.addWidget(no)
         row.addWidget(yes)
@@ -1033,7 +1124,7 @@ class InfoDialog(ThemedDialog):
         row.addStretch(1)
         ok = QPushButton("好的")
         ok.setFixedHeight(34)
-        ok.setStyleSheet(self._btn_style(THEME["accent"], "#ffffff"))
+        ok.setStyleSheet(self._btn_style(THEME["accent"], THEME["white"]))
         ok.clicked.connect(self.accept)
         row.addWidget(ok)
         lay.addLayout(row)
@@ -1129,7 +1220,7 @@ class SessionManagerDialog(QDialog):
         self.search.textChanged.connect(self._refresh)
         top.addWidget(self.search, 1)
 
-        self.folder_filter = QComboBox()
+        self.folder_filter = _NoWheelCombo()
         self.folder_filter.setFixedHeight(34)
         self.folder_filter.setMinimumWidth(140)
         self.folder_filter.setStyleSheet(
@@ -1164,14 +1255,14 @@ class SessionManagerDialog(QDialog):
         bulk.setStyleSheet(
             f"QPushButton{{background:{THEME['card']};color:{THEME['danger']};"
             f"border:1px solid {THEME['border']};border-radius:8px;padding:0 14px;font-size:13px;}}"
-            f"QPushButton:hover{{border-color:{THEME['danger']};background:#FCE8E6;}}")
+            f"QPushButton:hover{{border-color:{THEME['danger']};background:{THEME['danger_hover_red']};}}")
         bulk.clicked.connect(self._bulk_delete)
         bottom.addWidget(bulk)
         done = QPushButton("完成")
         done.setDefault(True)
         done.setFixedHeight(34)
         done.setStyleSheet(
-            f"QPushButton{{background:{THEME['accent']};color:#FFFFFF;border:none;"
+            f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
             f"border-radius:8px;padding:0 18px;font-size:13px;font-weight:500;}}"
             f"QPushButton:hover{{background:{THEME['accent_hover']};}}")
         done.clicked.connect(self.accept)
@@ -1236,7 +1327,7 @@ class SessionManagerDialog(QDialog):
         pin.setToolTip("置顶" if not s.pinned else "取消置顶")
         pin.setStyleSheet(
             f"QPushButton{{background:transparent;border:none;font-size:16px;"
-            f"color:{'#F4B400' if s.pinned else THEME['placeholder']};border-radius:6px;}}"
+            f"color:{THEME['pinned_color'] if s.pinned else THEME['placeholder']};border-radius:6px;}}"
             f"QPushButton:hover{{background:{THEME['sidebar_hover']};}}")
         pin.clicked.connect(lambda _, sid=s.sid: self._pin_toggle(sid))
         rl.addWidget(pin)
@@ -1250,7 +1341,7 @@ class SessionManagerDialog(QDialog):
         title.clicked.connect(lambda _, sid=s.sid: self._switch(sid))
         rl.addWidget(title, 1)
 
-        fcombo = QComboBox()
+        fcombo = _NoWheelCombo()
         fcombo.setFixedHeight(28)
         fcombo.setMinimumWidth(96)
         fcombo.setEditable(True)
@@ -1349,8 +1440,13 @@ class _EdgeResizeFilter(QAbstractNativeEventFilter):
                     # 是【逻辑坐标】——高分屏（125%/150% 缩放）直接相减导致热区偏移、
                     # 边缘缩放失灵。先按 devicePixelRatio 把物理坐标归一为逻辑坐标。
                     dpr = float(self._win.devicePixelRatioF() or 1.0)
-                    x = (msg.lParam & 0xFFFF) / dpr
-                    y = ((msg.lParam >> 16) & 0xFFFF) / dpr
+                    # v4.125 M-12：lParam 低/高 16 位是有符号 short——副屏在主屏
+                    # 左侧时 x 为负（如 -100 → 0xFF9C），不做符号扩展会被当成
+                    # 65436 的巨大正数，8 个边缘判定全不命中（H-11 残留）。
+                    _x16 = msg.lParam & 0xFFFF
+                    _y16 = (msg.lParam >> 16) & 0xFFFF
+                    x = ((_x16 - 65536 if _x16 >= 32768 else _x16)) / dpr
+                    y = ((_y16 - 65536 if _y16 >= 32768 else _y16)) / dpr
                     wx = x - self._win.x()
                     wy = y - self._win.y()
                     w = self._win.width()
@@ -1392,24 +1488,36 @@ def _flatten_text_content(content_list):
 
 def _sanitize_filename(name):
     """v4.102 hotfix：清洗 Windows 文件名非法字符（\\ / : * ? " < > |），
-    并裁掉首尾空格/点。返回清洗后的安全文件名；空结果回退为 'file'。"""
+    并裁掉首尾空格/点。返回清洗后的安全文件名；空结果回退为 'file'。
+    v4.125 P2：处理 Windows 保留设备名（con/nul/aux/com1..9/lpt1..9/prn），
+    模型生成此类文件名会落盘失败（即使带扩展名也拒绝）。"""
     if not name:
         return "file"
     safe = re.sub(r'[\\/:*?"<>|]', "_", name)
     safe = safe.strip().strip(".")
-    return safe or "file"
+    if not safe:
+        return "file"
+    stem = safe.split(".")[0].strip().lower()
+    _RESERVED = {"con", "prn", "aux", "nul"} | {
+        f"{p}{i}" for p in ("com", "lpt") for i in range(1, 10)}
+    if stem in _RESERVED:
+        safe = "_" + safe  # 前缀下划线绕开保留名
+    return safe
 
 
 def _vision_debug(msg):
-    """v4.102 fix5：写视觉链路调试日志到 ~/Documents/小臭玩AI/vision_debug.log，
-    用户/我们都能找得到（之前写 APP_DIR，源码与 exe 路径不同导致用户找不到）。"""
+    """v4.102 fix5：写视觉链路调试日志到 USER_DATA_DIR/vision_debug.log，
+    用户/我们都能找得到（之前写 APP_DIR，源码与 exe 路径不同导致用户找不到）。
+
+    v4.134.6：改走 config.append_log_line —— 与另外三条诊断日志共用同一套
+    「超限就滚成 .1」逻辑。此前是裸 open(...,"a") 只增不减（实测已涨到 537 KB）。
+    顺带把落点从写死的 expanduser("~/Documents/小臭玩AI") 换成 config.USER_DATA_DIR，
+    这样测试子进程注入的改道变量也能生效（否则它会一直往真实目录写）。
+    """
     try:
         from datetime import datetime
-        log_dir = os.path.expanduser("~/Documents/小臭玩AI")
-        os.makedirs(log_dir, exist_ok=True)
-        p = os.path.join(log_dir, "vision_debug.log")
-        with open(p, "a", encoding="utf-8") as f:
-            f.write(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}\n")
+        p = os.path.join(config.USER_DATA_DIR, "vision_debug.log")
+        config.append_log_line(p, f"[{datetime.now().strftime('%H:%M:%S')}] {msg}\n")
     except Exception:
         pass
 
@@ -1567,7 +1675,7 @@ def _sanitize_msg_for_api(m, vision_ok=False):
     content=None、以及多模态 list content——直接发给 DeepSeek 等接口会 400
     （unknown variant `tool_log` / invalid content）。历史消息必须经此过滤。
 
-    vision_ok=True（目标模型支持视觉，如 deepseek-v4-flash-vision-exp）时，若
+    vision_ok=True（目标模型支持视觉，如 deepseek-flash）时，若
     content 是含 image_url 的 list，则保留 list 结构（仅 text + image_url 两种合法
     part）原样发视觉模型，让模型真正"看图"；否则仍归一化为纯文本（兼容旧逻辑）。
     """
@@ -1604,6 +1712,99 @@ def _sanitize_msg_for_api(m, vision_ok=False):
     return {"role": role, "content": c}
 
 
+def _repair_tool_pairs(msgs):
+    """v4.125 N-01 内部：修复 tool_calls/tool 配对，杜绝 API 400 死局。
+
+    - 孤儿 tool 消息（前面无对应 assistant.tool_calls）→ 丢弃；
+    - assistant.tool_calls 未全部配到 tool 结果 → 只留配到的；
+      一个都没配到 → 剥掉 tool_calls 只留正文，正文也空则整条丢弃。
+    """
+    # 先收集所有 assistant 声明过的 tool_call_id——tool 消息只有配得上
+    # 其中之一才算"有主"（不能拿 tool 消息自己的 id 集合自证，孤儿会恒真）。
+    need = set()
+    for m in msgs:
+        if m.get("role") == "assistant":
+            for tc in (m.get("tool_calls") or []):
+                if tc.get("id"):
+                    need.add(tc["id"])
+    out = []
+    for m in msgs:
+        if m.get("role") == "tool":
+            if m.get("tool_call_id") in need:
+                out.append(m)
+            continue
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            tcs = [tc for tc in (m.get("tool_calls") or [])
+                   if tc.get("id") in _tool_ids_present(msgs)]
+            m = dict(m)
+            if tcs:
+                m["tool_calls"] = tcs
+            else:
+                m.pop("tool_calls", None)
+                if not str(m.get("content") or "").strip():
+                    continue
+        out.append(m)
+    return out
+
+
+def _tool_ids_present(msgs):
+    """当前消息序列里实际存在的 tool 结果 id 集合。"""
+    return {m.get("tool_call_id") for m in msgs if m.get("role") == "tool"}
+
+
+def _build_api_history(messages, vision_ok=False, max_history=None):
+    """v4.125 N-01：会话保真压缩——把 session 历史构造成 API 可接受的 messages。
+
+    与 _sanitize_msg_for_api 的区别（为什么要有这个函数）：
+    后者只收 user/assistant 纯文本，丢掉全部 tool 消息和 assistant.tool_calls——
+    普通聊天无伤，但 Agent 断点续跑/「继续」时模型因此看不到任何工具调用记录，
+    等于失忆重干（重复调工具、重复扣费、编造进度）——v4.108 花大力气建的
+    checkpoint 机制（快照/心跳/paused 状态机）全部空转。
+
+    保真规则：
+    1. 保留 user / assistant / tool 三种 role；assistant.tool_calls 原样保留；
+    2. 排除 system / _internal（nudge、伪造工具指令等由回写端保证不入 session）；
+    3. 配对修复（见 _repair_tool_pairs）——H-01/H-02/H-03 修过的 400 死局不回潮；
+    4. 截断按消息条数，截断后再修一遍配对（截断可能把 assistant 与 tool 结果
+       切成两半，孤儿立即剥离）；
+    5. 只输出 role/content/tool_calls/tool_call_id 四个白名单字段——session
+       里的 _seq 等存储字段绝不能发给 API。
+    """
+    cleaned = []
+    for m in (messages or []):
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        if role not in ("user", "assistant", "tool"):
+            continue
+        if m.get("_internal"):
+            continue
+        if role == "tool":
+            c = m.get("content")
+            c = c if isinstance(c, str) else json.dumps(c, ensure_ascii=False) if c else ""
+            cleaned.append({"role": "tool",
+                            "tool_call_id": str(m.get("tool_call_id", "")),
+                            "content": c})
+            continue
+        # user / assistant：content 归一化复用 _sanitize（视觉保留/文本展平）
+        sm = _sanitize_msg_for_api(m, vision_ok=vision_ok)
+        if not sm:
+            # 纯工具调用（正文为空）的 assistant 在 sanitize 里会被丢——这里保住
+            if role == "assistant" and m.get("tool_calls"):
+                sm = {"role": "assistant", "content": ""}
+            else:
+                continue
+        if role == "assistant" and m.get("tool_calls"):
+            sm = dict(sm)
+            sm["tool_calls"] = [tc for tc in m["tool_calls"]
+                                if isinstance(tc, dict) and tc.get("id")]
+        cleaned.append(sm)
+    cleaned = _repair_tool_pairs(cleaned)
+    if max_history and len(cleaned) > int(max_history):
+        cleaned = _repair_tool_pairs(cleaned[-int(max_history):])
+    return cleaned
+
+
 class ChatWindow(QMainWindow):
     def __init__(self, cfg):
         super().__init__()
@@ -1630,6 +1831,9 @@ class ChatWindow(QMainWindow):
         self._search_pos = -1
         self._edit_target_idx = None
         self._skills = load_skills()
+        # v4.152.2：已懒建过的页面名集合（见 _ensure_lazy_page）
+        # —— `_switch_nav` 每次切页都会进来，没有它就会重复构建整页控件。
+        self._lazy_built = set()
         self._busy = False
         self._busy_timeout = QTimer(self)
         self._busy_timeout.setSingleShot(True)
@@ -1710,37 +1914,6 @@ class ChatWindow(QMainWindow):
         # v4.122.1：不再在 _init_ui 阶段贴圆角——此时 winId() 会强制创建原生句柄，
         # 而该句柄在窗口真正 show 时可能被 Qt 重建（frameless+标志变更），圆角贴到旧
         # 句柄上失效；且 winId() 冷启动实测 ~1s。圆角统一交给 showEvent（最终句柄）贴。
-
-    def showEvent(self, e):
-        """v4.113：窗口首次/重新显示时重贴 DWM 圆角。
-        根因：_init_ui 阶段 winId() 触发生成的原生句柄，在窗口真正 show 时
-        可能被 Qt 重建（frameless + 标志变更场景），导致 DWMWCP_ROUND 落在
-        旧句柄上失效——外框呈现方角。showEvent 里 hwnd 已是最终句柄，重贴即稳。"""
-        super().showEvent(e)
-        try:
-            self._apply_round_corners()
-        except Exception:
-            pass  # 圆角是纯视觉增强，任何异常都不影响主流程
-
-    def _apply_round_corners(self):
-        """Win11 DWM 圆角窗（v4.112 UI 美化）：无边框窗同样支持 DWMWCP_ROUND。
-        非 Win11 / 调用失败一律静默降级为方角；最大化时 DWM 自动回方角（预期行为）。"""
-        try:
-            if sys.platform != "win32":
-                return
-            # v4.122.1：winId() 首次调用即强制创建原生句柄并返回，不必先调一次「触发」再取一次
-            hwnd = int(self.winId())
-            if not hwnd:
-                return
-            DWMWA_WINDOW_CORNER_PREFERENCE = 33
-            DWMWCP_ROUND = 2  # 圆角（WIN11 自绘小圆角，非大弧度）
-            pref = ctypes.c_int(DWMWCP_ROUND)
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
-                ctypes.byref(pref), ctypes.sizeof(pref))
-        except Exception:
-            pass  # 圆角纯属视觉增强，绝不能影响主流程
-
         # 全局样式
         self.setStyleSheet(f"""
             QMainWindow {{ background-color: {THEME['bg']}; }}
@@ -1835,49 +2008,59 @@ class ChatWindow(QMainWindow):
         # 页2：编排
         self.orchestrate_page = QWidget()
         self.orchestrate_page.setStyleSheet(f"background:{THEME['bg']};")
-        self._build_orchestrate_page()
+        # v4.152.2 启动提速：**内容构建推迟**（首次切到该页时由 _ensure_lazy_page 补建）。
+        # 外壳、导航项、addWidget 全部照旧 —— 页数 / nav 下标契约不变。
         self.main_stack.addWidget(self.orchestrate_page)
 
-        # 页3：生图
+        # 页3：Agent 军团（v4.135.0：真内嵌为工作台一页，左导航「军团」直达）
+        # 位置紧跟「编排」——两者同属"组织协调"心智，且该位置在写死下标(0/1)之后，不串页。
+        self.legion_page = QWidget()
+        self.legion_page.setStyleSheet(f"background:{THEME['bg']};")
+        # v4.152 启动提速：**内容构建推迟到 show 之后**（见 _post_show_init）。
+        # 内嵌 LegionWindow 实测 ~172ms，对「窗口何时出现」零贡献。页面外壳与
+        # 导航项仍在此建好 —— main_stack 页数 / nav 下标 / 军团嵌入的契约都不变。
+        self.main_stack.addWidget(self.legion_page)
+
+        # 页4：生图
         self.image_page = QWidget()
         self.image_page.setStyleSheet(f"background:{THEME['bg']};")
-        self._build_image_page()
+        # v4.152.2 启动提速：以下各页**内容构建一律推迟**到首次切页
+        # （_ensure_lazy_page 补建）。外壳 / 导航 / addWidget 全照旧。
+        # 依据：真实 GUI 口径实测，每个页面的 widget 挂载都在付「样式匹配」成本
+        # （addWidget 331 次里 195ms 分摊 + 3 次慢调用 363ms），
+        # 而首屏只用得到 welcome(0) 与 chat(1) —— 其余不点就是纯浪费。
         self.main_stack.addWidget(self.image_page)
 
-        # 页4：生视频
+        # 页5：生视频
         self.video_page = QWidget()
         self.video_page.setStyleSheet(f"background:{THEME['bg']};")
-        self._build_video_page()
         self.main_stack.addWidget(self.video_page)
 
-        # 页5：数字人分身（整合工作台之一）
+        # 页6：数字人分身（整合工作台之一）
         self.twin_page = QWidget()
         self.twin_page.setStyleSheet(f"background:{THEME['bg']};")
-        self._build_twin_page()
         self.main_stack.addWidget(self.twin_page)
 
-        # 页6：导演台（整合工作台之二）
+        # 页7：导演台（整合工作台之二）
         self.director_page = QWidget()
         self.director_page.setStyleSheet(f"background:{THEME['bg']};")
-        self._build_director_page()
+        # v4.152 启动提速：**内容构建推迟到 show 之后**（见 _post_show_init）。
+        # 导演台整页构建实测 ~92ms，同属「不点就不需要」的成本。
         self.main_stack.addWidget(self.director_page)
 
-        # 页7：工具
+        # 页8：工具
         self.tools_page = QWidget()
         self.tools_page.setStyleSheet(f"background:{THEME['bg']};")
-        self._build_tools_page()
         self.main_stack.addWidget(self.tools_page)
 
-        # 页8：自动化任务
+        # 页9：自动化任务
         self.automation_page = QWidget()
         self.automation_page.setStyleSheet(f"background:{THEME['bg']};")
-        self._build_automation_page()
         self.main_stack.addWidget(self.automation_page)
 
-        # 页9：设置
+        # 页10：设置
         self.settings_page = QWidget()
         self.settings_page.setStyleSheet(f"background:{THEME['bg']};")
-        self._build_settings_page()
         self.main_stack.addWidget(self.settings_page)
 
         self.main_stack.setCurrentIndex(0)
@@ -1896,33 +2079,23 @@ class ChatWindow(QMainWindow):
         self.skill_buttons = {}
         self._populate_skill_lib(skill_inner_layout)
 
-        # 模型选择
-        profiles = self.cfg.get("model_profiles", {})
-        if profiles:
-            names = list(profiles.keys())
-            self.model_combo.addItems(names)
-            self.model_combo.currentTextChanged.connect(self._on_model_change)
-            for i, nm in enumerate(names):
-                p = profiles[nm]
-                if p.get("base_url") == self.cfg["base_url"] and p.get("model") == self.cfg["model"]:
-                    self.model_combo.blockSignals(True)
-                    self.model_combo.setCurrentIndex(i)
-                    self.model_combo.blockSignals(False)
-                    self._on_model_change(nm)
-                    break
-            else:
-                if names:
-                    self._on_model_change(names[0])
+        # 模型选择（v4.149.0：只做「显示对齐」，**绝不回写 config**）
+        # 老代码在这里做的是：能找到匹配档位就 `_on_model_change(nm)`；
+        # **匹配不到就走 `for...else` 调 `_on_model_change(names[0])`** —— 无任何用户
+        # 操作、每次启动都可能把主模型三件套改成档位列表第一项并落盘。已删除该兜底。
+        self._init_settings_model_combo()
 
         # 初始化
-        self._render_messages(force_bottom=True)
+        self._render_messages(force_bottom=True)   # 首屏聊天内容，必须在 show 之前跑
         self._refresh_recent_on_welcome()
-        self._refresh_skill_buttons()
-        self._update_skill_bar()
-        self._refresh_deliverables()
-        self._refresh_session_combo()
         self.input_box.setFocus()
-        self._scan_agent_resume()  # v4.101：启动时检测本会话是否有暂停的 Agent 任务可继续
+        # v4.152 启动提速：以下 6 项都是「把数据填进控件」的刷新动作，与「窗口能不能显示」
+        # 无关，但此前同步跑在 __init__ 里 —— 而 __init__ 全程计入 window_shown，
+        # 实测 window_shown 占启动总时长的 89%（1.2~1.5s）。用户感知的「打开速度」
+        # 是**窗口何时出现**，所以把它们移到 show() 之后：QTimer.singleShot(0, ...)
+        # 在下一轮事件循环执行（几乎立即，那时窗口已经画出来了）。
+        # ⚠️ _render_messages 绝不能一起推后 —— 它是首屏内容。
+        QTimer.singleShot(0, self._post_show_init)
 
         # ===== 模块1：剪贴板自动监听 =====
         from clipboard_monitor import ClipboardMonitor
@@ -1934,6 +2107,130 @@ class ChatWindow(QMainWindow):
         # ---- 边缘缩放过滤器（用 QAbstractNativeEventFilter 避免 nativeEvent 签名冲突）----
         self._edge_filter = _EdgeResizeFilter(self)
         QApplication.instance().installNativeEventFilter(self._edge_filter)
+
+    def _post_show_init(self):
+        """v4.152：show() 之后才做的「非首屏」初始化。
+
+        原先这一批同步跑在 __init__ 里，把 window_shown 撑到 1.2~1.5s
+        （占启动总时长 89%）。移到 show() 之后，窗口能更早出现。
+        每项独立 try 包裹 —— 任何一项失败都不该影响其它项，更不该影响已显示的窗口。
+        """
+        # v4.156 启动提速：延迟创建 ChatWebView（QWebEngineView 渲染进程固有 ~200ms）。
+        # 必须在首批轻量刷新之前完成，确保首屏渲染/用户交互前真实视图已就绪。
+        self._build_chat_view()
+
+        # 第 1 批：轻量刷新（合计约 50ms）—— 立刻跑，让窗口状态在首屏就正确。
+        for fn in (self._refresh_skill_buttons,
+                   self._update_skill_bar,
+                   self._refresh_deliverables,
+                   self._refresh_session_combo,
+                   self._sync_product_context,     # v4.129 起：同步会话标题为项目名
+                   self._scan_agent_resume):       # v4.101 起：检测可续跑的 Agent 任务
+            try:
+                fn()
+            except Exception:
+                try:
+                    log.exception("启动后置初始化失败: %s", getattr(fn, "__name__", fn))
+                except Exception:
+                    pass
+        # 第 2 批：重活预热（合计约 450ms）—— 延后 600ms 再跑。
+        # 理由：这批（军团页 144ms + 导演台 94ms + 麦克风探测 ~200ms，
+        # 其中麦克风探测首次会加载 sounddevice+numpy）如果紧跟 show() 同步执行，
+        # 会**把首屏重绘一起卡住** —— 用户看到的是「窗口出来了但半秒不出内容」，
+        # 并不比原来好。延后 600ms：先让窗口画出来、能响应，再在后台预热。
+        # 用户在预热前就点进这两页也没关系：_switch_nav → _ensure_lazy_page
+        # 会立刻同步补建，不会看到空白页。
+        QTimer.singleShot(600, self._post_show_heavy)
+
+    def _post_show_heavy(self):
+        """v4.152：首屏画出来之后的「重活」预热（军团页 / 导演台 / 麦克风探测）。
+
+        每一项独立 try —— 任何一项失败都不该影响其它项，也不该影响已跑起来的窗口。
+        """
+        for fn in (self._build_legion_page,     # 页面外壳已在 __init__ 建好，这里补内容
+                   self._build_director_page,   # 同上
+                   self._fill_mics):            # 探测录音设备（首次触发 sounddevice 加载）
+            try:
+                fn()
+            except Exception:
+                try:
+                    log.exception("启动预热失败: %s", getattr(fn, "__name__", fn))
+                except Exception:
+                    pass
+
+
+
+    # ---------- v4.156 启动提速：ChatWebView 延迟创建 ----------
+    def _build_chat_view(self):
+        """v4.156：把 ChatWebView 的创建从 __init__ 移到 show() 之后。
+
+        根因：ChatWebView 内部 setHtml 会拉起 QWebEngineView 渲染进程，固有成本
+        ~200ms，此前同步计入 window_shown 占启动感知时长。setHtml 本身是异步的
+        （首屏本来就有空白期，要等 loadFinished 才渲染），所以延迟创建几乎不改变
+        用户可见的首屏时序，但能把这 ~200ms 从「窗口出现」之前挪到之后。
+
+        幂等：重复调用只创建一次（防御性，避免被误调导致双重视图）。
+        """
+        if getattr(self, "chat_view", None) is not None:
+            return
+        # 创建真实 ChatWebView 并连接既有信号
+        self.chat_view = chat_web.ChatWebView(THEME)
+        # v4.75：对话内搜索跳转 + 单条「重新生成 / 改写问题」链接（app:// 协议拦截）
+        self.chat_view.anchorActivated.connect(self._on_anchor_clicked)
+        # v4.104：页面意外重载（DOM 清空）→ 全量重渲染自愈
+        self.chat_view.pageReloaded.connect(self._on_chat_page_reloaded)
+        # v4.120.2：首屏就绪（第一次 loadFinished）→ 权威数据全量重渲染，
+        # 兜底首帧 runJavaScript 被吞导致的「首屏白屏 + 历史不显示」回归。
+        self.chat_view.ready.connect(self._on_chat_page_reloaded)
+        # 用真实视图替换占位容器（保持原有位置 + stretch=1，避免布局跳动）
+        lay = getattr(self, "chat_col_lay", None)
+        container = getattr(self, "chat_container", None)
+        if lay is not None and container is not None:
+            idx = lay.indexOf(container)
+            lay.removeWidget(container)
+            container.deleteLater()
+            self.chat_container = None
+            if idx < 0:
+                idx = lay.count()  # 兜底：找不到就加到末尾
+            lay.insertWidget(idx, self.chat_view, 1)
+        else:
+            # 防御性兜底：布局/占位引用丢失（正常流程不可能触发）。直接挂到聊天列，
+            # 不抛异常，保证视图仍能显示而非永久空白。
+            try:
+                log.warning("延迟创建 ChatWebView 时布局引用丢失，回退挂载到 chat_page")
+                self.chat_page.layout().addWidget(self.chat_view, 1)
+            except Exception:
+                pass
+
+    def showEvent(self, e):
+        """v4.113：窗口首次/重新显示时重贴 DWM 圆角。
+        根因：_init_ui 阶段 winId() 触发生成的原生句柄，在窗口真正 show 时
+        可能被 Qt 重建（frameless + 标志变更场景），导致 DWMWCP_ROUND 落在
+        旧句柄上失效——外框呈现方角。showEvent 里 hwnd 已是最终句柄，重贴即稳。"""
+        super().showEvent(e)
+        try:
+            self._apply_round_corners()
+        except Exception:
+            pass  # 圆角是纯视觉增强，任何异常都不影响主流程
+
+    def _apply_round_corners(self):
+        """Win11 DWM 圆角窗（v4.112 UI 美化）：无边框窗同样支持 DWMWCP_ROUND。
+        非 Win11 / 调用失败一律静默降级为方角；最大化时 DWM 自动回方角（预期行为）。"""
+        try:
+            if sys.platform != "win32":
+                return
+            # v4.122.1：winId() 首次调用即强制创建原生句柄并返回，不必先调一次「触发」再取一次
+            hwnd = int(self.winId())
+            if not hwnd:
+                return
+            DWMWA_WINDOW_CORNER_PREFERENCE = 33
+            DWMWCP_ROUND = 2  # 圆角（WIN11 自绘小圆角，非大弧度）
+            pref = ctypes.c_int(DWMWCP_ROUND)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
+                ctypes.byref(pref), ctypes.sizeof(pref))
+        except Exception:
+            pass  # 圆角纯属视觉增强，绝不能影响主流程
 
     def _fit_window_to_screen(self):
         """初始尺寸自适应屏幕可用区域并居中，并限制在舒适范围内便于用户后续手动缩放。
@@ -1981,7 +2278,7 @@ class ChatWindow(QMainWindow):
         hb.setContentsMargins(10, 0, 10, 0)
         hb.setSpacing(6)
 
-        self.session_combo = QComboBox()
+        self.session_combo = _NoWheelCombo()
         self.session_combo.setFixedHeight(32)
         self.session_combo.setMinimumWidth(160)
         self.session_combo.setStyleSheet(
@@ -1997,7 +2294,7 @@ class ChatWindow(QMainWindow):
         new_btn.setFixedSize(32, 32)
         new_btn.setToolTip("新建对话")
         new_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['accent']};color:#FFFFFF;border:none;"
+            f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
             f"border-radius:8px;padding:0;font-size:15px;font-weight:500;}}"
             f"QPushButton:hover{{background:{THEME['accent_hover']};}}")
         new_btn.clicked.connect(self._new_session)
@@ -2021,7 +2318,7 @@ class ChatWindow(QMainWindow):
         del_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['card']};"
             f"border:1px solid {THEME['border']};border-radius:8px;padding:0;}}"
-            f"QPushButton:hover{{border-color:{THEME['danger']};background:#FCE8E6;}}")
+            f"QPushButton:hover{{border-color:{THEME['danger']};background:{THEME['danger_hover_red']};}}")
         del_btn.clicked.connect(self._delete_active_session)
         hb.addWidget(del_btn)
 
@@ -2037,7 +2334,7 @@ class ChatWindow(QMainWindow):
         hb.addWidget(mgr_btn)
 
         # 麦克风选择
-        self.mic_combo = QComboBox()
+        self.mic_combo = _NoWheelCombo()
         self.mic_combo.setFixedHeight(32)
         self.mic_combo.setMinimumWidth(150)
         self.mic_combo.setStyleSheet(
@@ -2132,16 +2429,17 @@ class ChatWindow(QMainWindow):
 
         cc_lay.addWidget(header)
 
-        # 聊天视图（v4.104：QWebEngineView 真浏览器渲染——圆角/Markdown/流式局部更新）
-        self.chat_view = chat_web.ChatWebView(THEME)
-        # v4.75：对话内搜索跳转 + 单条「重新生成 / 改写问题」链接（app:// 协议拦截）
-        self.chat_view.anchorActivated.connect(self._on_anchor_clicked)
-        # v4.104：页面意外重载（DOM 清空）→ 全量重渲染自愈
-        self.chat_view.pageReloaded.connect(self._on_chat_page_reloaded)
-        # v4.120.2：首屏就绪（第一次 loadFinished）→ 权威数据全量重渲染，
-        # 兜底首帧 runJavaScript 被吞导致的「首屏白屏 + 历史不显示」回归。
-        self.chat_view.ready.connect(self._on_chat_page_reloaded)
-        cc_lay.addWidget(self.chat_view, 1)
+        # 聊天视图占位容器（v4.156 启动提速）：ChatWebView 内部 setHtml 会拉起
+        # QWebEngineView 渲染进程，固有成本 ~200ms，此前同步跑在 __init__ 里计入
+        # window_shown。setHtml 本就异步、首屏本来就有空白期，故延迟到 show() 之后
+        # 在 _build_chat_view() 创建真实视图；这里先放空容器撑住 stretch=1 布局，
+        # 避免占位缺失导致聊天列塌缩/输入区顶到顶部。
+        self.chat_container = QWidget()
+        self.chat_container.setObjectName("chat_placeholder")
+        self.chat_container.setStyleSheet(f"background:{THEME['bg']};")
+        cc_lay.addWidget(self.chat_container, 1)
+        # 记录聊天列布局，延迟创建后用于把占位容器替换成真实视图
+        self.chat_col_lay = cc_lay
 
         # 输入区
         cc_lay.addWidget(self._build_input_area())
@@ -2149,8 +2447,11 @@ class ChatWindow(QMainWindow):
         # v4.109：模型下拉填充（必须在 _build_input_area 建好 combo 之后）
         self._fill_model_combo()
 
-        # 麦克风列表填充（必须在 status_label 建好之后，否则 __init__ 崩溃）
-        self._fill_mics()
+        # v4.152 启动提速：麦克风列表填充**移到 show 之后**（_post_show_init）。
+        # 它会探测录音设备 → 触发 sounddevice+numpy 加载（实测数百 ms），与「窗口
+        # 能不能显示」毫无关系。原注释「必须在 status_label 建好之后」在延迟后
+        # 反而更稳 —— 那时包括 status_label 在内的所有控件都已建好。
+        # self._fill_mics()
 
         split.addWidget(chat_col)
         split.setStretchFactor(0, 1)
@@ -2185,13 +2486,28 @@ class ChatWindow(QMainWindow):
         self.chat_model_combo.blockSignals(True)
         try:
             self.chat_model_combo.clear()
-            self.chat_model_combo.addItem("Auto · 智能路由", "")
+            # v4.149.0：**Auto 标签里直接写出主模型是谁、复杂升到谁**。
+            # 此前只写「Auto · 智能路由」，主模型被静默换掉（09-06→09-14 一直跑智谱 GLM）
+            # 在界面上完全看不出来 —— 可见性缺口本身就是这次事故的一半。
+            _rt = cfg.get("model_routing") or {}
+            _cx = ""
+            if _rt.get("enabled", True) and _rt.get("complex_model"):
+                _cx = " → 复杂升 %s" % _rt["complex_model"]
+            self.chat_model_combo.addItem(
+                "Auto · 智能路由（主模型 %s%s）" % (cfg.get("model") or "未设置", _cx), "")
             self.chat_model_combo.addItem("主模型 · %s" % (cfg.get("model") or "未设置"),
                                           "__main__")
             for name, prof in (cfg.get("model_profiles") or {}).items():
                 prof = prof or {}
                 ok = bool(prof.get("api_key")) and bool(prof.get("model")) and bool(prof.get("base_url"))
                 label = "%s · %s" % (name, prof.get("model") or "未设置")
+                # v4.128：Agnes 系模型当前官方限免（刊例价非 0），标注「限免」不写死免费
+                try:
+                    import agnes_text as _at
+                    if _at.is_agnes_text_model(prof.get("model", "")):
+                        label += "（限免）"
+                except Exception:
+                    pass
                 if not ok:
                     label += "（未配置 Key）"
                 idx = self.chat_model_combo.addItem(label, name)
@@ -2235,6 +2551,53 @@ class ChatWindow(QMainWindow):
         except Exception:
             pass
 
+    # ===== v4.128：Agnes 文本模型设置（军团 / 导演台文本环节）=====
+    def _save_agnes_text_cfg(self, **fields):
+        """写回 config.json（与 model_lock 同口径，任何异常只记日志不打断 UI）。"""
+        try:
+            for k, v in fields.items():
+                self.cfg[k] = v
+            import config as _cfg
+            _cfg.save_config(self.cfg)
+            return True
+        except Exception as e:
+            log.warning("保存 Agnes 文本模型配置失败: %s", e)
+            return False
+
+    def _on_agnes_text_model_changed(self, idx):
+        try:
+            val = self.agnes_text_combo.itemData(idx) or "agnes-2.5-flash"
+        except Exception:
+            return
+        self._save_agnes_text_cfg(agnes_text_model=val)
+        try:
+            self.status_label.setText("Agnes 文本模型：%s" % self.agnes_text_combo.itemText(idx))
+        except Exception:
+            pass
+
+    def _on_agnes_fallback_changed(self, state):
+        self._save_agnes_text_cfg(agnes_text_fallback=bool(state))
+
+    def _on_agnes_thinking_changed(self, state):
+        self._save_agnes_text_cfg(agnes_thinking_enabled=bool(state))
+
+    def _refresh_agnes_stats(self):
+        """回退率统计 + 不稳定提示（界面提示，不改代码行为）。"""
+        try:
+            import agnes_text as _at
+            s = _at.stats()
+            txt = "本次运行：调用 %d 次，回退 %d 次（总回退率 %d%%）" % (
+                s["calls"], s["fallbacks"], int(round(s["rate"] * 100)))
+            hint = _at.unstable_hint()
+            if hint:
+                txt += "\n⚠️ " + hint
+            self.agnes_stats_lbl.setText(txt)
+        except Exception:
+            try:
+                self.agnes_stats_lbl.setText("")
+            except Exception:
+                pass
+
     def _build_input_area(self):
         """输入区卡片：状态/技能条 + 附件 + 输入框 + 发送。"""
         input_area = QWidget()
@@ -2252,7 +2615,7 @@ class ChatWindow(QMainWindow):
         self.status_label.setStyleSheet(
             f"color:{THEME['faint']};font-size:11px;min-height:12px;")
         _top_lay.addWidget(self.status_label, 1)
-        self.chat_model_combo = QComboBox()
+        self.chat_model_combo = _NoWheelCombo()
         self.chat_model_combo.setFixedHeight(28)
         self.chat_model_combo.setMinimumWidth(150)
         self.chat_model_combo.setMaximumWidth(280)
@@ -2268,7 +2631,11 @@ class ChatWindow(QMainWindow):
             f"QComboBox QAbstractItemView{{background:{THEME['card']};"
             f"border:1px solid {THEME['border']};"
             f"selection-background-color:{THEME['accent']};}}")
-        self.chat_model_combo.currentIndexChanged.connect(self._on_model_combo_changed)
+        # v4.149.0：currentIndexChanged → activated。前者连滚轮滑过/键盘上下/
+        # 程序化 setCurrentIndex 都会触发 `_on_model_combo_changed` 把 model_lock
+        # 写进 config.json（等于静默锁死档位、Auto 路由被绕过）；activated 只在
+        # 用户真选时发出，语义正确且与设置弹层口径一致。
+        self.chat_model_combo.activated.connect(self._on_model_combo_changed)
         _top_lay.addWidget(self.chat_model_combo, 0)
         ia_lay.addWidget(_top_row)
 
@@ -2338,7 +2705,7 @@ class ChatWindow(QMainWindow):
             f"QPushButton{{background:transparent;color:{THEME['dim']};"
             f"border:none;border-radius:17px;font-size:13px;padding:0 8px;}}"
             f"QPushButton:hover{{background:{THEME['panel2']};color:{THEME['text']};}}"
-            f"QPushButton:pressed{{background:{THEME['accent']};color:#FFFFFF;}}")
+            f"QPushButton:pressed{{background:{THEME['accent']};color:white;}}")
         self.talk_btn.pressed.connect(self._start_talk)
         self.talk_btn.released.connect(self._stop_talk)
         ifl.addWidget(self.talk_btn, 0, Qt.AlignBottom)
@@ -2348,7 +2715,7 @@ class ChatWindow(QMainWindow):
         self.send_btn.setEnabled(False)
         self.send_btn.setCursor(Qt.PointingHandCursor)
         self.send_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['accent']};color:#FFFFFF;"
+            f"QPushButton{{background:{THEME['accent']};color:white;"
             f"border:none;border-radius:17px;font-size:16px;font-weight:600;}}"
             f"QPushButton:hover{{background:{THEME['accent_hover']};}}"
             f"QPushButton:disabled{{background:{THEME['border']};color:{THEME['faint']};}}")
@@ -2361,9 +2728,9 @@ class ChatWindow(QMainWindow):
         self.stop_btn.setFixedWidth(60)
         self.stop_btn.setVisible(False)
         self.stop_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME.get('danger', '#d93025')};color:#FFFFFF;"
+            f"QPushButton{{background:{THEME['danger']};color:white;"
             f"border:none;border-radius:17px;font-size:13px;font-weight:600;}}"
-            f"QPushButton:hover{{background:#b3261e;}}"
+            f"QPushButton:hover{{background:{THEME['btn_delete_hover']};}}"
             f"QPushButton:disabled{{background:{THEME['border']};color:{THEME['faint']};}}")
         self.stop_btn.clicked.connect(self._request_agent_stop)
         ifl.addWidget(self.stop_btn, 0, Qt.AlignBottom)
@@ -2374,7 +2741,7 @@ class ChatWindow(QMainWindow):
         self.resume_agent_btn.setFixedWidth(120)
         self.resume_agent_btn.setVisible(False)
         self.resume_agent_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['accent']};color:#FFFFFF;"
+            f"QPushButton{{background:{THEME['accent']};color:white;"
             f"border:none;border-radius:17px;font-size:13px;font-weight:600;}}"
             f"QPushButton:hover{{background:{THEME['accent_hover']};}}")
         self.resume_agent_btn.clicked.connect(self._resume_agent_task)
@@ -2406,7 +2773,7 @@ class ChatWindow(QMainWindow):
     def _style_voice_switch(self, btn, on):
         """语音开关视觉态：开=蓝底白喇叭图标，关=灰底弱化图标。"""
         btn.setIcon(_nav_icon_qicon("语音" if on else "静音",
-                                    "#FFFFFF" if on else THEME["dim"], 15))
+                                    THEME["white"] if on else THEME["dim"], 15))
         if on:
             btn.setStyleSheet(
                 f"QPushButton{{background:{THEME['accent']};border:none;"
@@ -2618,10 +2985,10 @@ class ChatWindow(QMainWindow):
 
     # ============ 按钮样式 ============
     def _primary_btn_style(self):
-        return (f"QPushButton{{background:{THEME['accent']};color:#FFFFFF;border:none;"
+        return (f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
                 f"border-radius:8px;padding:0 16px;font-size:13px;font-weight:600;}}"
                 f"QPushButton:hover{{background:{THEME['accent_hover']};}}"
-                f"QPushButton:disabled{{background:{THEME['accent_disabled']};color:#FFFFFF;}}")
+                f"QPushButton:disabled{{background:{THEME['accent_disabled']};color:white;}}")
 
     def _secondary_btn_style(self):
         return (f"QPushButton{{background:{THEME['card']};border:1px solid {THEME['border']};"
@@ -2653,6 +3020,11 @@ class ChatWindow(QMainWindow):
 
     # ============ 编排页（小说一条龙）============
     def _build_orchestrate_page(self):
+        # v4.152.2：**幂等** —— 内容改由「首次切页」补建（_ensure_lazy_page），
+        # 但外部（验证脚本等）也可能显式调用；重复构建会把控件二次 addWidget 到同一页。
+        if getattr(self, "_orchestrate_built", False):
+            return
+        self._orchestrate_built = True
         page = self.orchestrate_page
         lay = QVBoxLayout(page)
         lay.setContentsMargins(32, 24, 32, 24)
@@ -2677,7 +3049,7 @@ class ChatWindow(QMainWindow):
             f"QLineEdit:focus{{border:1px solid {THEME['accent']};}}")
         cfg_row.addWidget(self.orch_topic, 1)
 
-        self.orch_len_type = QComboBox()
+        self.orch_len_type = _NoWheelCombo()
         self.orch_len_type.addItems(["短篇", "长篇"])
         self.orch_len_type.setFixedHeight(34)
         self.orch_len_type.setToolTip("短篇：一次性写完目标字数；长篇：按章生成，用「续写」出下一章")
@@ -2699,7 +3071,7 @@ class ChatWindow(QMainWindow):
             f"QSpinBox:focus{{border:1px solid {THEME['accent']};}}")
         cfg_row.addWidget(self.orch_words)
 
-        self.orch_platform = QComboBox()
+        self.orch_platform = _NoWheelCombo()
         self.orch_platform.addItems(["番茄小说", "知乎", "公众号", "抖音", "头条"])
         self.orch_platform.setFixedHeight(34)
         self.orch_platform.setStyleSheet(
@@ -2848,11 +3220,23 @@ class ChatWindow(QMainWindow):
         self._scan_skill_review()
 
     def _open_legion(self):
-        """v4.121：打开 Agent 军团面板（可自定义团队角色的多项目编排）。
+        """打开 Agent 军团（v4.135.0：优先切到内嵌页，内嵌不可用才回退独立窗口）。
 
         防御式 import：军团是新增旁路功能，模块加载/窗口构建失败只弹提示，
         绝不让异常冒泡到主窗口构造流程（旁路底线：自己死也不拖垮主程序）。
         """
+        # v4.152：内嵌页的内容构建已推迟到 show 之后（启动提速）。这里**先确保
+        # 它建好** —— 否则 `_legion_embedded` 仍是 None，会一路掉到下面的
+        # 「独立窗口」回退分支，而那正是 v4.135 刻意消除的「两实例同写存档」。
+        # 构建函数幂等，重复调用无害。
+        self._build_legion_page()
+        # 首选：内嵌页已就绪 → 直接切页（左导航同步高亮），不再弹独立窗口
+        if getattr(self, "_legion_embedded", None) is not None:
+            idx = getattr(self, "_legion_nav_idx", None)
+            if idx is not None:
+                self._switch_nav(idx)
+                return
+        # 回退：内嵌构建失败 → 独立窗口（旧行为）
         try:
             import legion_ui
         except Exception as e:
@@ -3166,6 +3550,10 @@ class ChatWindow(QMainWindow):
 
     # ============ 生图页 ============
     def _build_image_page(self):
+        # v4.152.2：幂等（同 _build_orchestrate_page）
+        if getattr(self, "_image_built", False):
+            return
+        self._image_built = True
         page = self.image_page
         lay = QVBoxLayout(page)
         lay.setContentsMargins(32, 24, 32, 24)
@@ -3183,7 +3571,7 @@ class ChatWindow(QMainWindow):
         size_lbl = QLabel("尺寸")
         size_lbl.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
         opt_row.addWidget(size_lbl)
-        self.image_size_combo = QComboBox()
+        self.image_size_combo = _NoWheelCombo()
         self.image_size_combo.setFixedHeight(34)
         self.image_size_combo.setMinimumWidth(150)
         for s in ["1024x1024 方形", "1024x768 横版 4:3", "768x1024 竖版 3:4",
@@ -3266,6 +3654,10 @@ class ChatWindow(QMainWindow):
 
     # ============ 生视频页 ============
     def _build_video_page(self):
+        # v4.152.2：幂等（同 _build_orchestrate_page）
+        if getattr(self, "_video_built", False):
+            return
+        self._video_built = True
         page = self.video_page
         lay = QVBoxLayout(page)
         lay.setContentsMargins(32, 24, 32, 24)
@@ -3300,7 +3692,7 @@ class ChatWindow(QMainWindow):
             f"border-radius:8px;padding:0 10px;font-size:13px;color:{THEME['text']};}}")
         opt.addWidget(self.video_duration)
 
-        self.video_resolution = QComboBox()
+        self.video_resolution = _NoWheelCombo()
         # 预设均经 2026-08-17 实测：Agnes 视频接受任意 WxH（无白名单），至少支持到 4K。
         for label, val in [
             ("竖屏 1080×1920 (9:16)", "1080x1920"),
@@ -3587,18 +3979,69 @@ class ChatWindow(QMainWindow):
     # ============ 数字人分身页（整合工作台）============
     def _build_twin_page(self):
         """委托给 digital_twin_panel 模块构建（懒导入，避免拖累启动与打包）。"""
+        # v4.152.2：幂等（同 _build_orchestrate_page）
+        if getattr(self, "_twin_built", False):
+            return
+        self._twin_built = True
         from digital_twin_panel import build_twin_panel
         build_twin_panel(self)
 
     # ============ 导演台页（整合工作台）============
     def _build_director_page(self):
-        """委托给 director_panel 模块构建（懒导入）。"""
+        """委托给 director_panel 模块构建（懒导入）。
+
+        v4.152：**幂等**。__init__ 现在只建页面外壳，内容改由 show 之后
+        （_post_show_init）或首次切到该页时（_ensure_lazy_page）补上；
+        另有验证脚本会显式再调一次 —— 重复构建会把控件二次 addWidget 到
+        同一页，所以必须挡住。失败时不置位，留出重试余地。
+        """
+        if getattr(self, "_director_built", False):
+            return
         from director_panel import build_director_panel
         build_director_panel(self)
+        self._director_built = True
+
+    # ============ Agent 军团页（v4.135.0：真内嵌）============
+    def _build_legion_page(self):
+        """把 legion_ui.LegionWindow 真内嵌为工作台一页（懒导入）。
+
+        防御式（沿用军团「自己死也不拖垮主程序」的旁路底线）：模块加载/构建失败
+        只显示占位提示，绝不冒泡到主窗口构造流程。构建成功则常驻本项目——左导航
+        「军团」直达；_open_legion 只切页，不再新开独立窗口（避免两实例同写存档）。
+
+        v4.152：**幂等** —— 内容构建已推迟到 show 之后（_post_show_init）或首次
+        切到该页时（_ensure_lazy_page），可能被调用多次，重复构建会把军团控件
+        二次 addWidget 到同一页。
+        """
+        if getattr(self, "_legion_built", False):
+            return
+        v = QVBoxLayout(self.legion_page)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+        self._legion_embedded = None
+        try:
+            import legion_ui
+            self._legion_embedded = legion_ui.LegionWindow(
+                mw=self, parent=self.legion_page, embedded=True)
+            v.addWidget(self._legion_embedded)
+        except Exception as e:
+            log.warning("军团页内嵌失败: %s", e)
+            tip = QLabel("Agent 军团加载失败：%s" % e)
+            tip.setAlignment(Qt.AlignCenter)
+            tip.setWordWrap(True)
+            tip.setStyleSheet(
+                f"color:{THEME['danger']};font-size:14px;background:transparent;padding:24px;")
+            v.addWidget(tip)
+        # v4.152：成功与占位都算「已构建」，防止 _post_show_init 与切页兜底重复调用
+        self._legion_built = True
 
     # ============ 自动化任务页（v4.88）============
     def _build_automation_page(self):
         """委托给 automation_panel 模块构建（懒导入）。"""
+        # v4.152.2：幂等（同 _build_orchestrate_page）
+        if getattr(self, "_automation_built", False):
+            return
+        self._automation_built = True
         from automation_panel import build_automation_panel
         build_automation_panel(self)
 
@@ -3667,6 +4110,10 @@ class ChatWindow(QMainWindow):
 
     # ============ 工具箱页 ============
     def _build_tools_page(self):
+        # v4.152.2：幂等（同 _build_orchestrate_page）
+        if getattr(self, "_tools_built", False):
+            return
+        self._tools_built = True
         page = self.tools_page
         lay = QVBoxLayout(page)
         lay.setContentsMargins(32, 24, 32, 24)
@@ -3684,7 +4131,7 @@ class ChatWindow(QMainWindow):
         market_btn.setFixedHeight(34)
         market_btn.setCursor(Qt.PointingHandCursor)
         market_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['accent']};color:#FFFFFF;border:none;"
+            f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
             f"border-radius:8px;padding:0 16px;font-size:13px;font-weight:500;}}"
             f"QPushButton:hover{{background:{THEME['accent_hover']};}}")
         market_btn.clicked.connect(self._open_skill_market)
@@ -3744,9 +4191,33 @@ class ChatWindow(QMainWindow):
 
     # ============ 设置页 ============
     def _build_settings_page(self):
+        # v4.152.2：幂等（同 _build_orchestrate_page）。
+        # 设置页是这批里最重的（实测首次构建 431ms），但也被验证脚本直接访问
+        # （_verify_ui_model_v41490 读 self.agnes_text_combo）→ 幂等是必需的。
+        if getattr(self, "_settings_built", False):
+            return
+        self._settings_built = True
         page = self.settings_page
         page.setFont(QFont("Microsoft YaHei", 13))
-        lay = QVBoxLayout(page)
+        # v4.152.3：设置页内容总高超过可视区，但此前**没有滚动容器** ——
+        # QVBoxLayout 会把 4 张卡片**平均压缩**（实测每张只剩 117px，卡片内每个控件
+        # 被压到 5~6px、互相重叠；而 QComboBox 是 v=Fixed(32px) 不参与压缩，会溢出到
+        # 相邻行 —— 表现为「下拉挤在文字中间」）。
+        # 修法：套一层 QScrollArea（沿用本项目 `_build_tools_page` 的既有模式），
+        # 卡片按内容撑开，超出部分滚动，不再被压。
+        _scroll = QScrollArea()
+        _scroll.setWidgetResizable(True)
+        _scroll.setFrameShape(QFrame.NoFrame)
+        _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        _scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        _inner = QWidget()
+        _inner.setStyleSheet(f"background:{THEME['bg']};")
+        _scroll.setWidget(_inner)
+        _outer = QVBoxLayout(page)
+        _outer.setContentsMargins(0, 0, 0, 0)
+        _outer.setSpacing(0)
+        _outer.addWidget(_scroll, 1)
+        lay = QVBoxLayout(_inner)          # ← 原来直接挂 page 的 lay 现在挂到 inner
         lay.setContentsMargins(32, 24, 32, 24)
         lay.setSpacing(16)
         head = QLabel("设置")
@@ -3765,7 +4236,11 @@ class ChatWindow(QMainWindow):
         prof = self.cfg.get("model_profiles", {})
         cur = next((n for n, p in prof.items()
                     if p.get("base_url") == self.cfg.get("base_url")
-                    and p.get("model") == self.cfg.get("model")), "—")
+                    and p.get("model") == self.cfg.get("model")), "")
+        # v4.149.0：失配不再显示「—」（等于把真实主模型藏起来），改为亮出真实 model 名
+        # 并标注「未匹配档位」。这样即便配置被谁改了，也一眼看得见主模型到底是什么。
+        if not cur:
+            cur = "未匹配档位 · %s" % (self.cfg.get("model") or "未设置")
         il.addWidget(self._kv("当前模型", cur))
         il.addWidget(self._kv("Agent 模式", "开" if self.cfg.get("agent_mode") else "关"))
         il.addWidget(self._kv("联网搜索", "开" if self.cfg.get("search_enabled", True) else "关"))
@@ -3793,6 +4268,79 @@ class ChatWindow(QMainWindow):
         btn_row.addWidget(diag_btn)
         btn_row.addStretch(1)
         lay.addLayout(btn_row)
+
+        # ===== v4.128：Agnes 文本模型（军团 / 导演台所有文本环节）=====
+        at_card = QWidget()
+        at_card.setObjectName("settingsAgnesTextCard")
+        at_card.setStyleSheet(f"QWidget#settingsAgnesTextCard{{background:{THEME['card']};border:1px solid {THEME['border']};"
+                              f"border-radius:10px;padding:16px;}}")
+        al = QVBoxLayout(at_card)
+        al.setSpacing(10)
+        at_head = QLabel("Agnes 文本模型（军团 / 导演台文本环节）")
+        at_head.setStyleSheet(f"font-size:15px;font-weight:600;color:{THEME['text']};background:transparent;")
+        al.addWidget(at_head)
+        at_sub = QLabel(
+            "3.0 是新一代文本模型（512K 上下文 / 65K 输出，官方当前限免），主打长任务不跑偏、"
+            "少空转；2.5 是现役稳定版。默认 2.5 —— 3.0 发布初期实测稳定性一般，"
+            "选 3.0 时超时/5xx/流中断/空响应会自动回退 2.5。生图与生视频模型不受影响。")
+        at_sub.setWordWrap(True)
+        at_sub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};background:transparent;")
+        al.addWidget(at_sub)
+
+        at_row = QHBoxLayout()
+        at_lbl = QLabel("文本模型：")
+        at_lbl.setStyleSheet(f"font-size:13px;color:{THEME['text']};background:transparent;")
+        at_row.addWidget(at_lbl)
+        self.agnes_text_combo = _NoWheelCombo()
+        self.agnes_text_combo.setFixedHeight(32)
+        self.agnes_text_combo.setMinimumWidth(240)
+        try:
+            import agnes_text as _at_mod
+            for _m in _at_mod.AGNES_TEXT_CANDIDATES:
+                self.agnes_text_combo.addItem(_at_mod.model_label(_m), _m)
+        except Exception:
+            self.agnes_text_combo.addItem("agnes-2.5-flash（限免）", "agnes-2.5-flash")
+            self.agnes_text_combo.addItem("agnes-3.0-flash（限免）", "agnes-3.0-flash")
+        self.agnes_text_combo.setStyleSheet(f"background:{THEME['bg']};border:1px solid {THEME['border']};"
+                                            f"border-radius:8px;padding:4px 8px;font-size:13px;"
+                                            f"color:{THEME['text']};")
+        _cur_text_model = (self.cfg.get("agnes_text_model") or "agnes-2.5-flash").strip()
+        _idx = self.agnes_text_combo.findData(_cur_text_model)
+        self.agnes_text_combo.setCurrentIndex(max(0, _idx))
+        # v4.149.0：currentIndexChanged → activated。这个下拉的处理器会
+        # `_save_agnes_text_cfg(agnes_text_model=...)` **直接落盘**，与「模型档位」同一类
+        # 隐患：滚轮/键盘/程序化改动都会触发，用户零意图也能改掉 Agnes 文本模型。
+        self.agnes_text_combo.activated.connect(self._on_agnes_text_model_changed)
+        at_row.addWidget(self.agnes_text_combo, 1)
+        al.addLayout(at_row)
+
+        self.agnes_fallback_chk = QCheckBox("3.0 失败自动回退 2.5（超时 / 5xx / 流中断 / 空响应）")
+        self.agnes_fallback_chk.setChecked(bool(self.cfg.get("agnes_text_fallback", True)))
+        self.agnes_fallback_chk.setStyleSheet(f"font-size:13px;color:{THEME['text']};background:transparent;")
+        self.agnes_fallback_chk.stateChanged.connect(self._on_agnes_fallback_changed)
+        al.addWidget(self.agnes_fallback_chk)
+
+        self.agnes_thinking_chk = QCheckBox("允许 Thinking（仅 3.0 档 + PM 验收/复杂规划，思考占用输出额度）")
+        self.agnes_thinking_chk.setChecked(bool(self.cfg.get("agnes_thinking_enabled", False)))
+        self.agnes_thinking_chk.setStyleSheet(f"font-size:13px;color:{THEME['text']};background:transparent;")
+        self.agnes_thinking_chk.stateChanged.connect(self._on_agnes_thinking_changed)
+        al.addWidget(self.agnes_thinking_chk)
+
+        self.agnes_stats_lbl = QLabel("")
+        self.agnes_stats_lbl.setWordWrap(True)
+        self.agnes_stats_lbl.setStyleSheet(f"font-size:12px;color:{THEME['dim']};background:transparent;")
+        al.addWidget(self.agnes_stats_lbl)
+        self._refresh_agnes_stats()
+
+        at_btns = QHBoxLayout()
+        at_refresh = QPushButton("刷新回退率")
+        at_refresh.setFixedHeight(32)
+        at_refresh.setStyleSheet(self._secondary_btn_style())
+        at_refresh.clicked.connect(self._refresh_agnes_stats)
+        at_btns.addWidget(at_refresh)
+        at_btns.addStretch(1)
+        al.addLayout(at_btns)
+        lay.addWidget(at_card)
 
         # ===== 我的记忆（跨对话长期记忆）=====
         mem_card = QWidget()
@@ -3824,9 +4372,11 @@ class ChatWindow(QMainWindow):
         mclear.setFixedHeight(34)
         # v4.112 UI 美化：危险操作改「红描边」次级样式——警示但不抢视觉重心
         mclear.setStyleSheet(
-            "QPushButton{background:transparent;color:#dc2626;border:1px solid #f3b6b1;"
+            "QPushButton{background:transparent;color:%s;border:1px solid %s;"
             "border-radius:8px;padding:0 14px;font-size:13px;font-weight:500;}"
-            "QPushButton:hover{background:#fdecea;border-color:#dc2626;font-weight:600;}")
+            "QPushButton:hover{background:%s;border-color:%s;font-weight:600;}" % (
+                THEME['danger_red2'], THEME['danger_border2'], THEME['danger_bg'], THEME['danger_red2'])
+        )
         mclear.clicked.connect(self._clear_memory)
         mbtns.addWidget(mrefresh)
         mbtns.addWidget(mclear)
@@ -3987,7 +4537,7 @@ class ChatWindow(QMainWindow):
         ).format(dim=THEME["dim"], text=THEME["text"])
         close_base = (
             "QPushButton{{background:transparent;color:{dim};border:none;font-size:14px;}}"
-            "QPushButton:hover{{background:#EA4335;color:#FFFFFF;}}"
+            f"QPushButton:hover{{background:{THEME['danger']};color:white;}}"
         ).format(dim=THEME["dim"])
         btn_w, btn_h = 44, 48
         self.min_btn = QPushButton("—")
@@ -4102,7 +4652,8 @@ class ChatWindow(QMainWindow):
         self.welcome_cards = []
         for color_key, icon_str, card_title, card_desc in card_data:
             card = QPushButton()
-            card.setFixedSize(190, 140)
+            card.setMinimumSize(200, 150)
+            card.setMaximumHeight(158)
             card.setCursor(Qt.PointingHandCursor)
 
             # 卡片配色
@@ -4110,13 +4661,17 @@ class ChatWindow(QMainWindow):
             icon_key = f"card_{color_key}_icon"
             card_bg = THEME.get(bg_key, THEME["surface_raised"])
             card_icon_color = THEME.get(icon_key, THEME["accent"])
+            # 图标底座：取图标色叠 12% 透明度（浅色底 + 深色图标，柔和色块）
+            _ic = QColor(card_icon_color)
+            chip_bg = (f"rgba({_ic.red()},{_ic.green()},{_ic.blue()},0.12)"
+                       if _ic.isValid() else card_bg)
 
             card.setStyleSheet(
                 f"QPushButton{{"
                 f"background:{card_bg};"
                 f"border:1px solid {THEME['border']};"
-                f"border-radius:10px;"
-                f"padding:14px 20px 16px 18px;text-align:left;"
+                f"border-radius:12px;"
+                f"text-align:left;"
                 f"}}"
                 f"QPushButton:hover{{"
                 f"border-color:{card_icon_color};"
@@ -4125,35 +4680,41 @@ class ChatWindow(QMainWindow):
                 f"}}"
             )
 
-            # 卡片内部布局
+            # 卡片内部布局。
+            # 🔇 样式表的 padding 只管按钮自身文字，不约束内部布局——
+            # margins 必须显式给足，否则图标/标题/描述全怼在左上角挤成一团。
             card_lay = QVBoxLayout(card)
-            card_lay.setContentsMargins(0, 0, 0, 0)
-            card_lay.setSpacing(8)
+            card_lay.setContentsMargins(20, 18, 18, 16)
+            card_lay.setSpacing(0)
 
-            icon_lbl = QLabel()
-            icon_lbl.setFixedSize(22, 22)
-            icon_lbl.setPixmap(_nav_icon_pixmap(icon_str, card_icon_color, 22))
-            icon_lbl.setStyleSheet("background:transparent;border:none;")
-            card_lay.addWidget(icon_lbl)
+            # 图标底座（圆角色块，图标居中）——比裸图标更有层次
+            chip = QLabel()
+            chip.setFixedSize(36, 36)
+            chip.setAlignment(Qt.AlignCenter)
+            chip.setPixmap(_nav_icon_pixmap(icon_str, card_icon_color, 18))
+            chip.setStyleSheet(
+                f"background:{chip_bg};border-radius:9px;border:none;")
+            card_lay.addWidget(chip)
+            card_lay.addSpacing(14)
 
             title_lbl = QLabel(card_title)
             title_lbl.setStyleSheet(
                 f"font-size:16px;font-weight:600;color:{THEME['text']};"
                 f"background:transparent;border:none;")
             card_lay.addWidget(title_lbl)
+            card_lay.addSpacing(7)
 
             desc_lbl = QLabel(card_desc)
             desc_lbl.setWordWrap(True)
-            desc_lbl.setMinimumHeight(40)
             desc_lbl.setStyleSheet(
-                f"font-size:12px;color:{THEME['dim']};line-height:1.55;"
-                f"background:transparent;border:none;word-wrap:break-word;")
+                f"font-size:12px;color:{THEME['dim']};"
+                f"background:transparent;border:none;")
             card_lay.addWidget(desc_lbl)
             card_lay.addStretch()
 
             card.clicked.connect(self._on_welcome_card)
             self.welcome_cards.append(card)
-            cards_row.addWidget(card)
+            cards_row.addWidget(card, stretch=1)
 
         scl.addLayout(cards_row)
         scl.addSpacing(32)
@@ -4235,7 +4796,7 @@ class ChatWindow(QMainWindow):
             new_btn.setFixedHeight(32)
             new_btn.setFixedWidth(116)
             new_btn.setStyleSheet(
-                f"QPushButton{{background:{THEME['accent']};color:#FFFFFF;border:none;"
+                f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
                 f"border-radius:16px;font-size:12px;font-weight:600;padding:0 16px;}}"
                 f"QPushButton:hover{{background:{THEME['accent_hover']};}}")
             new_btn.clicked.connect(self._new_session)
@@ -4349,7 +4910,7 @@ class ChatWindow(QMainWindow):
         sb.addLayout(logo_row)
         sb.addSpacing(12)
 
-        # ---- 导航 pill ×6 ----
+        # ---- 导航 pill（v4.135.0：新增「军团」项）----
         self.nav_buttons = []
         # 面板挂载范式（整合工作台）：
         #   nav_defs 顺序 == main_stack 页面顺序（首页占 index 0，不在 nav 中）。
@@ -4361,6 +4922,7 @@ class ChatWindow(QMainWindow):
         nav_defs = [
             ("对话", "对话"),
             ("编排", "编排"),
+            ("军团", "军团"),
             ("生图", "生图"),
             ("生视频", "生视频"),
             ("数字人", "数字人"),
@@ -4403,6 +4965,9 @@ class ChatWindow(QMainWindow):
             btn.clicked.connect(lambda _, idx=i: self._switch_nav(idx))
             nav_lay.addWidget(btn)
             self.nav_buttons.append(btn)
+            # v4.135.0：记住「军团」的导航下标（避免在别处写死数字，插入新项不串页）
+            if label == "军团":
+                self._legion_nav_idx = i
         sb.addWidget(nav_container)
 
         sb.addStretch(1)
@@ -4431,14 +4996,14 @@ class ChatWindow(QMainWindow):
             icon_name = btn.property("navIcon")
             if i == active:
                 btn.setStyleSheet(
-                    f"QPushButton{{background:{THEME['accent']};color:#FFFFFF;border:none;"
+                    f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
                     f"border-radius:24px;}}"
-                    f"QPushButton:hover{{background:{THEME['accent_hover']};color:#FFFFFF;}}")
+                    f"QPushButton:hover{{background:{THEME['accent_hover']};color:white;}}")
                 if text_lbl:
                     text_lbl.setStyleSheet(
-                        f"font-size:14px;font-weight:600;color:#FFFFFF;background:transparent;")
+                        f"font-size:14px;font-weight:600;color:white;background:transparent;")
                 if icon_lbl and icon_name:
-                    icon_lbl.setPixmap(_nav_icon_pixmap(icon_name, "#FFFFFF", 18))
+                    icon_lbl.setPixmap(_nav_icon_pixmap(icon_name, THEME["white"], 18))
             else:
                 btn.setStyleSheet(
                     f"QPushButton{{background:transparent;color:{THEME['dim']};border:none;"
@@ -4452,8 +5017,50 @@ class ChatWindow(QMainWindow):
 
     def _switch_nav(self, index):
         """导航切换：nav 序号 -> 主栈页面(nav+1，首页占0)。"""
-        self.main_stack.setCurrentIndex(index + 1)
+        _si = index + 1
+        self._ensure_lazy_page(_si)      # v4.152：内容延迟构建的兜底（见下）
+        self.main_stack.setCurrentIndex(_si)
         self._update_nav_styles(index)
+
+    def _ensure_lazy_page(self, stack_index):
+        """v4.152：把「内容构建推迟到 show 之后」的页面按需补建。
+
+        v4.152：军团页 / 导演台推迟到 show 之后（_post_show_heavy 预热）。
+        v4.152.2：其余 7 个非首屏页（编排/生图/生视频/数字人/工具/自动化/设置）
+        也改成**首次切页时才建** —— 真实 GUI 口径实测，这些页面的 widget 挂载
+        全都在付「样式匹配」成本（addWidget 331 次里 195ms 分摊 + 3 次慢调用 363ms），
+        而首屏只用得到 welcome(0) 与 chat(1)，不点就是纯浪费。
+
+        三个要点（LEARNINGS L084 的教训）：
+        1. 用**控件对象比对**而不是硬编码下标 —— 页面增删不会静默错位；
+        2. 用 `_lazy_built` 集合去重 —— `_switch_nav` **每次切页都会进来**；
+        3. 失败不置位，留重试余地。
+        """
+        try:
+            w = self.main_stack.widget(stack_index)
+        except Exception:
+            return
+        for page, builder, name in (
+                (getattr(self, "legion_page", None), self._build_legion_page, "legion"),
+                (getattr(self, "director_page", None), self._build_director_page, "director"),
+                (getattr(self, "orchestrate_page", None), self._build_orchestrate_page, "orchestrate"),
+                (getattr(self, "image_page", None), self._build_image_page, "image"),
+                (getattr(self, "video_page", None), self._build_video_page, "video"),
+                (getattr(self, "twin_page", None), self._build_twin_page, "twin"),
+                (getattr(self, "tools_page", None), self._build_tools_page, "tools"),
+                (getattr(self, "automation_page", None), self._build_automation_page, "automation"),
+                (getattr(self, "settings_page", None), self._build_settings_page, "settings")):
+            if page is None or w is not page:
+                continue
+            if name in self._lazy_built:
+                return
+            self._lazy_built.add(name)
+            try:
+                builder()
+            except Exception:
+                self._lazy_built.discard(name)      # 失败可重试
+                raise
+            return
 
     def _open_session_manager(self):
         """v4.79：打开会话管理对话框（置顶/分组/批量删除/筛选）。"""
@@ -4589,8 +5196,22 @@ class ChatWindow(QMainWindow):
         self._on_input_changed()
 
     # ============ 会话切换 ============
+    def _sync_product_context(self):
+        """v4.129：把当前会话标题同步给 product_layout 当「项目名」。
+
+        落盘发生在工具调用时，tools.py 是纯函数拿不到窗口对象，只能靠这份
+        模块级上下文。军团跑起来时由 legion_ui 覆盖成军团项目名（更明确）。
+        """
+        try:
+            import product_layout
+            s = self.store.active()
+            product_layout.set_context(session_title=(getattr(s, "title", "") or ""))
+        except Exception:
+            pass
+
     def _switch_session(self, sid):
         self.store.switch(sid)
+        self._sync_product_context()   # v4.129
         self._rendered_msg_count = 0  # v4.60：切换会话重置增量渲染计数
         self._refresh_session_combo()
         self._render_messages(force_bottom=True)
@@ -4606,6 +5227,7 @@ class ChatWindow(QMainWindow):
 
     def _new_session(self):
         self.store.new_session()
+        self._sync_product_context()   # v4.129
         self._rendered_msg_count = 0  # v4.60：新建会话重置增量渲染计数
         self._refresh_session_combo()
         self._render_messages(force_bottom=True)
@@ -4762,7 +5384,7 @@ class ChatWindow(QMainWindow):
         for i in range(0, len(parts), 2):  # 偶数段=可见文本
             parts[i] = re.sub(
                 qe,
-                r'<span style="background-color:#ffd54f;color:#000;'
+                f'<span style="background-color:{THEME["tpl_hl_bg"]};color:#000;'
                 r'border-radius:2px;padding:0 1px;">\g<0></span>',
                 parts[i], flags=re.IGNORECASE)
         return "".join(parts)
@@ -5045,7 +5667,8 @@ class ChatWindow(QMainWindow):
         if not freq:
             try:
                 subprocess.run(["schtasks", "/Delete", "/TN", task, "/F"],
-                               capture_output=True, text=True, timeout=20)
+                               capture_output=True, text=True, timeout=20,
+                               creationflags=_NO_WINDOW)
             except Exception:
                 pass
             self.status_label.setText("已关闭自动备份（系统计划任务已移除）")
@@ -5055,7 +5678,8 @@ class ChatWindow(QMainWindow):
             r = subprocess.run(
                 ["schtasks", "/Create", "/TN", task, "/TR", cmd,
                  "/SC", freq.upper(), "/ST", t, "/F", "/RL", "HIGHEST"],
-                capture_output=True, text=True, timeout=30)
+                capture_output=True, text=True, timeout=30,
+                creationflags=_NO_WINDOW)
             ok = r.returncode == 0
             msg = (r.stdout or r.stderr or "").strip()
         except Exception as e:
@@ -5070,7 +5694,8 @@ class ChatWindow(QMainWindow):
         import subprocess
         try:
             r = subprocess.run([sys.executable, "--autobackup"],
-                               capture_output=True, text=True, timeout=60)
+                               capture_output=True, text=True, timeout=60,
+                               creationflags=_NO_WINDOW)
             msg = (r.stdout or r.stderr or "备份完成").strip()
         except Exception as e:
             msg = f"备份失败：{e}"
@@ -5178,8 +5803,8 @@ class ChatWindow(QMainWindow):
             if os.path.isfile(ai_path) and os.path.isfile(user_path):
                 return
             for path, bg, label in (
-                (ai_path, "#6366F1", "🤖"),   # Indigo 柔和蓝紫
-                (user_path, "#6B7280", "👤"),  # 现代灰
+                (ai_path, THEME["tpl_marker_ai"], "🤖"),   # Indigo 柔和蓝紫
+                (user_path, THEME["tpl_marker_user"], "👤"),  # 现代灰
             ):
                 if os.path.isfile(path):
                     continue
@@ -5191,7 +5816,7 @@ class ChatWindow(QMainWindow):
                 p.setPen(Qt.NoPen)
                 # v4.97：正圆（半径=13，刚好 26×26）
                 p.drawEllipse(0, 0, 26, 26)
-                p.setPen(QColor("#FFFFFF"))
+                p.setPen(QColor(THEME["white"]))
                 font = QFont("Segoe UI Emoji", 14)
                 # fallback：如果 Segoe UI Emoji 不可用，用默认字体
                 if not QFont("Segoe UI Emoji").exactMatch():
@@ -5268,8 +5893,10 @@ class ChatWindow(QMainWindow):
         """批量保存定时器触发的实际写入。"""
         try:
             self.store.save()
-        except Exception:
-            pass
+        except Exception as e:
+            # v4.125 P3：存盘失败必须留痕——静默吞掉等于对话丢失无提示。
+            import logging as _lg
+            _lg.getLogger("dsdesktop").error("会话存盘失败（对话可能未保存！）: %s", e)
 
     def _render_messages(self, force_bottom=False):
         session = self.store.active()
@@ -5278,6 +5905,13 @@ class ChatWindow(QMainWindow):
             self.main_stack.setCurrentIndex(1)
         elif not has_content and self.main_stack.currentIndex() != 0:
             self.main_stack.setCurrentIndex(0)
+
+        # v4.156.1 修复：ChatWebView 已延迟到 show() 之后创建（见 _build_chat_view），
+        # 构造期（_init_ui 行 ~2029 首屏渲染）访问 self.chat_view 会 AttributeError 崩溃。
+        # 这里 chat_view 尚未创建时直接返回——首屏历史渲染由 _build_chat_view 之后的
+        # ready 信号（_on_chat_page_reloaded，v4.120.2 权威全量重渲染）兜底，幂等无副作用。
+        if getattr(self, "chat_view", None) is None:
+            return
 
         # v4.104：WebEngine 增量渲染——新消息 insertAdjacentHTML 追加（零重排），
         # 流式只替换 #stream-bubble 的 innerHTML；全量重建仅在会话切换/重生成时发生。
@@ -5533,6 +6167,42 @@ class ChatWindow(QMainWindow):
         open_dir_btn.clicked.connect(self._on_open_products_dir)
         dv.addWidget(open_dir_btn)
 
+        # v4.162.x：产物分叉入口——军团报告(LEGION_DIR)与图表(charts/)不在统一产物目录，
+        # 此前从 UI 找不到；补一个下拉，从交付物面板直接打开这两类产物。
+        other_dir_btn = QPushButton("打开军团 / 图表目录 ▾")
+        other_dir_btn.setFixedHeight(38)
+        other_dir_btn.setStyleSheet(
+            f"QPushButton{{"
+            f"background:transparent;"
+            f"border:1.5px solid {THEME['border']};"
+            f"border-radius:10px;"
+            f"color:{THEME['dim']};font-size:13px;font-weight:500;"
+            f"padding:0 14px;text-align:left;"
+            f"}}"
+            f"QPushButton:hover{{background:{THEME['panel2']};color:{THEME['text']};"
+            f"border-color:{THEME['border_highlight']};}}"
+        )
+        other_dir_btn.clicked.connect(self._on_open_other_products_menu)
+        dv.addWidget(other_dir_btn)
+
+        # v4.129：把根目录散落的旧产物按「日期/项目」归档（只读预览 → 勾选确认 → 才动）
+        archive_btn = QPushButton("归档旧产物")
+        archive_btn.setFixedHeight(38)
+        archive_btn.setStyleSheet(
+            f"QPushButton{{"
+            f"background:transparent;"
+            f"border:1.5px solid {THEME['border']};"
+            f"border-radius:10px;"
+            f"color:{THEME['dim']};font-size:13px;font-weight:500;"
+            f"padding:0 14px;text-align:left;"
+            f"}}"
+            f"QPushButton:hover{{background:{THEME['panel2']};color:{THEME['text']};"
+            f"border-color:{THEME['border_highlight']};}}"
+        )
+        archive_btn.setToolTip("把产物根目录里散落的旧文件/目录，按修改日期归到 产物/YYYY-MM-DD/<项目>/ 下")
+        archive_btn.clicked.connect(self._on_archive_products)
+        dv.addWidget(archive_btn)
+
         clear_btn = QPushButton("清空")
         clear_btn.setFixedHeight(38)
         # v4.116：描边式降视觉权重——浅红细描边 + 红字，hover 才升满红
@@ -5573,6 +6243,11 @@ class ChatWindow(QMainWindow):
         self.dv_expand_btn.setVisible(visible)
 
     def _refresh_deliverables(self):
+        """v4.129：按「日期 → 项目」两级分组渲染，各级可点击折叠。
+
+        老会话的 deliverables 没有 date/project 字段 → 统一归到「更早 / 未分类」，
+        不会出现空白组或报错。
+        """
         while self.dv_list_layout.count() > 1:
             item = self.dv_list_layout.takeAt(0)
             w = item.widget()
@@ -5581,97 +6256,225 @@ class ChatWindow(QMainWindow):
         items = self.store.active().deliverables
         self.dv_count_label.setText(str(len(items)))
         self.dv_empty_hint.setVisible(len(items) == 0)
+        if not hasattr(self, "_dv_collapsed"):
+            self._dv_collapsed = set()
+        if not items:
+            return
+
+        # ---- 分组：日期倒序（新的在上）；项目按本组内首次出现顺序 ----
+        by_date = {}
         for d in items:
-            rel = d.get("rel", "")
-            kind = d.get("kind", "file")
-            name = d.get("name", os.path.basename(rel))
-            desc = d.get("desc", rel)
+            ds = str(d.get("date") or "")
+            pj = str(d.get("project") or "")
+            if not ds or not pj:
+                # 老数据/其他面板直写的条目没有分组字段 → 从路径反推（找不到的留空，
+                # 落成「更早 / 未分类」，绝不把老产物误标成今天）
+                _id, _ip = self._dv_meta_from_rel(d.get("rel", ""),
+                                                   d.get("kind", ""), strict=True)
+                d["date"] = ds or _id
+                d["project"] = pj or _ip
+                ds, pj = d["date"], d["project"]
+            by_date.setdefault(ds, []).append(d)
+        groups = []
+        for ds in sorted(by_date.keys(), reverse=True):
+            proj_order, by_proj = [], {}
+            for d in by_date[ds]:
+                p = str(d.get("project") or "") or "未分类"
+                if p not in proj_order:
+                    proj_order.append(p)
+                by_proj.setdefault(p, []).append(d)
+            groups.append((ds, [(p, by_proj[p]) for p in proj_order]))
 
-            color_key, tag_color_key = DELIVERY_COLORS.get(kind, ("delivery_blue", "accent"))
-            # v4.114：色条/色点用莫兰迪深色（与 tag 前景同源），替代高饱和纯色
-            tag_bg, tag_fg = DELIVERY_TAG_STYLES.get(kind, DELIVERY_TAG_FALLBACK)
-            border_color = tag_fg
+        def _ins(w):
+            self.dv_list_layout.insertWidget(self.dv_list_layout.count() - 1, w)
 
-            # 交付物卡片（参考设计稿 .delivery-item）
-            card_item = QWidget()
-            card_item.setCursor(Qt.PointingHandCursor)
-            # v4.112 P2：hover 反馈（QSS :hover，无需事件过滤器）
-            card_item.setStyleSheet(
-                f"QWidget#dvCard{{"
-                f"background:{THEME['surface_raised']};"
-                f"border-radius:10px;"
-                f"border-left:3px solid {border_color};"
-                f"}}"
-                f"QWidget#dvCard:hover{{"
-                f"background:{THEME['blue_hover']};"
-                f"}}"
-                # tooltip 是独立顶层窗口，不继承主窗口 QSS，必须在控件级样式里给规则
-                f"QToolTip{{"
-                f"background:{THEME['card']};color:{THEME['text']};"
-                f"border:1px solid {THEME['border']};border-radius:8px;"
-                f"padding:6px 10px;font-size:12px;"
-                f"}}")
-            card_item.setObjectName("dvCard")
+        for ds, projs in groups:
+            dkey = "d::" + ds
+            n_total = sum(len(v) for _, v in projs)
+            _ins(self._dv_group_header(self._dv_date_label(ds), n_total, dkey, big=True))
+            if dkey in self._dv_collapsed:
+                continue
+            for pj, ditems in projs:
+                # 项目小标题：本日期下有多个项目、或项目名已知（非「未分类」）时才显示
+                pkey = dkey + "::p::" + pj
+                if len(projs) > 1 or (pj and pj != "未分类"):
+                    _ins(self._dv_group_header(pj, len(ditems), pkey, big=False))
+                    if pkey in self._dv_collapsed:
+                        continue
+                for d in ditems:
+                    _ins(self._dv_make_card(d))
 
-            ci_lay = QVBoxLayout(card_item)
-            ci_lay.setContentsMargins(14, 14, 14, 12)
-            ci_lay.setSpacing(4)
+    def _dv_group_header(self, label, count, key, big=True):
+        """分组标题行（可点击折叠）。big=日期级，否则项目级。"""
+        collapsed = key in getattr(self, "_dv_collapsed", set())
+        btn = QPushButton()
+        btn.setCursor(Qt.PointingHandCursor)
+        arrow = "▸" if collapsed else "▾"
+        btn.setText(f"{arrow}  {label}   · {count}")
+        if big:
+            btn.setStyleSheet(
+                f"QPushButton{{text-align:left;border:none;background:transparent;"
+                f"color:{THEME['text']};font-size:12px;font-weight:700;"
+                f"padding:8px 2px 4px 2px;}}"
+                f"QPushButton:hover{{color:{THEME['accent']};}}")
+        else:
+            btn.setStyleSheet(
+                f"QPushButton{{text-align:left;border:none;background:transparent;"
+                f"color:{THEME['dim']};font-size:11px;font-weight:600;"
+                f"padding:4px 2px 2px 12px;}}"
+                f"QPushButton:hover{{color:{THEME['text']};}}")
+        btn.clicked.connect(lambda _=False, k=key: self._dv_toggle_group(k))
+        return btn
 
-            # v4.112 P2：名称行加 kind 色点，视觉锚点更清晰
-            name_row = QHBoxLayout()
-            name_row.setSpacing(6)
-            dot = QLabel()
-            dot.setFixedSize(8, 8)
-            dot.setStyleSheet(
-                f"background:{border_color};border-radius:4px;")
-            name_row.addWidget(dot)
-            name_lbl = QLabel(name if len(name) <= 24 else name[:23] + "…")
-            name_lbl.setStyleSheet(
-                f"font-size:13px;font-weight:600;color:{THEME['text']};background:transparent;")
-            name_row.addWidget(name_lbl, 1)
-            ci_lay.addLayout(name_row)
+    def _dv_toggle_group(self, key):
+        if not hasattr(self, "_dv_collapsed"):
+            self._dv_collapsed = set()
+        if key in self._dv_collapsed:
+            self._dv_collapsed.discard(key)
+        else:
+            self._dv_collapsed.add(key)
+        self._refresh_deliverables()
 
-            if desc:
-                desc_text = desc if len(desc) <= 40 else desc[:39] + "…"
-                desc_lbl = QLabel(desc_text)
-                desc_lbl.setWordWrap(True)
-                desc_lbl.setStyleSheet(
-                    f"font-size:12px;color:{THEME['dim']};line-height:1.4;background:transparent;")
-                ci_lay.addWidget(desc_lbl)
+    def _dv_make_card(self, d):
+        """单个交付物卡片（原 _refresh_deliverables 内联逻辑抽出来复用）。"""
+        rel = d.get("rel", "")
+        kind = d.get("kind", "file")
+        name = d.get("name", os.path.basename(rel))
+        desc = d.get("desc", rel)
 
-            # v4.114：tag 改莫兰迪淡底深字胶囊；v4.115 前缀 emoji 改 SVG 小图标
-            tag_text = kind.upper() if len(kind) <= 8 else kind[:7].upper()
-            tag_wrap = QWidget()
-            tag_wrap_lay = QHBoxLayout(tag_wrap)
-            tag_wrap_lay.setContentsMargins(0, 0, 0, 0)
-            tag_wrap_lay.setSpacing(4)
-            tag_wrap_lay.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            tag_icon_name = DELIVERY_ICONS.get(kind, DELIVERY_ICON_FALLBACK)
-            tag_icon_lbl = QLabel()
-            tag_icon_lbl.setFixedSize(11, 11)
-            tag_icon_lbl.setPixmap(_nav_icon_pixmap(tag_icon_name, tag_fg, 11))
-            tag_icon_lbl.setStyleSheet("background:transparent;")
-            tag_wrap_lay.addWidget(tag_icon_lbl)
-            tag_lbl = QLabel(tag_text)
-            tag_lbl.setStyleSheet(
-                f"font-size:10px;font-weight:600;color:{tag_fg};background:{tag_bg};"
-                f"border-radius:8px;padding:2px 8px;")
-            tag_lbl.setFixedHeight(18)
-            tag_wrap_lay.addWidget(tag_lbl)
-            tag_wrap_lay.addStretch()
-            ci_lay.addWidget(tag_wrap)
+        tag_bg, tag_fg = DELIVERY_TAG_STYLES.get(kind, DELIVERY_TAG_FALLBACK)
+        border_color = tag_fg
 
-            card_item.setToolTip(f"{rel}\n{name}")
-            card_item.mousePressEvent = lambda e, r=rel: self._on_deliverable_open(r)
-            self.dv_list_layout.insertWidget(self.dv_list_layout.count() - 1, card_item)
+        card_item = QWidget()
+        card_item.setCursor(Qt.PointingHandCursor)
+        card_item.setStyleSheet(
+            f"QWidget#dvCard{{"
+            f"background:{THEME['surface_raised']};"
+            f"border-radius:10px;"
+            f"border-left:3px solid {border_color};"
+            f"}}"
+            f"QWidget#dvCard:hover{{"
+            f"background:{THEME['blue_hover']};"
+            f"}}"
+            f"QToolTip{{"
+            f"background:{THEME['card']};color:{THEME['text']};"
+            f"border:1px solid {THEME['border']};border-radius:8px;"
+            f"padding:6px 10px;font-size:12px;"
+            f"}}")
+        card_item.setObjectName("dvCard")
+
+        ci_lay = QVBoxLayout(card_item)
+        ci_lay.setContentsMargins(14, 14, 14, 12)
+        ci_lay.setSpacing(4)
+
+        name_row = QHBoxLayout()
+        name_row.setSpacing(6)
+        dot = QLabel()
+        dot.setFixedSize(8, 8)
+        dot.setStyleSheet(f"background:{border_color};border-radius:4px;")
+        name_row.addWidget(dot)
+        name_lbl = QLabel(name if len(name) <= 24 else name[:23] + "…")
+        name_lbl.setStyleSheet(
+            f"font-size:13px;font-weight:600;color:{THEME['text']};background:transparent;")
+        name_row.addWidget(name_lbl, 1)
+        ci_lay.addLayout(name_row)
+
+        if desc:
+            desc_text = desc if len(desc) <= 40 else desc[:39] + "…"
+            desc_lbl = QLabel(desc_text)
+            desc_lbl.setWordWrap(True)
+            desc_lbl.setStyleSheet(
+                f"font-size:12px;color:{THEME['dim']};line-height:1.4;background:transparent;")
+            ci_lay.addWidget(desc_lbl)
+
+        tag_text = kind.upper() if len(kind) <= 8 else kind[:7].upper()
+        tag_wrap = QWidget()
+        tag_wrap_lay = QHBoxLayout(tag_wrap)
+        tag_wrap_lay.setContentsMargins(0, 0, 0, 0)
+        tag_wrap_lay.setSpacing(4)
+        tag_wrap_lay.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        tag_icon_name = DELIVERY_ICONS.get(kind, DELIVERY_ICON_FALLBACK)
+        tag_icon_lbl = QLabel()
+        tag_icon_lbl.setFixedSize(11, 11)
+        tag_icon_lbl.setPixmap(_nav_icon_pixmap(tag_icon_name, tag_fg, 11))
+        tag_icon_lbl.setStyleSheet("background:transparent;")
+        tag_wrap_lay.addWidget(tag_icon_lbl)
+        tag_lbl = QLabel(tag_text)
+        tag_lbl.setStyleSheet(
+            f"font-size:10px;font-weight:600;color:{tag_fg};background:{tag_bg};"
+            f"border-radius:8px;padding:2px 8px;")
+        tag_lbl.setFixedHeight(18)
+        tag_wrap_lay.addWidget(tag_lbl)
+        # v4.129：时间小字（同组都是同一天，只显示 HH:MM 就够定位）
+        t = str(d.get("time") or "")
+        if t:
+            t_lbl = QLabel(t[:5])
+            t_lbl.setStyleSheet(
+                f"font-size:10px;color:{THEME['faint']};background:transparent;")
+            tag_wrap_lay.addWidget(t_lbl)
+        tag_wrap_lay.addStretch()
+        ci_lay.addWidget(tag_wrap)
+
+        card_item.setToolTip(f"{rel}\n{name}")
+        card_item.mousePressEvent = lambda e, r=rel: self._on_deliverable_open(r)
+        return card_item
+
+    # ---- v4.129：交付物分组（日期 + 项目）----
+    _DV_DATE_IN_REL = re.compile(r"(\d{4}-\d{2}-\d{2})[\\/]+([^\\/]+)")
+
+    def _dv_meta_from_rel(self, rel, kind="", strict=False):
+        """从产物路径反推 (日期, 项目)。
+
+        分层目录形如 产物/2026-09-09/<项目>/<类型>/文件。
+        - strict=False（新产物入列）：命中不到时回退「今天 + 当前项目上下文」。
+        - strict=True（渲染老数据兜底）：命中不到返回 ("", "")，由调用方落成
+          「更早 / 未分类」——不能把 2026-08 的老产物标成今天。
+        """
+        today_s = datetime.now().strftime("%Y-%m-%d")
+        proj = ""
+        try:
+            import product_layout
+            proj = product_layout.current_project()
+        except Exception:
+            proj = ""
+        m = self._DV_DATE_IN_REL.search(str(rel or "").replace("\\", "/"))
+        if not m:
+            return ("", "") if strict else (today_s, (proj or "未分类"))
+        date_s, first = m.group(1), m.group(2)
+        # 第二段是类型目录（图片/视频/…）时说明没有项目层 → 用上下文项目
+        try:
+            import product_layout as _pl
+            if first in set(_pl.KNOWN_KIND_DIRS):
+                return date_s, (("" if strict else proj) or "")
+        except Exception:
+            pass
+        return date_s, first
+
+    def _dv_date_label(self, date_s):
+        """YYYY-MM-DD → 今天 / 昨天 / 日期原文 / 更早"""
+        if not date_s:
+            return "更早"
+        today_s = datetime.now().strftime("%Y-%m-%d")
+        if date_s == today_s:
+            return "今天"
+        try:
+            y = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        except Exception:
+            y = ""
+        if y and date_s == y:
+            return "昨天"
+        return date_s
 
     def _on_deliverable_added(self, rel, kind, name):
         sess = self.store.active()
         if any(d.get("rel") == rel for d in sess.deliverables):
             return
+        _d, _p = self._dv_meta_from_rel(rel, kind)
         sess.deliverables.append({
             "rel": rel, "kind": kind, "name": name,
             "time": datetime.now().strftime("%H:%M:%S"),
+            # v4.129：分组字段（老数据没有这两个键 → 落到「更早 / 未分类」）
+            "date": _d, "project": _p,
         })
         self.store.save()
         self._refresh_deliverables()
@@ -5708,6 +6511,275 @@ class ChatWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl.fromLocalFile(pdir))
         else:
             self.status_label.setText(f"产物目录不可用：{pdir}")
+
+    def _on_open_other_products_menu(self):
+        """v4.162.x：产物分叉入口——弹出菜单打开军团产物目录 / 图表目录。
+        这两类不在统一产物目录（军团报告在 LEGION_DIR，图表在 charts/），
+        此前从 UI 找不到；补入口便于直接打开。底层目录不动（不迁移）。"""
+        from PySide6.QtWidgets import QMenu
+        from PySide6.QtCore import QPoint
+        menu = QMenu(self)
+        items = []  # (显示名, 绝对路径)
+
+        # 军团产物目录（LEGION_DIR，受 XC_LEGION_DIR 改道；含 legion_reports 等）
+        try:
+            import legion
+            _ld = getattr(legion, "LEGION_DIR", None)
+        except Exception:
+            _ld = None
+        if _ld:
+            items.append(("军团产物目录", _ld))
+
+        # 图表目录（chart_generator._charts_dir 同款路径）
+        _cd = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "charts")
+        items.append(("图表目录", _cd))
+
+        if not items:
+            return
+        for name, path in items:
+            a = menu.addAction(name)
+            a.setData(path)
+        btn = self.sender()
+        pos = btn.mapToGlobal(QPoint(0, btn.height())) if btn else \
+            self.mapToGlobal(self.rect().bottomLeft())
+        picked = menu.exec(pos)
+        if picked:
+            path = picked.data()
+            try:
+                os.makedirs(path, exist_ok=True)
+            except Exception:
+                pass
+            if os.path.exists(path):
+                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+            else:
+                self.status_label.setText(f"目录不可用：{path}")
+
+    # ==================== v4.129：旧产物归档 ====================
+    # 安全边界（个人文件铁律）：只读扫描 → 弹窗逐项列「源 → 目标」并勾选确认
+    # → 执行前写完整映射清单（可回溯/还原）→ 同盘 os.replace 原子改名，失败即停。
+
+    def _scan_archive_plan(self, pdir):
+        """只读扫描产物根目录，返回归档计划列表（不移动任何文件）。
+
+        每项：{"src": 绝对路径, "name": 显示名, "date": YYYY-MM-DD,
+               "kind": 目标类型目录（整目录搬时为空）, "is_dir": bool}
+        """
+        plan = []
+        try:
+            import product_layout
+        except Exception:
+            return plan
+        try:
+            entries = sorted(os.listdir(pdir))
+        except Exception:
+            return plan
+        for n in entries:
+            if n.startswith("_归档记录") or n.startswith("."):
+                continue
+            src = os.path.join(pdir, n)
+            # 已经是日期目录 → 说明分过层了，跳过
+            if os.path.isdir(src) and re.match(r"^\d{4}-\d{2}-\d{2}$", n):
+                continue
+            try:
+                mt = os.path.getmtime(src)
+            except Exception:
+                continue
+            date_s = datetime.fromtimestamp(mt).strftime("%Y-%m-%d")
+            if os.path.isdir(src):
+                # 顶层类型目录（图片/视频/…）→ 内容并入 <date>/<项目>/<类型>；
+                # 其余目录（canvas-design / _frames_tmp 等）整体搬过去。
+                _kd = product_layout.kind_dir_cn(n)
+                is_kind = bool(_kd)
+                plan.append({"src": src, "name": n, "date": date_s,
+                             "kind": _kd, "is_dir": True, "kind_dir": is_kind})
+            else:
+                ext = os.path.splitext(n)[1].lstrip(".").lower()
+                plan.append({"src": src, "name": n, "date": date_s,
+                             "kind": product_layout.kind_dir(ext), "is_dir": False,
+                             "kind_dir": False})
+        return plan
+
+    def _archive_target(self, pdir, plan_item, project):
+        """算出归档目标路径（只算不建）。"""
+        try:
+            import product_layout
+            _slug = product_layout.slugify(project) or "历史归档"
+        except Exception:
+            _slug = re.sub(r'[\\/:*?"<>|]', "", str(project or "")).strip() or "历史归档"
+        base = os.path.join(pdir, plan_item["date"], _slug)
+        if plan_item.get("kind_dir"):
+            # 顶层类型目录（图片/视频/…）→ 内容并入 <date>/<项目>/<类型>
+            return os.path.join(base, plan_item["kind"])
+        if plan_item["is_dir"]:
+            return os.path.join(base, plan_item["name"])
+        return os.path.join(base, plan_item["kind"], plan_item["name"])
+
+    def _on_archive_products(self):
+        if self._busy:
+            self.status_label.setText("正在处理，稍后再归档")
+            return
+        pdir = getattr(config, "PRODUCTS_DIR", "")
+        if not pdir or not os.path.isdir(pdir):
+            self.status_label.setText("产物目录不存在，无法归档")
+            return
+        plan = self._scan_archive_plan(pdir)
+        if not plan:
+            self.status_label.setText("产物根目录没有需要归档的内容（已按日期分层）")
+            return
+
+        from PySide6.QtWidgets import QListWidgetItem
+        dlg = QDialog(self)
+        dlg.setWindowTitle("归档旧产物")
+        dlg.resize(720, 520)
+        lay = QVBoxLayout(dlg)
+        lay.setSpacing(10)
+        tip = QLabel(
+            f"扫描到 {len(plan)} 项待归档。默认归到「历史归档」项目下，可改项目名；\n"
+            f"取消勾选 = 保持原样不动。点「开始归档」后才会真正移动文件，"
+            f"移动记录会写入 产物/_归档记录/ 便于回溯。")
+        tip.setWordWrap(True)
+        tip.setStyleSheet(f"color:{THEME['dim']};font-size:12px;background:transparent;")
+        lay.addWidget(tip)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("项目名："))
+        proj_edit = QLineEdit("历史归档")
+        proj_edit.setFixedHeight(30)
+        row.addWidget(proj_edit, 1)
+        lay.addLayout(row)
+
+        btns_row = QHBoxLayout()
+        sel_all = QPushButton("全选")
+        sel_none = QPushButton("全不选")
+        for b in (sel_all, sel_none):
+            b.setFixedHeight(28)
+            b.setStyleSheet(
+                f"QPushButton{{border:1px solid {THEME['border']};border-radius:6px;"
+                f"color:{THEME['dim']};font-size:12px;padding:0 12px;background:transparent;}}"
+                f"QPushButton:hover{{color:{THEME['text']};}}")
+        btns_row.addWidget(sel_all)
+        btns_row.addWidget(sel_none)
+        btns_row.addStretch(1)
+        lay.addLayout(btns_row)
+
+        lst = QListWidget()
+        lst.setStyleSheet(
+            f"QListWidget{{background:{THEME['panel2']};border:1px solid {THEME['border']};"
+            f"border-radius:8px;color:{THEME['text']};font-size:12px;}}")
+        lay.addWidget(lst, 1)
+
+        def _refresh_list():
+            proj = proj_edit.text().strip() or "历史归档"
+            lst.clear()
+            for it in plan:
+                tgt = self._archive_target(pdir, it, proj)
+                try:
+                    rel = os.path.relpath(tgt, pdir).replace("\\", "/")
+                except Exception:
+                    rel = tgt
+                item = QListWidgetItem(f"{it['name']}    →    {rel}")
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Checked)
+                lst.addItem(item)
+        _refresh_list()
+        proj_edit.textChanged.connect(_refresh_list)
+        sel_all.clicked.connect(lambda: _set_all(True))
+        sel_none.clicked.connect(lambda: _set_all(False))
+
+        def _set_all(on):
+            st = Qt.Checked if on else Qt.Unchecked
+            for i in range(lst.count()):
+                lst.item(i).setCheckState(st)
+
+        act_row = QHBoxLayout()
+        act_row.addStretch(1)
+        cancel_btn = QPushButton("取消")
+        ok_btn = QPushButton("开始归档")
+        ok_btn.setFixedHeight(34)
+        cancel_btn.setFixedHeight(34)
+        ok_btn.setStyleSheet(
+            f"QPushButton{{background:{THEME['accent']};color:{THEME['user_text']};"
+            f"border:none;border-radius:8px;font-size:13px;font-weight:600;padding:0 18px;}}")
+        cancel_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{THEME['dim']};"
+            f"border:1px solid {THEME['border']};border-radius:8px;font-size:13px;padding:0 18px;}}")
+        act_row.addWidget(cancel_btn)
+        act_row.addWidget(ok_btn)
+        lay.addLayout(act_row)
+        cancel_btn.clicked.connect(dlg.reject)
+        ok_btn.clicked.connect(dlg.accept)
+
+        if dlg.exec() != QDialog.Accepted:
+            return
+        chosen = [plan[i] for i in range(lst.count())
+                  if lst.item(i).checkState() == Qt.Checked]
+        if not chosen:
+            self.status_label.setText("没有勾选任何项，未做改动")
+            return
+        self._do_archive(pdir, chosen, proj_edit.text().strip() or "历史归档")
+
+    def _do_archive(self, pdir, chosen, project):
+        """执行归档：先写清单，再逐项移动，失败即停。"""
+        import shutil
+        rec_dir = os.path.join(pdir, "_归档记录")
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        rec_path = os.path.join(rec_dir, f"归档_{stamp}.json")
+        moves = []
+        ok_n, fail_n = 0, 0
+        first_err = ""
+        for it in chosen:
+            tgt = self._archive_target(pdir, it, project)
+            try:
+                os.makedirs(os.path.dirname(tgt), exist_ok=True)
+                src = it["src"]
+                if os.path.isdir(src) and os.path.isdir(tgt):
+                    # 目标目录已存在（重复归档）：合并内容，绝不整目录覆盖。
+                    # os.replace 到已存在目录在 Windows 上会 OSError，必须逐文件搬。
+                    for fn in sorted(os.listdir(src)):
+                        s2 = os.path.join(src, fn)
+                        t2 = os.path.join(tgt, fn)
+                        if os.path.exists(t2):
+                            b2, e2 = os.path.splitext(t2)
+                            t2 = f"{b2}_{stamp}{e2}"
+                        os.replace(s2, t2)
+                        moves.append({"from": s2, "to": t2})
+                    try:
+                        os.rmdir(src)      # 搬空了才删，非空会抛（安全）
+                    except Exception:
+                        pass
+                    ok_n += 1
+                    continue
+                if os.path.exists(tgt):
+                    # 撞名：加时间戳后缀，绝不覆盖
+                    base, ext = os.path.splitext(tgt)
+                    tgt = f"{base}_{stamp}{ext}"
+                os.replace(src, tgt)
+                moves.append({"from": src, "to": tgt})
+                ok_n += 1
+            except Exception as e:
+                fail_n += 1
+                if not first_err:
+                    first_err = f"{os.path.basename(it['src'])}: {e}"
+                break     # 失败即停，避免连续出错扩大损失
+        try:
+            os.makedirs(rec_dir, exist_ok=True)
+            with open(rec_path, "w", encoding="utf-8") as f:
+                json.dump({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                           "project": project, "planned": len(chosen),
+                           "moved": moves}, f, ensure_ascii=False, indent=2)
+        except Exception:
+            rec_path = ""
+        msg = f"归档完成：移动 {ok_n} 项" + (f"，失败 {fail_n} 项（{first_err}）" if fail_n else "")
+        if rec_path:
+            msg += f"；记录：{os.path.basename(rec_path)}"
+        try:
+            self.status_label.setText(msg)
+        except Exception:
+            print("[归档] " + msg)
+        try:
+            self._refresh_deliverables()
+        except Exception:
+            pass
 
     # ============ 弹层构建 ============
     def _popup_base(self, width):
@@ -5756,7 +6828,11 @@ class ChatWindow(QMainWindow):
         return popup, inner_layout
 
     def _build_settings_popup(self):
-        popup, layout = self._popup_base(300)
+        # v4.148.8：宽度 300 → 360。原因（实测「设置页挤成一团」）：
+        # 下面 model_combo 的 setMinimumWidth(260) + popup 边距 16×2 + 分组内边距 12×2
+        # = 316 > 300 —— 容器比子控件的最小宽度还窄，Qt 只能强行压缩/重叠，
+        # 视觉上就是「挤成一团」。这里给足宽度，并同时把 combo 的最小宽度降到 200。
+        popup, layout = self._popup_base(360)
         self._popup_title(layout, "设置")
 
         # v4.112 P2：弹层组卡片统一风格（与设置页 info card 对齐：radius 10 + padding 16）
@@ -5778,8 +6854,10 @@ class ChatWindow(QMainWindow):
         gmd.setStyleSheet(f"font-size:11px;color:{THEME['faint']};")
         gml.addWidget(gmd)
 
-        self.model_combo = QComboBox()
-        self.model_combo.setMinimumWidth(260)
+        # v4.148.8：改 _NoWheelCombo（滚轮不再切档）；最小宽度 260 → 200
+        # （260 会让弹窗可用宽度不足，是「挤成一团」的一半原因）
+        self.model_combo = _NoWheelCombo()
+        self.model_combo.setMinimumWidth(200)
         gml.addWidget(self.model_combo)
         layout.addWidget(group_model)
 
@@ -5903,14 +6981,18 @@ class ChatWindow(QMainWindow):
         _mode_label = QLabel("执行模式")
         _mode_label.setStyleSheet(f"font-size:13px;color:{THEME['text']};font-weight:600;padding-top:6px;")
         gtl.addWidget(_mode_label)
-        _mode_cb = QComboBox()
+        _mode_cb = _NoWheelCombo()
         _mode_cb.setStyleSheet(f"font-size:12px;color:{THEME['text']};padding:4px;")
         for _m, _t in MODES.items():
             _mode_cb.addItem(_t, _m)
         _idx = _mode_cb.findData(self.permission_engine.mode)
         if _idx >= 0:
             _mode_cb.setCurrentIndex(_idx)
-        _mode_cb.currentIndexChanged.connect(self._on_mode_change)
+        # v4.149.0：currentIndexChanged → activated。执行模式（manual/auto…）是**安全相关**
+        # 设置 —— `auto` 等价「危险操作免确认」，而 `_on_mode_change` 会把它写进 config.json。
+        # 用 currentIndexChanged 时，键盘上下/程序化改动都能静默把模式改掉、还落盘；
+        # 换成 activated（只在用户真选时发出）后，只有明确的点击/回车才会改。
+        _mode_cb.activated.connect(self._on_mode_change)
         gtl.addWidget(_mode_cb)
         _mode_hint = QLabel("交互：危险操作逐个问 ｜ 规划：只做只读 ｜ 自动：全直接执行 ｜ 仅讨论：不执行 ｜ 自定义：仅白名单免确认")
         _mode_hint.setWordWrap(True)
@@ -5942,7 +7024,7 @@ class ChatWindow(QMainWindow):
         bkd.setStyleSheet(f"font-size:11px;color:{THEME['faint']};")
         bkl.addWidget(bkd)
         bk_row = QHBoxLayout()
-        self.ab_freq_combo = QComboBox()
+        self.ab_freq_combo = _NoWheelCombo()
         self.ab_freq_combo.addItem("关闭", "")
         self.ab_freq_combo.addItem("每日", "daily")
         self.ab_freq_combo.addItem("每周", "weekly")
@@ -6180,6 +7262,10 @@ class ChatWindow(QMainWindow):
         if agent:
             base += AGENT_SYS_APPEND
             base += self._build_tool_overview()
+            # v4.129：当前产物落盘目录——引导 write_file 之类也写进 日期/项目 分层目录
+            _pd = self._prompt_section_products_dir()
+            if _pd:
+                base += "\n\n" + _pd
         else:
             base += (
                 "\n\n【模式说明：当前为「普通对话模式」，你无法直接调用任何工具】\n"
@@ -6217,6 +7303,32 @@ class ChatWindow(QMainWindow):
         if not sk:
             return ""
         return f'【当前技能：{sk.get("name", "")}】\n{sk.get("prompt", "")}'
+
+    def _prompt_section_products_dir(self):
+        """v4.129：把「当前产物落盘目录」告诉模型。
+
+        只在 Agent 模式 + dated 分层开启时注入（普通模式没工具，注入纯浪费 token）。
+        目的是让 write_file / 报告类产物也进 产物/YYYY-MM-DD/<项目>/，
+        而不是继续散落在产物根目录（实测根目录堆了 20+ 个散落 md/html/png）。
+        """
+        try:
+            import product_layout
+            if not product_layout.is_dated_layout_enabled(self.cfg):
+                return ""
+            pj = product_layout.current_project()
+            base_dir = product_layout.product_dir(
+                config.PRODUCTS_DIR, kind="md", project=pj,
+                layout="dated", make=False)
+            return (
+                f"【产物落盘目录（v4.129 分层）】\n"
+                f"· 今天日期：{product_layout.today()}；当前项目：{pj}\n"
+                f"· 文档类产物请写到：{base_dir}\n"
+                f"· 其他类型把上面路径末尾的「文档」换成对应目录：图片 / 视频 / 截图 / 脚本 / 网页 / 音频 / 表格\n"
+                f"· 生成类工具（image_gen / video_gen / screenshot）已自动落位，你无需指定路径。\n"
+                f"· 用户明确指定了路径时，以用户指定为准。"
+            )
+        except Exception:
+            return ""
 
     def _prompt_section_rules(self):
         """行为规范 agent_rules.md（根目录找不到回退 _internal/，文件缺失静默跳过）。"""
@@ -6566,17 +7678,96 @@ class ChatWindow(QMainWindow):
             pass
 
     # ============ 模型切换 / 导出 ============
-    def _on_model_change(self, name):
+    def _match_model_profile(self):
+        """当前三件套匹配到的档位名；返回 (档位名, 是否精确匹配)。
+
+        v4.149.0：两级匹配——① base_url + model **全等**（精确）；
+        ② base_url **唯一命中**（宽容，仅用于显示，绝不改配置）。
+        为什么要 ②：档位里的 model 名会漂移（例：主配置升到 `agnes-3.0-flash`
+        而 `model_profiles["Agnes"].model` 还写着 `agnes-2.5-flash`），此时 ① 失配，
+        老代码就会陷入 `for...else` 强制切档；宽容匹配让「显示」回归正确，
+        同时把「要不要把档位同步到 3.0」留给用户，不擅自替他决定。
+        """
+        cfg = self.cfg or {}
+        profiles = cfg.get("model_profiles") or {}
+        base, model = cfg.get("base_url"), cfg.get("model")
+        for n, p in profiles.items():
+            p = p or {}
+            if p.get("base_url") == base and p.get("model") == model:
+                return n, True
+        hit = [n for n, p in profiles.items() if (p or {}).get("base_url") == base]
+        if len(hit) == 1:
+            return hit[0], False
+        return "", False
+
+    def _init_settings_model_combo(self):
+        """设置弹层档位下拉：填充 + 显示对齐。**任何情况都不写 config.json**。
+
+        v4.149.0 根因修复（大哥反馈「主模型显示智谱」）：
+        老实现连的是 `currentTextChanged` + 失配时 `_on_model_change(names[0])`，
+        两条路都能在用户零意图下把 base_url/model/api_key 整套换掉并落盘 ——
+        实测主模型自 2026-09-06 20:28 起被换成 `glm-4-flash`（智谱）长达 8 天，
+        而 Auto 档的界面只显示「Auto · 智能路由」，用户完全看不出来。
+        现在：**只显示，不落盘**；真选（`activated`）才走 `_on_model_change(explicit=True)`。
+        """
+        names = list((self.cfg.get("model_profiles") or {}).keys())
+        if not names:
+            return
+        self.model_combo.blockSignals(True)
+        try:
+            self.model_combo.clear()
+            self.model_combo.addItems(names)
+            nm, exact = self._match_model_profile()
+            if nm:
+                self.model_combo.setCurrentIndex(names.index(nm))
+                if not exact:
+                    log.info("主模型与档位「%s」仅 base_url 相同（model 有差异）：配置=%s 档位=%s"
+                             "—— 按「沿用配置、不动档位」处理",
+                             nm, self.cfg.get("model"),
+                             ((self.cfg.get("model_profiles") or {}).get(nm) or {}).get("model"))
+            else:
+                log.warning("主模型未匹配任何档位，保持原样、不自动切换（旧版此处会强制切档并落盘）："
+                            "model=%s base_url=%s", self.cfg.get("model"), self.cfg.get("base_url"))
+        finally:
+            self.model_combo.blockSignals(False)
+        # 只认「用户真选」：activated 仅在用户在弹出列表里选定（点击/回车）时发出，
+        # 滚轮滑过、键盘上下、程序化 setCurrentIndex 都不会触发它。
+        self.model_combo.activated.connect(self._on_model_combo_activated)
+
+    def _on_model_combo_activated(self, idx):
+        """设置弹层档位下拉被用户**真选** → 才允许改配置。"""
+        try:
+            name = self.model_combo.itemText(idx)
+        except Exception:
+            return
+        self._on_model_change(name, explicit=True)
+
+    def _on_model_change(self, name, explicit=False):
+        """切换档位三件套（base_url/model/api_key）。
+
+        **只有 explicit=True（用户在设置弹层里真选了）才落盘。** 其余调用（滚轮、
+        键盘、程序化 setCurrentIndex、启动对齐）一律忽略并记 WARNING 留审计痕。
+        """
         prof = self.cfg.get("model_profiles", {}).get(name)
         if not prof:
             return
+        if not explicit:
+            log.warning("忽略非用户发起的模型切换（不写盘）：档位=%s", name)
+            return
+        _prev = (self.cfg.get("base_url"), self.cfg.get("model"))
         self.cfg["base_url"] = prof["base_url"]
         self.cfg["model"] = prof["model"]
         if prof.get("api_key"):
             self.cfg["api_key"] = prof["api_key"]
             self.api_key_edit.setText(self.cfg["api_key"])
         self._save_cfg()
+        log.info("用户切换模型档位：%s（model %s → %s；base_url %s → %s）",
+                 name, _prev[1], self.cfg["model"], _prev[0], self.cfg["base_url"])
         self.status_label.setText(f"已切换模型：{name}（{prof['model']}）")
+        try:
+            self._fill_model_combo()      # 让工具栏 Auto/主模型标签同步刷新
+        except Exception as e:
+            log.debug("刷新模型下拉失败: %s", e)
 
     def _save_api_key(self):
         key = self.api_key_edit.text().strip()
@@ -6628,20 +7819,20 @@ class ChatWindow(QMainWindow):
         """导出 HTML/PDF 共用的内联样式。"""
         return (
             "body{font-family:'Microsoft YaHei','PingFang SC',sans-serif;"
-            "max-width:820px;margin:24px auto;padding:0 16px;color:#1f2328;line-height:1.7;}"
+            "max-width:820px;margin:24px auto;padding:0 16px;color:%(text_dark2)s;line-height:1.7;}"
             "h1{font-size:22px;margin-bottom:4px;} .meta{color:#888;font-size:13px;margin:2px 0;}"
-            "hr{border:none;border-top:1px solid #e5e7eb;margin:16px 0;}"
+            "hr{border:none;border-top:1px solid %(border)s;margin:16px 0;}"
             ".msg{margin:14px 0;} .role{font-size:12px;font-weight:600;color:#888;margin-bottom:4px;}"
             ".bubble{padding:10px 14px;border-radius:10px;white-space:pre-wrap;word-break:break-word;}"
-            ".user .bubble{background:#e8f0fe;} .asst .bubble{background:#f1f3f5;}"
-            ".tool{border:1px solid #e5e7eb;border-radius:8px;padding:8px 12px;margin:10px 0;"
-            "background:#fafafa;font-size:13px;}"
-            ".tool .role{color:#2563eb;} .result{color:#666;margin-top:4px;}"
-            "pre{background:#0f172a;color:#e2e8f0;padding:10px;border-radius:6px;"
+            ".user .bubble{background:%(user_bg)s;} .asst .bubble{background:%(tpl_asst_bubble)s;}"
+            ".tool{border:1px solid %(border)s;border-radius:8px;padding:8px 12px;margin:10px 0;"
+            "background:%(tpl_tool_bg)s;font-size:13px;}"
+            ".tool .role{color:%(tpl_tool_role)s;} .result{color:#666;margin-top:4px;}"
+            "pre{background:%(tpl_pre_bg)s;color:%(tpl_pre_text)s;padding:10px;border-radius:6px;"
             "overflow:auto;font-size:12px;white-space:pre-wrap;}"
-            "code{background:#f1f1f1;padding:1px 4px;border-radius:4px;font-size:12px;}"
+            "code{background:%(tpl_code_bg)s;padding:1px 4px;border-radius:4px;font-size:12px;}"
             "b{font-weight:600;}"
-        )
+        ) % THEME
 
     def _md_to_html(self, text):
         """极简 Markdown→HTML：转义 + 代码块 + 加粗 + 换行；用于 HTML/PDF 导出。"""
@@ -6806,6 +7997,8 @@ class ChatWindow(QMainWindow):
         if self._busy:
             self.status_label.setText("上一条还在处理，请稍候再发（本条已保留在输入框）")
             return
+        # v4.129：发消息前同步一次项目上下文（会话标题可能刚被自动重命名过）
+        self._sync_product_context()
         text = self.input_box.toPlainText().strip()
         # Strip image placeholder markers from text
         text = re.sub(r"\[\u56fe\u7247\u5df2\u7c98\u8d34 \d+\]", "", text).strip()
@@ -7036,7 +8229,7 @@ class ChatWindow(QMainWindow):
         sys_msg = {"role": "system",
                    "content": self._build_system_prompt()}
         # v4.102 图像输入链路：agent 任务若带图（含 image_url）或命中工具意图，路由会
-        # 升级到视觉模型（deepseek-v4-flash-vision-exp）。预判路由结果是否视觉，是则
+        # 升级到视觉模型（deepseek-flash）。预判路由结果是否视觉，是则
         # 保留图像 content，让 AgentWorker 真正"看图"干活；非视觉仍归一化纯文本。
         _msgs = [m for m in session.messages if isinstance(m, dict)]
         _ti = self._needs_tool_intent(_msgs)
@@ -7051,13 +8244,10 @@ class ChatWindow(QMainWindow):
         _vision_ok = _model_supports_vision(_m)
         # 统一走 _sanitize_msg_for_api——滤掉 tool/tool_log/None；视觉模型保留多模态
         # list（含图像），非视觉归一化为纯文本（list 原样发接口会 400）。
-        hist = []
-        for m in session.messages:
-            sm = _sanitize_msg_for_api(m, vision_ok=_vision_ok)
-            if sm:
-                hist.append(sm)
-        if len(hist) > self.cfg["max_history"]:
-            hist = hist[-self.cfg["max_history"]:]
+        # v4.125 N-01：Agent 管线历史走保真压缩（_build_api_history）——
+        # 保留 tool_calls+tool 配对，续跑/继续时模型看得见工具调用记录，不再失忆重干。
+        hist = _build_api_history(session.messages, vision_ok=_vision_ok,
+                                  max_history=self.cfg["max_history"])
         messages = [sys_msg] + hist
 
         all_tools = config.get_all_tools(self.cfg)
@@ -7261,7 +8451,10 @@ class ChatWindow(QMainWindow):
         self.resume_agent_btn.setVisible(False)
         w = self._agent_worker
         stopped = getattr(w, "stopped_by_user", False)
-        if stopped:
+        # v4.125 M-01：用户暂停 **或** 可续的自动停止（超时/熔断/步数耗尽）都给
+        # 「继续」入口——检查点已 mark_paused 保留，没理由藏按钮。
+        resumable = stopped or getattr(w, "_resumable_stop", False)
+        if resumable:
             # v4.101：用户暂停 → 检查点已标记 paused，显示「继续上次任务」入口
             tid = getattr(w, "task_id", None)
             if tid and task_resume.load_checkpoint(self.cfg, tid):
@@ -7500,6 +8693,10 @@ class ChatWindow(QMainWindow):
         # 命中这些非工具意图问句特征直接返回 False（交由普通对话直答）。
         if self._looks_like_learning_question(last_user):
             return False
+        # v4.155 fix3：纯评价/夸赞/感慨豁免——「这能力颠覆认知」「效果真好」之类不应被当成
+        # 工具意图升舱或强制 required（否则误走 DeepSeek 空转，甚至被系统提示助推去调生成工具）。
+        if self._looks_like_praise(last_user):
+            return False
         if any(kw in last_user.lower() for kw in KEYWORDS):
             return True
         # v4.102 fix11：媒体生成组合判定兜底——"生成口播视频 / 做个数字人"这类
@@ -7560,9 +8757,31 @@ class ChatWindow(QMainWindow):
             return True
         return False
 
+    def _looks_like_praise(self, text):
+        """v4.155 fix3：判断是否为「纯评价 / 夸赞 / 感慨」而非动作指令。
+        『这能力颠覆认知』『效果真好』『太强了』『生成得不错』这类句子虽可能含
+        『生成 / 视频』等词，但用户是在评价而非让我执行，不应触发生成类工具路由。
+        命中评价特征词、且不含明确祈使动词 → 视为纯评价，返回 True。"""
+        if not text:
+            return False
+        t = text.lower()
+        if any(k in t for k in ("颠覆认知", "真好用", "太强了", "真强", "效果不错",
+                                "效果真好", "好厉害", "绝了", "厉害", "惊艳",
+                                "超出预期", "意想不到", "没想到这么", "生成得不错",
+                                "画得不错", "做得好", "很强", "真不错", "服了",
+                                "牛啊", "太牛了", "有点东西", "可以啊")):
+            # 含明确祈使动词则视为真指令（如「帮我生成一张」「做一张海报」），不豁免
+            if any(v in t for v in ("帮我", "请生成", "请画", "生成一张", "画一张",
+                                    "做一张", "来一张", "出个视频", "做个视频",
+                                    "做一个", "写一段", "帮我做", "帮我画",
+                                    "帮我生成", "来一个", "整一个")):
+                return False
+            return True
+        return False
+
     def _is_reasoning_model(self, model, base_url=""):
         """v4.102 fix10：判断当前模型是否为「思考/推理模式」模型。
-        DeepSeek 官方推理模型（例如 deepseek-v4-flash-vision-exp）不支持 tool_choice="required"
+        DeepSeek 官方推理模型（例如 deepseek-flash）不支持 tool_choice="required"
         ——一旦工具意图命中（如用户说「执行任务」「运行」）被 v4.98 强制设 required，
         API 直接返回 400：`Thinking mode does not support this tool_choice`，
         异常又被 _agent_call 的 except 吞掉 → 空 content → 界面「Agent 完成」但无任何输出。
@@ -7574,14 +8793,24 @@ class ChatWindow(QMainWindow):
         # 明确推理/思考特征
         if any(k in m for k in ("think", "reason", "-r1", "reasoning", "thinking")):
             return True
+        # v4.162：Agnes 3.x 为思考/推理档（如 agnes-3.0-flash），同样不接受
+        # tool_choice="required"/函数调用，会返回 400「Thinking mode does not support
+        # this tool_choice」——与 DeepSeek 思考模式同病。Agnes 2.5 等旧档不受影响。
+        if "agnes" in b and "-3" in m:
+            return True
         # DeepSeek 官方通道（api.deepseek.com）当前推理模型均为思考模式
         if "api.deepseek.com" in b:
             return True
         return False
 
-    def _agent_call(self, messages, tools, on_delta=None, force_required=False, force_tool=None, force_complex=False):
+    def _agent_call(self, messages, tools, on_delta=None, force_required=False, force_tool=None, force_complex=False, model_override="", thinking=False):
         import urllib.request as urllib_req
         import logging as _logging
+        # v4.128：Agnes 文本模型调用层（3.0/2.5 两档 + 失败自动回退 + 回退率统计）
+        try:
+            import agnes_text as _at
+        except Exception:
+            _at = None
         _tool_intent = self._needs_tool_intent(messages)
         # v4.102：消息含图 → 强制走视觉模型通道（复杂/工具意图路径），让模型真正"看图"
         _has_img_call = any(
@@ -7596,8 +8825,26 @@ class ChatWindow(QMainWindow):
         _route_reason = ("tool_intent" if _tool_intent
                          else ("image" if _has_img_call
                                else ("force_complex" if force_complex else "")))
-        _base_url, _model, _api_key = self._route_model(
-            messages, force_complex=_route_force, reason=_route_reason)
+        # v4.125 M-08：角色级模型覆盖——军团角色卡「模型」字段填了 model_profiles
+        # 里的档位名时，该成员的所有调用锁定到该档位（原先收了字段从不使用，
+        # 是死控件）。档位无效（缺 key/不存在）则回落全局路由，绝不静默跳通道。
+        _ov = (model_override or "").strip()
+        _ov_prof = None
+        if _ov:
+            _p = (self.cfg.get("model_profiles") or {}).get(_ov) or {}
+            if _p.get("api_key") and _p.get("model") and _p.get("base_url"):
+                _ov_prof = _p
+                _route_reason = "role_model:" + _ov
+            else:
+                _route_reason = "role_model_invalid:" + _ov
+        if _ov_prof:
+            _base_url, _model, _api_key = (
+                _ov_prof["base_url"], _ov_prof["model"], _ov_prof["api_key"])
+            self._route_reason = _route_reason
+            self._log_route(messages, _model, _base_url, False, _route_reason)
+        else:
+            _base_url, _model, _api_key = self._route_model(
+                messages, force_complex=_route_force, reason=_route_reason)
         url = _base_url.rstrip("/") + "/chat/completions"
         body = {
             "model": _model,
@@ -7606,6 +8853,14 @@ class ChatWindow(QMainWindow):
             "stream": True,
             "temperature": 0.3,
         }
+        # v4.128：Agnes 文本回退链——仅 Agnes 文本档且选了 3.0 时才是两档（[3.0, 2.5]），
+        # 2.5 与非 Agnes 通道（DeepSeek 等）都是单档，行为与升级前完全一致。
+        _chain = _at.chain_for(self.cfg, model=_model, base_url=_base_url) if _at else [_model]
+        _agnes_chain = bool(_at) and _at.is_agnes_text_model(_chain[0])
+        if _agnes_chain and thinking:
+            # 开 Thinking 必须给足 max_tokens（思考过程占用输出额度，否则正文被截断）
+            body.update(_at.thinking_payload(
+                True, (self.cfg or {}).get("agnes_thinking_max_tokens")))
         _REDO_KEYWORDS = (
             "重新生成", "重新画", "重新搜索", "再生成", "再画", "再来一张",
             "再来一次", "再查", "再搜索", "再搜", "regenerate", "redo", "重画",
@@ -7628,6 +8883,7 @@ class ChatWindow(QMainWindow):
                 # 改为在消息尾部注入强制指令，让思考模型自然决定调用指定工具，
                 # 不设 tool_choice（思考模式默认行为）。
                 _ft_instr = (
+                    "【系统强制指令，非用户请求】"
                     f"当前任务必须通过调用工具 {force_tool} 完成。"
                     f"请直接调用 {force_tool} 工具：把用户请求的全部必要信息整理为它的参数"
                     f"（如 prompt / duration / aspect / dialogue 等），一次调用它并生成结果。"
@@ -7660,8 +8916,13 @@ class ChatWindow(QMainWindow):
         tool_acc = {}  # index -> {"id", "function": {"name", "arguments"}}
         _usage = {}
 
-        def _stream_once(_body):
-            """发一次流式请求，返回 (content, tool_acc, usage)；失败时向外抛异常。"""
+        def _stream_once(_body, strict=False):
+            """发一次流式请求，返回 (content, tool_acc, usage)；失败时向外抛异常。
+
+            strict=True（v4.128，仅当 Agnes 3.0 回退链生效时开启）：
+            流中断（无 finish_reason 且无任何内容）与空响应视作**失败**抛 AgnesTextError，
+            让上层回退到 2.5 重试一次。非 Agnes 通道 strict 恒为 False，行为不变。
+            """
             _payload = json.dumps(_body, ensure_ascii=False).encode("utf-8")
             _req = urllib_req.Request(url, data=_payload, method="POST")
             _req.add_header("Content-Type", "application/json")
@@ -7670,6 +8931,7 @@ class ChatWindow(QMainWindow):
             _content = ""
             _acc = {}
             _u = {}
+            _finished = False
             with urllib_req.urlopen(_req, timeout=90) as resp:
                 buf = ""
                 for raw in resp:
@@ -7684,6 +8946,7 @@ class ChatWindow(QMainWindow):
                             continue
                         data = line[len("data:"):].strip()
                         if data == "[DONE]":
+                            _finished = True
                             break
                         try:
                             evt = json.loads(data)
@@ -7693,6 +8956,9 @@ class ChatWindow(QMainWindow):
                         if evt.get("usage"):
                             _u = evt["usage"]
                         choice = (evt.get("choices") or [{}])[0]
+                        # v4.128：记录是否正常收尾（用于流中断判定）
+                        if choice.get("finish_reason"):
+                            _finished = True
                         delta = choice.get("delta") or {}
                         if delta.get("content") is not None:
                             _content += delta["content"]
@@ -7710,40 +8976,95 @@ class ChatWindow(QMainWindow):
                                 acc["function"]["name"] = fn["name"]
                             if fn.get("arguments"):
                                 acc["function"]["arguments"] += fn["arguments"]
+            # v4.128：严格模式下「什么都没收到」＝失败（空响应 / 流中断），交给回退链。
+            if strict and not _content and not _acc:
+                _kind = "empty" if _finished else "stream_break"
+                raise _at.AgnesTextError(
+                    _kind, "空响应" if _finished else "流中断（无 finish_reason）")
             return _content, _acc, _u
 
-        try:
-            full_content, tool_acc, _usage = _stream_once(body)
-        except Exception as e:
-            # v4.102 fix12：通道不认识 stream_options 时（多为 HTTP 400），
-            # 去掉该参数重试一次——保持 fix12 之前的行为，绝不因新参数导致调用失败。
-            _code = getattr(e, "code", None)
-            if _code in (400, 404) or "stream_options" in str(e):
-                try:
-                    body.pop("stream_options", None)
-                    full_content, tool_acc, _usage = _stream_once(body)
-                except Exception as e2:
-                    # v4.108 H-04：失败必须上抛交给 agent.py 兜底弹错，不能吞掉装"成功"。
-                    _logging.getLogger("dsdesktop").error("Agent 流式调用失败: %s", e2)
-                    raise
-            elif _code in (429, 500, 502, 503, 504):
-                # v4.108 H-04：限流/网关抖动 → 退避重试 2 次（2s/4s），仍失败则上抛。
-                _last = e
-                for _attempt in range(2):
-                    time.sleep(2 * (_attempt + 1))
+        def _attempt_model(_m, _strict, _backoff=True):
+            """v4.128：用指定模型跑一次完整流程（含既有 stream_options 修复 / 5xx 退避）。
+
+            _backoff=False（回退链生效且本档后面还有候选时）：不再原地退避重试——
+            「换 2.5 重试一次」本身就是重试，再叠 2s/4s 退避只会让用户干等 6 秒。
+            非 Agnes 通道与最后一档仍保持 v4.108 H-04 的原有退避行为。
+            """
+            body["model"] = _m
+            try:
+                return _stream_once(body, strict=_strict)
+            except Exception as e:
+                # v4.102 fix12：通道不认识 stream_options 时（多为 HTTP 400），
+                # 去掉该参数重试一次——保持 fix12 之前的行为，绝不因新参数导致调用失败。
+                _code = getattr(e, "code", None)
+                _estr = str(e)
+                if _code in (400, 404) or "stream_options" in _estr or "tool_choice" in _estr:
                     try:
-                        full_content, tool_acc, _usage = _stream_once(body)
-                        _last = None
-                        break
-                    except Exception as e3:
-                        _last = e3
-                if _last is not None:
+                        body.pop("stream_options", None)
+                        # v4.162：思考模型（DeepSeek/Agnes 3.x）不容忍 tool_choice 时，
+                        # 降级为不设（默认/auto）后重试——否则 400 直接空响应。
+                        if "tool_choice" in _estr:
+                            body.pop("tool_choice", None)
+                        return _stream_once(body, strict=_strict)
+                    except Exception as e2:
+                        # v4.108 H-04：失败必须上抛交给 agent.py 兜底弹错，不能吞掉装"成功"。
+                        _logging.getLogger("dsdesktop").error("Agent 流式调用失败: %s", e2)
+                        raise
+                elif _backoff and _code in (429, 500, 502, 503, 504):
+                    # v4.108 H-04：限流/网关抖动 → 退避重试 2 次（2s/4s），仍失败则上抛。
+                    _last = e
+                    for _attempt in range(2):
+                        time.sleep(2 * (_attempt + 1))
+                        try:
+                            return _stream_once(body, strict=_strict)
+                        except Exception as e3:
+                            _last = e3
                     _logging.getLogger("dsdesktop").error("Agent 流式调用重试仍失败: %s", _last)
                     raise
-            else:
-                # v4.108 H-04：其余失败（超时/断流等）同样上抛，禁止静默返回空响应。
-                _logging.getLogger("dsdesktop").error("Agent 流式调用失败: %s", e)
+                else:
+                    # v4.108 H-04：其余失败（超时/断流等）同样上抛，禁止静默返回空响应。
+                    _logging.getLogger("dsdesktop").error("Agent 流式调用失败: %s", e)
+                    raise
+
+        _fb_reason = ""
+        _strict = len(_chain) > 1
+        for _ci, _cm in enumerate(_chain):
+            _is_last = _ci == len(_chain) - 1
+            try:
+                full_content, tool_acc, _usage = _attempt_model(
+                    _cm, _strict, _backoff=(not _strict or _is_last))
+            except Exception as e:
+                if _at is not None and not _is_last and _at.is_fallbackable(e):
+                    _fb_reason = _at.failure_label(e)
+                    try:
+                        _at.note_attempt(_cm, ok=False)
+                    except Exception:
+                        pass
+                    _logging.getLogger("dsdesktop").warning(
+                        "Agnes 文本调用 %s 失败（%s）→ 回退 %s", _cm, _fb_reason, _chain[_ci + 1])
+                    continue
+                if _agnes_chain and _at is not None:
+                    try:
+                        _at.note_attempt(_cm, ok=False)
+                    except Exception:
+                        pass
                 raise
+            if _ci > 0:
+                # 回退成功：换用成功档位的模型名回传（usage 统计/日志口径与真实调用一致）
+                _model = _cm
+                _fb_reason = _fb_reason or "未知原因"
+                try:
+                    _at.note_call(_cm, fallback=True, ok=True)
+                    _logging.getLogger("dsdesktop").warning(
+                        "Agnes 文本调用已回退：%s→%s（%s）", _chain[0], _cm, _fb_reason)
+                except Exception:
+                    pass
+            elif _agnes_chain and _at is not None:
+                try:
+                    _at.note_call(_cm, fallback=False, ok=True)
+                except Exception:
+                    pass
+            break
 
         tool_calls = []
         for idx in sorted(tool_acc):
@@ -7830,7 +9151,7 @@ class ChatWindow(QMainWindow):
         sys_msg = {"role": "system", "content": self._build_system_prompt()}
 
         # v4.102 图像输入链路：用户发图时，强制路由到视觉模型（complex_model profile，
-        # 现指向 deepseek-v4-flash-vision-exp），并保留图像 content 让模型真正"看图"；
+        # 现指向 deepseek-flash），并保留图像 content 让模型真正"看图"；
         # 非视觉模型（如 Agnes）仍把图归一化为纯文本，避免 list 原样发送导致 400。
         last_msg = session.messages[-1] if session.messages else None
         _has_img = bool(
@@ -7863,13 +9184,10 @@ class ChatWindow(QMainWindow):
         # v4.79 hotfix：历史必须经 _sanitize_msg_for_api 清洗——session 里混有
         # tool/tool_log/None/list 内容（UI 展示用），直接发接口会 400。
         # 视觉模型保留图像列表，非视觉归一化为纯文本。
-        others = []
-        for m in session.messages[:-1]:
-            sm = _sanitize_msg_for_api(m, vision_ok=_vision_ok)
-            if sm:
-                others.append(sm)
-        if len(others) > self.cfg["max_history"]:
-            others = others[-self.cfg["max_history"]:]
+        # v4.125 N-01：普通发送历史同样走保真压缩——session 里回写过的
+        # tool_calls/tool 配对保留（配对修复防 400），视觉/截断在函数内处理。
+        others = _build_api_history(session.messages[:-1], vision_ok=_vision_ok,
+                                    max_history=self.cfg["max_history"])
         api_messages = [sys_msg] + others
         if search_context:
             api_messages.append({"role": "system", "content": search_context})
@@ -7939,7 +9257,10 @@ class ChatWindow(QMainWindow):
         chunk = bytes(reply.readAll()).decode("utf-8", "ignore")
         self._sse_buf += chunk
         # v4.58：防 SSE 缓冲区无限膨胀（与 _agent_call 同步流保持一致）
-        if len(self._sse_buf) > 1_000_000:
+        # v4.125 P2：1MB→4MB——跨 chunk 的巨型 tool_calls arguments（含
+        # base64 图像参数）可能超 1MB，整段清空会把它半路丢弃 → json
+        # 解析失败 → 工具按空参执行。4MB 才按病态事件丢弃。
+        if len(self._sse_buf) > 4_000_000:
             self._sse_buf = ""
         self._drain_sse()
 
@@ -7971,7 +9292,7 @@ class ChatWindow(QMainWindow):
                     delta_obj = obj["choices"][0]["delta"]
                 except Exception:
                     continue
-                # v4.102：视觉模型（deepseek-v4-flash-vision-exp）会先吐 reasoning_content
+                # v4.102：视觉模型（deepseek-flash）会先吐 reasoning_content
                 # （思考阶段，content 为空/null），可能持续很多秒。期间给用户反馈，避免
                 # 误以为「发图后无回复卡死」。
                 rc = delta_obj.get("reasoning_content")
@@ -8058,6 +9379,21 @@ class ChatWindow(QMainWindow):
                     except Exception:
                         continue
             log.error("流式请求失败 HTTP=%s err=%s msg=%s", status_code, err_str, msg)
+            # v4.125 P2：失败不丢已生成文本——断流前可能已流出几百字，
+            # 此前直接丢弃只在状态栏一闪而过（Agent 链路 v4.108 H-04 已修，
+            # 普通聊天没对齐）。保留入会话并标注截断，用户可基于它重发。
+            _partial = (self._streaming_text or "").strip()
+            if _partial:
+                try:
+                    session = self.store.active()
+                    session.messages.append({
+                        "role": "assistant",
+                        "content": _partial + f"\n\n（⚠️ 生成中断：{msg[:160]}）"})
+                    self._track_context("assistant", _partial)
+                    self.store.save()
+                    self._flush_render()
+                except Exception:
+                    pass
             if not msg:
                 # 服务器无错误正文（如连接被重置 / 协议层错误）时，给出可读提示并指向调试日志
                 msg = err_str or f"HTTP {status_code}（无错误详情，详见 vision_debug.log）"
@@ -8491,11 +9827,22 @@ class TrayApp:
                 pass
 
     def _setup_hotkey(self):
+        # v4.125 M-11：keyboard 钩子线程无 Qt 事件循环，里面直接
+        # QTimer.singleShot(0, ...) 永不触发（QTimer 依赖创建线程的循环）——
+        # 用户自定义热键因此静默失效。改用 Signal 跨线程 queued 投递：
+        # 桥对象在 GUI 线程创建并 connect，钩子线程 emit 自动排到主线程执行。
+        from PySide6.QtCore import QObject, Signal as _Sig
+
+        class _HotkeyBridge(QObject):
+            _fire = _Sig()
+
+        self._hotkey_bridge = _HotkeyBridge()
+        self._hotkey_bridge._fire.connect(self.toggle)
         try:
             import keyboard
             keyboard.add_hotkey(
                 self.cfg["hotkey"],
-                lambda: QTimer.singleShot(0, self.toggle),
+                self._hotkey_bridge._fire.emit,
             )
         except Exception:
             pass

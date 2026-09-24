@@ -52,6 +52,9 @@ class AgentNode:
         "legion_get_output": "读取军团某位成员或某一波的完整产出原文",
         "legion_read_log": "读取本次军团执行的过程日志",
         "legion_board": "读取项目共享任务板（各节点状态与最近事件）",
+        "legion_find_asset": "查资产库：找已产出的图/视频/剧本存货（三视图、关键帧、成片等），复用别重造",
+        "legion_get_sources": "查成员抓取留痕：搜了哪些词、抓了哪些页面、抓回多少字（验收数据类产出必查）",
+        "legion_report_issue": "上报问题：上游数据不可信/缺依赖/指令矛盾时上报，项目经理必须回应（别硬编数据）",
     }
 
     def __init__(self, name: str, role_prompt: str,
@@ -64,6 +67,8 @@ class AgentNode:
         self.mw = mw
         self.max_turns = max_turns
         self.model_cfg = model_cfg or {}
+        # v4.128：Thinking 默认关，仅 PM 验收/复杂规划等重推理环节由调用方显式打开。
+        self.thinking = bool((model_cfg or {}).get("thinking"))
 
     def run(self, state: dict) -> dict:
         """执行本 Agent 的任务循环，返回更新后的 state。"""
@@ -101,9 +106,12 @@ class AgentNode:
 
         # Agent 工具循环
         output = ""
+        # v4.125 M-08：角色级模型——角色卡「模型」字段填了档位名则锁定该档位。
+        _model_ov = (self.model_cfg or {}).get("profile", "")
         for turn in range(1, self.max_turns + 1):
             try:
-                resp = self.mw._agent_call(messages, my_tools)
+                resp = self.mw._agent_call(messages, my_tools, model_override=_model_ov,
+                                           thinking=self.thinking)
             except Exception as e:
                 log.error("AgentNode [%s] turn %d 调用失败: %s", self.name, turn, e)
                 break
@@ -122,10 +130,12 @@ class AgentNode:
                         args = json.loads(fn.get("arguments", "{}") or "{}")
                     except Exception:
                         args = {}
-                    # 调工具
+                    # 调工具（v4.125 M-04：执行端白名单二次校验——schema 过滤
+                    # 防君子不防幻觉，幻觉出的白名单外工具在这里被硬拒。）
                     from tools import exec_tool
                     try:
-                        result, _, _ = exec_tool(self.mw.cfg, APP_DIR, t_name, args)
+                        result, _, _ = exec_tool(self.mw.cfg, APP_DIR, t_name, args,
+                                                 allowed_tools=self.tool_names)
                     except Exception as _te:
                         result = f"工具执行异常：{_te}"
                     # 截断过长结果

@@ -8,11 +8,14 @@ import re
 import json
 import time
 import subprocess
+# v4.125 M-14：windowed 打包下调子进程不闪黑窗
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 import shutil
 import logging
 import inspect
 import urllib.request
 import urllib.error
+import urllib.parse
 from pathlib import Path
 from datetime import datetime
 
@@ -34,6 +37,24 @@ except Exception:      # 旁路模块缺失绝不能拖垮工具模块（冻结�
 from context_manager import get_context_manager
 from database_tools import DatabaseTools
 db_tools = DatabaseTools()
+
+
+# v4.155 fix2：图生视频轮询超时上限（默认 240s，< Agent 回合上限 445s，刻意留余量）。
+# 经 XIAOCHOU_VIDEO_TIMEOUT 可覆盖；替换原先写死的 120（原本只管 submit，轮询仍落 1800 默认）。
+VIDEO_POLL_TIMEOUT = int(os.getenv("XIAOCHOU_VIDEO_TIMEOUT", "240"))
+
+
+def _trunc_args(args, limit=500):
+    """把工具入参安全截断到 limit 字符，避免超长入参撑爆 agent_logs 表（v4.155 fix1）。"""
+    try:
+        s = json.dumps(args, ensure_ascii=False) if not isinstance(args, str) else args
+    except Exception:
+        s = str(args)
+    s = s or ""
+    if len(s) > limit:
+        s = s[:limit] + f"...(截断，共{len(s)}字符)"
+    return s
+
 
 _chart_gen = None
 
@@ -69,6 +90,38 @@ def _safe_relpath(path, base):
         return os.path.relpath(path, base).replace("\\", "/")
     except ValueError:
         return os.path.abspath(path).replace("\\", "/")
+
+
+# ---- v4.129：产物分层落盘 ----
+# 最近一次 exec_tool 的 cfg。落盘函数（_save_gen_image / _save_gen_video 等）签名里
+# 没有 cfg，历史上是模块级直接用 PRODUCTS_DIR；这里缓存一份让它们也能读到
+# products_layout 开关，避免给十几个调用点逐个加参数。
+_LAST_CFG = {}
+
+# product_layout 导入失败时的兜底目录名（只覆盖本机实际用到的几种）
+_KIND_DIR_FALLBACK = {"image": "图片", "video": "视频", "screenshot": "截图",
+                      "code": "脚本", "md": "文档", "cover": "封面图"}
+
+
+def _products_dir(cfg=None, kind=None, project=None):
+    """v4.129：算产物落盘目录（必要时创建），永不抛异常。
+
+    dated（默认）→ 产物/YYYY-MM-DD/<项目>/<类型>/；flat → 产物/<类型>/（旧行为）。
+    """
+    kd = _KIND_DIR_FALLBACK.get(str(kind or "").lower(), "其他")
+    try:
+        import product_layout
+        c = cfg or _LAST_CFG or {}
+        layout = "dated" if product_layout.is_dated_layout_enabled(c) else "flat"
+        return product_layout.product_dir(PRODUCTS_DIR, kind=kind,
+                                          project=project, layout=layout)
+    except Exception:
+        d = os.path.join(PRODUCTS_DIR, kd)
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+        return d
 
 
 def _normalize_deliverable(d, app_dir):
@@ -138,12 +191,16 @@ from risk import RiskClass, RISK_MAP, classify, tier_of, grouped_tools
 # 兼容别名：旧代码可能直接查 TOOL_TIER（name -> 等级）
 TOOL_TIER = {n: tier_of(n) for n in RISK_MAP}
 
+# Agnes 2.5 生视频参考图硬上限（实测传 6 张报 400）—— v4.127 多参考图截断用
+MAX_REF_IMAGES = 5
+
 
 # === 核心 25 工具注册到 registry（v4.31）===
 # handler 签名统一 (cfg, app_dir, args) -> (result_str, deliverables, schedule)
 @register_tool("web_search")
 def _h_web_search(cfg, app_dir, args, progress=None):
-    return (tool_web_search(cfg, args.get("query", "")), [], None)
+    # v4.148.6：把 app_dir 透下去 —— 搜索链全空时的「浏览器搜索兜底」要靠它定位 profile
+    return (tool_web_search(cfg, args.get("query", ""), app_dir=app_dir), [], None)
 
 @register_tool("web_fetch")
 def _h_web_fetch(cfg, app_dir, args, progress=None):
@@ -244,6 +301,96 @@ def _h_legion_read_log(cfg, app_dir, args, progress=None):
     return (head + "\n".join(tail), [], None)
 
 
+@register_tool("legion_get_sources", risk="read")
+def _h_legion_get_sources(cfg, app_dir, args, progress=None):
+    """查本波成员的**抓取留痕**：搜了哪些词、抓了哪些页面、抓回来多少字。
+
+    验收数据类产出（研究员/竞品分析师/选品官…）时**先查这个再看正文**：
+    搜索词跑偏了，正文写得再像样也是编的。留痕里一条抓取都没有，
+    说明成员压根没联网就下了结论 —— 直接判定 FAIL。
+    """
+    run = _legion_run_safe(args.get("run_id") or None)
+    if not run:
+        return (_LEGION_NO_RUN, [], None)
+    try:
+        import legion as _lg
+    except Exception as e:
+        return (f"军团模块加载失败：{e}", [], None)
+    wave = args.get("wave")
+    try:
+        limit = int(args.get("limit") or 30)
+    except (TypeError, ValueError):
+        limit = 30
+    blk = _lg.sources_block(run["run_id"], wave=wave, limit=limit)
+    if not blk:
+        where = f"第 {wave} 波" if wave is not None else "本次执行"
+        return (f"执行批次 {run['run_id']} · {where}："
+                "**没有任何抓取记录**（成员没调用 web_search / web_fetch 就交了结论）。\n"
+                "这是编造数据的最强信号 —— 数据类角色出现这种情况请直接判定 FAIL，"
+                "打回指令写明「必须先用 web_search 实搜，再把搜到的来源逐条标注」。",
+                [], None)
+    return (blk, [], None)
+
+
+@register_tool("legion_find_asset", risk="read")
+def _h_legion_find_asset(cfg, app_dir, args, progress=None):
+    """查资产库：找已产出的图片/视频/剧本/数据（三视图、关键帧、成片等）。
+
+    资产是以前跑军团/导演台留下的**存货**——同类任务直接复用别重造。
+    """
+    try:
+        import asset_store
+    except Exception as e:
+        return (f"资产库模块加载失败：{e}", [], None)
+    query = (args.get("query") or "").strip()
+    kind = (args.get("kind") or "").strip() or None
+    if kind and kind not in asset_store.KIND_LABELS:
+        return ("kind 不合法。可选：" + "、".join(
+                    f"{k}（{v}）" for k, v in asset_store.KIND_LABELS.items()),
+                [], None)
+    if not query:
+        n, by = asset_store.asset_stats()
+        if not n:
+            return ("资产库是空的——还没有任何已登记的存货。", [], None)
+        cat = asset_store.asset_catalog(top=20)
+        return (cat or f"资产库共 {n} 件。", [], None)
+    hits = asset_store.search_assets(query, kind=kind, top=int(args.get("top") or 10))
+    if not hits:
+        n, _by = asset_store.asset_stats()
+        return (f"没搜到「{query}」相关资产（库里共 {n} 件）。"
+                f"换关键词试试，或不带 query 看全库清单。", [], None)
+    lines = [f"「{query}」命中 {len(hits)} 件资产："]
+    for a in hits:
+        k = asset_store.KIND_LABELS.get(a.get("kind"), a.get("kind") or "?")
+        missing = "" if os.path.exists((a.get("path") or "")) else " ⚠️文件丢失"
+        lines.append(f"\n- 【{k}】{a.get('name')}（{a.get('ts')}）{missing}\n"
+                     f"  路径：{a.get('path')}\n"
+                     f"  来源：{(a.get('project') or '')[:30]} / {(a.get('task') or '')[:60]}")
+    return ("\n".join(lines), [], None)
+
+
+@register_tool("legion_report_issue", risk="read")
+def _h_legion_report_issue(cfg, app_dir, args, progress=None):
+    """v4.131-F：成员上报通道 —— 发现上游数据不可信 / 缺依赖 / 指令矛盾时用。
+
+    以前成员遇到「研究员给的市场规模查不到出处」只能硬编一个数字交差，
+    或者空着被判未交付。现在上报即可：项目经理验收本波时**必须逐条回应**，
+    大哥在授权弹窗里也看得见。上报完**继续做你确认得了的部分**，别停着等。
+    """
+    import legion
+    kind = (args.get("kind") or "其他").strip()
+    text = (args.get("text") or "").strip()
+    upstream = (args.get("upstream") or "").strip()
+    if not text:
+        return ("上报失败：必须写 text —— 说清你质疑什么"
+                "（例：研究员给的「市场规模 3 亿」在留痕里查不到出处）。", [], None)
+    ok, msg = legion.report_issue(kind, text, upstream)
+    kinds = " / ".join(legion._REPORT_KINDS)
+    if not ok:
+        return (f"{msg}\n（可选 kind：{kinds}）", [], None)
+    return (msg, [], None)
+
+
 @register_tool("legion_board", risk="read")
 def _h_legion_board(cfg, app_dir, args, progress=None):
     """读项目的**共享任务板**：各节点干到哪了、最近发生了什么。
@@ -307,27 +454,52 @@ def _h_run_python(cfg, app_dir, args, progress=None):
     r, d = tool_run_python(app_dir, args.get("code", ""))
     return (r, d, None)
 
+def _asset_register_deliverable(res, prompt, kind):
+    """v4.125 ④：工具产出（图/视频）自动登记进资产库，军团可复用。
+
+    res 是 (path, kind_hint, name) 之类的交付物元组；登记失败静默（不影响工具返回）。
+    """
+    try:
+        import asset_store
+        p = str(res[0] or "")
+        if p and os.path.isfile(p):
+            name = (str(res[2]) if len(res) > 2 and res[2] else
+                    os.path.splitext(os.path.basename(p))[0])[:60]
+            asset_store.register_asset(
+                name, kind, p,
+                tags=[kind, "agent产出"],
+                project="Agent", task=(prompt or "")[:100],
+                meta={"prompt": (prompt or "")[:200]})
+    except Exception:
+        pass
+
+
 @register_tool("image_gen")
 def _h_image_gen(cfg, app_dir, args, progress=None):
     # v4.108 M-16：模型传的 size（"WxH"）必须透传给后端——此前被 handler 丢弃，
     # 模型以为指定了尺寸实际永远走默认。
-    res = tool_image_gen(cfg, app_dir, args.get("prompt", ""),
+    _prompt = args.get("prompt", "")
+    res = tool_image_gen(cfg, app_dir, _prompt,
                          size=args.get("size"), progress=progress)
     if isinstance(res, tuple):
+        _asset_register_deliverable(res, _prompt, "image")
         return (res[0], [res], None)
     return (res, [], None)
 
 @register_tool("video_gen")
 def _h_video_gen(cfg, app_dir, args, progress=None):
-    res = tool_video_gen(cfg, app_dir, args.get("prompt", ""),
+    _prompt = args.get("prompt", "")
+    res = tool_video_gen(cfg, app_dir, _prompt,
                          duration=args.get("duration"), aspect=args.get("aspect"),
                          image=args.get("image"),
                          first_frame=args.get("first_frame"),
                          last_frame=args.get("last_frame"),
                          images=args.get("images"),
+                         ref_images=args.get("ref_images"),   # v4.127 多参考图
                          dialogue=args.get("dialogue"),
                          progress=progress)
     if isinstance(res, tuple):
+        _asset_register_deliverable(res, _prompt, "clip")
         return (f"视频已生成并保存到：{res[0]}", [res], None)
     return (res, [], None)
 
@@ -545,8 +717,9 @@ def _h_webhook_start(cfg, app_dir, args, progress=None):
         try:
             from config import save_config
             save_config(cfg)
-        except Exception:
-            pass
+        except Exception as e:
+            # v4.125 P3：token 持久化失败要留痕——否则重启后旧 token 全部 401 无从排查。
+            log.warning("webhook token 持久化失败（重启后需重新生成）: %s", e)
     r = webhook_start(port, token=token)
     return (f"Webhook 服务器已启动（端口 {port}，仅本机 127.0.0.1 可访问，"
             f"请求需带 X-Webhook-Token: {token}）" if r is True
@@ -569,13 +742,59 @@ def _h_send_email(cfg, app_dir, args, progress=None):
     return (tool_send_email(cfg, args.get("to", ""), args.get("subject", ""), args.get("body", "")), [], None)
 
 
-def exec_tool(cfg, app_dir, name, args, progress=None):
+# ---- v4.131：抓取留痕 ----
+# 病根：军团成员搜了什么词、抓了哪些页面，此前**完全不留痕**。PM 验收只能看
+# 成品正文，正文写得像模像样就放行 —— 实际上成员可能一个字都没搜、纯靠模型
+# 记忆编（实测：研究员交 4006 字网页堆砌、竞品分析师交 881 字无关搜索结果，
+# 都是「搜偏了还硬交」）。留痕后 PM 能先查「搜的词对不对」，再判内容。
+_FETCH_TRACE_TOOLS = ("web_search", "web_fetch")
+
+
+def _trace_fetch(name, args, result, ok=None):
+    """把 web_search / web_fetch 的调用记进军团抓取留痕仓（非军团运行时自动空转）。"""
+    if name not in _FETCH_TRACE_TOOLS:
+        return
+    try:
+        import legion as _lg
+        if not hasattr(_lg, "record_source"):
+            return
+    except Exception:
+        return
+    try:
+        target = args.get("query") or args.get("url") or ""
+        txt = str(result or "")
+        if ok is None:
+            ok = bool(txt.strip()) and ("未找到搜索结果" not in txt[:80]) \
+                and ("未提供" not in txt[:20]) and not txt.startswith("抓取失败") \
+                and not txt.startswith("未知工具")
+        _lg.record_source(name, target, txt, ok=bool(ok))
+    except Exception as e:
+        log.warning("抓取留痕失败: %s", e)
+
+
+def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None):
     """统一工具路由，返回 (result_str, deliverables, schedule)。
 
     result_str: 工具执行结果文本
     deliverables: [(rel_path, kind, name), ...] 新生成的交付物
     schedule: (message, delay_seconds) 定时提醒，无则为 None
+
+    v4.125 M-04：allowed_tools（可选集合）= 执行端白名单。此前白名单只过滤
+    发给模型的 tools schema，执行端按名字直查注册表——模型幻觉/注入诱导出
+    白名单外的工具（run_python/send_email 等）仍会被真实执行。军团成员
+    调用时必须传角色 tools，双层防线。
     """
+    if allowed_tools is not None and name not in allowed_tools:
+        log.warning("工具 %s 不在执行端白名单内，已拒绝（M-04）", name)
+        return (f"工具 {name} 不在本角色可用工具列表内，已拒绝执行。"
+                "请只使用角色卡声明的工具。", [], None)
+    # v4.129：缓存 cfg，供无 cfg 参数的落盘函数读 products_layout 开关
+    global _LAST_CFG
+    try:
+        if cfg:
+            _LAST_CFG = cfg
+    except Exception:
+        pass
     deliverables = []
     schedule = None
     # v4.31 统一注册中心：优先查 registry（扩展模块已注册；核心工具逐步迁移中）
@@ -585,16 +804,34 @@ def exec_tool(cfg, app_dir, name, args, progress=None):
             get_logger().info(f"执行工具: {name}", module="tools", extra={"tool": name})
             _r = _entry["handler"](cfg, app_dir, args, progress)
             if isinstance(_r, tuple) and len(_r) == 3:
+                _trace_fetch(name, args, _r[0])
                 return _r
-            return (str(_r), [], None)
+            _out = str(_r)
+            _trace_fetch(name, args, _out)
+            return (_out, [], None)
         except Exception as e:
             log.warning("工具 %s 执行异常: %s", name, e)
+            try:
+                # v4.155 fix1：异常分支补 ERROR 级落库，便于事后排查工具失败原因
+                get_logger().error(
+                    f"工具执行失败: {name} | args={_trunc_args(args)}",
+                    module="tools", exc_info=True)
+            except Exception:
+                pass
+            _trace_fetch(name, args, f"工具执行异常：{e}", ok=False)
             return (f"工具执行异常：{e}", [], None)
 
     try:
         get_logger().info(f"执行工具: {name}", module="tools", extra={"tool": name})
         result_str = _try_mcp_tool(name, args)
     except Exception as e:
+        try:
+            # v4.155 fix1：MCP 工具异常分支同样补 ERROR 级落库
+            get_logger().error(
+                f"工具执行失败(MCP): {name} | args={_trunc_args(args)}",
+                module="tools", exc_info=True)
+        except Exception:
+            pass
         result_str = f"工具执行异常：{e}"
 
     return (result_str, deliverables, schedule)
@@ -643,7 +880,105 @@ def _detect_year(query):
     return str(datetime.date.today().year)  # 默认今年（确保不回到旧的 2025 写死）
 
 
-def tool_web_search(cfg, query):
+# v4.131：搜索结果尾部统一带的「抓取纪律」。
+# 实测病根：成员搜到「抖音国际版/百度经验」这种明显不相干的条目，照样整段抄进
+# 产出凑字数 —— 它不知道「不相干就该换词重搜」，也不知道「搜不到可以明说」。
+_SEARCH_DISCIPLINE = (
+    "\n\n（🔴 抓取纪律：上面这些是**原料，不是产出**。"
+    "禁止把本段原文/摘要直接交回当成你的交付物，"
+    "必须加工成约定的结构化结果（表格/清单/结论）；也不许把本段纪律文字抄进交付物。"
+    "每条硬结论都要标【来源 URL + 采集日期】。"
+    "逐条核对平台/地区/时间是否对得上，对不上就**换关键词重搜**；"
+    "确实搜不到就明确写「未获取到，待补」。"
+    "禁止拿不相干条目凑数，禁止凭记忆编数据。）"
+)
+
+
+def _is_junk_search_result(query, results):
+    """v4.157.0：判定直连引擎返回的是否为与 query 不沾边的模板页（万年历 / 节假日通知 /
+    黄页 / 百科定义 / 旅游攻略），命中即视为失效，让 tool_web_search 跳过该 provider、
+    导流浏览器 VPN 通道（见《三项修复方案》方案四）。
+
+    直连引擎（Bing/百度/搜狗）对「天气 / 新闻 / 今日热点」等时效查询常吐模板化无关页
+    （实测：昆明天气→旅游攻略/百科；「2026年9月17日 AI 新闻」→ 万年历/国务院节假日通知/
+    Britannica「什么是AI」），旧逻辑「有结果即 return」把它们当真数据返回，浏览器可靠通道
+    因此永不触发，自动化任务白烧 2-3 轮。
+
+    判据（命中任一即失效）：
+      · 万年历 / 黄历 / 宜忌 / 节假日安排 / 国务院节假日 / 法定节假日 / 放假安排 → 日历模板页；
+      · 黄页 / 企业名录 / 114查号 / 查号台 / 工商注册号 → 黄页；
+      · 带时效信号（新闻/天气/今日/最新…）且结果含 Britannica / 维基百科 / 多条「什么是」→ 百科定义页；
+      · 天气类 query 但结果里完全找不到任何天气信号词（如返回旅游攻略/百科）→ 主题错配。
+
+    安全闸：用户本就在查 日历/黄历/放假/黄页/企业/电话/什么是 时不判垃圾，避免误杀真实需求。
+    """
+    if not results:
+        return False
+    _SELF_TOPIC = ("万年历", "日历", "农历", "黄历", "放假", "节假日", "黄页",
+                   "企业名录", "电话查询", "什么是")
+    if any(k in query for k in _SELF_TOPIC):
+        return False
+    text = " ".join(
+        ((r.get("title") or "") + " " + (r.get("snippet") or ""))
+        for r in results
+    ).lower()
+    qlow = (query or "").lower()
+
+    # ① 日历 / 节假日模板页（强信号）
+    _CAL = ("万年历", "黄历", "宜忌", "宜：", "忌：", "节假日安排", "国务院节假日",
+            "法定节假日", "放假安排", "2026年放假", "2025年放假", "法定节日")
+    # ② 黄页（强信号）
+    _YP = ("黄页", "企业名录", "114查号", "查号台", "工商注册号")
+    # ③ 百科定义（仅当 query 带时效信号时才算垃圾）
+    _ENC = ("britannica", "维基百科", "百科词条")
+    _ENC_SOFT = ("什么是",)
+
+    hits = []
+    for m in _CAL:
+        if m in text:
+            hits.append("cal:" + m)
+            break
+    else:
+        # 黄历「宜X忌Y」配对（未必带冒号）+ 农历 同现 → 日历模板页强信号
+        if "农历" in text and "宜" in text and "忌" in text:
+            hits.append("cal:宜忌pair")
+    for m in _YP:
+        if m in text:
+            hits.append("yp:" + m)
+            break
+    _TIME = ("新闻", "日报", "今日", "今天", "本周", "本月", "最新", "热点", "趋势",
+             "热榜", "天气", "trending", "news", "实时", "现在", "最近", "2026年", "2025年")
+    time_sig = any(k in qlow for k in _TIME)
+    if time_sig:
+        for m in _ENC:
+            if m in text:
+                hits.append("enc:" + m)
+                break
+        if any(k in text for k in _ENC_SOFT):
+            enc_count = sum(
+                1 for r in results
+                if any(k in ((r.get("title") or "") + (r.get("snippet") or "")).lower()
+                       for k in _ENC_SOFT)
+            )
+            if enc_count >= 2:
+                hits.append("enc:什么是(x%d)" % enc_count)
+
+    # ④ 天气类 query 主题错配：query 含天气词但结果无任何天气信号 → 大概率是攻略/百科
+    _WX_INTENT = ("天气", "气温", "温度", "预报", "下雨", "降雨", "气象", "气候",
+                  "降温", "升温", "湿度", "风力", "紫外线", "体感", "空气质量", "雾霾", "台风")
+    _WX_SIGNAL = ("天气", "气象", "气温", "温度", "预报", "降雨", "下雨", "雨", "雪", "多云",
+                  "晴", "风力", "湿度", "摄氏度", "℃", "气候", "体感", "空气", "雾霾",
+                  "pm2.5", "风向", "转阴", "雷阵雨")
+    if any(w in qlow for w in _WX_INTENT):
+        if not any(s in text for s in _WX_SIGNAL):
+            hits.append("wx_mismatch")
+
+    return bool(hits)
+
+
+def tool_web_search(cfg, query, app_dir=None):
+    """v4.148.6：新增可选 app_dir —— 只用于「浏览器搜索兜底」（定位 CDP profile 与日志），
+    不传也能跑（走默认 9222 + %LOCALAPPDATA% 下的专属 profile）。"""
     if not query:
         return "未提供搜索词"
     # 内容平台识别：命中则用最优引擎并自动展开多角度子查询（一次聚合多来源高质量结果）
@@ -731,18 +1066,43 @@ def tool_web_search(cfg, query):
             lines = [f"搜索「{query}」结果（来源：Brave Search API）："]
             for i, r in enumerate(_r[:top_k], 1):
                 lines.append(f"{i}. {r['title']}\n   {r['snippet']}\n   {r['url']}")
-            return "\n".join(lines)
+            return "\n".join(lines) + _SEARCH_DISCIPLINE
     if serper_key:
         _r = search_mod.search_serper(query, serper_key, top_k)
         if _r:
             lines = [f"搜索「{query}」结果（来源：Serper / Google）："]
             for i, r in enumerate(_r[:top_k], 1):
                 lines.append(f"{i}. {r['title']}\n   {r['snippet']}\n   {r['url']}")
-            return "\n".join(lines)
+            return "\n".join(lines) + _SEARCH_DISCIPLINE
     # 无付费 key：先走 query 语言感知路由（v4.124.4：英文 query 自动切到英文优先链
     # 'duckduckgo_en→bing_en→wikipedia_en'，避免 baidu 把 'pet hair' 拆成塑料瓶/达州时差，
     # 详见 search.py:_is_english_query / provider_chain 说明）。
     chain = search_mod.provider_chain(cfg.get("search_provider", "auto"), query=query)
+    # v4.147：境外主题（TikTok Shop / 马来西亚 / 跨境…）无 VPN + 无 key 时，DuckDuckGo 被墙；
+    # 若回落到百度/搜狗等国内引擎，对境外主题零覆盖，会吐模板化无关垃圾（研究员曾误当真数据）。
+    # 故境外查询剔除国内引擎，只留 DDG 系 + bing_en + wikipedia_en（国内可直连），宁少给不给假。
+    if search_mod._is_offshore_query(query):
+        _domestic = {"bing", "baidu", "sogou"}
+        chain = [p for p in chain if p not in _domestic]
+        if "wikipedia_en" not in chain:
+            chain.append("wikipedia_en")
+        _offshore_mode = True
+    else:
+        _offshore_mode = False
+    # v4.148.6：**境外主题优先走浏览器通道**。
+    #
+    # 为什么不能等链路全空才兜底（2026-09-14 实测）：境外模式下 http_get 链路里
+    # `bing_en` 是唯一直连可用的引擎，但它对境外主题**总能返回一堆低质结果**
+    # （实测「TikTok Shop Malaysia seller commission fee policy 2026」→ TikTok 官网
+    # 首页、微软商店下载页、TikTok Academy 首页），于是「有结果」直接 return，
+    # 兜底**永不触发** —— 军团照旧拿不到一手来源。
+    # 而浏览器通道（走 VPN 的 DDG/Google）同一句实测 9 秒拿到 inseller.my 费率详解、
+    # seller-my.tiktok.com 官方卖家中心政策页、费率计算器，全是带 URL 的真源。
+    # 故：境外主题先给浏览器通道一次机会，不可用/无结果再回落原链路（不会更差）。
+    if _offshore_mode:
+        _bo = _browser_search_fallback(cfg, query, app_dir, top_k, offshore=True)
+        if _bo:
+            return _bo
     last_err = ""
     for provider in chain:
         try:
@@ -753,18 +1113,83 @@ def tool_web_search(cfg, query):
             continue
         results = search_mod.parse_search(raw, provider, top_k)
         if results:
+            # v4.157.0：直连引擎「有结果就 return」会吞掉无关模板页（万年历/黄页/百科/
+            # 旅游攻略），导致浏览器可靠通道永不触发（见《三项修复方案》方案四）。
+            # 命中垃圾 → 跳过该 provider，继续试下一引擎；全链都垃圾/空才导流浏览器通道。
+            if _is_junk_search_result(query, results):
+                log.warning("工具搜索 %s 返回疑似无关模板页，跳过并导流浏览器通道", provider)
+                continue
             lines = [f"搜索「{query}」结果（来源：{provider}）："]
             for i, r in enumerate(results[:top_k], 1):
                 lines.append(f"{i}. {r['title']}\n   {r['snippet']}\n   {r['url']}")
-            return "\n".join(lines)
+            return "\n".join(lines) + _SEARCH_DISCIPLINE
     # 国内链全空 → 境外 DuckDuckGo 最后兜底（英文 query 走 en Accept-Language）
     _r = search_mod.search_ddg(query, top_k, lang="en" if search_mod._is_english_query(query) else "zh")
-    if _r:
+    if _r and not _is_junk_search_result(query, _r):
         lines = [f"搜索「{query}」结果（来源：DuckDuckGo 境外兜底）："]
         for i, r in enumerate(_r[:top_k], 1):
             lines.append(f"{i}. {r['title']}\n   {r['snippet']}\n   {r['url']}")
-        return "\n".join(lines)
+        return "\n".join(lines) + _SEARCH_DISCIPLINE
+    # v4.148.6：常规链路全空 → **浏览器搜索兜底**（唯一吃浏览器 VPN 的通道）。
+    _b = _browser_search_fallback(cfg, query, app_dir, top_k, offshore=_offshore_mode)
+    if _b:
+        return _b
+    if _offshore_mode:
+        return ("⚠️ 境外主题搜索无法获取：当前未开 VPN 且未配置 Serper/Brave key，DuckDuckGo 被墙、"
+                "国内引擎已禁用（避免返回无关垃圾）。已在浏览器通道再试一次也没取到 —— "
+                "请确认调试浏览器里 VPN 扩展已点「连接」，或在 config.json 加 brave_api_key / "
+                "serper_api_key 后重试。")
     return f"未找到搜索结果（最后错误：{last_err}）" if last_err else "未找到搜索结果"
+
+
+def _browser_search_fallback(cfg, query, app_dir, top_k, offshore=False):
+    """v4.148.6：常规搜索链全空时的浏览器兜底。返回拼好的文案；不可用/无结果返回 ""。
+
+    为什么必须有它：`search.py:http_get` 是小臭**自己的 Python 网络栈直连**（纯 urllib、
+    零代理），**不吃浏览器 VPN** —— 这就是「VPN 一直连着、搜索却全空或只回噪声」的真相，
+    也是成员反复硬撞境外站超时的底层原因。唯一吃梯子的通道是 browser_*（接管真实 Edge）。
+    此前只在角色卡里写了「JS 页请用 browser」，四轮实测**没人照做**；兜底写进工具层
+    比靠提示倒逼可靠。
+
+    可用开关：config.json 里 `"web_search_browser_fallback": false` 可关闭（默认开）。
+    """
+    try:
+        if not (cfg or {}).get("web_search_browser_fallback", True):
+            return ""
+    except Exception:
+        pass
+    try:
+        import browser_control_tools as _bct
+    except Exception as e:            # 模块缺失/导入失败都不该拖垮搜索
+        log.warning("浏览器搜索兜底跳过（导入 browser_control_tools 失败）: %s", e)
+        return ""
+    # 引擎顺序（2026-09-14 真机实测）：DDG html 版最可靠（结果 href 是 `uddg=` 跳转链、
+    # 可解码还原真实 URL）→ Google（多为真实 URL）→ Bing（结果链接已加密成 `p=`，
+    # 客户端解不出，只作最后手段）。
+    engines = ["duckduckgo", "google", "bing"]
+    try:
+        res, note = _bct.browser_search(cfg, query, app_dir=app_dir,
+                                        top_k=top_k, engines=engines)
+    except Exception as e:
+        log.warning("浏览器搜索兜底失败: %s", e)
+        return ""
+    if not res:
+        log.warning("浏览器搜索兜底无结果：%s", note)
+        return ""
+    lines = [f"搜索「{query}」结果（来源：{note}）："]
+    for i, r in enumerate(res[:top_k], 1):
+        lines.append(f"{i}. {r['title']}")
+        if r.get("snippet"):
+            lines.append(f"   {r['snippet']}")
+        if r.get("redirect"):
+            lines.append(f"   {r['url']}")
+            lines.append("   ⚠️ 上面这条是搜索引擎加密链，**不可直接读取**（打开会返回 400）："
+                         "只当标题线索用，别拿它去 browser_read")
+        else:
+            lines.append(f"   {r['url']}　← 可直接 browser_read")
+    lines.append("（说明：本通道摘要可能不完整；**正文请用 browser_read 打开上面标「可直接 browser_read」"
+                 "的 URL 取回**，再按交付格式加工成表格/清单，每条带【来源 URL】【采集日期】。）")
+    return "\n".join(lines) + _SEARCH_DISCIPLINE
 
 
 def _is_sensitive_file(path):
@@ -786,6 +1211,77 @@ def _is_sensitive_file(path):
     return False
 
 
+# 抓取正文抽取的噪音词（短句命中才砍 —— 长正文里出现不误杀）
+_FETCH_NAV_WORDS = (
+    "skip to content", "skip to main", "toggle navigation", "all rights reserved",
+    "privacy policy", "terms of service", "cookie", "sign in", "log in", "sign up",
+    "subscribe", "newsletter", "breadcrumb", "jump to", "share this", "read more",
+    "首页", "登录", "注册", "版权所有", "京公网安备", "意见反馈", "关于我们",
+    "联系我们", "网站地图", "免责声明", "手机版", "电脑版", "扫码", "下载app",
+    "上一篇", "下一篇", "返回顶部", "相关推荐", "热门推荐",
+)
+
+
+def _html_main_text(raw):
+    """v4.131：从 HTML 抽**正文主体**，砍掉导航/页脚/版权/重复块。
+
+    旧实现整页去标签后直接返回，导航菜单、页脚备案、cookie 提示全混进正文
+    —— 成员拿到这种大杂烩只能整段贴进产出（实测：研究员 4006 字产出通篇是
+    Malaysia.travel / MCMC 的导航与正文混排，等于把抓取素材当结论交了）。
+    """
+    t = re.sub(r'<script.*?</script>', ' ', raw, flags=re.S | re.I)
+    t = re.sub(r'<style.*?</style>', ' ', t, flags=re.S | re.I)
+    t = re.sub(r'<!--.*?-->', ' ', t, flags=re.S)
+    t = re.sub(r'<(nav|header|footer|aside)\b[^>]*>.*?</\1>', ' ', t, flags=re.S | re.I)
+    # 块级标签 → 换行：保住段落结构，才谈得上「按行过滤」
+    t = re.sub(r'<(?:br|/p|/div|/li|/tr|/h[1-6]|/section|/article|/td|/p)\b[^>]*>',
+               '\n', t, flags=re.I)
+    t = re.sub(r'<[^>]+>', ' ', t)
+    t = html_mod.unescape(t)
+    lines, seen = [], {}
+    for ln in t.split('\n'):
+        s = re.sub(r'\s+', ' ', ln).strip()
+        if len(s) < 8:
+            continue
+        low = s.lower()
+        if len(s) < 40 and any(w in low for w in _FETCH_NAV_WORDS):
+            continue
+        if s.count('http') >= 2 and len(re.sub(r'http\S+', '', s)) < 12:
+            continue
+        k = s[:24]
+        seen[k] = seen.get(k, 0) + 1
+        # 短块（菜单/页脚话术）出现第 2 次即丢；长块（可能是真正文）第 3 次才丢，
+        # 免得把 legit 的重复段落（表格行、并列条目）误杀。
+        if seen[k] > (1 if len(s) < 60 else 2):
+            continue
+        lines.append(s)
+    return re.sub(r'\n{2,}', '\n', '\n'.join(lines)).strip()
+
+
+# v4.147：JS 重渲染 / 反爬域名 —— web_fetch 服务器侧拿不到正文，必须走 browser_open/browser_read。
+# 实测：seller-my.tiktok.com 等 TikTok 官方域 web_fetch 直接 fetch failed；淘宝/京东/抖音/小红书
+# 等前端 JS 渲染，http_get 只拿空壳。识别后给明确改道提示，避免成员误判「通道断」。
+_JS_HEAVY_DOMAINS = (
+    "seller-my.tiktok.com", "seller.tiktokglobalshop.com", "seller.tiktokshopglobalselling.com",
+    "tiktok.com", "taobao.com", "tmall.com", "jd.com", "pinduoduo.com", "yangkeduo.com",
+    "douyin.com", "xiaohongshu.com", "xhslink.com", "weixin.qq.com", "mp.weixin.qq.com",
+    "weibo.com", "zhihu.com",
+    # v4.147.4：电商数据/情报站同样是前端 JS 渲染，web_fetch 只拿得到 title 空壳。
+    # 实测：kalodata.com 经 web_fetch 仅返 17 字「商品排行榜 - 美国 TikTok」，
+    # 成员误以为抓到了数据、把空壳当战绩上报（TK 马来团第 1 波 FAIL 的直接原因之一）。
+    "kalodata.com", "fastmoss.com", "echotik", "shoplus", "sellersprite",
+    "shopee.", "lazada.", "1688.com", "temu.com", "shein.com", "amazon.",
+)
+
+
+def _is_js_heavy(url):
+    try:
+        h = urllib.parse.urlparse(url).netloc.lower()
+        return any(d in h for d in _JS_HEAVY_DOMAINS)
+    except Exception:
+        return False
+
+
 def tool_web_fetch(url):
     if not url:
         return "未提供 URL"
@@ -794,12 +1290,26 @@ def tool_web_fetch(url):
     try:
         raw = search_mod.http_get(url, timeout=20)
     except Exception as e:
+        if _is_js_heavy(url):
+            return ("抓取失败（该域为 JS 渲染/反爬，服务器侧拿不到正文，**非通道断**）："
+                    "请用 browser_open 打开页面、再用 browser_read 取正文，不要依赖 web_fetch。"
+                    "原始错误：%s" % e)
         return f"抓取失败：{e}"
-    text = re.sub(r'<script.*?</script>', ' ', raw, flags=re.S | re.I)
-    text = re.sub(r'<style.*?</style>', ' ', text, flags=re.S | re.I)
-    text = re.sub(r'<[^>]+>', ' ', text)
-    text = html_mod.unescape(text)
-    text = re.sub(r'\s+', ' ', text).strip()
+    try:
+        text = _html_main_text(raw)
+    except Exception:
+        text = ""
+    if len(text) < 200:
+        # 抽不出正文主体（纯 JS 渲染页 / 极短页）
+        if _is_js_heavy(url):
+            return ("该页面为 JS 渲染/反爬，web_fetch 抽不出正文（**非通道断**）："
+                    "请用 browser_open + browser_read 取内容；禁止 web_fetch 失败即写「数据待确认」了事。")
+        # 回退旧的整页文本，别把内容弄丢
+        text = re.sub(r'<script.*?</script>', ' ', raw, flags=re.S | re.I)
+        text = re.sub(r'<style.*?</style>', ' ', text, flags=re.S | re.I)
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = html_mod.unescape(text)
+        text = re.sub(r'\s+', ' ', text).strip()
     return text[:TOOL_RESULT_LIMIT] if text else "页面无可用文本"
 
 
@@ -941,11 +1451,12 @@ def tool_run_command(app_dir, command):
             proc = subprocess.run(
                 ["powershell", "-Command", command],
                 cwd=app_dir, capture_output=True, timeout=60,
+                creationflags=_NO_WINDOW,
             )
         else:
             proc = subprocess.run(
                 command, shell=True, cwd=app_dir,
-                capture_output=True, timeout=60,
+                capture_output=True, timeout=60, creationflags=_NO_WINDOW,
             )
     except subprocess.TimeoutExpired:
         return "命令执行超时（>60s），已终止"
@@ -1004,7 +1515,7 @@ def _resolve_python_exe():
             continue
         try:
             r = subprocess.run([c, "-c", "import sys; sys.stdout.write(sys.executable)"],
-                               capture_output=True, timeout=10)
+                               capture_output=True, timeout=10, creationflags=_NO_WINDOW)
             if r.returncode == 0 and r.stdout:
                 return c
         except Exception:
@@ -1046,7 +1557,8 @@ def tool_run_python(app_dir, code):
     before = snapshot_workspace(ws)
     try:
         proc = subprocess.run([exe, fpath], cwd=ws,
-                               capture_output=True, timeout=120)
+                               capture_output=True, timeout=120,
+                               creationflags=_NO_WINDOW)
     except subprocess.TimeoutExpired:
         return "代码执行超时（>120s），已终止。可把任务拆小或分步执行。", []
     except Exception as e:
@@ -1096,7 +1608,8 @@ def _tool_run_python_legacy(app_dir, code):
     before = snapshot_workspace(app_dir)
     try:
         proc = subprocess.run([exe, fpath], cwd=app_dir,
-                               capture_output=True, timeout=60)
+                               capture_output=True, timeout=60,
+                               creationflags=_NO_WINDOW)
     except subprocess.TimeoutExpired:
         return "代码执行超时（>60s），已终止", []
     except Exception as e:
@@ -1165,7 +1678,8 @@ def tool_screenshot(cfg, app_dir, args, progress=None):
     mode = args.get("mode", "fullscreen")
     save_path = args.get("save_path", "")
 
-    outputs = Path(PRODUCTS_DIR) / "截图"
+    # v4.129：走分层目录（dated 时 产物/YYYY-MM-DD/<项目>/截图）
+    outputs = Path(_products_dir(cfg, "screenshot"))
     outputs.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -1223,9 +1737,12 @@ def tool_image_gen(cfg, app_dir, prompt, size=None, progress=None):
         return f"未知生图后端：{provider}（支持 gateway / agnes / deepseek / local_stability）"
 
 
-def _save_gen_image(app_dir, data_or_path, is_bytes=False):
-    """将生图结果存入产物目录「图片」子目录，返回 (rel, 'image', name)。"""
-    img_dir = os.path.join(PRODUCTS_DIR, "图片")
+def _save_gen_image(app_dir, data_or_path, is_bytes=False, cfg=None):
+    """将生图结果存入产物目录「图片」子目录，返回 (rel, 'image', name)。
+
+    v4.129：目录改由 product_layout 计算（dated 时 产物/YYYY-MM-DD/<项目>/图片）。
+    """
+    img_dir = _products_dir(cfg, "image")
     os.makedirs(img_dir, exist_ok=True)
     # v4.120：并发生图同秒撞名互相覆盖（实测两次 image_gen 同秒完成 →
     # 用户看到两张一样的图）——毫秒 + 4 位随机后缀保证唯一。
@@ -1362,22 +1879,62 @@ def _gen_local_sd(cfg, app_dir, prompt, size=None):
         return f"保存本地 SD 图片失败：{e}"
 
 
+_DLG_BRACKET_RE = re.compile(r"[（(\[【][^）)\]】]*[）)\]】]|\*[^*]{1,10}\*")
+_DLG_LEAD_RE = re.compile(r"^\s*(?:台词|对白|旁白|line|dialogue)\s*[:：]\s*", re.I)
+_DLG_JUNK_RE = re.compile(r"[\"'“”‘’*#`《》<>｜|]")
+
+
+def _clean_dialogue(line, max_len=60):
+    """把台词洗成「能安全念出来的纯中文单句」，洗不出来返回 ""。
+
+    与 video_pipeline.clean_dialogue / core.agnes.clean_dialogue 同规则。
+    剥掉会被照本宣科念出来的杂质：换行、（叹气）动作描写、引号、英文残留。
+    """
+    if not line:
+        return ""
+    d = str(line).strip()
+    if not d:
+        return ""
+    d = d.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    d = _DLG_LEAD_RE.sub("", d)
+    d = _DLG_BRACKET_RE.sub("", d)
+    d = _DLG_JUNK_RE.sub("", d)
+    d = re.sub(r"\s+", " ", d).strip(" 　:：，,。.、;；-—")
+    if not d:
+        return ""
+    han = len(re.findall(r"[\u4e00-\u9fff]", d))
+    if han < 2 or han / max(len(d), 1) < 0.20:
+        return ""
+    if len(d) > max_len:
+        cut = d[:max_len]
+        for p in ("。", "！", "？", "，", "、"):
+            k = cut.rfind(p)
+            if k >= max_len // 2:
+                cut = cut[:k + 1]
+                break
+        d = cut
+    return d
+
+
 def _build_video_prompt(prompt, dialogue=None):
     """把口播/台词包进视频 prompt（逻辑与 video-agent/core/agnes._inject_dialogue 对齐）。
 
     agnes-video-2.5-flash 会念出括号里的中文元指令（如“用中文说”之类），
     因此所有非台词文字改用英文，中文台词仅放在引号内，避免控制语泄漏进画面文字。
-    video_pipeline.py 在逐镜生成时调用本函数注入本镜台词。
+
+    ⚠️ v4.126.1：台词注入全链路只允许一处。video_pipeline 已不再调用本函数
+    （它走 dialogue= 参数由内核注入），这里保留给数字分身口播等直连场景。
     """
     if not dialogue:
         return prompt
-    d = dialogue.strip()
+    d = _clean_dialogue(dialogue)
     if not d:
         return prompt
     return (
         f"{prompt.rstrip('. ')}\n\n"
         f'Spoken line in Mandarin: "{d}"\n'
-        f"Only the quoted line above should be spoken. No English, no introduction. "
+        f"Speak ONLY the Chinese text inside the quotation marks, word for word. "
+        f"Do not translate it, do not add any introduction, do not read any other text. "
         f"Natural lip-synced mouth movement, clear spoken Mandarin voice."
     )
 
@@ -1473,6 +2030,10 @@ def _gen_agnes_image(cfg, app_dir, prompt, size=None, progress=None):
         prompt = prompt.rstrip("。.") + _ANTI_TEXT_SUFFIX
     url = base + "/images/generations"
     body = {"model": model, "prompt": prompt, "size": size}
+    # v4.134.10：agnes-image-2.5-flash 必须带 extra_body.response_format='url'，
+    # 否则默认可能返回 base64 而非 URL；_save_gen_image 无法处理裸 base64 串会保存失败。
+    # 技能文档（agnes-ai/SKILL.md:76,96）实测确认：response_format 必须放 extra_body。
+    body["extra_body"] = {"response_format": "url"}
     want_wh = None
     if is_25 and isinstance(size, str) and "x" in size:
         try:
@@ -1487,30 +2048,71 @@ def _gen_agnes_image(cfg, app_dir, prompt, size=None, progress=None):
     if progress and want_wh is None:
         progress(f"🖼 Agnes {model} 生成中…（{size}）")
     payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, method="POST")
-    req.add_header("Content-Type", "application/json")
-    if key:
-        req.add_header("Authorization", f"Bearer {key}")
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read().decode("utf-8", "ignore"))
-    except Exception as e:
-        return f"生图请求失败（Agnes 直连）：{e}"
-    # 兼容多种返回：data[].url / images[].url / content(裸URL)
+    # v4.134.11：Agnes 免费档生图队列常满（503 "queue is full, please retry
+    # later"）或 5xx 瞬态抖动。服务端明确叫重试，这里自动退避重试，单张图的
+    # 瞬态失败不再连累整组三视图。401/400 等永久错误不重试、立即返回真实原因。
+    _MAX_TRIES = 4
+    _BACKOFF = (3, 8, 16)  # 第 1/2/3 次重试前的等待秒数（指数退避）
+    _RETRYABLE = (500, 502, 503, 504, 429)
+    data = None
+    for _attempt in range(1, _MAX_TRIES + 1):
+        req = urllib.request.Request(url, data=payload, method="POST")
+        req.add_header("Content-Type", "application/json")
+        if key:
+            req.add_header("Authorization", f"Bearer {key}")
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = json.loads(resp.read().decode("utf-8", "ignore"))
+            break  # 成功，跳出重试
+        except urllib.error.HTTPError as e:
+            _code = e.code
+            if _code in _RETRYABLE and _attempt < _MAX_TRIES:
+                _wait = _BACKOFF[_attempt - 1] if _attempt - 1 < len(_BACKOFF) else _BACKOFF[-1]
+                if progress:
+                    progress(f"⏳ Agnes 生图队列繁忙({_code})，{_wait}s 后自动第{_attempt + 1}次重试…")
+                time.sleep(_wait)
+                continue
+            _msg = ""
+            try:
+                _err = json.loads(e.read().decode("utf-8", "ignore"))
+                if isinstance(_err, dict):
+                    _em = _err.get("error")
+                    _msg = _em.get("message", "") if isinstance(_em, dict) else str(_em)
+            except Exception:
+                pass
+            return (f"生图请求失败（Agnes 直连）：HTTP {_code} {e.reason}"
+                    + (f" —— {_msg}" if _msg else ""))
+        except Exception as e:
+            if _attempt < _MAX_TRIES:
+                _wait = _BACKOFF[_attempt - 1] if _attempt - 1 < len(_BACKOFF) else _BACKOFF[-1]
+                if progress:
+                    progress(f"⏳ Agnes 生图请求异常（{type(e).__name__}），{_wait}s 后自动第{_attempt + 1}次重试…")
+                time.sleep(_wait)
+                continue
+            return f"生图请求失败（Agnes 直连）：{e}"
+    if data is None:
+        return "生图请求失败（Agnes 直连）：重试后仍无有效响应"
+    # 兼容多种返回：data[].url / images[].url / data[].b64_json / content(裸URL)
     images = data.get("data") or data.get("images") or []
     img_url = ""
+    img_b64 = ""
     if images:
-        img_url = images[0].get("url", "") or images[0].get("b64_json", "")
-    if not img_url:
+        img_url = images[0].get("url", "")
+        img_b64 = images[0].get("b64_json", "")
+    if not img_url and not img_b64:
         content = (data.get("content") or "").strip()
         if content.startswith("http"):
             img_url = content
-    if not img_url:
+    if not img_url and not img_b64:
         return f"生图失败：{data}"
     if progress:
         progress("⬇ 下载并保存图片…")
     try:
-        res = _save_gen_image(app_dir, img_url)
+        if img_b64:
+            import base64 as _b64
+            res = _save_gen_image(app_dir, _b64.b64decode(img_b64), is_bytes=True)
+        else:
+            res = _save_gen_image(app_dir, img_url)
     except Exception as e:
         return f"保存图片失败：{e}（原始返回：{data}）"
     # 档位出图与用户要求的精确像素可能不同，落盘后对齐一次
@@ -1523,8 +2125,11 @@ def _gen_agnes_image(cfg, app_dir, prompt, size=None, progress=None):
 
 
 def _save_gen_video(app_dir, url):
-    """将视频下载到产物目录「视频」子目录，返回 (rel, 'video', name)。"""
-    v_dir = os.path.join(PRODUCTS_DIR, "视频")
+    """将视频下载到产物目录「视频」子目录，返回 (rel, 'video', name)。
+
+    v4.129：目录由 product_layout 计算（dated 时 产物/YYYY-MM-DD/<项目>/视频）。
+    """
+    v_dir = _products_dir(None, "video")
     os.makedirs(v_dir, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d%H%M%S")
     fpath = os.path.join(v_dir, f"video_{stamp}.mp4")
@@ -1584,7 +2189,7 @@ def is_silent_clip(rel):
 
 def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=None,
                    image=None, first_frame=None, last_frame=None, dialogue=None,
-                   progress=None, images=None):
+                   progress=None, images=None, ref_images=None):
     """生视频（统一内核：委托 video-agent/core 的 AgnesClient）。
 
     与网页版 / director_panel 共用同一套 core/，根除两份 Agnes 视频客户端。
@@ -1599,6 +2204,7 @@ def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=
     duration: 秒，自动钳制到 [4,12]；aspect: 'landscape'/'portrait'；
     resolution: 仅作宽高提示（2.5-flash 实际分辨率由 size 决定，默认 720P）；
     image / images: 图生视频参考图（reference 模式，≤5 张）；
+    ref_images: v4.127 多参考图入参（list，等价 images，最多 5 张，超出截断）；
     first_frame/last_frame: 首尾帧（keyframe 模式）；
     dialogue: 口播台词（中文），模型合成中文语音 + 对口型。
     """
@@ -1618,12 +2224,17 @@ def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=
     # 比例：landscape -> 16:9，否则默认竖版 9:16（抖音/视频号/小红书）
     aspect_ratio = "16:9" if aspect == "landscape" else "9:16"
     size = "720P"
-    # 参考图归并：images(多) 优先，其次 image(单)
+    # 参考图归并：images(多) 优先，其次 ref_images(v4.127)，最后 image(单)
+    # Agnes 2.5 硬上限 5 张（实测传 6 张报 400）—— 超出一律截断，不报错不中断
     ref_list = []
     if images:
         ref_list = list(images) if isinstance(images, (list, tuple)) else [images]
+    elif ref_images:
+        ref_list = list(ref_images) if isinstance(ref_images, (list, tuple)) else [ref_images]
     elif image:
         ref_list = [image]
+    if len(ref_list) > MAX_REF_IMAGES:
+        ref_list = ref_list[:MAX_REF_IMAGES]
     # 图片归一化（本地/相对路径 -> data URI，URL 透传），交给 core 前先转好
     first_frame = _image_to_payload_value(first_frame, app_dir) if first_frame else None
     last_frame = _image_to_payload_value(last_frame, app_dir) if last_frame else None
@@ -1639,8 +2250,9 @@ def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=
         elif ev == "done":
             progress("✅ 视频已生成")
     # 保存到产物目录「视频」，路径与旧 _save_gen_video 保持一致（video_pipeline 靠 rel 拼回）
+    # v4.129：目录改由 product_layout 计算（dated 时 产物/YYYY-MM-DD/<项目>/视频）
     stamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    v_dir = os.path.join(PRODUCTS_DIR, "视频")
+    v_dir = _products_dir(cfg, "video")
     os.makedirs(v_dir, exist_ok=True)
     dest_path = os.path.join(v_dir, f"video_{stamp}.mp4")
     try:
@@ -1659,7 +2271,7 @@ def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=
             model="agnes-video-2.5-flash",
             dest_path=dest_path,
             on_event=_on_event,
-            timeout=120,
+            timeout=VIDEO_POLL_TIMEOUT,
         )
     except AgnesError as e:
         return f"视频生成失败（统一内核）：{e.msg}"

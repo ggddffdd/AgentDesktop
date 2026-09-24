@@ -16,6 +16,9 @@ import re
 import json
 import uuid
 import datetime
+import logging
+
+log = logging.getLogger("trace_log")
 
 
 DEFAULT_DIR_NAME = "task_traces"
@@ -189,8 +192,8 @@ def prune(cfg, max_keep=None):
         try:
             with open(_path(cfg), "w", encoding="utf-8") as f:
                 json.dump({"version": 1, "traces": traces}, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("轨迹裁剪落盘失败 %s: %s", _path(cfg), e)
 
 
 # ==================== v4.102 fix12：Agent 任务级轨迹写回 ====================

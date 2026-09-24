@@ -5,6 +5,7 @@ import time
 import json
 import datetime
 import os
+import re
 import threading
 import logging
 from pathlib import Path
@@ -180,6 +181,10 @@ class AgentWorker(QThread):
         self._confirm_event = threading.Event()
         self._confirm_val = False
         self._stop_requested = False
+        # v4.125 M-01：自动停止但"可续"（超时/预算熔断/步数耗尽）——这类停止
+        # 检查点必须 mark_paused 保留（此前 mark_done 删档 + UI 只认
+        # stopped_by_user → 提示"可点继续"却既无按钮也无存档）。
+        self._resumable_stop = False
         self._last_status_ts = 0  # v4.102 fix7：最近具体状态时间戳，供心跳判断是否抢话
         self._last_status_text = ""  # v4.102 fix7：最近一条具体状态文字，心跳兜底时带上
         # v4.102 fix9：_guard_blocked 必须 __init__ 初始化——纯文本分支（模型首步就输出
@@ -428,21 +433,41 @@ class AgentWorker(QThread):
         "行动", "快", "加速",
     )
 
-    # v4.80：意图→工具路由关键词（能明确推断要调哪个工具时直接指定 tool_choice，
-    # 避免模型把「生成视频」这类明确动作退化成反复调 sys_info 查能力清单）
-    _VIDEO_GEN_KW = (
-        "视频", "短视频", "离谱视频", "搞笑视频", "mv", "文生视频", "图生视频",
-        "视频生成", "视频创作", "生成视频", "做视频", "来个视频", "做条视频",
-        "ai视频", "ai生成视频", "一条视频", "生成个视频",
+    # v4.80：意图→工具路由——能明确推断要调哪个工具时直接指定 tool_choice。
+    # v4.158：移除裸 "视频"子串白名单（覆盖面过广易误触）。
+    # v4.159：彻底废除子串白名单，改为「组合式生成意图判据」——详见 _gen_intent。
+    #   根因：子串命中=下达指令 既误报（「做视频的稿子」被路由 video_gen、
+    #   「短视频的标题」被路由）又漏报（「做个视频」不构成『做视频』子串、真指令反漏），
+    #   且白名单枚举永远补不完。组合式判据（生成动词+媒体宾语+宾语为实头+非疑问句+非平台名）
+    #   一次堵三洞。
+    _GEN_VERBS = (
+        "做", "生成", "来个", "来一个", "来一张", "来一条", "来一段", "来幅", "来段", "来一期",
+        "搞", "整", "弄", "制作", "产出", "输出", "上一张", "上一条",
+        "给我做", "给我生成", "给我来", "来点", "来些",
+        "画", "画张", "画个", "画幅", "拍", "拍个", "拍一条",
+        "剪辑", "配音", "渲染", "设计", "创作",
+        "剪", "合成", "合并", "拼", "接", "出", "出片",
     )
-    _IMAGE_GEN_KW = (
-        "生成图片", "生图", "画图", "画一张", "生成一张", "配图", "ai绘画",
-        "出图", "做张图", "画个图", "画幅图", "ai生图", "画张",
+    _VIDEO_OBJ = (
+        "视频", "短片", "短视频", "片子", "mv", "预告片", "宣传片", "动画",
+        "视频片段", "小视频", "竖屏视频", "口播视频", "混剪", "vlog", "vlog视频",
+        "成品", "成片", "作品", "口播",
+    )
+    _IMAGE_OBJ = (
+        "图片", "照片", "插画", "海报", "封面", "头像", "表情包", "配图",
+        "画作", "动图", "壁纸", "banner", "logo", "图",
+    )
+    # 明确祈使短语（动词+量词、无显式宾语名词）：compositional 名词判据覆盖不到，
+    # 仅补「画一张/拍一张」这类。均为完整祈使短语、非裸宾语子串，误报面极小。
+    _MEDIA_PHRASE = (
+        "画一张", "画个图", "画幅图", "画张", "画个", "画一幅",
+        "拍一张", "拍条", "拍一个", "拍张", "配个图", "出张图", "来张图", "做张图",
     )
     _STATUS_KW = (
         "进度", "如何", "怎么样", "咋样", "好了吗", "完成了吗", "完成没",
         "到哪", "到哪了", "状态", "做了吗", "生成了没", "出来没", "出来了吗",
         "还好吗", "还在吗", "啥情况", "怎么样了", "进行到", "现在怎样",
+        "完了吧", "生成完了", "跑完了", "完了没",
     )
     _BARE_VERB_KW = (
         "生成", "做", "出", "画", "用agnes", "做啊", "生成啊", "重做", "重新", "再来",
@@ -481,6 +506,204 @@ class AgentWorker(QThread):
         "做什么", "写什么", "发什么", "内容", "玩法", "风格", "推荐", "建议",
         "榜单", "最新", "热门", "爆火", "火",
     )
+    # v4.159.2：引用/质疑语境标记——命中即一票否决（在生成意图判断【之前】），
+    # 解决「豁免挪过头」+「否定侧空白」副作用：用户在【谈论/质疑/引用】某个生成动作
+    # 而非下达指令时（如「分析下生成视频这件事」「你刚才说的生成个视频，是BUG」
+    # 「我什么时候让你生成视频了」），强制路由会误触 video_gen → 向思考模型注入伪用户
+    # 指令，用户喊停反而被强制生成（危害远大于漏报）。该词表为临时过渡，长期（P2）改为
+    # 位置判据，逐步退役。
+    _REF_KW = (
+        "这件事", "你说的", "你刚才说的", "什么时候", "让你", "是BUG",
+        "讨论", "评价",
+    )
+    # v4.158→v4.159.1：讨论/复盘/质疑类弱豁免（分析/解释/聊聊等），仅在【未命中生成意图】
+    # 时兜底生效；v4.159.2 将 讨论/评价 上提为 _REF_KW 引用标记（前置一票否决），
+    # 此处仅留弱讨论词，降低误伤真指令概率。
+    _DISCUSS_KW = (
+        "聊聊", "聊", "谈", "谈一下", "说说", "说说看",
+        "分析", "分析下", "分析一下", "诊断", "复盘", "怎么看", "怎么理解",
+        "为什么", "怎么回事", "咋回事", "什么原因", "原因在哪", "是不是",
+        "算不算", "是bug", "是 bug", "bug", "BUG", "隐患", "解释", "解释下",
+        "解释一下", "评价下", "评估", "评估下", "你的行为", "自我诊断", "自检",
+    )
+    # v4.159.3（P2）：位置判据的引用/分析语境辅助表。
+    # 元话语动词：分析(下/一下)/聊聊/讨论/评价/解释/诊断… 其宾语是「被讨论的对象」而非用户指令。
+    # 注意：刻意【不收】裸「分析」「聊」「谈」单字——会误中『大数据分析』『刚才聊的』『话题』
+    #       等复合词；标准口语形式用 分析下/分析一下/聊聊/谈一下/谈谈 覆盖即可。
+    #       「讨论/评价」已在 _REF_KW（位置判定同样认得），此处不再重复。
+    _META_VERBS = (
+        "分析下", "分析一下",
+        "聊聊", "聊一下", "聊一聊", "谈一下", "谈谈",
+        "说说", "说说看",
+        "解释", "解释下", "解释一下", "诊断", "复盘",
+        "怎么看", "怎么理解", "为什么", "怎么回事", "咋回事", "什么原因", "原因在哪",
+        "评价", "评价下", "评估", "评估下", "隐患", "自检", "自我诊断",
+    )
+    # 独立分句分隔符：生成短语【之前】若出现这些，说明生成短语是独立指令而非被分析的对象。
+    # 例：『生成个视频，顺便分析下这个题材』中的「，」使分析句不回头压制生成指令（O4 仍返 video_gen）。
+    _CLAUSE_SEP = ("，", "。", "；", "？", "?", "然后", "顺便", "并且", "而且",
+                   "再", "之后", "完后", "以及", "并", "、")
+
+    # ---------- v4.159 组合式生成意图判据 ----------
+    def _is_question(self, text):
+        """非疑问句才视为下达生成指令。疑问句（含/结尾 吗/呢/怎么/为什么 等）一律不算。"""
+        if not text:
+            return False
+        s = text.strip()
+        if s.endswith(("？", "?", "吗", "呢", "么")):
+            return True
+        if any(k in text for k in ("怎么", "为什么", "为何", "是否", "是不是",
+                                    "能不能", "可以吗", "行吗", "如何", "咋")):
+            return True
+        # v4.159.5：补闭集疑问代词（什么/啥/哪些/哪个/多少/多久），结构性识别疑问句，
+        # 堵死『做视频需要什么条件/有啥技巧/有哪些坑/走哪个接口/要花多少钱/要多久』类
+        # 危险侧误触（此前缺疑问代词，单靠 吗/呢/怎么 漏判）。绝不补短语（开集坑第五次警示）。
+        if any(k in text for k in ("什么", "啥", "哪些", "哪个", "多少", "多久")):
+            return True
+        return False
+
+    def _verb_near(self, scan, obj_idx, obj_len, window=30):
+        """宾语前后 window 字符内是否存在生成类动词（祈使结构：动词…宾语 或 宾语…动词）。"""
+        lo = max(0, obj_idx - window)
+        hi = min(len(scan), obj_idx + obj_len + window)
+        pre = scan[lo:obj_idx]
+        post = scan[obj_idx + obj_len:hi]
+        for v in self._GEN_VERBS:
+            if v in pre or v in post:
+                return True
+        return False
+
+    def _gen_intent_span(self, text, objs):
+        """返回首个【有效生成意图】的宾语起始位置（供位置判据使用），无则 -1。
+        逻辑与 _gen_intent 完全一致：生成动词 + 媒体宾语共现、宾语为实头、非疑问、非平台名。"""
+        if not text:
+            return -1
+        if self._is_question(text):
+            return -1
+        # 平台名排除：视频号 是平台而非视频宾语，临时占位避免命中
+        scan = text.replace("视频号", "　　")
+        for obj in objs:
+            idx = scan.find(obj)
+            while idx != -1:
+                # 宾语若为修饰语（后接『的』，如『做视频的稿子』『短视频的标题』）→ 跳过，
+                # 继续找下一处出现；只有作实头的宾语才算真下达生成指令
+                if idx + len(obj) < len(scan) and scan[idx + len(obj)] == "的":
+                    idx = scan.find(obj, idx + len(obj))
+                    continue
+                # v4.159.4：『视频封面』『短视频海报』等——视频宾语紧贴图片宾语（无『的』）→
+                # 视频是封面/海报的修饰语，封面才是真宾语，跳过该处视频匹配，避免『做个视频封面』
+                # 被误判为生成视频（封面是图片意图）。仅对视频宾语生效，图片宾语不受影响。
+                after = scan[idx + len(obj):]
+                if obj in self._VIDEO_OBJ and any(after.startswith(io) for io in self._IMAGE_OBJ):
+                    idx = scan.find(obj, idx + len(obj))
+                    continue
+                if self._verb_near(scan, idx, len(obj)):
+                    return idx
+                idx = scan.find(obj, idx + len(obj))
+        return -1
+
+    def _gen_intent(self, text, objs):
+        """组合式生成意图：生成类动词 + 媒体宾语 共现，且宾语为实头（非『X的宾语』修饰语）、
+        非疑问句、非平台名（视频号）。取代 v4.158 子串白名单，一次性堵死误报/漏报/枚举三洞。"""
+        return self._gen_intent_span(text, objs) != -1
+
+    def _phrase_hit(self, text):
+        """明确祈使短语命中（动词+量词无显式宾语，如『画一张』），仅补 compositional 名词判据。"""
+        if not text:
+            return False
+        if self._is_question(text):
+            return False
+        return any(p in text for p in self._MEDIA_PHRASE)
+
+    def _neg_hit(self, text):
+        """否定一票否决（v4.159.2 引入；v4.159.4 重构裸『别』判据）：
+        用户在取消/拒绝/喊停生成指令时，绝不路由生成工具。
+        误报（错杀真指令）仅造成安全侧漏报，可接受；漏报（没拦住取消）会触发强制生成，危害大，故覆盖面略宽。
+
+        v4.159.4 关键重构（方法论定式：凡『排除类』判断一律改【后向/位置判据】或【一票否决表】，
+        不再用『枚举复合词』——前向白名单是开集，辨别/识别/类别/个别/送别/别扭 永远补不完）：
+          · 裸『别』字由【前向白名单排除复合词】改为【后向词法判据】——只看后 1-3 字是否跟生成动词
+            或语气助词（闭集，可枚举），实测修好 5 条误杀（辨别/识别/类别/个别/送别/别扭 不再误杀真指令）。
+          · 补一般否定短语（不做/不弄/不搞/不生成/不剪/不拍/不画/不做了/先不做了/再想想/以后再说/算了/先不做），
+            修『视频先不做了』类（否定词与生成短语跨分句，旧 window=30 够不到）。
+        v4.159.5 收口（用户自检 54 用例复测暴露的 5 误杀真指令）：
+          · 前向复合词闭集豁免——『别』前一字属可左缀成词闭集（特/分/差/辨/识/类/个/送/级/性/告/离/
+            区/辞/样/致）时跳过，根治『特别想做/特别出彩/分别拍/差别做』被当否定误杀。
+          · 后向窗口收紧到紧贴后一字 + 动词集剔除『出』，根治『别出心裁做个视频』被当否定误杀
+            （『出』在后向 3 字窗内把『别出心裁』命中）。绝不补短语（开集坑第五次警示）。"""
+        if not text:
+            return False
+        # 否定短语一票否决表（闭集、可枚举）
+        for k in ("别生成", "别做", "别搞", "别弄", "别画", "别拍", "别发", "别去",
+                  "别再", "先别", "别急", "别管", "别碰", "别了", "不用", "不要",
+                  "取消", "停止", "别理", "别动", "别提",
+                  "不做", "不弄", "不搞", "不生成", "不剪", "不拍", "不画",
+                  "不做了", "先不做了", "再想想", "以后再说", "算了", "先不做"):
+            if k in text:
+                return True
+        # 裸『别』字【后向词法判据 + 前向复合词闭集豁免】（v4.159.5）：
+        #   ① 前向复合词闭集豁免——『别』前一字若属可左缀成词的闭集
+        #      （特/分/差/辨/识/类/个/送/级/性/告/离/区/辞/样/致），则该『别』是复合词
+        #      （特别/分别/差别/辨别/识别/类别/个别/送别/级别/性别/告别/离别/区别/辞别/
+        #      别样/别致）的一部分，非否定词，跳过。闭集可穷举（非开集枚举，根治 v4.159.4
+        #      仍误杀『特别想做/特别出彩/分别拍/差别做』类真指令）。
+        #   ② 后向窗口收紧到【紧贴后一字】(tail0)，且动词集剔除『出』：避免『别出心裁』
+        #      (别+出+心裁) 被当否定误杀真指令『做个视频』；『出』作否定前接词极罕见
+        #      （别出成品），漏报代价可控（闭集判据优先于开集枚举）。
+        _NEG_COMPOUND_BEFORE = set("特分差辨识类个送级性别离区辞样致")
+        for m in re.finditer("别", text):
+            i = m.start()
+            if i > 0 and text[i - 1] in _NEG_COMPOUND_BEFORE:
+                continue
+            if text[i:i + 2] == "别扭":
+                continue  # 别别扭扭
+            tail0 = text[i + 1:i + 2]
+            if tail0 in ("做", "搞", "弄", "画", "拍", "剪", "发", "去", "来", "写", "合", "拼", "接"):
+                return True
+            if tail0 in "了呀啊吧":
+                return True
+        return False
+
+    def _ref_by_position(self, text):
+        """位置判据的引用/分析语境（v4.159.3 / P2）：元话语动词出现在生成短语【之前】且同一
+        分句内 → 生成短语是被分析/讨论的对象，而非用户下达的指令，不该强制生成工具。
+        解决裸「分析下生成视频」类残留风险（v4.159.2 仅靠前置词表 _REF_KW，覆盖不到无标记的
+        分析句）。逐步退役 _DISCUSS_KW 词表——强语境（元话语动词辖制生成短语）改由位置判据
+        接管，_DISCUSS_KW 仅保留给「无生成短语的纯讨论」兜底。
+          例：『分析下生成视频』→ 分析下 在 生成视频 之前、同分句 → 引用语境 → None；
+              『生成个视频，顺便分析下这个题材』(O4) → 生成短语在前、其后才出现分析，且含「，」
+              → 不触发（用户确要视频）；
+              『分析完数据再生成个视频』→ 含分隔符『再』→ 不触发（用户确要视频）。"""
+        if not text:
+            return False
+        span = self._gen_intent_span(text, self._VIDEO_OBJ)
+        if span == -1:
+            span = self._gen_intent_span(text, self._IMAGE_OBJ)
+        if span == -1:
+            return False
+        prefix = text[:span]
+        # 前置若存在独立分句分隔符，生成短语已是独立指令，不算引用语境
+        if any(sep in prefix for sep in self._CLAUSE_SEP):
+            return False
+        for mv in self._META_VERBS:
+            if mv in prefix:
+                return True
+        # v4.159.4（P1）：反向位置判据——【疑问/追问类】元话语动词出现在生成短语【之后】且其后
+        # （到句末）无 _CLAUSE_SEP 分隔符 → 生成短语是被追问的对象而非指令，同样拦截。
+        # 修「生成视频是什么原因」类（『什么原因』在生成短语之后，旧版仅查前置漏过）。
+        # 关键收窄：仅认疑问类（什么原因/咋回事/怎么回事/为什么/怎么看/怎么理解/原因在哪/为何），
+        # 不认动作类（复盘/分析下/解释/诊断/评估…）——否则『生成视频后复盘一下效果』（R6 须返 video_gen：
+        # 『后』说明生成是独立指令、复盘是后续动作，而非讨论生成本身）会被误杀。
+        # 安全闸：suffix 含分句分隔符即说明生成短语是独立指令，不拦截
+        # （『做个视频，顺便识别下素材』中『，』使后置分析句不回头压制生成指令）。
+        _REF_INTERROG = ("什么原因", "咋回事", "怎么回事", "为什么", "怎么看", "怎么理解",
+                         "原因在哪", "为何", "怎么")
+        suffix = text[span:]
+        if not any(sep in suffix for sep in self._CLAUSE_SEP):
+            for mv in _REF_INTERROG:
+                if mv in suffix:
+                    return True
+        return False
 
     def _route_force_tool(self, text, prev_text=None):
         """v4.80：依据用户【当前】原话推断最该调用的工具，返回工具名或 None。
@@ -495,14 +718,48 @@ class AgentWorker(QThread):
         if not text:
             return None
         t = text.lower()
-        # 1) 状态追问优先拦截：进度/如何/好了吗/状态 → 不强制工具，让模型正常汇报
+        # 0) 否定一票否决（v4.159.2）：取消/拒绝/喊停类表述，绝不路由任何工具，
+        #    否则用户说「别生成视频了」反被强制生成（危害链：force 非空 → 思考模型注入伪指令）
+        if self._neg_hit(text):
+            return None
+        # 0.1) 评价句式前置短路（v4.161 方案A补全集）：用户用「生成动词 + 的/得 + 褒义评价」
+        #      描述已完成/赞赏的结果（『这个封面做的漂亮』『图画的太好了』『文章写得很棒』），
+        #      属动补结构而非祈使生成指令，前置拦截避免误触 image_gen/video_gen（实证：封面做的
+        #      漂亮→image_gen；做得很到位→强制生图）。去程度副词限制更稳：允许 0~1 个程度副词，
+        #      褒义词集合补全，且要求动词紧贴『的/得』才命中，正常祈使句（『做一张好看的图』动词
+        #      后无『的/得』紧贴）不受影响。
+        if re.search(
+            r"(做|干|写|拍|画|剪|整|弄|搞|设计|生成|制作|编辑)"
+            r"(的|得)"
+            r"(很|挺|真|超|太|非常|十分|特别|蛮|相当|还|更|极|够|贼|巨|老|最)?"
+            r"(好|漂亮|不错|棒|美|清楚|干净|到位|赞|妙|厉害|完美|出色|好看|惊艳|绝|顶|"
+            r"牛|强|神|一流|优秀|好极了|无可挑剔|惊为天人|强悍|牛逼|绝了)",
+            text,
+        ):
+            return None
+        # 0.5) 引用/质疑语境一票否决（v4.159.2）：用户在谈论/质疑/引用某生成动作而非
+        #      下达指令时（「分析下生成视频这件事」「你刚才说的生成个视频，是BUG」
+        #      「我什么时候让你生成视频了」），前置拦截，避免强制生成。
+        if any(k in text for k in self._REF_KW):
+            return None
+        # 1) 状态追问优先拦截：进度/如何/好了吗/状态/完了吧 → 不强制工具，让模型正常汇报
         if any(k in text for k in self._STATUS_KW):
             return None
-        # 2) 当前消息已含明确对象词 → 直接路由
-        if any(k in text for k in self._VIDEO_GEN_KW):
+        # 1.5) 位置判据的引用/分析语境（v4.159.3 / P2）：元话语动词辖制生成短语（如『分析下
+        #      生成视频』）→ 生成短语是被分析的对象而非指令，前置拦截，避免强制生成。
+        if self._ref_by_position(text):
+            return None
+        # 2) 当前消息已含生成意图（v4.159 组合式判据） → 优先路由，不容「分析/解释」等
+        #    讨论豁免词压制真指令（v4.159.1 修复）。「聊聊…做视频的行为」类句式因『视频的』
+        #    修饰语跳过已不命中生成意图，仍由下方讨论豁免兜底。
+        if self._gen_intent(text, self._VIDEO_OBJ):
             return "video_gen"
-        if any(k in text for k in self._IMAGE_GEN_KW):
+        if self._gen_intent(text, self._IMAGE_OBJ) or self._phrase_hit(text):
             return "image_gen"
+        # 3) 弱讨论/复盘/质疑豁免（v4.159.2：讨论/评价 已上提为 _REF_KW）：仅在【未命中
+        #    生成意图】时兜底生效，用户在谈论/分析某事而非下达生成指令时，不强制任何工具。
+        if any(k in text for k in self._DISCUSS_KW):
+            return None
         # v4.103 五次：浏览器路由（先于搜索——「打开xx网页搜一下」应进浏览器而非纯搜索）
         if any(k in t for k in self._BROWSER_URL_KW):
             return "browser_open"
@@ -510,17 +767,21 @@ class AgentWorker(QThread):
                 and any(v in text for v in self._BROWSER_OPEN_VERB_KW)):
             return "browser_open"
         if "agnes" in t:
-            if any(k in text for k in self._IMAGE_GEN_KW):
+            if self._gen_intent(text, self._IMAGE_OBJ) or self._phrase_hit(text):
                 return "image_gen"
-            return "video_gen"
+            if self._gen_intent(text, self._VIDEO_OBJ):
+                return "video_gen"
+            # 无生成意图（如『Agnes 中文能力颠覆认知』纯夸赞/评测）→ 不强制工具，
+            # 否则裸兜底 video_gen 白跑（v4.161 修复：agnes 分支不再无条件兜底 video_gen）。
+            return None
         if "搜索" in text or "搜" in text:
             return "web_search"
         # 3) 当前句仅含裸续接动词、无对象 → 用上一句上下文兜底（仅限此场景）
         if prev_text and any(v in t for v in self._BARE_VERB_KW):
             pt = prev_text.lower()
-            if any(k in pt for k in self._VIDEO_GEN_KW):
+            if self._gen_intent(pt, self._VIDEO_OBJ):
                 return "video_gen"
-            if any(k in pt for k in self._IMAGE_GEN_KW):
+            if self._gen_intent(pt, self._IMAGE_OBJ) or self._phrase_hit(pt):
                 return "image_gen"
         return None
 
@@ -584,8 +845,12 @@ class AgentWorker(QThread):
         # 工具，否则弱模型「必须调工具但不知道该调啥」→ 空 content，无回复气泡。
         if self._content_creation_only(text):
             return False
+        # v4.159.2：否定/引用语境同样不该强制 action——「取消生成视频」「分析下生成视频这件事」
+        # 不应被判定为需要执行操作。v4.159.3：补位置判据（分析下生成视频 无标记也拦截）。
+        if self._neg_hit(text) or any(k in text for k in self._REF_KW) or self._ref_by_position(text):
+            return False
         # v4.102 fix10：明确要求生成图片/视频（产物是多媒体文件）→ 必须走工具
-        if any(k in text for k in self._IMAGE_GEN_KW) or any(k in text for k in self._VIDEO_GEN_KW):
+        if self._gen_intent(text, self._IMAGE_OBJ) or self._gen_intent(text, self._VIDEO_OBJ) or self._phrase_hit(text):
             return True
         return any(k in text for k in self._ACTION_KEYWORDS)
 
@@ -767,9 +1032,13 @@ class AgentWorker(QThread):
             self.messages.append({
                 "role": "system",
                 "content": (
-                    f"【继续上次任务】你之前被用户暂停，已完成的工作都在历史消息中"
-                    f"（含工具调用与结果）。请直接阅读历史，从断点接着干原始目标"
-                    f"（{_goal}），禁止再说「我来/我开始」之类的空话，必须调用真实工具推进。"
+                    # v4.125 N-01：措辞对齐事实——历史消息由 _build_api_history
+                    # 保真压缩而来，工具调用与结果确实可见（此前清洗丢光、
+                    # 提示却声称完整，模型只能编造进度）。
+                    f"【继续上次任务】你之前被暂停，历史消息中包含已完成的"
+                    f"工作记录（含工具调用与结果）。请先通读历史确认做到哪一步，"
+                    f"再从断点接着干原始目标（{_goal}）；已调用过的工具不要重复调用，"
+                    f"禁止再说「我来/我开始」之类的空话，必须调用真实工具推进。"
                 ),
                 "_seq": -1,
             })
@@ -816,6 +1085,7 @@ class AgentWorker(QThread):
             if elapsed > MAX_DURATION:
                 self._emit_status(f"⏰ Agent 超时（{int(elapsed)}s），已自动停止。建议切回 DeepSeek 获得更快响应。")
                 self.stream_commit.emit(f"\n\n⏰ 执行超时（{int(elapsed)}秒），已自动停止。Agnes 免费模型速度较慢，建议切回 DeepSeek。")
+                self._resumable_stop = True  # v4.125 M-01：超时可续
                 break
             if self._stop_requested:
                 self._emit_status("⏹ 已停止（用户请求）")
@@ -849,6 +1119,14 @@ class AgentWorker(QThread):
                 )
             except Exception as e:
                 log.error("Agent 调用失败: %s", e)
+                # v4.162：把调用失败写入结构化日志库（agent_log.db），否则 log_query 查不到、
+                # 出事后无法复盘（此前只走了 Python logging，不落 agent_log.db）。
+                try:
+                    from structured_logger import get_logger
+                    get_logger().error(f"Agent 调用失败: {e}", module="agent",
+                                       extra={"error": str(e)})
+                except Exception:
+                    pass
                 self.tool_log.emit({"name": "错误", "args": "", "result": str(e)})
                 # v4.108 H-04：失败要让用户在气泡里看得见，不再静默结束装"完成"。
                 self.stream_commit.emit(f"\n\n⚠️ 模型调用失败：{e}")
@@ -857,6 +1135,7 @@ class AgentWorker(QThread):
             # v4.102 fix12：累计工具名 + token 预算熔断（超预算即停，保留阶段性结果）
             self._collect_step_tools(resp)
             if not self._tick_token_budget(resp):
+                self._resumable_stop = True  # v4.125 M-01：熔断可续
                 break
 
             # v4.62：步内超时检查（单次模型调用最长 90s，避免下一轮开头才拦导致大幅超额）
@@ -864,6 +1143,7 @@ class AgentWorker(QThread):
                 self._emit_status(f"⏰ Agent 超时（{int(time.time() - _t0)}s），已自动停止。")
                 self.stream_commit.emit(
                     f"\n\n⏰ 执行超时（{int(time.time() - _t0)}秒），已自动停止。")
+                self._resumable_stop = True  # v4.125 M-01：超时可续
                 break
             content = resp.get("content") or ""
             # v4.102 fix8：复读/原地打转护栏——模型连续 N 步输出完全相同的内容（或调用
@@ -1111,6 +1391,7 @@ class AgentWorker(QThread):
                     })
             else:
                 log.warning("Agent 步数截断：已达最大步数 %d，已停止（可点继续）", self._max_steps)
+                self._resumable_stop = True  # v4.125 M-01：步数耗尽可续
                 self.tool_log.emit({
                     "name": "提示",
                     "args": "",
@@ -1129,12 +1410,15 @@ class AgentWorker(QThread):
             # 正常完成/自动停止（超时·追问过多·工具连败）→ 删除检查点，不留「继续」入口。
             self.stopped_by_user = self._stop_requested
             try:
-                if self._stop_requested:
+                # v4.125 M-01：用户停止 **或** 可续的自动停止（超时/熔断/步数耗尽）
+                # 都保留检查点——此前自动停止走 mark_done 删档，提示"可点继续"
+                # 却既无按钮也无存档，任务卡死无法续。正常完成才删档。
+                if self._stop_requested or getattr(self, "_resumable_stop", False):
                     task_resume.mark_paused(mw.cfg, self.task_id)
                 else:
                     task_resume.mark_done(mw.cfg, self.task_id)
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("任务完成标记失败 task_id=%s: %s", self.task_id, e)
             if not self._stop_requested:
                 self._auto_remember(mw)
             # v4.102 fix12：所有退出路径（正常完成/熔断/停止/超时/步数耗尽）都在此汇流，
@@ -1233,7 +1517,11 @@ class AgentWorker(QThread):
                 "name": name,
                 "result_preview": str(result_str)[:200],
                 "index": idx,
-                "success": "失败" not in str(result_str)[:50] and "取消" not in str(result_str)[:50],
+                # v4.125 P2：失败判定从「前50字含'失败'」收窄为「开头就是失败模式」——
+                # 工具正文写"本次修复了失败原因"会被误标红叉（仅影响 UI 图标）。
+                "success": not str(result_str)[:20].startswith(
+                    ("失败", "错误", "工具执行异常", "未知工具",
+                     "不在本角色可用工具列表", "已取消", "取消")),
                 "duration_ms": dt,
             })
 
@@ -1340,7 +1628,11 @@ class AgentWorker(QThread):
                     "name": name,
                     "result_preview": str(result_str)[:200],
                     "index": idx,
-                    "success": "失败" not in str(result_str)[:50] and "取消" not in str(result_str)[:50],
+                    # v4.125 P2：失败判定从「前50字含'失败'」收窄为「开头就是失败模式」——
+                # 工具正文写"本次修复了失败原因"会被误标红叉（仅影响 UI 图标）。
+                "success": not str(result_str)[:20].startswith(
+                    ("失败", "错误", "工具执行异常", "未知工具",
+                     "不在本角色可用工具列表", "已取消", "取消")),
                     "duration_ms": dt,
                 })
 

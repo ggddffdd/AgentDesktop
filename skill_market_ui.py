@@ -33,6 +33,7 @@ from PySide6.QtCore import Qt, QThread, Signal, QUrl
 from PySide6.QtGui import QFont, QColor, QDesktopServices
 
 import config
+from ui import THEME
 from skill_loader import scan_skills, normalize_skill_name
 
 log = logging.getLogger(__name__)
@@ -42,11 +43,11 @@ USER_SKILLS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩A
 CATALOG_PATH = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "skills_catalog.json")
 
 # 配色
-_COLOR_CARD = QColor("#ffffff")
-_COLOR_ON = QColor("#1b7a3d")
-_COLOR_OFF = QColor("#9aa0a6")
-_COLOR_ACCENT = QColor("#6c5ce7")
-_COLOR_WARN = QColor("#b8860b")
+_COLOR_CARD = QColor(THEME["white"])
+_COLOR_ON = QColor(THEME["on_green"])
+_COLOR_OFF = QColor(THEME["faint"])
+_COLOR_ACCENT = QColor(THEME["accent_violet"])
+_COLOR_WARN = QColor(THEME["warn_gold"])
 
 
 # ---------- 安装线程（防 UI 卡死） ----------
@@ -163,7 +164,7 @@ class SkillMarketWindow(QMainWindow):
         # 卡片滚动区
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setStyleSheet("QScrollArea{background:#f6f7f9;border:1px solid #e6e8eb;border-radius:10px;}")
+        self.scroll.setStyleSheet("QScrollArea{background:%s;border:1px solid %s;border-radius:10px;}" % (THEME["bg_alt"], THEME["card_border"]))
         self.cards_inner = QWidget()
         self.cards_lay = QVBoxLayout(self.cards_inner)
         self.cards_lay.setContentsMargins(14, 14, 14, 14)
@@ -308,8 +309,8 @@ class SkillMarketWindow(QMainWindow):
         card = QFrame()
         card.setFrameShape(QFrame.StyledPanel)
         card.setStyleSheet(
-            "QFrame{background:#ffffff;border:1px solid #e6e8eb;border-radius:10px;}"
-            "QFrame:hover{border-color:#6c5ce7;}"
+            "QFrame{background:%s;border:1px solid %s;border-radius:10px;}QFrame:hover{border-color:%s;}"
+            % (THEME["white"], THEME["card_border"], THEME["accent_violet"])
         )
         lay = QVBoxLayout(card)
         lay.setContentsMargins(14, 12, 14, 12)
@@ -322,17 +323,17 @@ class SkillMarketWindow(QMainWindow):
 
         badge = QLabel(e.get("category", "未分类"))
         badge.setStyleSheet(
-            "QLabel{background:#f0eefb;color:#6c5ce7;border-radius:10px;padding:2px 10px;font-size:11px;}"
+            "QLabel{background:%s;color:%s;border-radius:10px;padding:2px 10px;font-size:11px;}" % (THEME["accent_violet_bg2"], THEME["accent_violet"])
         )
         top.addWidget(badge)
 
         # 状态/来源标签
         if e.get("installed"):
             st = QLabel("✅ 已安装" if self._is_enabled(e["name"]) else "⚪ 已禁用")
-            st.setStyleSheet(f"QLabel{{color:{'#1b7a3d' if self._is_enabled(e['name']) else '#9aa0a6'};font-size:11px;}}")
+            st.setStyleSheet(f"QLabel{{color:{THEME['on_green'] if self._is_enabled(e['name']) else THEME['faint']};font-size:11px;}}")
         else:
             st = QLabel("🆕 可发现")
-            st.setStyleSheet("QLabel{color:#b8860b;font-size:11px;}")
+            st.setStyleSheet("QLabel{color:%s;font-size:11px;}" % THEME["warn_gold"])
         top.addWidget(st)
         lay.addLayout(top)
 
@@ -349,9 +350,11 @@ class SkillMarketWindow(QMainWindow):
                 uninst = QPushButton("卸载")
                 uninst.setFixedHeight(30)
                 uninst.setStyleSheet(
-                    "QPushButton{background:#fff;color:#c0392b;border:1px solid #e6b0aa;"
+                    "QPushButton{background:white;color:%s;border:1px solid %s;"
                     "border-radius:8px;padding:0 12px;font-size:12px;}"
-                    "QPushButton:hover{background:#fdecea;}")
+                    "QPushButton:hover{background:%s;}"
+                    % (THEME["danger_brown"], THEME["card_red_border"], THEME["danger_bg"])
+                )
                 uninst.clicked.connect(lambda _=False, p=e["path"], n=e["name"]: self._uninstall(p, n))
                 act.addWidget(uninst)
         else:
@@ -361,10 +364,12 @@ class SkillMarketWindow(QMainWindow):
             install_btn.setEnabled(bool(url))
             install_btn.setToolTip(url or "无来源链接（在线搜索结果需用仓库链接安装）")
             install_btn.setStyleSheet(
-                "QPushButton{background:#6c5ce7;color:#fff;border:none;border-radius:8px;"
+                "QPushButton{background:%s;color:white;border:none;border-radius:8px;"
                 "padding:0 16px;font-size:12px;font-weight:500;}"
-                "QPushButton:hover{background:#5a4bd4;}"
-                "QPushButton:disabled{background:#cfc8ef;}")
+                "QPushButton:hover{background:%s;}"
+                "QPushButton:disabled{background:%s;}"
+                % (THEME["accent_violet"], THEME["accent_violet_dark"], THEME["accent_violet_bg"])
+            )
             install_btn.clicked.connect(lambda _=False, u=url: self._install(u))
             act.addWidget(install_btn)
         lay.addLayout(act)

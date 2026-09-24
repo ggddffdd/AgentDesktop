@@ -1,14 +1,24 @@
 {
   "manifest_version": 3,
   "name": "小臭抓网页",
-  "version": "1.0",
-  "description": "一键把当前网页正文/选中文字发到「小臭玩AI」桌面端，让 AI 帮你总结、提取、分析。",
+  "version": "1.2",
+  "description": "一键把当前网页正文/选中文字发到「小臭玩AI」桌面端，让 AI 帮你总结、提取、分析。支持自动发送、右键菜单、全局快捷键。",
   "action": {
     "default_title": "小臭抓网页",
     "default_popup": "popup.html"
   },
-  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "permissions": ["activeTab", "scripting", "storage", "tabs", "contextMenus"],
   "host_permissions": ["http://127.0.0.1/*"],
+  "commands": {
+    "capture-article": {
+      "suggested_key": { "default": "Ctrl+Shift+S" },
+      "description": "小臭：抓取当前页正文"
+    },
+    "capture-selection": {
+      "suggested_key": { "default": "Ctrl+Shift+X" },
+      "description": "小臭：抓取选中文字"
+    }
+  },
   "background": {
     "service_worker": "background.js"
   },

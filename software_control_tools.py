@@ -679,7 +679,17 @@ def tool_app_screenshot(cfg, app_dir, args):
     save_path = args.get("save_path")
     if not save_path:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        save_path = os.path.join(app_dir, "output", f"app_screenshot_{ts}.png")
+        # v4.162.x：默认落到统一产物目录的「截图」子目录，而非程序目录 app_dir/output
+        try:
+            from config import PRODUCTS_DIR
+            base = os.path.join(PRODUCTS_DIR, "截图")
+        except Exception:
+            base = os.path.join(app_dir, "output")
+        try:
+            os.makedirs(base, exist_ok=True)
+        except Exception:
+            pass
+        save_path = os.path.join(base, f"app_screenshot_{ts}.png")
 
     try:
         # 先取 pywinauto 窗口坐标

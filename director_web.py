@@ -46,8 +46,18 @@ def register_localres_scheme():
                    | QWebEngineUrlScheme.Flag.CorsEnabled
                    | QWebEngineUrlScheme.Flag.ContentSecurityPolicyIgnored)
         QWebEngineUrlScheme.registerScheme(s)
-    except Exception:
-        pass
+    except Exception as e:
+        # v4.141 P2：此前 except: pass 把注册失败完全吞掉，却照样置
+        # _scheme_registered=True —— 后果是导演台图片/视频全部加载失败，
+        # 而日志里连一行线索都没有，排障极其痛苦。现在必须留下明确痕迹。
+        # 仍置 True：scheme 注册是 QApplication 之前的一次性动作，失败后
+        # 重试无意义（只会重复抛），保持幂等避免刷屏。
+        try:
+            print("[director_web] ❌ localres scheme 注册失败：%r\n"
+                  "    → 导演台图片/视频将无法加载；"
+                  "该 scheme 必须在 QApplication 创建前注册成功。" % (e,))
+        except Exception:
+            pass
     _scheme_registered = True
 
 
@@ -56,6 +66,28 @@ def _localres_url(path: str) -> str:
     p = path.replace("\\", "/")
     enc = urllib.parse.quote(p, safe="/:")
     return "localres:///" + enc
+
+
+def _localres_allowed(path: str) -> bool:
+    """v4.125 M-21：localres 资源白名单——只许读产物/项目/用户数据目录。
+
+    目录集合（realpath 归一化后前缀匹配，防 ../ 穿越与符号链接绕过）：
+    - APP_DIR（含打包 dist 与源码运行两种形态）
+    - ~/Documents/小臭玩AI（产物/交付物/导演台会话素材）
+    """
+    try:
+        from config import APP_DIR
+        rp = os.path.realpath(path)
+        allowed_roots = [
+            os.path.realpath(APP_DIR),
+            os.path.realpath(os.path.expanduser("~/Documents/小臭玩AI")),
+        ]
+        for root in allowed_roots:
+            if rp.lower().startswith(root.lower() + os.sep) or rp.lower() == root.lower():
+                return True
+        return False
+    except Exception:
+        return False
 
 
 class _LocalResHandler(QWebEngineUrlSchemeHandler):
@@ -86,6 +118,15 @@ class _LocalResHandler(QWebEngineUrlSchemeHandler):
         if not p or not os.path.isfile(p):
             try:
                 job.fail(QWebEngineUrlRequestJob.Error.RequestFailed)
+            except Exception:
+                pass
+            return
+        # v4.125 M-21：路径白名单——此前只判 isfile，localres:///C:/Users/.../id_rsa
+        # 可读本机任意文件。仅放行产物/项目/用户数据三目录下的资源（realpath 归一化
+        # 防 ..\ 穿越），其余一律拒绝。
+        if not _localres_allowed(p):
+            try:
+                job.fail(QWebEngineUrlRequestJob.Error.RequestDenied)
             except Exception:
                 pass
             return
@@ -170,13 +211,32 @@ html,body{margin:0;padding:0;background:var(--bg);
 <script>
 function zoom(src){document.getElementById('lbimg').src=src;
   document.getElementById('lb').style.display='flex';}
-function act(kind,idx){console.log('__xc__'+kind+':'+idx);}
+window.__xcTok='__TOKEN__';
+function act(kind,idx){console.log('__xc__'+kind+':'+idx+':'+(window.__xcTok||''));}
 </script>
 </body></html>"""
 
 
 def _esc(s):
     return _html.escape(str(s))
+
+
+_project_token = ""
+
+
+def set_project_token(tok):
+    """v4.141 P2：设置当前项目令牌。
+
+    网页动作（重生成/回滚/版本对比）会携带它，Python 侧据此判断该动作是否
+    属于当前项目。项目切换或重置后，旧页面晚到的点击会因令牌不匹配被丢弃，
+    避免「项目 A 的第 2 镜重生成」误打到项目 B 的第 2 镜。
+    """
+    global _project_token
+    _project_token = str(tok or "")
+
+
+def project_token():
+    return _project_token
 
 
 class DirectorWebView(QWebEngineView):
@@ -204,7 +264,8 @@ class DirectorWebView(QWebEngineView):
                 .replace("__TEXT__", t.get("text", "#202124"))
                 .replace("__DIM__", t.get("dim", "#5F6368"))
                 .replace("__ACCENT__", t.get("accent", "#1A73E8"))
-                .replace("__CARDS__", cards_html))
+                .replace("__CARDS__", cards_html)
+                .replace("__TOKEN__", _esc(_project_token)))
 
     def render_cards(self, cards_html):
         """整段替换网格卡片 HTML。"""
@@ -216,6 +277,17 @@ class DirectorWebView(QWebEngineView):
 
 # ---------- 卡片模板 ----------
 
+def _ask_btn(kind, idx, label="✎说一句怎么改"):
+    """v4.150：把「改这一件」的意见入口指向底部导演对话框。
+
+    点了只是预填模板（如「镜3关键帧：」）并聚焦，不执行、不烧钱；
+    用户补完意见按 Enter 才真正开始改。这是对标 Pavo 的关键一步——
+    原先卡片上只有裸的「↻重生成」，想描述怎么改只能去批量弹窗。
+    """
+    return (f'<a onclick="act(\'{kind}\',{idx})" '
+            f'title="把指令填进下方对话框，补一句怎么改再回车">{label}</a>')
+
+
 def _rb_btn(kind, idx, can_rollback, label="↩回滚"):
     """回滚按钮：只有真的存在历史版本时才渲染，避免点了没反应的死按钮。"""
     if not can_rollback:
@@ -223,10 +295,19 @@ def _rb_btn(kind, idx, can_rollback, label="↩回滚"):
     return f'<a onclick="act(\'{kind}\',{idx})" title="回退到上一版">{label}</a>'
 
 
+def _ver_btn(idx, can_versions, sig="vers", label="🔀版本"):
+    """v4.133 多版本对比入口：历史版本 ≥1 个时才有得比（当前版算第二版）。"""
+    if not can_versions:
+        return ""
+    return (f'<a onclick="act(\'{sig}\',{idx})" '
+            f'title="并排对比全部历史版本，挑一版">{label}</a>')
+
+
 def clip_card_html(i, status, path=None, kf=None, error="", info_text=None,
-                   can_rollback=False):
+                   can_rollback=False, can_versions=False):
     """分镜卡：视频内嵌播放（status=done）、排队/失败占位。idx 从 0 计。"""
     rb = _rb_btn("rollback_clip", i, can_rollback)
+    vb = _ver_btn(i, can_versions)
     if status == "done" and path and os.path.isfile(path):
         poster = f' poster="{_localres_url(kf)}"' if (kf and os.path.isfile(kf)) else ""
         thumb = (f'<div class="thumb"><video src="{_localres_url(path)}" '
@@ -234,16 +315,19 @@ def clip_card_html(i, status, path=None, kf=None, error="", info_text=None,
                  f'<div class="play-overlay"></div></div>')
         info = info_text or f"镜{i+1} · ✅ 完成"
         btns = (f'<div class="btns">'
-                f'<a onclick="act(\'mod\',{i})">✎改</a>'
-                f'<a onclick="act(\'regen\',{i})">↻</a>'
-                f'<a onclick="act(\'view\',{i})">🔍</a>'
-                f'{rb}'
+                f'{_ask_btn("ask_clip", i, "✎说一句怎么改")}'
+                f'<a onclick="act(\'regen\',{i})" title="不加意见，直接重生成">↻</a>'
+                f'<a onclick="act(\'view\',{i})" title="看这镜实际发出去的提示词">🔍</a>'
+                f'{vb}{rb}'
                 f'</div>')
         return f'<div class="card">{thumb}<div class="info">{_esc(info)}</div>{btns}</div>'
     if status == "fail":
         thumb = '<div class="thumb"><div class="ph">❌ 生成失败</div></div>'
         info = info_text or f"镜{i+1} · ❌ 失败"
-        btns = (f'<div class="btns"><a onclick="act(\'view\',{i})">🔍看原因</a>'
+        btns = (f'<div class="btns">'
+                f'<a onclick="act(\'mod\',{i})" title="先看这镜已发的提示词与失败原因，再写修改意见">'
+                f'✎看原因再改</a>'
+                f'<a onclick="act(\'view\',{i})">🔍看原因</a>'
                 f'<a onclick="act(\'regen\',{i})">↻重生成</a>{rb}</div>')
         return f'<div class="card">{thumb}<div class="info">{_esc(info)}</div>{btns}</div>'
     # queued / generating
@@ -252,8 +336,14 @@ def clip_card_html(i, status, path=None, kf=None, error="", info_text=None,
     return f'<div class="card">{thumb}<div class="info">{_esc(info)}</div></div>'
 
 
-def keyframe_card_html(i, kf, note="", can_rollback=False):
-    """关键帧卡：首帧图片 + 质检状态；图片可点击灯箱放大。"""
+def keyframe_card_html(i, kf, note="", can_rollback=False, can_versions=False,
+                       stale=False):
+    """关键帧卡：首帧图片 + 质检状态；图片可点击灯箱放大。
+
+    v4.141：stale=True 表示上游资产（角色/线索）已被回滚，此关键帧是基于旧版本
+    生成的。界面必须明示，避免「角色已回到 V1、关键帧却还挂着 V3」这种
+    假一致性把人骗过去。
+    """
     if kf and os.path.isfile(kf):
         thumb = (f'<div class="thumb"><img src="{_localres_url(kf)}" '
                  f'onclick="zoom(this.src)" alt="镜{i+1} 关键帧"></div>')
@@ -261,19 +351,23 @@ def keyframe_card_html(i, kf, note="", can_rollback=False):
     else:
         thumb = '<div class="thumb"><div class="ph">无关键帧</div></div>'
         info = f"镜{i+1} · 生成失败"
+    if stale and kf and os.path.isfile(kf):
+        info += " · ⚠️ 基于旧资产"
     qc = ""
     if note:
         failed = "VERDICT: FAIL" in note.upper()
         label = "⚠️ 质检未通过" if failed else "✅ 质检通过"
         cls = "qc fail" if failed else "qc"
         qc = f'<div class="{cls}">{_esc(label)}</div>'
-    btns = (f'<div class="btns"><a onclick="act(\'regen_kf\',{i})">↻重生成</a>'
+    btns = (f'<div class="btns">{_ask_btn("ask_kf", i, "✎说一句怎么改")}'
+            f'<a onclick="act(\'regen_kf\',{i})" title="不加意见，直接重生成这一镜">↻重生成</a>'
+            f'{_ver_btn(i, can_versions, "verskf")}'
             f'{_rb_btn("rollback_kf", i, can_rollback)}</div>')
     return (f'<div class="card">{thumb}<div class="info">{_esc(info)}</div>'
             f'{qc}{btns}</div>')
 
 
-def character_card_html(c, idx=None, can_rollback=False):
+def character_card_html(c, idx=None, can_rollback=False, can_versions=False):
     """角色卡：三视图横排（可灯箱）+ 名称 + 描述（idx 给出时挂重生成/回滚按钮）。"""
     name = _esc(c.get("name", "角色"))
     desc = _esc(c.get("desc", ""))
@@ -289,7 +383,9 @@ def character_card_html(c, idx=None, can_rollback=False):
         imgs = '<div class="ph" style="height:120px;">无三视图</div>'
     btns = ""
     if idx is not None:
-        btns = (f'<div class="btns"><a onclick="act(\'regen_char\',{idx})">↻重生成</a>'
+        btns = (f'<div class="btns">{_ask_btn("ask_char", idx, "✎说一句怎么改")}'
+                f'<a onclick="act(\'regen_char\',{idx})" title="不加意见，直接重生成">↻重生成</a>'
+                f'{_ver_btn(idx, can_versions, "verschar")}'
                 f'{_rb_btn("rollback_char", idx, can_rollback)}</div>')
     return (f'<div class="card">'
             f'<div class="info"><b>{name}</b></div>'
@@ -298,7 +394,7 @@ def character_card_html(c, idx=None, can_rollback=False):
             f'{btns}</div>')
 
 
-def clue_card_html(idx, c, can_rollback=False):
+def clue_card_html(idx, c, can_rollback=False, can_versions=False):
     """线索卡（关键道具 / 场景资产）：参考图 + 名称 + 英文视觉描述 + 重生成/回滚。"""
     name = _esc(c.get("name", "道具"))
     desc = _esc(c.get("desc", ""))
@@ -309,15 +405,21 @@ def clue_card_html(idx, c, can_rollback=False):
                  f'onclick="zoom(this.src)" alt="{name} 参考图"></div>')
     else:
         thumb = '<div class="thumb"><div class="ph">无参考图</div></div>'
-    btns = (f'<div class="btns"><a onclick="act(\'regen_clue\',{idx})">↻重生成</a>'
+    btns = (f'<div class="btns">{_ask_btn("ask_clue", idx, "✎说一句怎么改")}'
+            f'<a onclick="act(\'regen_clue\',{idx})" title="不加意见，直接重生成">↻重生成</a>'
+            f'{_ver_btn(idx, can_versions, "versclue")}'
             f'{_rb_btn("rollback_clue", idx, can_rollback)}</div>')
     return (f'<div class="card">{thumb}'
             f'<div class="info"><b>{name}</b> · {kind}</div>'
             f'<div class="desc">{desc}</div>{btns}</div>')
 
 
-def merge_card_html(path, kf=None):
-    """合成预览卡：成片视频内嵌播放（或首帧图）。"""
+def merge_card_html(path, kf=None, stale=False):
+    """合成预览卡：成片视频内嵌播放（或首帧图）。
+
+    v4.141：stale=True 表示成片合成之后，上游（角色/线索/关键帧/视频）又回滚过，
+    成片已不再对应当前资产，应提示重新合成。
+    """
     if path and os.path.isfile(path):
         poster = f' poster="{_localres_url(kf)}"' if (kf and os.path.isfile(kf)) else ""
         thumb = (f'<div class="thumb" style="aspect-ratio:auto;">'
@@ -325,5 +427,7 @@ def merge_card_html(path, kf=None):
                  f'style="width:100%;max-height:360px;cursor:pointer;" onclick="act(\'play\',-1)"></video>'
                  f'<div class="play-overlay"></div></div>')
         info = "成片预览（可内嵌播放）"
+        if stale:
+            info += " · ⚠️ 上游已变更，建议重新合成"
         return f'<div class="card">{thumb}<div class="info">{_esc(info)}</div></div>'
     return '<div class="empty">尚未合成</div>'

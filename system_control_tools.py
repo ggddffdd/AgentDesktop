@@ -310,13 +310,25 @@ from pathlib import Path
 # ---------- 内部工具 ----------
 
 def _resolve_save_path(save_path, prefix="screenshot", app_dir=None):
-    """解析截图保存路径。"""
+    """解析截图保存路径。
+    v4.162.x：默认落到统一产物目录的「截图」子目录（~/Documents/小臭玩AI/产物/截图），
+    不再塞进程序目录 app_dir/output（dist 打包后随清理丢失）。
+    调用方显式给 save_path 时仍优先尊重。"""
     if save_path:
         return save_path
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     if app_dir is None:
         app_dir = os.getcwd()
-    return os.path.join(app_dir, "output", f"{prefix}_{ts}.png")
+    try:
+        from config import PRODUCTS_DIR
+        base = os.path.join(PRODUCTS_DIR, "截图")
+    except Exception:
+        base = os.path.join(app_dir, "output")
+    try:
+        os.makedirs(base, exist_ok=True)
+    except Exception:
+        pass
+    return os.path.join(base, f"{prefix}_{ts}.png")
 
 
 # ---------- 截图 ----------

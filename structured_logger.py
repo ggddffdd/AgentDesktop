@@ -19,7 +19,12 @@ from pathlib import Path
 
 
 def _default_db_path():
-    d = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI")
+    # v4.134.4：跟随军团数据根的改道（XC_LEGION_DIR）—— 测试子进程注入该变量后，
+    # 日志库也落临时目录，不再写真实 ~/Documents/小臭玩AI/agent_log.db。
+    # （此前用 expanduser("~") 硬算，只有骗 HOME/USERPROFILE 才拦得住，
+    #  跑手做不到对每个 import 都生效。）
+    d = os.environ.get("XC_LEGION_DIR") or os.path.join(
+        os.path.expanduser("~"), "Documents", "小臭玩AI")
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, "agent_log.db")
 
@@ -59,12 +64,15 @@ class StructuredLogger:
              json.dumps(extra, ensure_ascii=False) if extra else None, session_id))
         conn.commit()
         conn.close()
-        # 兼容旧 debug.log
-        try:
-            with open(os.path.join(os.path.dirname(self.db_path), "debug.log"), "a", encoding="utf-8") as f:
-                f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [{level}] {message}\n")
-        except Exception:
-            pass
+        # v4.134.5：**移除**「兼容旧 debug.log」的文本双写。
+        # 病根：这条双写自 v1.1 起就没有任何读取方 —— 全仓唯一读 `debug.log` 的
+        #   diagnostic_export 读的是 APP_DIR 下那份（即 dist 里由 config.py 的
+        #   logging.basicConfig 写的那份），与这里 `os.path.dirname(self.db_path)`
+        #   指向的用户数据目录那份**不是同一个文件**。
+        #   于是它成了「无人消费却无限增长」的纯负担：2026-07-22 ~ 09-10 七周
+        #   堆到 246KB / 4394 行，且被测试子进程反复追加（污染真实数据目录的写点之一）。
+        # SQLite（agent_log.db）本身已含 timestamp/level/module/message，
+        #   文本副本零信息增量，纯属历史遗留。
 
     def debug(self, message, module=None, extra=None, session_id=None):
         self._log("DEBUG", message, module, extra, session_id)

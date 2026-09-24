@@ -12,26 +12,66 @@
 """
 
 import os
+import sys
 import shutil
 import datetime
 
 
 # ---------- 路径 ----------
+def _user_root():
+    """技能唯一权威根目录：用户文档下的「小臭玩AI」（与 config.USER_DATA_DIR 一致）。"""
+    try:
+        import config
+        return config.USER_DATA_DIR
+    except Exception:
+        return os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI")
+
+
+def _is_under_app_dir(path):
+    """判断 path 是否落在打包程序目录（dist / _internal）下——技能绝不能写进去，否则重打包丢失。"""
+    if not path:
+        return False
+    try:
+        import config
+        app_dir = getattr(config, "APP_DIR", "")
+    except Exception:
+        app_dir = ""
+    if not app_dir and getattr(sys, "frozen", False):
+        app_dir = os.path.dirname(sys.executable)
+    if not app_dir:
+        return False
+    try:
+        return os.path.abspath(path).startswith(os.path.abspath(app_dir) + os.sep)
+    except Exception:
+        return False
+
+
 def get_pending_dir(cfg):
-    """待审核目录：默认 ~/Documents/小臭玩AI/skills_pending。"""
+    """待审核目录：默认 ~/Documents/小臭玩AI/skills_pending。
+
+    v4.155 fix4：若配置里 skills_pending_dir 落在打包程序目录（dist）下，强制重定向到用户目录，
+    杜绝自建/待审技能随重打包丢失。
+    """
+    d = None
     if isinstance(cfg, dict) and cfg.get("skills_pending_dir"):
-        return cfg["skills_pending_dir"]
-    return os.path.join(
-        os.path.expanduser("~"), "Documents", "小臭玩AI", "skills_pending")
+        d = cfg["skills_pending_dir"]
+        if _is_under_app_dir(d):
+            d = None
+    if not d:
+        d = os.path.join(_user_root(), "skills_pending")
+    return d
 
 
 def get_active_dir(cfg):
     """正式技能目录：用户目录 ~/Documents/小臭玩AI/skills（与 skill_loader 第一来源一致）。
 
     cfg 可带 "skills_dir" 覆盖（离线单测用），否则取 config.get_skill_scan_dirs()[0]。
+    v4.155 fix4：若自定义 skills_dir 落在打包程序目录（dist）下，强制重定向到用户目录。
     """
     if isinstance(cfg, dict) and cfg.get("skills_dir"):
-        return cfg["skills_dir"]
+        d = cfg["skills_dir"]
+        if not _is_under_app_dir(d):
+            return d
     try:
         import config
         dirs = config.get_skill_scan_dirs()
@@ -39,8 +79,7 @@ def get_active_dir(cfg):
             return dirs[0]
     except Exception:
         pass
-    return os.path.join(
-        os.path.expanduser("~"), "Documents", "小臭玩AI", "skills")
+    return os.path.join(_user_root(), "skills")
 
 
 # ---------- 提交（模型侧调用）----------
@@ -200,6 +239,59 @@ def _parse_skill_md(md_path):
             desc_lines.append(s)
     meta["description"] = " ".join(desc_lines)[:200]
     return meta
+
+
+# ---------- 首次运行：内置技能同步 ----------
+def seed_builtin_skills():
+    """v4.155 fix4：首次运行把打包内置技能（dist/_internal/skills 或 dist/skills）复制到用户目录，
+    使「用户目录」成为技能唯一权威来源——重打包（wipe dist）后技能不丢。
+
+    幂等：仅复制用户目录尚不存在的技能目录，绝不覆盖用户已编辑/自建/已审的技能。
+    仅在冻结（exe）模式下执行；开发模式源码 skills 即时可见，不搬。
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        import config
+        user_dir = config.get_skill_scan_dirs()[0]
+    except Exception:
+        user_dir = os.path.join(_user_root(), "skills")
+    exe_dir = os.path.dirname(sys.executable)
+    candidates = [
+        os.path.join(exe_dir, "_internal", "skills"),
+        os.path.join(exe_dir, "skills"),
+    ]
+    seeded = 0
+    for src in candidates:
+        if not os.path.isdir(src):
+            continue
+        for slug in sorted(os.listdir(src)):
+            sdir = os.path.join(src, slug)
+            if not os.path.isdir(sdir):
+                continue
+            dst = os.path.join(user_dir, slug)
+            if os.path.exists(dst):      # 用户目录已有（自建/已审/已同步），不覆盖
+                continue
+            try:
+                os.makedirs(user_dir, exist_ok=True)
+                shutil.copytree(sdir, dst)
+                seeded += 1
+            except Exception:
+                pass
+    if seeded:
+        try:
+            log = None
+            try:
+                from structured_logger import get_logger
+                log = get_logger()
+            except Exception:
+                pass
+            if log:
+                log.info("首次运行已同步 %d 个内置技能到用户目录（重打包不丢）" % seeded,
+                         module="skill_review")
+        except Exception:
+            pass
+    return seeded
 
 
 if __name__ == "__main__":

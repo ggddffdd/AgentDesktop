@@ -27,6 +27,30 @@ def _is_english_query(query):
     return all(ord(c) < 128 for c in s)
 
 
+# v4.139.3：境外主题提示词 —— 中文 query 命中这些词也走 DuckDuckGo 优先。
+_OFFSHORE_HINTS = (
+    "马来西亚", "马来", "malaysia", "印尼", "indonesia", "越南", "vietnam",
+    "泰国", "thailand", "新加坡", "singapore", "菲律宾", "philippines",
+    "tiktok shop", "tiktokshop", "shopee", "lazada", "amazon", "temu", "shein",
+    "跨境", "出海", "海外", "东南亚", "southeast asia", "asean",
+    "sst", "sirim", "halal", "清真", "j&t", "ninja van",
+)
+
+
+def _is_offshore_query(query):
+    """中文 query 但主题在境外（电商出海场景）→ 也走 DuckDuckGo 优先（v4.139.3）。
+
+    为什么必须分流（2026-09-12 实测，VPN 下同一句「TikTok Shop 马来西亚 佣金 费率 政策 2026」）：
+      · DuckDuckGo → inseller.my（中文版）/ amz123 / dataede / 91miaoshou，**全是真实 URL**；
+      · Bing（国内） → 内容其实一样，但 URL 全被包成 `www.bing.com/ck/a?!!…` **加密跳转链** ——
+        成员拿着这种 URL **根本没法 web_fetch**。
+    对「军团要抓一手源」这个场景，**URL 可用性**比"国内引擎有没有结果"更要命。
+    国内/平台类主题（小红书、抖音、微信…）仍走原链，不受影响。
+    """
+    s = (query or "").lower()
+    return any(h in s for h in _OFFSHORE_HINTS)
+
+
 def provider_chain(search_provider="auto", query=""):
     """根据 search_provider 配置 + query 语言返回搜索后端优先级列表（v4.124.4）。
 
@@ -61,6 +85,9 @@ def provider_chain(search_provider="auto", query=""):
         # 英文优先：把已经配过 Brave/Serper 的留口子（main 路径优先级
         # 在 tools.py:tool_web_search 处理，这里只列免费/无 key 后端）
         return ["duckduckgo_en", "bing_en", "wikipedia_en"]
+    # v4.139.3：中文但主题在境外 → DDG 优先（真实 URL；见 _is_offshore_query 注释）
+    if _is_offshore_query(query):
+        return ["duckduckgo", "duckduckgo_en", "bing_en", "bing", "baidu", "sogou", "wikipedia"]
     return ["bing", "baidu", "sogou", "wikipedia"]
 
 
@@ -207,7 +234,15 @@ def search_url(provider, text, search_top_k=5):
         return "https://html.duckduckgo.com/html/?q=" + q
     if provider == "bing_en":
         # cc.bing.com + ?setLang=en-US 让英文 query 出英文结果（无 geo bias）
-        return "https://www.bing.com/search?setLang=en-US&q=" + q
+        # v4.134.3：只加 setLang 压不住 CN geo —— 实测英文 query
+        # 「Malaysia TikTok Shop average order value RM beauty 2025 statistics」
+        # 返回的却是**百度百科「马来西亚」词条 / Malaysia Airlines 官网**（中文站结果）。
+        # 补 setmkt + ensearch=1（强制英文市场）才真正切到 EN 索引。
+        # 🔴 v4.134.4：参数名恢复驼峰 `setLang` —— v4.134.3 手误写成小写
+        # `setlang`，等于把原有的语言参数悄悄弄失效了（新增的 setmkt 才是
+        # 压 geo 的主力，但既有参数名不该变）。`_verify_manual_context` 盯着这串。
+        return ("https://www.bing.com/search?setLang=en-US&setmkt=en-US"
+                "&ensearch=1&cc=US&q=" + q)
     if provider == "wikipedia_en":
         # 英文维基 API（en.wikipedia.org）— 维基是英文 query 最后的精确参考
         return ("https://en.wikipedia.org/w/api.php?action=query&list=search"

@@ -395,7 +395,7 @@ def _make_card(app, task):
     action = task.get("action", auto.ACT_REMIND)
     badge = QLabel(auto.ACTION_LABELS.get(action, action))
     badge.setStyleSheet(
-        f"background:{_badge_bg(action)};color:#FFFFFF;border-radius:9px;"
+        f"background:{_badge_bg(action)};color:white;border-radius:9px;"
         f"padding:2px 10px;font-size:11px;font-weight:600;")
     row1.addWidget(badge)
     row1.addStretch(1)
@@ -435,7 +435,7 @@ def _make_card(app, task):
 
 
 def _badge_bg(action):
-    return THEME["accent"] if action == auto.ACT_RUN else "#8A6FE8"
+    return THEME["accent"] if action == auto.ACT_RUN else THEME["accent_violet_light"]
 
 
 def _toggle(app, task_id, on):
@@ -474,7 +474,7 @@ _BTN_QSS = (
 )
 
 _PRIMARY_QSS = (
-    f"QPushButton{{background:{THEME['accent']};color:#FFFFFF;border:none;border-radius:8px;"
+    f"QPushButton{{background:{THEME['accent']};color:white;border:none;border-radius:8px;"
     f"padding:0 18px;font-size:13px;font-weight:500;}}"
     f"QPushButton:hover{{background:{THEME['accent_hover']};}}"
 )
@@ -488,5 +488,5 @@ _SMALL_BTN_QSS = (
 _DANGER_QSS = (
     f"QPushButton{{background:transparent;color:{THEME['danger']};border:1px solid {THEME['border']};"
     f"border-radius:7px;font-size:12px;}}"
-    f"QPushButton:hover{{background:{THEME['danger']};color:#FFFFFF;}}"
+    f"QPushButton:hover{{background:{THEME['danger']};color:white;}}"
 )

@@ -44,6 +44,7 @@ class SessionStore:
     def __init__(self):
         self.sessions = {}
         self.active_sid = None
+        self._corrupt_lock = False  # v4.125 N-02：坏档未备份时阻止空库覆盖
         os.makedirs(os.path.dirname(self.PATH), exist_ok=True)
         self._load()
         if not self.sessions:
@@ -62,10 +63,29 @@ class SessionStore:
             if self.active_sid not in self.sessions:
                 self.active_sid = next(iter(self.sessions), None)
         except Exception as e:
+            # v4.125 N-02：坏档保护——加载失败先把原文件改名备份，绝不留给
+            # 下一次 save() 用空库原子覆盖（原子写防的是"写一半"，防不了
+            # "源文件已坏"）。备份后原路径不存在，new_session→save 是安全的
+            # 全新落盘而非历史覆盖；用户历史可从 .bak 找回。
             log.error("加载 sessions.json 失败: %s", e)
+            try:
+                import time as _time
+                bak = self.PATH + f".corrupt-{_time.strftime('%Y%m%d-%H%M%S')}.bak"
+                os.replace(self.PATH, bak)
+                log.warning("已把损坏的 sessions.json 备份为: %s（不会用空库覆盖历史）", bak)
+            except Exception as be:
+                # 改名也失败（文件被锁等）——退而求其次：立"坏档"标志，
+                # save() 首次落盘前会看到它并拒绝覆盖（宁可暂时不存也不能毁档）。
+                log.error("坏档备份失败（%s），将阻止首次空库覆盖", be)
+                self._corrupt_lock = True
 
     def save(self):
         """v4.58：原子写入——先写临时文件再 os.replace，防止崩溃时损坏 sessions.json。"""
+        # v4.125 N-02：原文件加载失败且改名备份也失败时，禁止用空库覆盖
+        # （_corrupt_lock 只在"确有坏档且未成功备份"时为真）。
+        if getattr(self, "_corrupt_lock", False) and not self.sessions:
+            log.error("检测到坏档未备份，本次跳过保存（防止空库覆盖历史）")
+            return
         data = {
             "active": self.active_sid,
             "sessions": [s.to_dict() for s in self.sessions.values()],
@@ -75,6 +95,8 @@ class SessionStore:
             tmp_path = self.PATH + ".tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())  # v4.145 修复⑤：落盘前 fsync，防断电/快速启动丢数据
             os.replace(tmp_path, self.PATH)  # 原子重命名
         except Exception as e:
             log.error("保存 sessions.json 失败: %s", e)

@@ -20,6 +20,23 @@ os.environ.setdefault(
     "QTWEBENGINE_CHROMIUM_FLAGS",
     "--disable-gpu --disable-gpu-compositing --disable-dev-shm-usage",
 )
+# v4.134.8：**别再试 flags 压 QtWebEngine 那条日志了** —— 2026-09-11 在冻结版上
+# 做了五组对照实测，无论加什么，每次启动**照写 12 行**：
+#   基准(无)         +12 行
+#   --log-level=2    +12 行
+#   --log-level=3    +12 行
+#   --disable-logging +12 行   ← 连"完全关闭"都无效
+#   --log-level=2 --enable-logging  +12 行
+# 原因：这条（`web_engine_library_info.cpp:63` 的「--webengine-resources-path /
+# --webengine-locales-path not passed to renderer process」）是 QtWebEngine 桥接到
+# **Qt 消息系统**再落到包目录 debug.log 的，**不走 Chromium 的 --log-level 过滤**。
+# （参数本身没毛病：开发机实验里 --log-level=3 把 Chromium 原生 ERROR 从 6 条压到 0 条，
+#  所以「档位选 2 还是 3」这个问题在冻结版上是**伪问题** —— 它根本管不着这条。）
+# ✅ 唯一有效手段 = **启动时由我们代它滚动**：config.cap_qtwebengine_log()。
+#    已实测：人工灌到 1,241,423 字节 → 启动后滚成 debug.log.1，新 debug.log 从 0 开始
+#    （2,100 字节 / 12 行）。见 LEARNINGS L055。
+# 注：本版（v4.134.8）已把 v4.134.7 误加的 `--log-level=2` 撤掉 —— 它净效果为零，
+# 留着只会让人误以为"已经压住了"。真正干活的是下面那个代滚动调用。
 # v4.121.6：关 Chromium 沙箱——必须在 import PySide6 之前设置。
 # 实测（2026-09-07 冻结 exe）：不带开关时 QtWebEngineProcess 启动即被 Killed
 # （exit_code=1），聊天区 renderProcessTerminated 崩溃-重建死循环（日志 9 次/60s）；
@@ -33,6 +50,17 @@ from PySide6.QtCore import QThread, Signal, QObject, QAbstractNativeEventFilter,
 from ui import ChatWindow, TrayApp, THEME
 
 log = logging.getLogger("dsdesktop")
+
+# v4.134.8：给 QtWebEngine 自己那份 debug.log 套上限 —— **这是唯一有效的手段**。
+# （上面那五组 flags 实测全部无效，详见那段注释。）
+# 只有冻结版才有该文件；开发机返回 False 不做任何事。异常全吞，绝不影响启动。
+# 实测有效性：灌到 1,241,423 字节 → 启动后滚成 debug.log.1，新文件从 0 开始。
+try:
+    import config as _cfg
+    if _cfg.cap_qtwebengine_log():
+        log.info("QtWebEngine debug.log 已滚动归档")
+except Exception:
+    pass
 
 # 性能基线：顶部只依赖标准库（perf_baseline 内部才 import PySide6/业务模块），早期可安全 import
 import perf_baseline
@@ -50,10 +78,12 @@ def _install_crash_logger():
 
     def _dump(et, ev, tb):
         try:
-            with open(os.path.join(LOG_DIR, "app.log"), "a", encoding="utf-8") as f:
-                f.write("\n=== 未捕获异常 %s ===\n" % datetime.now().isoformat())
-                f.write("".join(traceback.format_exception(et, ev, tb)))
-                f.write("\n")
+            # v4.134.6：改走公共滚动入口（此前裸 open 追加，实测已 706 KB 且无上限）。
+            # 崩溃兜底自己就可能被反复触发，一旦无限增长会在磁盘紧张时雪上加霜。
+            from config import append_log_line
+            txt = ("\n=== 未捕获异常 %s ===\n" % datetime.now().isoformat()
+                   + "".join(traceback.format_exception(et, ev, tb)) + "\n")
+            append_log_line(os.path.join(LOG_DIR, "app.log"), txt)
         except Exception:
             pass
 
@@ -109,11 +139,15 @@ class GlobalHotkeyFilter(QAbstractNativeEventFilter):
         if eventType == b"windows_generic_MSG":
             try:
                 class MSG(ctypes.Structure):
+                    # v4.125 P2：wParam/lParam 在 64 位 Windows 是 UINT_PTR/
+                    # LONG_PTR（8 字节），此前 c_ulong(4 字节) 字段错位——
+                    # 当前只读 message（偏移在 wParam 之前）碰巧正常，但
+                    # 一旦读 wParam/lParam（如热键 id、鼠标坐标）必错。
                     _fields_ = [
                         ("hwnd", ctypes.c_void_p),
                         ("message", ctypes.c_ulong),
-                        ("wParam", ctypes.c_ulong),
-                        ("lParam", ctypes.c_ulong),
+                        ("wParam", ctypes.c_size_t),
+                        ("lParam", ctypes.c_ssize_t),
                         ("time", ctypes.c_ulong),
                         ("pt", ctypes.c_ulong * 2),
                     ]
@@ -332,8 +366,9 @@ def main():
     # v4.117：tooltip 是独立顶层窗口，不继承主窗口 QSS，全局规则必须挂在 QApplication 上
     # （否则交付物卡片/顶栏按钮 tooltip 走系统默认黑底，浅色主题下看不清）
     app.setStyleSheet(
-        "QToolTip { background: #FFFFFF; color: #1F2937; border: 1px solid #D5DBE3;"
-        " border-radius: 8px; padding: 6px 10px; font-size: 12px; }")
+        "QToolTip { background: %s; color: %s; border: 1px solid %s;"
+        " border-radius: 8px; padding: 6px 10px; font-size: 12px; }"
+        % (THEME["white"], THEME["tooltip_text"], THEME["tooltip_border"]))
     perf_baseline.mark("qapp")
 
     # 保活后台 Obsidian worker（局部变量可能被 GC 导致线程被腰斩）
@@ -341,12 +376,23 @@ def main():
         app.obsidian_worker = obsidian_worker
 
     window = ChatWindow(cfg)
+    # v4.152：把 window_shown 拆成「构造」与「show」两段 —— 实测 window_shown 占启动
+    # 总时长的 89%（1.2~1.5s），但此前它把 ChatWindow(cfg) 构造与 show() 混在一起，
+    # 看不出是哪一头重。加这一个 mark 后，下次启动即可在 perf/startup.jsonl 里看清。
+    perf_baseline.mark("window_built")
     window.show()
     perf_baseline.mark("window_shown")
 
     tray = TrayApp(app, window, cfg)
     window.tray_app = tray  # 打通剪贴板通知到托盘
     perf_baseline.mark("tray")
+
+    # v4.155 fix4：首次运行把内置技能从 dist 同步进用户目录，使技能不随重打包丢失
+    try:
+        import skill_review
+        skill_review.seed_builtin_skills()
+    except Exception as e:
+        log.warning("内置技能同步失败（不影响启动）: %s", e)
 
     # v4.79：首次启动新手引导（看过则不再弹；全 try 包裹不影响启动）
     try:
@@ -363,19 +409,27 @@ def main():
     _register_global_hotkey(app, window)
     perf_baseline.mark("hotkey")
 
+    # v4.125 M-10：跨线程 UI 桥提前建（webhook / browser_bridge 两个 HTTP
+    # 线程共用）——此前 webhook 回调在 serve_forever 线程直接调
+    # tray.showMessage()，属跨线程 GUI 调用（H-08 残留），Windows 偶发托盘卡死。
+    _ui_bridge = UiBridge()
+
     # Webhook 服务
     try:
         from webhook_server import get_webhook_server, set_event_callback
 
         def _wh_cb(kind, payload):
-            try:
-                if getattr(window, "tray_app", None):
-                    from PySide6.QtGui import QSystemTrayIcon
-                    window.tray_app.tray.showMessage(
-                        "小臭玩AI · Webhook", f"收到 {kind} 事件",
-                        QSystemTrayIcon.Information, 4000)
-            except Exception:
-                pass
+            def _notify_tray():
+                try:
+                    if getattr(window, "tray_app", None):
+                        from PySide6.QtGui import QSystemTrayIcon
+                        window.tray_app.tray.showMessage(
+                            "小臭玩AI · Webhook", f"收到 {kind} 事件",
+                            QSystemTrayIcon.Information, 4000)
+                except Exception:
+                    pass
+            # v4.125 M-10：HTTP 线程 → 信号 queued 投递 GUI 线程，杜绝跨线程 Qt 调用
+            _ui_bridge.post(_notify_tray)
 
         set_event_callback(_wh_cb)
 
@@ -402,8 +456,20 @@ def main():
     # 仅本机 127.0.0.1:9100，带 token 校验，安全无外部暴露。
     try:
         from browser_bridge import (browser_bridge_start, browser_bridge_stop,
-                                    set_event_callback as _bridge_set_cb)
-        _ui_bridge = UiBridge()  # GUI 线程创建；HTTP 线程 post() 排到 GUI 执行
+                                    set_event_callback as _bridge_set_cb,
+                                    set_persist_callback as _bridge_set_persist)
+
+        def _persist_bridge_token(new_tok):
+            """v4.125 M-20：/pair 重置 token → 立刻写回 config，重启不再 401。"""
+            try:
+                cfg["browser_bridge_token"] = new_tok
+                from config import save_config
+                save_config(cfg)
+                log.info("浏览器扩展配对码已更新并持久化")
+            except Exception as e:
+                log.warning("配对码持久化失败（重启后需重新配对）: %s", e)
+
+        _bridge_set_persist(_persist_bridge_token)
 
         def _bridge_cb(kind, payload):
             if kind != "browser_page":
@@ -417,24 +483,54 @@ def main():
                         text = p.get("text", "")
                         sel = p.get("selection", "")
                         note = p.get("note", "")
-                        body = sel if sel else text
+                        markdown = p.get("markdown", "") or ""
+                        meta = p.get("meta") or {}
+                        if not isinstance(meta, dict):
+                            meta = {}
+                        autosend = bool(p.get("autosend", False))
+                        # L1.2/L1.4：优先用 Markdown 正文，其次选中文字，最后纯文本正文
+                        body = markdown if markdown else (sel if sel else text)
                         if not body:
                             return
                         block = "请帮我处理这个网页内容"
                         if note:
                             block += "（要求：" + note + "）"
                         block += "\n\n"
-                        block += "标题：" + title + "\n链接：" + url + "\n\n"
-                        block += "---\n" + body + "\n---"
+                        block += "标题：" + title + "\n链接：" + url + "\n"
+                        # L1.8：页面元信息增强（来源站点 / 字数 / 抓取时间）
+                        site = meta.get("siteName", "") or ""
+                        wc = meta.get("wordCount", 0) or 0
+                        cap = meta.get("capturedAt", "") or ""
+                        if site or wc or cap:
+                            block += "来源：" + site
+                            if wc:
+                                block += "　字数：" + str(wc)
+                            if cap:
+                                block += "　抓取于：" + cap
+                            block += "\n"
+                        block += "\n---\n" + body + "\n---"
                         window.input_box.setPlainText(block)
                         window.input_box.setFocus()
-                        if getattr(window, "tray_app", None):
-                            from PySide6.QtGui import QSystemTrayIcon
-                            window.tray_app.tray.showMessage(
-                                "小臭玩AI · 浏览器扩展",
-                                "已收到网页：" + (title[:30] or "（无标题）")
-                                + "（按 Enter 让 AI 处理）",
-                                QSystemTrayIcon.Information, 4000)
+                        if autosend:
+                            # L1.1：自动提交，等价于用户按了发送键（若上一条仍在处理则跳过，内容保留在输入框）
+                            try:
+                                window.send()
+                            except Exception as e:
+                                log.warning("浏览器扩展自动发送失败（已填入输入框）: %s", e)
+                            if getattr(window, "tray_app", None):
+                                from PySide6.QtGui import QSystemTrayIcon
+                                window.tray_app.tray.showMessage(
+                                    "小臭玩AI · 浏览器扩展",
+                                    "已自动发送网页：" + (title[:30] or "（无标题）"),
+                                    QSystemTrayIcon.Information, 4000)
+                        else:
+                            if getattr(window, "tray_app", None):
+                                from PySide6.QtGui import QSystemTrayIcon
+                                window.tray_app.tray.showMessage(
+                                    "小臭玩AI · 浏览器扩展",
+                                    "已收到网页：" + (title[:30] or "（无标题）")
+                                    + "（按发送键让 AI 处理）",
+                                    QSystemTrayIcon.Information, 4000)
                     except Exception as e:
                         log.warning("浏览器扩展注入失败: %s", e)
 
@@ -552,9 +648,13 @@ def run_autobackup():
             pass
 
     try:
-        # 排除「产物」（可能含大体积图片/视频），其余全量复制
+        # 排除「产物」（可能含大体积图片/视频）与「backups」自身
+        # （v4.125 P2：此前 backups 目录被递归复制进每次新备份——
+        # 第 N 次备份写入量 ≈ N×全量数据，O(N²) 膨胀），其余全量复制
         def _ignore(dirname, names):
-            return {"产物"} if os.path.abspath(dirname) == os.path.abspath(data_dir) else set()
+            if os.path.abspath(dirname) == os.path.abspath(data_dir):
+                return {"产物", "backups"}
+            return set()
 
         shutil.copytree(data_dir, dest, ignore=_ignore)
         # 保留最近 14 份

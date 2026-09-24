@@ -30,12 +30,13 @@ from datetime import datetime
 from pathlib import Path
 import config
 from skill_loader import scan_skills
+from ui import THEME
 
 log = logging.getLogger(__name__)
 
 # 视觉配色
-_COLOR_ON = QColor("#1b7a3d")    # 启用：绿
-_COLOR_OFF = QColor("#9aa0a6")   # 禁用：灰
+_COLOR_ON = QColor(THEME["on_green"])    # 启用：绿
+_COLOR_OFF = QColor(THEME["faint"])   # 禁用：灰
 
 
 class SkillLoaderThread(QThread):

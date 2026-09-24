@@ -10,11 +10,16 @@
 """
 
 import json
+import logging
+import os
 import re
+import threading
 import urllib.request
 import urllib.error
 from datetime import datetime
 from pathlib import Path
+
+log = logging.getLogger("context_manager")
 
 
 def _user_data_dir():
@@ -39,6 +44,8 @@ class ContextManager:
             "todos": [],        # 待办事项
             "preferences": [],  # 用户偏好
         }
+        # v4.125 M-16：持久化三件套——RLock 防并发丢更新 + 原子写防截断。
+        self._lock = threading.RLock()
         self._load()
 
     # ---------- 持久化 ----------
@@ -56,15 +63,27 @@ class ContextManager:
         except Exception:
             pass
 
+    @staticmethod
+    def _atomic_write(path, data):
+        """v4.125 M-16：tmp + os.replace 原子写（与 config/session 同款模板）。"""
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+
     def _save_summaries(self):
-        Path(self.summary_path).write_text(
-            json.dumps(self.summaries, ensure_ascii=False, indent=2),
-            encoding="utf-8")
+        with self._lock:
+            try:
+                self._atomic_write(self.summary_path, self.summaries)
+            except Exception as e:
+                log.warning("摘要落盘失败 %s: %s", self.summary_path, e)
 
     def _save_key_info(self):
-        Path(self.key_info_path).write_text(
-            json.dumps(self.key_info, ensure_ascii=False, indent=2),
-            encoding="utf-8")
+        with self._lock:
+            try:
+                self._atomic_write(self.key_info_path, self.key_info)
+            except Exception as e:
+                log.warning("密钥信息落盘失败 %s: %s", self.key_info_path, e)
 
     # ---------- 核心 ----------
     def add_message(self, role, content, metadata=None):

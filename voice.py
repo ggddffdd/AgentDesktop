@@ -12,6 +12,8 @@ import sys
 import json
 import asyncio
 import subprocess
+# v4.125 M-14：windowed 打包下调 ffmpeg 不闪黑窗
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 import tempfile
 import urllib.request
 import urllib.error
@@ -119,6 +121,7 @@ def _concat_audio(files, out_path):
     subprocess.run(
         [FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", out_path],
         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=_NO_WINDOW,
     )
     try:
         os.remove(list_path)
@@ -179,18 +182,53 @@ def _sounddevice_library_path():
     return None
 
 
-_sd_lib = _sounddevice_library_path()
-if _sd_lib:
-    os.environ["SOUNDDEVICE_LIBRARY_PATH"] = _sd_lib
+# ============ sounddevice / numpy 惰性加载（v4.152：启动提速）============
+# 原先这里是在**模块级**直接 `import sounddevice` + `import numpy`，
+# 而 main → ui → voice 是启动必经链 —— 实测冷启动为它俩付了 **1877 ms**
+# （numpy 1695 + sounddevice 134 + asyncio 43），占整个启动 import 时长的 64%。
+# 但它们只在「检测麦克风 / 录音」时才真正需要 → 改为**首次使用时才 import**。
+#
+# 对外接口不变：外部读 `voice.HAVE_SD` / `voice._sd` / `voice._np` 仍照旧可用
+# （走下面的模块级 __getattr__，会自动触发加载）；模块内部统一改用 `_have_sd()`。
+_sd = None
+_np = None
+_HAVE_SD = None          # None=尚未探测；True/False=探测结果（只真正尝试一次）
 
-try:
-    import sounddevice as _sd
-    import numpy as _np
-    HAVE_SD = True
-except Exception:
-    _sd = None
-    _np = None
-    HAVE_SD = False
+
+def _load_sd():
+    """首次需要时加载 sounddevice + numpy，返回是否可用（只真正尝试一次）。"""
+    global _sd, _np, _HAVE_SD
+    if _HAVE_SD is not None:
+        return _HAVE_SD
+    try:
+        _lib = _sounddevice_library_path()
+        if _lib:
+            os.environ["SOUNDDEVICE_LIBRARY_PATH"] = _lib
+        import sounddevice as _s
+        import numpy as _n
+        _sd, _np, _HAVE_SD = _s, _n, True
+    except Exception:
+        _sd, _np, _HAVE_SD = None, None, False
+    return _HAVE_SD
+
+
+def _have_sd():
+    """sounddevice 是否可用（惰性探测：首次调用才会真正加载库）。"""
+    return _load_sd()
+
+
+def __getattr__(name):
+    """让**外部**沿用 `voice.HAVE_SD` / `voice._sd` / `voice._np` 的读取方式。
+
+    PEP 562 模块级 __getattr__：只在属性查不到时触发。
+    本模块**内部**读同名全局变量不会走这里，所以模块内一律用 `_have_sd()` 显式触发。
+    """
+    if name == "HAVE_SD":
+        return _have_sd()
+    if name in ("_sd", "_np"):
+        _load_sd()
+        return globals()[name]
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
 
 import re as _re
 import wave as _wave
@@ -198,6 +236,8 @@ import wave as _wave
 
 def _sd_mics():
     """用 sounddevice 列出所有输入设备名。"""
+    if not _load_sd():          # v4.152：惰性加载后才可用，否则 _sd 仍为 None
+        return []
     try:
         devs = _sd.query_devices()
         return [d["name"] for d in devs if d.get("max_input_channels", 0) > 0]
@@ -209,14 +249,14 @@ def detect_mics(diag=None):
     """返回所有可用录音设备名（sounddevice 优先，ffmpeg dshow 回落）。
     diag: 可选 dict，回填诊断信息（ffmpeg 路径/返回码/输出长度/异常/用的后端）。"""
     info = {"ffmpeg": FFMPEG, "ffmpeg_exists": os.path.exists(FFMPEG),
-            "backend": "sounddevice" if HAVE_SD else "ffmpeg-dshow",
+            "backend": "sounddevice" if _have_sd() else "ffmpeg-dshow",
             "returncode": None, "stderr_len": 0, "stdout_len": 0,
             "raw_head": "", "exception": None}
     if diag is not None:
         diag.update(info)
     try:
         # 优先 sounddevice：直接读 WASAPI 输入设备，无需 ffmpeg 子进程，最稳。
-        if HAVE_SD:
+        if _have_sd():
             names = _sd_mics()
             if names:
                 info["backend"] = "sounddevice"
@@ -227,6 +267,7 @@ def detect_mics(diag=None):
         out = subprocess.run(
             [FFMPEG, "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+            creationflags=_NO_WINDOW,
         )
         info["returncode"] = out.returncode
         info["stderr_len"] = len(out.stderr or b"")
@@ -292,7 +333,23 @@ class Recorder:
         self._raw_path = None
         self._out_wav = None
         self._cap_rate = rate          # 实际采集采样率（WASAPI 常只支持 48000）
-        self.backend = "sounddevice" if HAVE_SD else "ffmpeg-dshow"
+        # v4.152：backend 改为**惰性 property**（见下）。
+        # 此前这里是 `self.backend = "sounddevice" if _have_sd() else ...` —— 直接
+        # 调 _have_sd() 会在**构造 Recorder 时**就加载 sounddevice+numpy（实测 ~200ms）。
+        # 而 ChatWindow.__init__ 启动路径上就 new 了一个 Recorder，等于把上一轮
+        # 「numpy/sounddevice 惰性加载」的收益在启动路径上原样吐了回去。
+        self._backend = None
+
+    @property
+    def backend(self):
+        """录音后端名（"sounddevice" / "ffmpeg-dshow"）。
+
+        首次读取时才探测 —— 探测会加载 sounddevice+numpy（数百 ms），
+        绝不能在构造 Recorder 时付出。构造只做纯赋值。
+        """
+        if self._backend is None:
+            self._backend = "sounddevice" if _have_sd() else "ffmpeg-dshow"
+        return self._backend
 
     def _sd_device(self, mic):
         if not mic or mic in ("默认麦克风", "未检测到麦克风"):
@@ -327,7 +384,7 @@ class Recorder:
     def start(self, mic=None, out_wav=None):
         self.error = None
         self._out_wav = out_wav or os.path.join(tempfile.gettempdir(), "xiaochou_rec.wav")
-        if HAVE_SD:
+        if _have_sd():
             try:
                 self._frames = []
                 dev = self._sd_device(mic)
@@ -363,7 +420,8 @@ class Recorder:
                 [FFMPEG, "-y", "-f", "dshow", "-i", f"audio={mic}",
                  "-ac", str(self.channels), "-ar", str(self.rate),
                  "-f", "s16le", self._raw_path],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=_NO_WINDOW)
             return self._raw_path
         except Exception as e:
             self.error = f"ffmpeg 启动失败: {e}"
@@ -371,7 +429,7 @@ class Recorder:
 
     def stop(self, out_wav=None):
         out_wav = out_wav or self._out_wav or os.path.join(tempfile.gettempdir(), "xiaochou_rec.wav")
-        if HAVE_SD and self._stream is not None:
+        if _have_sd() and self._stream is not None:
             try:
                 self._stream.stop()
                 self._stream.close()
@@ -392,7 +450,8 @@ class Recorder:
                         subprocess.run(
                             [FFMPEG, "-y", "-i", tmp, "-ar", str(self.rate),
                              "-ac", str(self.channels), out_wav],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
+                            creationflags=_NO_WINDOW)
                         try:
                             os.remove(tmp)
                         except Exception:
@@ -422,7 +481,8 @@ class Recorder:
                 subprocess.run(
                     [FFMPEG, "-y", "-f", "s16le", "-ar", str(self.rate),
                      "-ac", str(self.channels), "-i", raw, out_wav],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
+                    creationflags=_NO_WINDOW)
                 os.remove(raw)
                 return out_wav
             except Exception as e:

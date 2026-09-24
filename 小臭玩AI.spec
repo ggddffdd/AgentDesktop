@@ -15,7 +15,14 @@ hiddenimports = ['PySide6', 'PySide6.QtPrintSupport', 'PySide6.QtWebEngineWidget
                # v4.121 Agent 军团：数据层 + 波次执行器 + 面板界面。
                # legion_ui 在 ui.py 里是函数内延迟导入（防御式），静态分析扫不到，必须显式登记，
                # 否则打包后点「⚔️ Agent 军团」按钮会报 ModuleNotFoundError。
-               'legion', 'legion_worker', 'legion_ui']
+               'legion', 'legion_worker', 'legion_ui',
+               # v4.128 Agnes 文本模型调用层：在 ui._agent_call / video_pipeline 里
+               # 均为函数内延迟导入，静态分析扫不到，必须显式登记，否则打包后
+               # 军团与导演台的文本环节会 ModuleNotFoundError。
+               'agnes_text',
+               # v4.129 产物分层落盘：tools._products_dir / ui 归档 / video_pipeline
+               # 全是函数内延迟导入，不登记则打包后新产物退回旧平铺路径（静默降级，最难查）。
+               'product_layout']
 
 
 a = Analysis(
@@ -37,6 +44,23 @@ a = Analysis(
         'scipy._lib.array_api_compat.cupy',
         'scipy._lib.array_api_compat.dask',
         'cupy', 'dask', 'sympy',
+
+        # ---------- v4.152 打包面瘦身 ----------
+        # 这四个包在**全部 349 个源码文件（含 core/）里零 import**，却出现在包里，
+        # 实测占 _internal 约 298.6 MB / 1076 MB（28%）：
+        #     cv2 138.1 MB | pyarrow 77.3 MB | scipy 67.1 MB(含 libs) | pandas 16.1 MB
+        # 反向依赖查证：requires 它们的只有 modelscope / paddleocr / streamlit / altair /
+        # scikit-learn / easyocr / sentence-transformers 等 —— **这些包同样没被打进包**，
+        # 与本程序无运行关系（推测是某条 hook 的传递收集）。
+        #
+        # ⚠️ 以下三个虽然也"体积可疑"，但是**真传递依赖**，绝不能一起排：
+        #     lxml         ← python-docx (docx) 依赖
+        #     pdfminer.six ← pdfplumber 依赖
+        #     numpy        ← matplotlib / sounddevice / rag 依赖
+        #
+        # 排除后必须验证：启动冒烟 + 全量回归（尤其 chart_generator→matplotlib、
+        # rag→docx/pdfminer、voice→sounddevice/numpy 这几条链）。
+        'cv2', 'pyarrow', 'scipy', 'pandas',
     ],
     noarchive=False,
     optimize=0,
@@ -53,7 +77,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,  # v4.147: 关 UPX 压缩——Qt DLL 巨大，UPX 既拖长构建又吃内存峰值（易触发后台 Job 回收），还可能和 Qt6Core 运行时加载不兼容导致 0xc0000409 崩溃
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -66,7 +90,7 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,  # v4.147: 关 UPX 压缩——Qt DLL 巨大，UPX 既拖长构建又吃内存峰值（易触发后台 Job 回收），还可能和 Qt6Core 运行时加载不兼容导致 0xc0000409 崩溃
     upx_exclude=[],
     name='小臭玩AI',
 )

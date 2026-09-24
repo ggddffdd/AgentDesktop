@@ -2,10 +2,14 @@
 """MCP stdio 客户端模块 — 管理 MCP 服务器进程并提供工具调用"""
 
 import subprocess
+import os
+# v4.125 M-14：MCP server 子进程不闪黑窗
+# ⚠️ v4.126.0 热修：import os 必须在 os.name 使用之前（此前 import os 在下方第 10 行，
+#    打包后一进 init_mcp_clients 就 NameError: name 'os' is not defined）
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 import json
 import threading
 import logging
-import os
 
 log = logging.getLogger("dsdesktop")
 
@@ -43,6 +47,7 @@ class McpClient:
                 env=merged_env,
                 cwd=self.cwd,
                 text=False,
+                creationflags=_NO_WINDOW,
             )
         except Exception as e:
             log.error("MCP [%s] 启动进程失败: %s", self.name, e)

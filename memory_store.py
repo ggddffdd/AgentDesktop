@@ -43,12 +43,15 @@ def _configure(base_dir):
     测试只改 MEMORY_DIR 无效，写入落到了真实文件。改为可重配置后，测试先 _configure
     到临时目录即可彻底隔离，绝不碰真实数据。
     """
-    global MEMORY_DIR, MEMORY_PATH, MEMORY_DB_PATH, PINNED_PATH, _DB_READY
+    global MEMORY_DIR, MEMORY_PATH, MEMORY_DB_PATH, PINNED_PATH, _DB_READY, _SALT_PATH
     MEMORY_DIR = os.path.abspath(base_dir)
     MEMORY_PATH = os.path.join(MEMORY_DIR, "memory.md")
     MEMORY_DB_PATH = os.path.join(MEMORY_DIR, "memory.db")
     PINNED_PATH = os.path.join(MEMORY_DIR, "memory_core.md")
     _DB_READY = False
+    # v4.153 P2-06：重配目录后必须把延迟计算的 salt 路径也清掉，
+    # 否则 _salt_path() 仍指向旧目录的 memory.salt（salt 非 secret，但路径错了会读错文件）。
+    _SALT_PATH = None
 
 
 # ---- v4.75：可选加密存储（过掉"敢交重要资料"最后一道明文坎） ----

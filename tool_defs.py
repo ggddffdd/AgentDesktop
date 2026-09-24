@@ -188,7 +188,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "video_gen",
-            "description": "用 Agnes 生成短视频（文生视频/图生视频），不经过本地网关。Agnes 视频模型支持【内置中文口播】：把台词填到 dialogue 参数，即可生成带真人中文语音+对口型的视频（无需后期配音）。传入画面描述到 prompt，需要人物说话/口播/带货时务必填 dialogue；可选 duration(秒)/aspect(横版/竖版)/image(单图)/images(多参考图,最多5张)。【三种图片模式，互斥】① images 传1-5张参考图 → reference 参考图模式（模型参考这些图的风格/人物/场景来生成，多图优先）；② first_frame 或 last_frame → keyframe 首尾帧模式（首帧锁定/首尾帧过渡）；③ 都不传 → text 纯文生视频。【重要流程】只需调用本工具一次：工具内部会自动完成『提交任务→轮询至完成→下载到工作区』全流程，不要把它拆成『先提交』『再轮询』多步，也不要臆测 Agnes 不能出声——口播靠 dialogue 参数，纯画面无声则是不填 dialogue 导致。",
+            "description": "用 Agnes 生成短视频（文生视频/图生视频），不经过本地网关。Agnes 视频模型支持【内置中文口播】：把台词填到 dialogue 参数，即可生成带真人中文语音+对口型的视频（无需后期配音）。传入画面描述到 prompt，需要人物说话/口播/带货时务必填 dialogue；可选 duration(秒)/aspect(横版/竖版)/image(单图)/images(多参考图,最多5张)/ref_images(同images,v4.127)。【三种图片模式，互斥】① images 传1-5张参考图 → reference 参考图模式（模型参考这些图的风格/人物/场景来生成，多图优先）；② first_frame 或 last_frame → keyframe 首尾帧模式（首帧锁定/首尾帧过渡）；③ 都不传 → text 纯文生视频。【重要流程】只需调用本工具一次：工具内部会自动完成『提交任务→轮询至完成→下载到工作区』全流程，不要把它拆成『先提交』『再轮询』多步，也不要臆测 Agnes 不能出声——口播靠 dialogue 参数，纯画面无声则是不填 dialogue 导致。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -198,6 +198,7 @@ TOOL_DEFS = [
                     "aspect": {"type": "string", "description": "画幅：portrait 竖版(768x1152) 或 landscape 横版(1152x768)，默认竖版（抖音/视频号/小红书等竖屏平台请保持竖版）。横版内容（漫剧分镜/影视画面）必须显式传 landscape，否则横版构图会被塞进竖容器。"},
                     "image": {"type": "string", "description": "图生视频源图（单张）：可传图片URL，也可传本地图片路径（如 incoming/xxx.png）或 base64 data URI（data:image/png;base64,XXXX），工具会自动读取并转换，无需图床。用户附带了图片时直接传其路径/图片即可。留空则文生视频。多图请改用 images。"},
                     "images": {"type": "array", "description": "参考图列表（reference 模式，最多 5 张，超出会自动截断）。用于让模型参考这些图的【人物形象/服装/场景/画风】来生成视频，适合：固定角色形象跨镜头一致、指定场景与美术风格、多角度同人物。每项可为图片URL、本地路径（如 incoming/xxx.png）或 data URI。传了 images 就走参考图模式，会覆盖 first_frame/last_frame。"},
+                    "ref_images": {"type": "array", "description": "v4.127 多参考图（等价 images，最多 5 张，超出自动截断）。导演台逐镜装配参考图时走这个入参；与 images 同时给时以 images 为准。用于让模型参考这些图的【人物形象/服装/场景/画风】来生成视频。"},
                     "first_frame": {"type": "string", "description": "首帧图（keyframe 模式）：URL/本地路径/data URI。只传首帧=首帧锁定，模型从这张图开始演绎。"},
                     "last_frame": {"type": "string", "description": "尾帧图（keyframe 模式）：URL/本地路径/data URI。与 first_frame 同传=精确首尾帧过渡。"}
                 },
@@ -260,6 +261,73 @@ TOOL_DEFS = [
                     "run_id": {"type": "string", "description": "执行批次 ID，留空=当前/最近一次"},
                 },
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "legion_get_sources",
+            "description": (
+                "读取成员的**抓取留痕**：本波谁搜了哪些关键词、抓了哪些网页、抓回来多少字、"
+                "是不是空手而归。**验收数据类产出（研究员/竞品分析师/选品官/市场调研）时先查它再读正文**："
+                "搜索词跑偏 → 正文写得再像样也是编的；一条抓取记录都没有 → 成员压根没联网就下了结论，"
+                "直接判定 FAIL。仅在军团运行中可调。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "wave": {"type": "integer", "description": "波次序号（从 1 开始），留空=全批次"},
+                    "limit": {"type": "integer", "description": "最多列出多少条，默认 30"},
+                    "run_id": {"type": "string", "description": "执行批次 ID，留空=当前/最近一次"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "legion_find_asset",
+            "description": (
+                "查**资产库**：找以前跑军团/导演台留下的存货（三视图、关键帧、成片、剧本、数据等）。"
+                "同一题材/同一角色别重造 —— 开工前先查库，命中就直接沿用或改稿，省一轮生成。"
+                "不带 query 时返回全库清单概览。仅在有存货时有意义，库空会直接告诉你。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string",
+                              "description": "搜索关键词（题材/项目名/资产名）；留空=看全库清单"},
+                    "kind": {"type": "string",
+                             "description": "资产类型（如 image / video / script），留空=不限"},
+                    "top": {"type": "integer", "description": "最多返回几件，默认 10"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "legion_report_issue",
+            "description": (
+                "v4.131-F 成员上报通道：执行中发现**上游数据不可信 / 缺依赖 / 指令自相矛盾**时上报。"
+                "例：『研究员给的市场规模 3 亿在留痕里查不到出处』『让我按第 2 波成稿写，但那份产出不存在』。"
+                "上报后项目经理验收本波时**必须逐条回应**，你先继续做自己能确认的部分，不要停着等，"
+                "也不要硬编一个数字交差。仅在军团运行中可调。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string",
+                             "description": "上报内容：说清你质疑什么、依据是什么（必填）"},
+                    "kind": {"type": "string",
+                             "description": "类型：数据存疑 / 缺依赖 / 指令矛盾 / 工具不可用 / 范围过大 / 其他"},
+                    "upstream": {"type": "string",
+                                 "description": "指名上游：哪个角色或哪份产出不可信（例：研究员·第1波·市场规模表）"},
+                },
+                "required": ["text"],
             },
         },
     },
@@ -687,13 +755,13 @@ DIRECTOR_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "director_revise_keyframe",
-            "description": "按修改意见只重生成导演台项目某一个分镜的关键帧图片（其他镜与场景图不动）。用户说「把第3镜的关键帧改成夜晚」时用。改完后该镜片段如需同步更新，再调 director_revise_clip。",
+            "description": "按修改意见只重生成导演台项目某一个分镜的关键帧图片（其他镜与场景图不动）。用户说「把第3镜的关键帧改成夜晚」时用。改完后该镜片段如需同步更新，再调 director_revise_clip。要全部关键帧一起重跑时，idx 填字符串 \"all\"（会重生成每一镜，耗时与费用都高，用户没明确要求整批就别用）。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "idx": {"type": "integer", "description": "分镜号，从 1 开始"},
+                    "idx": {"description": "分镜号（整数，从 1 开始）；只有用户明确要求「全部/整批重生成关键帧」时才填字符串 \"all\"。不填会报错，不会默认整批。"},
                     "note": {"type": "string", "description": "修改意见（中文，如：改成夜晚、人物表情更惊讶）。留空=按原提示词直接重生成"},
-                    "timeout": {"type": "integer", "description": "等待完成秒数，默认 600"},
+                    "timeout": {"type": "integer", "description": "等待完成秒数，单镜默认 600，整批默认 1800"},
                 },
                 "required": ["idx"],
             },
@@ -703,15 +771,60 @@ DIRECTOR_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "director_revise_character",
-            "description": "按修改意见只重生成导演台项目某一个角色的三视图，并同步刷新角色锁定描述（后续分镜自动跟新形象一致）。用户说「把主角换成短发」时用。idx 是角色序号（先调 director_status 查看）。",
+            "description": "按修改意见只重生成导演台项目某一个角色的三视图，并同步刷新角色锁定描述（后续分镜自动跟新形象一致）。用户说「把主角换成短发」时用。idx 是角色序号（先调 director_status 查看）。要全部角色一起重跑时 idx 填字符串 \"all\"（费用高，用户没明确要求就别用）。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "idx": {"type": "integer", "description": "角色序号，从 1 开始（见 director_status 的 characters 列表）"},
+                    "idx": {"description": "角色序号（整数，从 1 开始，见 director_status 的 characters 列表）；只有用户明确要求「全部角色重生成」时才填字符串 \"all\"。不填会报错，不会默认整批。"},
                     "note": {"type": "string", "description": "外观修改意见（中文，如：换成红衣服、短发）。留空=按原描述直接重生成"},
-                    "timeout": {"type": "integer", "description": "等待完成秒数，默认 600"},
+                    "timeout": {"type": "integer", "description": "等待完成秒数，单个默认 600，整批默认 1800"},
                 },
                 "required": ["idx"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "director_revise_story",
+            "description": "按修改意见重写导演台项目的剧本（等价于导演台「✎ 重写剧本」按钮）。纯文本产出、不调生成接口，没有费用风险。用户说「重写剧本：xxx」「剧本再紧凑一点」「开头改成倒叙」时用。note 留空=按原样重试。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "note": {"type": "string", "description": "修改意见（中文，原样传用户的话，不要缩写成空话）。留空=原样重试"},
+                    "timeout": {"type": "integer", "description": "等待完成秒数，默认 600"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "director_revise_shots",
+            "description": "按修改意见重排/重拆分镜（等价于导演台「✎ 重排分镜」按钮）。纯文本产出、不调生成接口，没有费用风险。用户说「重排分镜：xxx」「分镜太碎了，合并一下」「加一镜特写」时用。注意：重排分镜后，已生成的关键帧与片段会和新的分镜对不上，这是预期行为，要在回复里提醒用户。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "note": {"type": "string", "description": "修改意见（中文，原样传用户的话）。留空=原样重试"},
+                    "timeout": {"type": "integer", "description": "等待完成秒数，默认 900"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "director_confirm",
+            "description": "采用当前步骤的产物并推进到下一步（等价于点导演台「✓ 采用XX → 下一步」按钮）。用户说「采用」「确定」「没问题，继续」「下一步」时用。只作用于当前停留的那一步；已经推进过的步骤会拒绝重复采用。涉及关键帧/视频生成的推进仍会先弹 Prompt 预审窗，由用户自己确认后才烧钱。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "step": {"type": "integer", "description": "要采用的步骤号，一般不用填（自动取当前停留步骤）。填了就必须与当前步一致，否则拒绝。"},
+                    "timeout": {"type": "integer", "description": "等待完成秒数，默认 1800（推进可能触发整批生成）"},
+                },
+                "required": [],
             },
         },
     },
@@ -726,6 +839,54 @@ DIRECTOR_TOOL_DEFS = [
                     "timeout": {"type": "integer", "description": "等待完成秒数，默认 1500"},
                 },
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "director_gen_clues",
+            "description": "跨镜一致性：从剧本抽取并生成「关键道具 / 场景资产」参考图（同一把剑、同一块招牌这类跨镜复用的东西），之后每镜都会带上它们，避免道具造型漂移。人物的一致性由三视图负责，本工具只管道具与陈设。用户说「道具怎么不一样了」「把道具锁一下」时用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "note": {"type": "string", "description": "额外风格/外观意见（中文，可选）"},
+                    "timeout": {"type": "integer", "description": "等待完成秒数，默认 1200"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "director_revise_clue",
+            "description": "按修改意见只重生成某一件道具/场景资产的参考图（其他件不动）。idx 从 1 数，先调 director_status 看 clues 列表。用户说「那把剑改成木头的」时用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "idx": {"type": "integer", "description": "道具/资产序号，从 1 开始（见 director_status 的 clues 列表）"},
+                    "note": {"type": "string", "description": "修改意见（中文，如：改成木柄、加一道裂纹）。留空=按原描述重生成"},
+                    "timeout": {"type": "integer", "description": "等待完成秒数，默认 600"},
+                },
+                "required": ["idx"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "director_rollback",
+            "description": "把某一镜的片段/关键帧，或某个角色、某件道具，回滚到上一个版本（改崩了想退回上一版时用）。kind 选 clip=视频片段 / keyframe=关键帧 / character=角色三视图 / clue=道具资产；idx 从 1 数；version 默认 -1（上一版），-2 是更早一版。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "description": "clip | keyframe | character | clue"},
+                    "idx": {"type": "integer", "description": "序号，从 1 开始（镜号 / 角色号 / 道具号，见 director_status）"},
+                    "version": {"type": "integer", "description": "版本号：默认 -1=上一版，-2=更早一版；也可填正数表示绝对第几版"},
+                    "timeout": {"type": "integer", "description": "等待完成秒数，默认 60"},
+                },
+                "required": ["kind", "idx"],
             },
         },
     },

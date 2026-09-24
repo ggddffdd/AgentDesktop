@@ -11,6 +11,7 @@ import os
 import json
 import uuid
 import config as cfg_mod_wf
+from ui import THEME
 import logging
 from PySide6.QtWidgets import (
     QApplication, QWidget, QDialog, QVBoxLayout, QHBoxLayout, QListWidget,
@@ -364,7 +365,7 @@ class WorkflowManagerWindow(QWidget):
         self.detail_layout.addWidget(QLabel("<b>步骤（点 ▶ 执行，发到当前会话）</b>"))
         for i, s in enumerate(t.get("steps", []), 1):
             row = QHBoxLayout()
-            tag = "  <span style='color:#c0392b'>[Agent]</span>" if s.get("force_agent") else ""
+            tag = "  <span style='color:%s'>[Agent]</span>" % THEME["danger_brown"] if s.get("force_agent") else ""
             label = QLabel(f"{i}. {s.get('title', '')}{tag}")
             label.setWordWrap(True)
             run_btn = QPushButton("▶ 执行")

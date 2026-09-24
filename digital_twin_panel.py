@@ -176,9 +176,9 @@ def build_twin_panel(app):
     del_btn.setFixedHeight(32)
     del_btn.setCursor(Qt.PointingHandCursor)
     del_btn.setStyleSheet(
-        f"QPushButton{{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;"
+        f"QPushButton{{background:{THEME["danger_bg2"]};color:{THEME["danger_text_dark"]};border:1px solid {THEME["danger_border"]};"
         f"border-radius:8px;padding:0 14px;font-size:13px;}}"
-        f"QPushButton:hover{{background:#fecaca;}}")
+        f"QPushButton:hover{{background:{THEME["danger_hover_bg"]};}}")
     del_btn.clicked.connect(lambda: _twin_delete_portrait(app))
     btn_row.addWidget(del_btn)
     right_col.addLayout(btn_row)
@@ -217,6 +217,15 @@ def build_twin_panel(app):
     app.twin_dialogue.setPlaceholderText("例如：大家好，我是小臭。今天跟大家聊聊……")
     app.twin_dialogue.setStyleSheet(_edit_style())
     dia.addWidget(app.twin_dialogue)
+    # 实时分段预览：让「长口播会被自动拆成多段」当场可见。
+    # 起因（2026-09-17 用户反馈）：下方「时长」下拉最高只有 12 秒，被误读成
+    # 「整条视频最多 12 秒、只能 1 镜」，于是以为长口播做不了。用这行把真实
+    # 段数 / 总时长算出来给他看，误会当场消除。
+    app.twin_seg_preview = QLabel("")
+    app.twin_seg_preview.setWordWrap(True)
+    app.twin_seg_preview.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    dia.addWidget(app.twin_seg_preview)
+    app.twin_dialogue.textChanged.connect(lambda: _update_twin_seg_preview(app))
     mid.addLayout(dia, 1)
 
     lay.addLayout(mid)
@@ -225,14 +234,20 @@ def build_twin_panel(app):
     opt = QHBoxLayout()
     opt.setSpacing(12)
 
-    dur_lab = QLabel("时长")
+    dur_lab = QLabel("每段时长")
     dur_lab.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
+    dur_lab.setToolTip(
+        "Agnes 单次生成上限 12 秒——这是「每一段」的时长，不是整条视频的长度。\n"
+        "长口播会按这个秒数**自动切成多段**，逐段生成后再拼成一整条长视频，\n"
+        "所以整条视频的总时长不受 12 秒限制（口播框下方会实时显示将切成几段 / 共多少秒）。")
     opt.addWidget(dur_lab)
     app.twin_duration = QSpinBox()
-    # 新版 agnes-video-2.5-flash 时长合法范围 4~12 秒（旧版 3~16s）
+    # 新版 agnes-video-2.5-flash 单段时长合法范围 4~12 秒（旧版 3~16s）
     app.twin_duration.setRange(4, 12)
     app.twin_duration.setValue(8)
     app.twin_duration.setSuffix(" 秒")
+    app.twin_duration.setToolTip(dur_lab.toolTip())
+    app.twin_duration.valueChanged.connect(lambda _v: _update_twin_seg_preview(app))
     app.twin_duration.setFixedHeight(34)
     app.twin_duration.setStyleSheet(_combo_style())
     opt.addWidget(app.twin_duration)
@@ -325,7 +340,7 @@ def _btn_style():
 
 
 def _btn_accent_style():
-    return (f"QPushButton{{background:{THEME['accent']};color:#FFFFFF;border:none;"
+    return (f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
             f"border-radius:8px;padding:0 18px;font-size:14px;font-weight:500;}}"
             f"QPushButton:hover{{background:{THEME['accent_hover']};}}")
 
@@ -597,6 +612,35 @@ def split_dialogue(text, max_sec=SEG_MAX_SEC, min_sec=SEG_MIN_SEC,
                                             int(round(len(merged) / chars_per_sec)))))
         out.pop()
     return out
+
+
+def _update_twin_seg_preview(app):
+    """实时显示口播将被切成几段、预计总时长。
+
+    专治「下拉只有 12 秒 → 以为整条只有 12 秒 / 只能 1 镜」的误读：
+    把 split_dialogue 的真实结果（段数 + 总秒数）直接摊在口播框下面。
+    """
+    w = getattr(app, "twin_seg_preview", None)
+    if w is None:
+        return
+    dlg = getattr(app, "twin_dialogue", None)
+    text = dlg.toPlainText().strip() if dlg is not None else ""
+    if not text:
+        w.setText("")
+        return
+    dw = getattr(app, "twin_duration", None)
+    dur = dw.value() if dw is not None else SEG_MAX_SEC
+    segs = split_dialogue(text, max_sec=dur)
+    if not segs:
+        w.setText("")
+        return
+    n = len(segs)
+    total = sum(s for _t, s in segs)
+    if n <= 1:
+        w.setText(f"共 1 段 · 约 {total} 秒（单段上限 {SEG_MAX_SEC} 秒）")
+    else:
+        w.setText(f"长口播 → 自动切成 {n} 段，逐段生成后拼接 · "
+                  f"预计总时长 ≈ {total} 秒（整条不受 {SEG_MAX_SEC} 秒限制）")
 
 
 # 声音漂移缓解：每段都写死同一套音色描述（用户已确认接受漂移，尽力而为）

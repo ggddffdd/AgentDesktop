@@ -6,6 +6,8 @@
 import json
 import logging
 import os
+import subprocess  # v4.125 M-14：子进程统一无黑窗
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 import time
 import urllib.request
 from pathlib import Path
@@ -96,9 +98,18 @@ class RAGStore:
 
     def _save_index(self):
         try:
-            with open(self._index_path, "w", encoding="utf-8") as f:
+            # v4.125 M-18：原子写——直接 open("w") 写一半崩溃会留截断 JSON，
+            # 下次加载静默回空索引（config.py 的原子写没同步过来）。
+            import os as _os
+            # v4.134.2 修复：_index_path 是 Path（第 28 行 store_dir / "index.json"），
+            # Path + str 会抛 TypeError（unsupported operand type(s) for +），
+            # 被下面 except 吞成 warning → 索引**从未真正落盘**：每次重启都丢，
+            # 重跑一遍 embedding（白花钱+白等）。必须 str() 后再拼。
+            _tmp = str(self._index_path) + ".tmp"
+            with open(_tmp, "w", encoding="utf-8") as f:
                 json.dump({"chunks": self._chunks, "next_id": self._chunk_counter,
                            "files": self._files}, f, ensure_ascii=False)
+            _os.replace(_tmp, self._index_path)
         except Exception as e:
             log.warning("保存 RAG 索引失败: %s", e)
 
@@ -243,7 +254,8 @@ class RAGStore:
                     tmp_wav = tempfile.mktemp(suffix=".wav")
                     try:
                         subprocess.run([voice.FFMPEG, "-y", "-i", file_path, "-vn", tmp_wav],
-                                       capture_output=True, timeout=120)
+                                       capture_output=True, timeout=120,
+                                       creationflags=_NO_WINDOW)
                         if os.path.exists(tmp_wav):
                             a = voice.transcribe(tmp_wav, sf)
                             if a:
@@ -256,7 +268,8 @@ class RAGStore:
                         fr = tempfile.mktemp(suffix=".jpg")
                         try:
                             subprocess.run([voice.FFMPEG, "-y", "-ss", str(sec), "-i", file_path,
-                                           "-frames:v", "1", fr], capture_output=True, timeout=60)
+                                           "-frames:v", "1", fr], capture_output=True, timeout=60,
+                                           creationflags=_NO_WINDOW)
                             if os.path.exists(fr):
                                 d = self._vision_describe(fr)
                                 if d:
@@ -393,8 +406,14 @@ class RAGStore:
         """返回视频秒数（解析失败返回 0）。"""
         try:
             import subprocess, re as _re, voice
+            # v4.125 M-19：text=True 在 GBK 控制台下遇到非 GBK 输出会
+            # UnicodeDecodeError 被吞返 0 → 长视频只抽第 0 秒一帧。
+            # 统一 bytes + utf-8 replace（与 core/agnes.py 的 ffmpeg 冻结环境约定一致）。
             out = subprocess.run([voice.FFMPEG, "-i", path],
-                                 capture_output=True, text=True, timeout=30).stderr
+                                 capture_output=True, timeout=30,
+                                 creationflags=_NO_WINDOW).stderr
+            if isinstance(out, bytes):
+                out = out.decode("utf-8", "replace")
             m = _re.search(r"Duration:\s*(\d+):(\d+):(\d+)", out)
             if m:
                 return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))

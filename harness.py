@@ -15,6 +15,18 @@ import os
 import json
 import copy
 import datetime
+import threading
+
+# v4.125 M-17：经验库读改写锁——并发 refine 时"读→改→写"互相覆盖会丢经验。
+_NOTES_LOCK = threading.RLock()
+
+
+def _atomic_write(path, data):
+    """v4.125 M-17：tmp + os.replace 原子写（写一半崩溃不再留截断 JSON）。"""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
 
 
 # v1 默认经验库：把历史热修沉淀的操作铁律固化进来（人工灌入，带版本快照可回滚）
@@ -133,56 +145,59 @@ def _load_history(cfg):
 def save_harness_notes(cfg, data, snapshot=True):
     """写回经验库；snapshot=True 时把旧版本推入 history 链以实现回滚（最多保留最近 10 个快照）。"""
     p = _default_path(cfg)
-    try:
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        if snapshot and os.path.exists(p):
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    old = json.load(f)
-                hist = _load_history(cfg)
-                hist.append(old)
-                hist = hist[-10:]
-                with open(_history_path(cfg), "w", encoding="utf-8") as f:
-                    json.dump(hist, f, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
-        with open(p, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception:
-        return False
+    # v4.125 M-17：全程持锁——快照读改写 + 主文件写入是两个文件的整体操作，
+    # 并发执行会交叉覆盖（先写的历史丢在别人快照之外）。
+    with _NOTES_LOCK:
+        try:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            if snapshot and os.path.exists(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        old = json.load(f)
+                    hist = _load_history(cfg)
+                    hist.append(old)
+                    hist = hist[-10:]
+                    _atomic_write(_history_path(cfg), hist)
+                except Exception:
+                    pass
+            _atomic_write(p, data)
+            return True
+        except Exception:
+            return False
 
 
 def upsert_note(cfg, id_, title, body, tags=None, source="agent_refine"):
     """新增或更新一条经验（refine 核心）。返回 (ok, version)。"""
     if not id_ or not title or not body:
         return False, 0
-    data = load_harness_notes(cfg)
-    today = datetime.date.today().isoformat()
-    entries = data.setdefault("entries", [])
-    found = None
-    for e in entries:
-        if e.get("id") == id_:
-            found = e
-            break
-    if found:
-        found["title"] = title
-        found["body"] = body
-        if tags:
-            found["tags"] = tags
-        found["updated"] = today
-        if source:
-            found["source"] = source
-    else:
-        entries.append({
-            "id": id_, "title": title, "body": body,
-            "tags": tags or [], "created": today, "updated": today,
-            "source": source,
-        })
-    data["version"] = data.get("version", 0) + 1
-    data["updated"] = today
-    ok = save_harness_notes(cfg, data)
-    return ok, data.get("version", 0)
+    # v4.125 M-17：读→改→写全程持锁（RLock 可重入，save_harness_notes 内层不死锁）。
+    with _NOTES_LOCK:
+        data = load_harness_notes(cfg)
+        today = datetime.date.today().isoformat()
+        entries = data.setdefault("entries", [])
+        found = None
+        for e in entries:
+            if e.get("id") == id_:
+                found = e
+                break
+        if found:
+            found["title"] = title
+            found["body"] = body
+            if tags:
+                found["tags"] = tags
+            found["updated"] = today
+            if source:
+                found["source"] = source
+        else:
+            entries.append({
+                "id": id_, "title": title, "body": body,
+                "tags": tags or [], "created": today, "updated": today,
+                "source": source,
+            })
+        data["version"] = data.get("version", 0) + 1
+        data["updated"] = today
+        ok = save_harness_notes(cfg, data)
+        return ok, data.get("version", 0)
 
 
 def rollback_harness(cfg, version=None):

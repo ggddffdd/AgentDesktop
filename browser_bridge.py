@@ -27,7 +27,27 @@ from pathlib import Path
 _event_callback = None
 _server = None
 _token = None
+_persist_cb = None       # v4.125 M-20：token 变更持久化回调（由 main 注册）
 DEFAULT_PORT = 9100
+MAX_BODY = 256 * 1024    # v4.125 N-04：body 硬上限（对齐 webhook_server 256KB）
+
+
+def set_persist_callback(fn):
+    """v4.125 M-20：注册 token 持久化回调，签名 fn(new_token)。
+
+    /pair 重置 token 后调用，由 main 写回 config 持久化——
+    否则扩展拿到新码而 config 里还是旧码，重启后全部 401。
+    """
+    global _persist_cb
+    _persist_cb = fn
+
+
+def _persist_token(tok):
+    try:
+        if _persist_cb and tok:
+            _persist_cb(tok)
+    except Exception:
+        pass
 
 
 def set_event_callback(fn):
@@ -69,6 +89,11 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
     def _read_json(self):
         try:
             length = int(self.headers.get("Content-Length", 0))
+            # v4.125 N-04：body 限长——length 取自请求头，恶意/异常请求可虚报
+            # 巨大值打爆内存（webhook 已修 256KB，bridge 对齐）。
+            if length > MAX_BODY:
+                self._send(413, {"error": "payload too large"})
+                return None
             raw = self.rfile.read(length) if length else b""
             return json.loads(raw.decode("utf-8")) if raw else {}
         except Exception:
@@ -104,13 +129,32 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 self._send_401()
                 return
             data = self._read_json()
+            if data is None:   # v4.125 N-04：超限 413 已回，不再处理
+                return
             # 基本字段清洗：只收需要的字段，避免超大 payload 撑爆内存
+            # L1：新增 mode / autosend / markdown / meta（扩展侧 L1 增强版才带，
+            # 旧版扩展不带时全部走默认值，向后兼容）。
+            _meta_in = data.get("meta") or {}
+            if not isinstance(_meta_in, dict):
+                _meta_in = {}
+            try:
+                _wc = int(_meta_in.get("wordCount", 0) or 0)
+            except (TypeError, ValueError):
+                _wc = 0
             payload = {
                 "title": str(data.get("title", ""))[:500],
                 "url": str(data.get("url", ""))[:2000],
                 "text": str(data.get("text", ""))[:60000],
                 "selection": str(data.get("selection", ""))[:20000],
                 "note": str(data.get("note", ""))[:500],
+                "mode": str(data.get("mode", ""))[:16],
+                "autosend": bool(data.get("autosend", False)),
+                "markdown": str(data.get("markdown", ""))[:60000],
+                "meta": {
+                    "siteName": str(_meta_in.get("siteName", ""))[:200],
+                    "capturedAt": str(_meta_in.get("capturedAt", ""))[:60],
+                    "wordCount": _wc,
+                },
                 "ts": data.get("ts", ""),
             }
             if not payload["text"] and not payload["selection"] and not payload["title"]:
@@ -123,11 +167,15 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             # 已配对则要求带旧 token 才能重置，避免被任意网页重置。
             global _token
             data = self._read_json()
+            if data is None:   # v4.125 N-04：413 已回，不再处理
+                return
             if not _token:
                 _token = gen_token()
+                _persist_token(_token)  # v4.125 M-20：新码落 config
                 self._send(200, {"token": _token, "paired": True})
             elif _auth_ok(self):
                 _token = gen_token()
+                _persist_token(_token)  # v4.125 M-20：重置码落 config
                 self._send(200, {"token": _token, "paired": True, "reset": True})
             else:
                 self._send_401()
@@ -149,8 +197,13 @@ class BrowserBridgeServer:
         if self._server:
             return False
         try:
-            # 仅绑 127.0.0.1，拒绝外部访问
-            self._server = socketserver.TCPServer((self.host, self.port), BridgeHandler)
+            # 仅绑 127.0.0.1，拒绝外部访问。
+            # v4.125 N-04：TCPServer → ThreadingHTTPServer——单线程下慢请求
+            # （大 body / 恶意连接）会阻塞健康检查与其他请求，属于自我 DoS；
+            # threading 版每连接一线程，且 daemon_threads 不挡退出。
+            self._server = http.server.ThreadingHTTPServer((self.host, self.port),
+                                                           BridgeHandler)
+            self._server.daemon_threads = True
         except Exception as e:
             return f"启动失败：{e}"
         self._thread = threading.Thread(

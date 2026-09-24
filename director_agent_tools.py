@@ -6,6 +6,8 @@
 - 开拍仍走导演台表单（用户点「开始导演」）；这里只覆盖：
   查状态 / 改分镜 / 重生成关键帧 / 重生成三视图 / 合成成片 /
   抽取关键道具场景资产(clues) / 改道具 / 版本回滚(含 clue)。
+- v4.150 补三件「对话里此前根本做不到」的事：重写剧本 / 重排分镜 / 对话内采用推进；
+  并给 keyframe·character 的 idx 加上显式 "all" 整批通道（不带 idx 仍 fail-closed）。
 - 风险档：director_status=READ；其余=WRITE_LOCAL（与 image_gen/video_gen 同档，
   生成物写本地工作区）。
 """
@@ -56,11 +58,21 @@ def _h_director_revise_clip(cfg, app_dir, args, progress=None):
 
 @register_tool("director_revise_keyframe", risk=RiskClass.WRITE_LOCAL)
 def _h_director_revise_keyframe(cfg, app_dir, args, progress=None):
-    """按修改意见只重生成某一个分镜的关键帧图片（其他镜/场景图不动）。"""
-    idx = args.get("idx")
+    """按修改意见只重生成某一个分镜的关键帧图片（其他镜/场景图不动）。
+
+    v4.150：idx 支持字符串 "all" 显式整批重跑。**不带 idx 仍报错**（fail-closed）——
+    整批会烧掉全片关键帧的钱，绝不允许模型漏参时静默降级成整批。
+    """
+    raw = args.get("idx")
     note = (args.get("note") or "").strip()
+    if isinstance(raw, str) and raw.strip().lower() in ("all", "*", "全部", "整批"):
+        res = _run({"action": "revise_keyframe_all", "note": note},
+                   timeout=int(args.get("timeout") or 1800))
+        return (_fmt(res), [], None)
+    idx = raw
     if not idx:
-        return ("缺少分镜号 idx（从 1 数）。可先调 director_status 查看各镜状态。", [], None)
+        return ("缺少分镜号 idx（从 1 数，可先调 director_status 查看各镜状态）；"
+                "要整批重跑请显式传 idx=\"all\"（注意会重生成全部关键帧）。", [], None)
     res = _run({"action": "revise_keyframe", "idx": idx, "note": note},
                timeout=int(args.get("timeout") or 600))
     return (_fmt(res), [], None)
@@ -68,13 +80,63 @@ def _h_director_revise_keyframe(cfg, app_dir, args, progress=None):
 
 @register_tool("director_revise_character", risk=RiskClass.WRITE_LOCAL)
 def _h_director_revise_character(cfg, app_dir, args, progress=None):
-    """按修改意见只重生成某一个角色的三视图，并同步刷新角色锁定描述。"""
-    idx = args.get("idx")
+    """按修改意见只重生成某一个角色的三视图，并同步刷新角色锁定描述。
+
+    v4.150：idx 支持 "all" 显式整批（同 keyframe，不带 idx 报错，不静默整批）。
+    """
+    raw = args.get("idx")
     note = (args.get("note") or "").strip()
+    if isinstance(raw, str) and raw.strip().lower() in ("all", "*", "全部", "整批"):
+        res = _run({"action": "revise_characters_all", "note": note},
+                   timeout=int(args.get("timeout") or 1800))
+        return (_fmt(res), [], None)
+    idx = raw
     if idx is None:
-        return ("缺少角色序号 idx（从 1 数）。可先调 director_status 查看角色列表。", [], None)
+        return ("缺少角色序号 idx（从 1 数，可先调 director_status 查看角色列表）；"
+                "要整批重跑请显式传 idx=\"all\"（注意会重生成全部角色三视图）。", [], None)
     res = _run({"action": "revise_character", "idx": idx, "note": note},
                timeout=int(args.get("timeout") or 600))
+    return (_fmt(res), [], None)
+
+
+@register_tool("director_revise_story", risk=RiskClass.WRITE_LOCAL)
+def _h_director_revise_story(cfg, app_dir, args, progress=None):
+    """按修改意见重写导演台项目的剧本（等价于导演台「✎ 重写剧本」按钮）。
+
+    纯文本产出、不调生成接口，无烧钱风险。note 留空=原样重试。
+    用户说「重写剧本：xxx」「剧本再紧凑一点」时用。
+    """
+    note = (args.get("note") or "").strip()
+    res = _run({"action": "revise_story", "note": note},
+               timeout=int(args.get("timeout") or 600))
+    return (_fmt(res), [], None)
+
+
+@register_tool("director_revise_shots", risk=RiskClass.WRITE_LOCAL)
+def _h_director_revise_shots(cfg, app_dir, args, progress=None):
+    """按修改意见重排/重拆分镜（等价于导演台「✎ 重排分镜」按钮）。
+
+    纯文本产出、不调生成接口，无烧钱风险。note 留空=原样重试。
+    用户说「重排分镜：xxx」「分镜太碎了合并一下」时用。
+    注意：重排分镜会让已生成的关键帧/片段与新分镜对不上，属预期行为。
+    """
+    note = (args.get("note") or "").strip()
+    res = _run({"action": "revise_shots", "note": note},
+               timeout=int(args.get("timeout") or 900))
+    return (_fmt(res), [], None)
+
+
+@register_tool("director_confirm", risk=RiskClass.WRITE_LOCAL)
+def _h_director_confirm(cfg, app_dir, args, progress=None):
+    """采用当前步骤的产物并推进到下一步（等价于点导演台「✓ 采用XX → 下一步」）。
+
+    用户说「采用」「确定」「下一步」「可以了，继续」时用。
+    只作用于**当前停留的步骤**；已推进过的步骤会拒绝重复采用（防误调用把流程推回去）。
+    关键帧/视频这类会烧钱的推进仍会先弹 Prompt 预审窗，由用户确认。
+    step 一般不用填（自动取当前步）；填了则必须与当前步一致，否则拒绝。
+    """
+    res = _run({"action": "confirm", "step": args.get("step")},
+               timeout=int(args.get("timeout") or 1800))
     return (_fmt(res), [], None)
 
 

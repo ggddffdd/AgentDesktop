@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Agent 军团面板 v4.124.6
+"""Agent 军团面板 v4.124.11
 
 把「编排页」从单一小说流水线扩展成**可自定义团队的多项目军团**：
 
@@ -9,23 +9,75 @@
 
 v4.124.6 改动：断点续传 UI 入口（项目主面板 / 续跑按钮 / 弹窗选「续/重/取」）。
         详见 LegionWorker.resume_from 字段 + legion.has_checkpoint()。
+v4.124.8 改动：联系项目经理对话框（两档：备忘进队列 / 急件本波跑完立即响应），
+        每句话进审计账本（legion.record_message），PM 判定需重走流程时弹窗拍板。
+v4.124.9 改动：修「点续跑没动静」三根因——补 _log_line 方法（原来调用不存在的方法
+        抛 AttributeError 静默失败）、续跑时任务框空自动复用存档任务、续跑按钮文案
+        起点波号 +1→+2 对齐日志。
+v4.124.10 改动：修「第 3 波 FAIL 却续(第4波)」——每波完成落盘用 last_passed_wave
+        （最后 PASS 的波）而非 wi（当前波索引），避免未验收/FAIL 的波被当"完成"、
+        续跑跳过它；PASS 波后立即落盘持久化新进度。
+v4.124.11 改动：验收链五修（实盘跑通失败的五个根因）——
+        ① 空产出不得放行：parse_verdict(has_output=False) 强制打回，PM 写 PASS 也不翻盘；
+        ② 续跑 run_id 补登记（legion.ensure_run）—— 旧 run_id 不在内存状态仓导致
+           record_log/record_output 全哑火、PM 三件套全瞎（审校读不到产出就是这个坑），
+           续跑时同时回填存档里前几波产出；
+        ③ 标的锁死：涉及选品/选题的任务，选品波必须收敛唯一标的，否则 FAIL；
+        ④ 交付物形态第一道闸：交的不是约定形态（报告/说明/提示词）直接 FAIL；
+        ⑤ 读不到产出禁止脑补：PM 与审校必须写 FAIL + 「产出不可读」，禁止复述打回指令。
+v4.135.0 改动：军团双页 + 原生对话页（本次）：
+        把「所有决策/成果/建议在一个对话页实时交互」落地，右栏拆 QStackedWidget 双页：
+        ① 编排页（页0）：原波次编排/成员管理/任务下发，低频配置态，不动；
+        ② 对话页（页1）：新建 legion_chat.LegionChatPanel —— 原生 QTextEdit 时间线 +
+           输入框（**刻意不内嵌网页**，复用 director_chat 范式，避免再拉 QWebEngine 进程）；
+        ③ 运行中日志/成果/PM 汇报/重编请求**同步进对话流**（信号桥接 log_line/done/
+           replan_request），PM 每波结束一句话进展 + 下一步 + 提醒；
+        ④ 授权去自动挡：auth_request 不再模态 dlg.exec() 挡输入，改为渲染进对话页 + 自动
+           切到对话页，大哥在对话框里「放行/打回/终止」做决策；模态按钮弹窗抽成 _open_auth_dialog
+           兜底（对话页「授权弹窗」按钮触发，保留宪法第二章人手放行权）；
+        ⑤ 轻量意图解析 legion_chat.parse_intent（纯规则不调 LLM）：abort>reject>pass 优先级，
+           非授权语境一律 message 路由给 PM；
+        ⑥ 历史持久化 LEGION_DIR/legion_chat/<pid>.json 跟随项目，换项目 reload_for_project
+           清/载最近 40 条；左栏（项目列表 + 8 按钮）两页共用，所有 self.xxx 引用只改父级不删。
 """
+import os
 import copy
+import json
 import logging
 
 from PySide6.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QListWidget,
     QListWidgetItem, QLineEdit, QPushButton, QLabel, QTextEdit, QComboBox,
     QMessageBox, QGroupBox, QScrollArea, QDialogButtonBox, QAbstractItemView,
-    QSizePolicy, QCheckBox, QSpinBox, QInputDialog,
+    QSizePolicy, QCheckBox, QSpinBox, QInputDialog, QStackedWidget,
+    QSplitter, QTextBrowser, QPlainTextEdit,
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import QBrush, QColor
 
 import legion
 from legion_worker import LegionWorker
+from legion_chat import LegionChatPanel
+from ui import THEME
 
 log = logging.getLogger("legion")
+
+
+class _NoWheelCombo(QComboBox):
+    """v4.149.0：滚轮不切档的 QComboBox（军团编排页用）。
+
+    为什么军团也要一份：**授权闸门（human/advisory/off）** 就在编排页上，它决定
+    「每波是否停下来等大哥批准」—— 宪法第二章的红线。而 QComboBox 默认响应滚轮，
+    光标滑过就切档；切档处理器 `_on_gate_changed` 会**直接落盘**到 legion.json。
+    等于「滚过去一眼」就可能把『人手把关』降级成『关闭（一路跑完）』，零提示零确认。
+    与 ui.py 的 `_NoWheelCombo` 同一策略：**未聚焦时忽略滚轮**，想滚轮换档先点它聚焦。
+    """
+
+    def wheelEvent(self, event):
+        if not self.hasFocus():
+            event.ignore()
+            return
+        super().wheelEvent(event)
 
 
 def _add_skill_section_header(lst: QListWidget, text: str):
@@ -36,7 +88,7 @@ def _add_skill_section_header(lst: QListWidget, text: str):
     it.setFlags(flags)
     it.setForeground(QBrush(QColor("#666")))
     # 禁用样式加重一点：灰底
-    it.setBackground(QBrush(QColor("#f3f3f3")))
+    it.setBackground(QBrush(QColor(THEME["row_gray_bg"])))
     lst.addItem(it)
     return it
 
@@ -85,6 +137,14 @@ class RoleEditor(QDialog):
         self.e_tools.setToolTip("可多选。留空 = 该角色不使用工具，直接输出文本。")
 
         self.e_model = QLineEdit(r.get("model", ""))
+        # v4.148.2（模型分档）：取证/批量岗用便宜快模型省 token，终稿/决策岗用强模型。
+        self.e_model.setPlaceholderText("留空=跟随主模型")
+        self.e_model.setToolTip(
+            "模型分档（对标 CrewAI per-agent right-sizing）：\n"
+            "· 取证/批量岗（研究员、竞品分析师）→ 填便宜快档位（如「Agnes」），省 token；\n"
+            "· 终稿/决策岗（写手、项目经理）→ 留空走主模型（DeepSeek）。\n"
+            "档位名必须与 config.json 的 model_profiles 里的名字完全一致；\n"
+            "填了但该档位没配 api_key，该成员会调用失败 —— 拿不准就留空。")
         self.e_model.setPlaceholderText("留空 = 跟随全局模型配置")
 
         self.e_output = QTextEdit(r.get("output_format", ""))
@@ -155,7 +215,7 @@ class RoleEditor(QDialog):
                 it = QListWidgetItem(label)
                 # v4.121.5：payload 改为整个 dict，get_role 时整存回去名字不丢
                 it.setData(Qt.UserRole, ("archived", entry))
-                it.setForeground(QBrush(QColor("#a0a0a0")))
+                it.setForeground(QBrush(QColor(THEME["gray2"])))
                 it.setToolTip(
                     f"slug: {slug}\n"
                     f"状态：技能已下架（skills/{slug}/SKILL.md 不存在或读不动）\n"
@@ -487,13 +547,20 @@ class TeamBuildDialog(QDialog):
             for m in (w.get("members") or []):
                 nm = m.get("name", "?")
                 em = ""
+                tools = []
                 for r in self.library:
                     if r.get("name") == nm:
                         em = r.get("emoji", "")
+                        tools = [t for t in (r.get("tools") or []) if t]
                         break
                 seg = "     · %s %s" % (em, nm)
                 if m.get("why"):
                     seg += " —— %s" % m["why"]
+                # v4.134：把「手脚」摆出来 —— 成员有没有工具，一眼就能看出
+                # （无工具的纯生成型成员跑起来只能凭记忆编，组队时就得知道）
+                seg += "\n         🔧 工具：%s" % (
+                    "、".join(tools) if tools
+                    else "（无 —— 一个工具都调不了，开工时需项目经理在【能力配置】里配）")
                 if m.get("skills"):
                     seg += "\n         技能：%s" % "、".join(m["skills"])
                 lines.append(seg)
@@ -581,12 +648,12 @@ class TeamBuildDialog(QDialog):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
         if r != QMessageBox.Yes:
             return
-        sk = target.get("skills") or []
-        if slug not in sk:
-            sk.append(slug)
-        target["skills"] = sk
+        # v4.134.2：挂载改走数据层唯一落地点 —— 与主窗口「🔧 装技能」共用同一段
+        # 逻辑（plan 与 proj 的 waves 结构相同），免得两处各写一份、日后行为漂移。
+        _waves, _msg = legion.attach_skill_to_project(
+            self.plan, slug, target.get("name"))
         self.out.setPlainText(self._fmt(self.plan))
-        self.status.setText("✅ 已把「%s」挂给 %s，批准后就生效。" % (slug, target.get("name")))
+        self.status.setText(_msg if _waves else ("⚠️ " + _msg))
 
     def _reject_plan(self):
         """打回重来：把意见记下来，连同原需求再喂给 PM。"""
@@ -835,18 +902,6 @@ class SkillInstallDialog(QDialog):
         self.audit_worker.failed.connect(self._on_audit_fail)
         self.audit_worker.start()
 
-    def _on_repo(self):
-        it = self.lst_repo.currentItem()
-        if not it:
-            return
-        d = it.data(Qt.UserRole) or {}
-        self.repo = d.get("full_name")
-        self.branch = d.get("branch")
-        self.lst_file.clear()
-        self.preview.clear()
-        self._busy(True, "⏳ 正在列 %s 里的 SKILL.md…" % self.repo)
-        self._run("list", repo=self.repo, branch=self.branch)
-
     def _on_file(self):
         it = self.lst_file.currentItem()
         if not it:
@@ -856,19 +911,6 @@ class SkillInstallDialog(QDialog):
         self.b_inst.setEnabled(True)
         self._busy(True, "⏳ 正在拉内容预览…")
         self._run("preview", repo=self.repo, branch=self.branch, path=d.get("path"))
-
-    def _install(self):
-        it = self.lst_file.currentItem()
-        if not it:
-            return
-        d = it.data(Qt.UserRole) or {}
-        slug = self.ed_slug.text().strip()
-        if not slug:
-            QMessageBox.information(self, "给个名字", "填一下安装后的 slug（技能目录名）。")
-            return
-        self._busy(True, "⏳ 正在安装…")
-        self._run("install", repo=self.repo, branch=self.branch,
-                  path=d.get("path"), slug=slug)
 
     def _run(self, mode, **kw):
         self.worker = GHWorker(mode, self, **kw)
@@ -910,16 +952,19 @@ class SkillInstallDialog(QDialog):
             self._busy(False, msg)
             if ok:
                 self.installed_slug = slug
-                QMessageBox.information(
-                    self, "装好了",
-                    msg + "\n\n关掉这个窗口后，可以把技能直接挂给需要的角色。")
+                _tail = "\n\n关掉这个窗口后，可以把技能直接挂给需要的角色。"
+                # v4.134.1：静态安全审计给了 P1 提示（或审计器不可用）时抬成警告弹窗
+                if "⚠️" in msg:
+                    QMessageBox.warning(self, "装好了（有提示）", msg + _tail)
+                else:
+                    QMessageBox.information(self, "装好了", msg + _tail)
 
     # ---- 结构化候选 + 审查报告 ----
     _TAG = {
-        "强推": ("✅ 强推", "#1a7f37"),
-        "推":   ("✅ 推荐", "#1a7f37"),
-        "慎":   ("⚠️ 慎装", "#9a6700"),
-        "不推": ("❌ 不推", "#b91c1c"),
+        "强推": ("✅ 强推", THEME["on_green2"]),
+        "推":   ("✅ 推荐", THEME["on_green2"]),
+        "慎":   ("⚠️ 慎装", THEME["warn_gold2"]),
+        "不推": ("❌ 不推", THEME["tag_red"]),
     }
 
     def _add_repo_item(self, r):
@@ -946,8 +991,8 @@ class SkillInstallDialog(QDialog):
             color = self._TAG.get(ev["recommend"], ("", None))[1]
             if color:
                 from PySide6.QtGui import QBrush
-                it.setBackground(QBrush(QColor(color if ev["recommend"] != "不推" else "#fee2e2")))
-                it.setForeground(QBrush(QColor("#ffffff" if ev["recommend"] in ("强推", "推") else "#1a1a1a")))
+                it.setBackground(QBrush(QColor(color if ev["recommend"] != "不推" else THEME["danger_bg2"])))
+                it.setForeground(QBrush(QColor(THEME["white"] if ev["recommend"] in ("强推", "推") else THEME["text_dark"])))
         self.lst_repo.addItem(it)
 
     def _on_audit(self, evals, err):
@@ -1065,6 +1110,240 @@ class SkillInstallDialog(QDialog):
                   path=d.get("path"), slug=slug)
 
 
+# ============ 技能缺口候选面板（v4.135 · 闭环）============
+class SkillGapCandidateDialog(QDialog):
+    """v4.135：技能缺口候选面板（闭合「差技能→去 GitHub 找→批→装→挂」断环）。
+
+    跑批检测到的技能缺口（名字+给谁用+干什么用）自动去 GitHub 找候选仓库，
+    列出 ⭐/📅/📜/archived 等结构化信息；点「安装」才装——
+    装前过内容级静态安全审计（install_skill_from_github 内部），装完自动挂给对应角色。
+    搜索只是「给报告」（大哥设计的机制一步），真正落盘要你点头（宪法第二章）。
+    """
+
+    def __init__(self, parent, gaps, mw=None, project=None, data=None):
+        super().__init__(parent)
+        self.mw = mw
+        self.project = project
+        self.data = data
+        self.gaps = [g for g in (gaps or []) if isinstance(g, dict) and g.get("name")]
+        self.setWindowTitle("🛡 技能缺口候选（自动找好，你批了才装）")
+        self.resize(760, 580)
+        self.gap_lists = {}
+        self.gap_status = {}
+        self.gap_meta = {}
+        self.resolved = set()
+        self.worker = None
+
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(
+            "本次跑批检测到 %d 个技能库里没有的需求。已自动去 GitHub 找候选"
+            "（仅搜索，不安装）。点「安装」才装：装前过内容级安全审计，"
+            "装完自动挂给对应角色。" % len(self.gaps)))
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.body = QWidget()
+        self.body_lay = QVBoxLayout(self.body)
+        self.scroll.setWidget(self.body)
+        lay.addWidget(self.scroll, 1)
+
+        self.status = QLabel("")
+        lay.addWidget(self.status)
+
+        row = QHBoxLayout()
+        self.b_rescan = QPushButton("🔎 重新搜索")
+        self.b_rescan.clicked.connect(self._search_all)
+        b_close = QPushButton("关闭")
+        b_close.clicked.connect(self.accept)
+        row.addWidget(self.b_rescan)
+        row.addStretch(1)
+        row.addWidget(b_close)
+        lay.addLayout(row)
+
+        self._build_gap_sections()
+        # 弹窗画好后再自动搜（避免卡绘制），这就是「去 GitHub 找」自动触发
+        QTimer.singleShot(200, self._search_all)
+
+    # ---- 缺口分段 ----
+    def _build_gap_sections(self):
+        seen = set()
+        for g in self.gaps:
+            nm = g.get("name")
+            if nm in seen:
+                continue
+            seen.add(nm)
+            self.gap_meta[nm] = g
+            who = g.get("for_role") or "未指定角色"
+            why = g.get("why") or ""
+            gb = QGroupBox("🔧 缺口：%s（给 %s 用）" % (nm, who))
+            gl = QVBoxLayout(gb)
+            if why:
+                gl.addWidget(QLabel("用途：%s" % why))
+            lw = QListWidget()
+            lw.setMaximumHeight(170)
+            gl.addWidget(lw)
+            st = QLabel("⏳ 正在去 GitHub 找候选…")
+            gl.addWidget(st)
+            self.body_lay.addWidget(gb)
+            self.gap_lists[nm] = lw
+            self.gap_status[nm] = st
+
+    def _gap_for(self, nm):
+        return (self.gap_meta.get(nm) or {}).get("for_role") or ""
+
+    # ---- 搜索 ----
+    def _search_all(self):
+        for nm in list(self.gap_lists.keys()):
+            self._search_one(nm)
+
+    def _search_one(self, nm):
+        st = self.gap_status.get(nm)
+        lw = self.gap_lists.get(nm)
+        if st is not None:
+            st.setText("⏳ 正在搜 GitHub：%s …" % nm)
+        if lw is not None:
+            lw.clear()
+        w = GHWorker("search", self, query=nm, gap_name=nm)
+        w.done.connect(lambda pl, err, _w=w: self._on_search_done(pl, err, _w))
+        w.start()
+
+    def _on_search_done(self, payload, err, w):
+        nm = (w.kw.get("gap_name") if w else None) or None
+        lw = self.gap_lists.get(nm) if nm else None
+        st = self.gap_status.get(nm) if nm else None
+        if lw is None or st is None:
+            return
+        repos = payload or []
+        if err:
+            st.setText("❌ " + err)
+            return
+        if not repos:
+            st.setText("ℹ️ GitHub 未搜到相关仓库（可去主窗口「🔧 装技能」换词手动搜）")
+            return
+        for r in repos:
+            self._add_candidate_item(lw, r, nm)
+        st.setText("✅ 找到 %d 个候选仓库，点「安装」才装。" % len(repos))
+
+    def _add_candidate_item(self, lw, repo, nm):
+        lic = legion._safe_license_text(repo)
+        txt = "⭐%s  %s  📅%s  📜%s%s\n    %s" % (
+            repo.get("stars", 0), repo.get("full_name", ""),
+            repo.get("updated", ""), lic,
+            "  🗄 已归档" if repo.get("archived") else "",
+            repo.get("description", "（无描述）"))
+        item = QListWidgetItem()
+        item.setData(Qt.UserRole, repo)
+        lw.addItem(item)
+        row = QWidget()
+        hl = QHBoxLayout(row)
+        hl.setContentsMargins(2, 2, 2, 2)
+        hl.addWidget(QLabel(txt), 1)
+        btn = QPushButton("⬇ 安装")
+        btn.clicked.connect(
+            lambda _=False, r=repo, g={"name": nm, "for_role": self._gap_for(nm),
+                                       "why": (self.gap_meta.get(nm) or {}).get("why", "")}:
+            self._install_candidate(r, g))
+        hl.addWidget(btn)
+        lw.setItemWidget(item, row)
+
+    # ---- 安装闭环 ----
+    def _install_candidate(self, repo, gap):
+        full = repo.get("full_name")
+        if not full:
+            return
+        lic = repo.get("license") or "—"
+        risk = []
+        if not lic or lic == "—":
+            risk.append("· ⚠️ 仓库没有明确 License，装下来不受版权保护")
+        if repo.get("archived"):
+            risk.append("· 🗄 仓库已被归档，不会再维护")
+        if risk:
+            r = QMessageBox.warning(
+                self, "⚠️ 风险确认",
+                "以下风险，确定要装吗？\n\n" + "\n".join(risk),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if r != QMessageBox.Yes:
+                return
+        self.status.setText("⏳ 正在列 %s 里的 SKILL.md…" % full)
+        w = GHWorker("list", self, repo=full, branch=repo.get("branch"))
+        w.done.connect(
+            lambda pl, err, _w=w, _repo=repo, _gap=gap:
+            self._on_list_done(pl, err, _w, _repo, _gap))
+        w.start()
+
+    def _on_list_done(self, payload, err, w, repo, gap):
+        files = payload or []
+        if err:
+            self.status.setText("❌ 列文件失败：" + err)
+            return
+        if not files:
+            self.status.setText("❌ 这个仓库里没找到 SKILL.md。")
+            return
+        if len(files) == 1:
+            self._do_install(repo, files[0], gap)
+            return
+        labels = ["%s（%s）" % (f.get("path"), f.get("slug")) for f in files]
+        pick, ok = QInputDialog.getItem(
+            self, "选 SKILL.md",
+            "仓库 %s 里有 %d 个 SKILL.md，装哪个？" % (repo.get("full_name"), len(files)),
+            labels, 0, False)
+        if not ok or not pick:
+            self.status.setText("已取消安装。")
+            return
+        try:
+            idx = labels.index(pick)
+        except Exception:
+            return
+        self._do_install(repo, files[idx], gap)
+
+    def _do_install(self, repo, f, gap):
+        slug = f.get("slug") or ""
+        if not slug:
+            self.status.setText("❌ 推不出 slug，没法装。")
+            return
+        self.status.setText("⏳ 正在安装 %s …" % slug)
+        w = GHWorker("install", self, repo=repo.get("full_name"),
+                     path=f.get("path"), branch=repo.get("branch"), slug=slug)
+        w.done.connect(
+            lambda pl, err, _w=w, _gap=gap, _slug=slug, _repo=repo:
+            self._on_install_done(pl, err, _gap, _slug, _repo))
+        w.start()
+
+    def _on_install_done(self, payload, err, gap, slug, repo):
+        if err:
+            self.status.setText("❌ 安装失败：" + err)
+            return
+        ok = (payload or {}).get("ok")
+        msg = (payload or {}).get("msg") or ""
+        if not ok:
+            self.status.setText("❌ " + msg)
+            return
+        who = gap.get("for_role")
+        attach_msg = ""
+        if who and self.project:
+            try:
+                _waves, _m = legion.attach_skill_to_project(self.project, slug, who)
+                attach_msg = "｜" + _m
+                if _waves:
+                    try:
+                        legion.save_legion(self.data)
+                        parent = self.parent()
+                        if parent is not None and hasattr(parent, "_rebuild_waves"):
+                            parent._rebuild_waves()
+                    except Exception:
+                        pass
+            except Exception as e:
+                attach_msg = "｜⚠️ 挂接失败：%s" % e
+        elif who and not self.project:
+            attach_msg = "｜（未选项目，未自动挂；可去「🔧 装技能」手动挂）"
+        self.resolved.add(gap.get("name"))
+        st = self.gap_status.get(gap.get("name"))
+        if st is not None:
+            st.setText("✅ 已安装 %s 并挂给 %s。下一波/重跑立即生效。"
+                       % (slug, who or "—"))
+        self.status.setText("✅ %s%s" % (msg, attach_msg))
+
+
 # ============ 项目信息编辑器 ============
 class ProjectEditor(QDialog):
     def __init__(self, project=None, parent=None):
@@ -1090,10 +1369,27 @@ class ProjectEditor(QDialog):
         if p.get("category") in legion.CATEGORIES:
             self.e_cat.setCurrentText(p.get("category"))
 
+        # v4.148.2：配方化 —— 任务模板 + 填空变量（inputs）。留空 = 普通项目。
+        self.e_tpl = QLineEdit(p.get("task_template", ""))
+        self.e_tpl.setPlaceholderText(
+            "可选。如：对 {region} 的 {category} 做选品全链路 —— {key} 会被填空替换")
+        self.e_tpl.setToolTip(
+            "任务模板：团队库点「▶ 启动此团队」时按下面的填空变量渲染成任务。\n"
+            "留空 = 普通项目（启动时手动输任务）。")
+        self.e_inputs = QPlainTextEdit()
+        self.e_inputs.setPlainText(
+            json.dumps(p.get("inputs") or [], ensure_ascii=False, indent=2))
+        self.e_inputs.setFixedHeight(110)
+        self.e_inputs.setPlaceholderText(
+            '填空变量（JSON 数组）：[{"key":"region","label":"目标站点",\n'
+            '  "default":"马来西亚(MY)","placeholder":"可选提示"}]')
+
         form = QFormLayout()
         form.addRow("图标 + 项目名称", row)
         form.addRow("说明", self.e_desc)
         form.addRow("分类", self.e_cat)
+        form.addRow("任务模板（配方）", self.e_tpl)
+        form.addRow("填空变量（配方）", self.e_inputs)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.button(QDialogButtonBox.Ok).setText("确定")
@@ -1109,27 +1405,105 @@ class ProjectEditor(QDialog):
         if not self.e_name.text().strip():
             QMessageBox.warning(self, "缺项目名", "给项目起个名字，比如「公众号养生文」。")
             return
+        # v4.148.2：inputs 必须是合法 JSON 数组（留空 = 无填空变量）
+        if self.e_inputs.toPlainText().strip():
+            try:
+                val = json.loads(self.e_inputs.toPlainText())
+                if not isinstance(val, list):
+                    raise ValueError("必须是 JSON 数组")
+                for item in val:
+                    if not isinstance(item, dict) or not item.get("key"):
+                        raise ValueError("每项都要有 key 字段")
+            except Exception as e:
+                QMessageBox.warning(self, "填空变量格式不对",
+                                    f"inputs 需要是 JSON 数组，每项含 key：\n{e}")
+                return
         self.accept()
 
     def get_data(self):
+        inputs = []
+        if self.e_inputs.toPlainText().strip():
+            try:
+                inputs = json.loads(self.e_inputs.toPlainText())
+            except Exception:
+                inputs = []   # _on_ok 已拦截，这里只兜底
         return {
             "name": self.e_name.text().strip(),
             "emoji": self.e_emoji.text().strip(),
             "description": self.e_desc.toPlainText().strip(),
             "category": self.e_cat.currentText(),
+            # v4.148.2：配方字段
+            "task_template": self.e_tpl.text().strip(),
+            "inputs": inputs,
         }
+
+
+# ============ 配方启动 · 填空对话框（v4.148.2，对标 CrewAI inputs 模板变量）============
+class RecipeLaunchDialog(QDialog):
+    """按配方的 inputs 弹表单填空，渲染 task_template 成最终任务。"""
+
+    def __init__(self, project, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"启动配方 · {project.get('name', '')}")
+        self.resize(460, 200)
+        self._project = project
+        form = QFormLayout()
+        self._edits = {}
+        for spec in (project.get("inputs") or []):
+            key = spec.get("key") or ""
+            if not key:
+                continue
+            ed = QLineEdit(str(spec.get("default") or ""))
+            ed.setPlaceholderText(str(spec.get("placeholder") or ""))
+            self._edits[key] = ed
+            form.addRow(spec.get("label") or key, ed)
+        if not self._edits:
+            self.reject()   # 没有可填项（理论不达，保险）
+            return
+        hint = QLabel("填完点「启动」—— 任务会按模板自动拼好交给项目经理。")
+        hint.setStyleSheet("color:#888;font-size:12px;")
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.button(QDialogButtonBox.Ok).setText("🚀 启动")
+        btns.button(QDialogButtonBox.Cancel).setText("取消")
+        btns.accepted.connect(self._on_ok)
+        btns.rejected.connect(self.reject)
+
+        lay = QVBoxLayout(self)
+        lay.addLayout(form)
+        lay.addWidget(hint)
+        lay.addWidget(btns)
+
+    def _on_ok(self):
+        # 必填校验：有 placeholder 提示且无默认值的，留空不给过（缺失交给 PM 澄清也行，
+        # 但既然弹了表单，填全体验更顺）
+        for key, ed in self._edits.items():
+            if not ed.text().strip():
+                QMessageBox.warning(self, "还有没填的", f"「{key}」还没填 —— "
+                                    "留空的话请回团队库直接启动（跳过填空）。")
+                return
+        self.accept()
+
+    def values(self):
+        return {k: ed.text().strip() for k, ed in self._edits.items()}
 
 
 # ============ 军团主窗口 ============
 class LegionWindow(QWidget):
     """多项目军团管理 + 编排 + 执行。"""
 
-    def __init__(self, mw=None, parent=None):
+    def __init__(self, mw=None, parent=None, embedded=False):
         super().__init__(parent)
         self.mw = mw
+        # v4.135.0：embedded=True → 作为主窗口内嵌面板（不设 Qt.Window、不自定尺寸/居中，
+        # 布局交给主窗口）；False → 保持独立窗口（旧行为，兼容 _open_legion 兜底与冒烟测试）。
+        self.embedded = bool(embedded)
         self.data = legion.load_legion()
         self.cur_project_id = None
         self.worker = None
+        # v4.137：正在执行的 worker 所属项目 id。用来识别「僵尸任务」——
+        # 项目被删掉了但 worker 还在跑，此时光靠 isRunning() 判断会把
+        # 整个军团的启动入口永久锁死，必须先能把执行对象认出来。
+        self._worker_pid = ""
         # v4.124.1 修复：改「调度与授权」控件时，valueChanged 是在信号的派发栈上
         # 触发 _rebuild_waves()，而重建会销毁 sender（gate_box 整棵树），
         # 导致 "Internal C++ object already deleted" 段错误。
@@ -1137,13 +1511,16 @@ class LegionWindow(QWidget):
         # 让 valueChanged 完整返回、Qt 不再访问 sender，再重建。
         self._gate_rebuild_pending = False
         self.setWindowTitle("Agent 军团 · 自定义团队")
-        # 必须是独立窗口：否则会当成父窗口里的子控件，落在左上角盖住编排页，
-        # 且没有自己的标题栏/关闭按钮。Qt.Window 让它带标题栏 + 关闭 X。
-        self.setWindowFlags(self.windowFlags() | Qt.Window)
-        self.resize(1040, 720)
+        if not self.embedded:
+            # 必须是独立窗口：否则会当成父窗口里的子控件，落在左上角盖住编排页，
+            # 且没有自己的标题栏/关闭按钮。Qt.Window 让它带标题栏 + 关闭 X。
+            # （内嵌模式反过来——绝不能设 Qt.Window，否则在页面里又弹独立窗。）
+            self.setWindowFlags(self.windowFlags() | Qt.Window)
+            self.resize(1040, 720)
         self._build_ui()
         self._refresh_projects()
-        self._center_on_parent()
+        if not self.embedded:
+            self._center_on_parent()
 
     def _center_on_parent(self):
         """首次打开时把窗口居中（相对父窗口，无父则居中屏幕）。只执行一次。"""
@@ -1190,9 +1567,24 @@ class LegionWindow(QWidget):
         b_del = QPushButton("删除项目")
         b_del.clicked.connect(self._del_project)
         b_skill = QPushButton("🔧 装技能（GitHub）")
-        b_skill.setToolTip("技能库里缺方法论时，从 GitHub 找 SKILL.md 装上")
+        b_skill.setToolTip("技能库里缺方法论时，从 GitHub 找 SKILL.md 装上。\n"
+                           "装完会问挂给谁 —— 挂上后下一波 / 打回重跑立即生效\n"
+                           "（项目经理报了差技能的话，名字在执行日志里）")
         b_skill.clicked.connect(self._install_skill)
-        for b in (b_team, b_add, b_edit, b_dup, b_del, b_skill):
+        # v4.124.14：记忆层必须「看得见、清得掉」——
+        # 否则换了个新任务，旧的补录数据/锁定标的还在暗处把方向带跑偏。
+        b_manual = QPushButton("📎 补录数据")
+        b_manual.setToolTip("管理手工补录文件：挂载到本项目 / 归档（不再被任何任务自动读取）")
+        b_manual.clicked.connect(self._manage_manual)
+        b_wipe = QPushButton("🧹 清记忆")
+        b_wipe.setToolTip("清空本项目的锁定标的 / 否决黑名单 / 项目教训本")
+        b_wipe.clicked.connect(self._wipe_memory)
+        # v4.124.15：报告入口（跑完的成稿落在 ~/Documents/小臭玩AI/legion_reports/）
+        b_report = QPushButton("📄 上次报告")
+        b_report.setToolTip("打开最近一次军团的报告文件（落盘位置 legion_reports/）")
+        b_report.clicked.connect(self._open_last_report)
+        for b in (b_team, b_add, b_edit, b_dup, b_del, b_skill, b_manual, b_wipe,
+                  b_report):
             lv.addWidget(b)
         root.addWidget(left)
 
@@ -1232,6 +1624,23 @@ class LegionWindow(QWidget):
         self.run_btn.clicked.connect(self._run_legion)
         rrow.addWidget(self.task_edit, 1)
         rrow.addWidget(self.run_btn)
+        # v4.146：任务模板（反复任务一键加载 task_hint，开工前能力审计据此跑）
+        self.tpl_btn = QPushButton("📋 任务模板")
+        self.tpl_btn.setToolTip("保存/套用/删除任务模板（must_roles/must_capabilities/task_hint）")
+        self.tpl_btn.clicked.connect(self._open_task_templates)
+        rrow.addWidget(self.tpl_btn)
+        # v4.137：常驻「停止」入口。此前唯一的终止按钮藏在 human 模式的授权弹窗里，
+        # 波内执行阶段（最耗时、也正是最想停的时候）界面上压根没有出口 ——
+        # 表现为「删了团队它还在跑，而且停不下来」。运行时才显示。
+        self.stop_btn = QPushButton("⛔ 停止")
+        self.stop_btn.setToolTip(
+            "向军团发出停止指令：\n"
+            "  • 它会跑完正在进行的这一步后收尾，不把成员调用拦腰砍断\n"
+            "  • 已产出的东西保留，可续跑\n"
+            "（想更硬一点：删除该项目时选「立即停止并删除」）")
+        self.stop_btn.setVisible(False)
+        self.stop_btn.clicked.connect(self._on_stop_clicked)
+        rrow.addWidget(self.stop_btn)
         # v4.124.6：续跑按钮，默认隐藏（_refresh_head 按 cur_project_id 是否带 ckpt 切可见）
         self.resume_btn = QPushButton("⏵ 续跑")
         self.resume_btn.setVisible(False)
@@ -1245,9 +1654,515 @@ class LegionWindow(QWidget):
         self.log_view.setFixedHeight(160)
         self.log_view.setPlaceholderText("执行日志与产出会显示在这里")
         rb.addWidget(self.log_view)
+        # v4.124.8：联系项目经理 —— 军团运行时把要求传给 PM（两档：备忘 / 急件）
+        self.pm_box = QGroupBox("联系项目经理")
+        pm_lay = QVBoxLayout(self.pm_box)
+        self.pm_msg_edit = QLineEdit()
+        self.pm_msg_edit.setPlaceholderText("给项目经理传句话，例如：把选品范围收窄到 3C 类目")
+        self.pm_msg_edit.returnPressed.connect(self._on_send_pm)
+        pm_row = QHBoxLayout()
+        self.pm_urgent_cb = QCheckBox("急件（本波跑完立即响应）")
+        self.pm_urgent_cb.setToolTip(
+            "默认「备忘」：进队列，下一个波界交给 PM。\n"
+            "勾选「急件」：本波跑完后立即打断、PM 就地响应。\n"
+            "两种都会进审计账本（与授权同一 run_id 谱系）。")
+        self.pm_send_btn = QPushButton("发送")
+        self.pm_send_btn.clicked.connect(self._on_send_pm)
+        pm_row.addWidget(self.pm_urgent_cb)
+        pm_row.addStretch(1)
+        pm_row.addWidget(self.pm_send_btn)
+        pm_lay.addWidget(self.pm_msg_edit)
+        pm_lay.addLayout(pm_row)
+        self.pm_box.setEnabled(False)   # 军团运行且开启验收（有 PM）时才启用
+        rb.addWidget(self.pm_box)
         rv.addWidget(run_box)
 
-        root.addWidget(right, 1)
+        # v4.148.1（UI 化繁为简，大哥定调）：页面重排为「💬 聊天（默认）/ 👥 角色库 /
+        # 🧩 团队库 / ⚙️ 编排（高级，默认隐藏）」。编排页整段代码保留不删 —— 续跑/
+        # 波次微调/补录数据等高级操作仍挂在它上面，点 ⚙️ 随时可展开；日常只面对聊天页。
+        # 左栏（项目列表 + 按钮）不动 —— 项目即团队的载体，很多回调查它。
+        self.chat_panel = LegionChatPanel(mw=self.mw)
+        self.chat_panel.set_pm_sender(self._chat_send_pm)
+        self.chat_panel.set_auth_resolver(self._chat_resolve_auth)
+        self.chat_panel.set_auth_dialog_opener(self._open_auth_dialog)
+        self.chat_panel.set_stopper(self._on_stop_clicked)   # v4.137 对话页也能停
+        self.chat_panel.set_skill_helper(self._skill_cmd)    # v4.139 对话里查/搜/装技能
+        self.chat_panel.set_skill_installer(self._install_skill)  # v4.144 对话页也能装技能
+        self.chat_panel.set_launcher(self._chat_launch)      # v4.148.1 聊天框直接「启动 …」
+
+        right_container = QWidget()
+        rcv = QVBoxLayout(right_container)
+        rcv.setContentsMargins(0, 0, 0, 0)
+        rcv.setSpacing(6)
+
+        # 顶部 tab 切换条（聊天 / 角色库 / 团队库 / ⚙️编排）
+        tab_row = QHBoxLayout()
+        tab_row.setSpacing(6)
+        self._tab_chat = QPushButton("💬 聊天")
+        self._tab_roles = QPushButton("👥 角色库")
+        self._tab_teams = QPushButton("🧩 团队库")
+        self._tab_orch = QPushButton("📐 编排")
+        for _tb in (self._tab_chat, self._tab_roles, self._tab_teams, self._tab_orch):
+            _tb.setCheckable(True)
+            _tb.setCursor(Qt.PointingHandCursor)
+            _tb.setFixedHeight(34)
+        self._tab_chat.setChecked(True)          # 默认进聊天页
+        self._tab_chat.clicked.connect(lambda: self._switch_page(0))
+        self._tab_roles.clicked.connect(lambda: self._switch_page(1))
+        self._tab_teams.clicked.connect(lambda: self._switch_page(2))
+        self._tab_orch.clicked.connect(lambda: self._switch_page(3))
+        tab_row.addWidget(self._tab_chat)
+        tab_row.addWidget(self._tab_roles)
+        tab_row.addWidget(self._tab_teams)
+        # ⚙️ 切换「编排（高级）」页的显隐：只藏 tab 按钮，不销毁任何控件/信号，
+        # 高级操作（续跑、波次微调、补录、清记忆）都还在编排页上，随时可展开。
+        self._gear_btn = QPushButton("⚙️")
+        self._gear_btn.setCheckable(True)
+        self._gear_btn.setFixedHeight(34)
+        self._gear_btn.setFixedWidth(44)
+        self._gear_btn.setToolTip("展开「编排」高级页：波次微调 / 续跑 / 补录数据 / 清记忆")
+        self._gear_btn.setCursor(Qt.PointingHandCursor)
+        self._gear_btn.toggled.connect(self._toggle_orch_tab)
+        tab_row.addWidget(self._gear_btn)
+        tab_row.addStretch(1)
+        rcv.addLayout(tab_row)
+
+        # 三张新页
+        self._roles_page = self._build_roles_page()
+        self._teams_page = self._build_teams_page()
+
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self.chat_panel)   # 页0 聊天（默认）
+        self._stack.addWidget(self._roles_page)  # 页1 角色库
+        self._stack.addWidget(self._teams_page)  # 页2 团队库
+        self._stack.addWidget(right)             # 页3 编排（原右栏，高级）
+        rcv.addWidget(self._stack, 1)
+
+        self._style_tabs()
+        self._toggle_orch_tab(False)             # 默认藏编排 tab
+        root.addWidget(right_container, 1)
+
+    def _toggle_orch_tab(self, on):
+        """⚙️ 开关：显示/隐藏「编排」高级页 tab。开着时编排序号仍为 3。"""
+        self._tab_orch.setVisible(bool(on))
+        if not on and self._stack.currentIndex() == 3:
+            self._switch_page(0)
+
+    def _switch_page(self, idx):
+        """切页并刷新 tab 高亮（0 聊天 / 1 角色库 / 2 团队库 / 3 编排-高级）。"""
+        self._stack.setCurrentIndex(idx)
+        # 直调（非点击）时也要同步 checked 态 —— 点击路径 Qt 自己会切，
+        # 程序路径（如团队库点启动跳聊天页）必须手动对齐。
+        self._tab_chat.setChecked(idx == 0)
+        self._tab_roles.setChecked(idx == 1)
+        self._tab_teams.setChecked(idx == 2)
+        self._tab_orch.setChecked(idx == 3)
+        if idx == 1:
+            self._refresh_roles_page()
+        elif idx == 2:
+            self._refresh_teams_page()
+        self._style_tabs()
+
+    def _style_tabs(self):
+        """按选中态给 tab 上色（active=accent / inactive=card）。"""
+        from ui import THEME
+        active = (f"QPushButton{{background:{THEME['accent']};color:#fff;border:none;"
+                  f"border-radius:8px;padding:0 18px;font-size:13px;font-weight:600;}}")
+        inactive = (f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
+                    f"border:1px solid {THEME['border']};border-radius:8px;padding:0 18px;"
+                    f"font-size:13px;}}"
+                    f"QPushButton:disabled{{color:{THEME['faint']};}}")
+        for _tb in (self._tab_chat, self._tab_roles, self._tab_teams, self._tab_orch):
+            _tb.setStyleSheet(active if _tb.isChecked() else inactive)
+
+    # ---- v4.148.1：角色库页 ----
+    def _build_roles_page(self):
+        """角色库：左边角色清单，右边「员工简历」详情（对标 TeamWork 员工卡）。"""
+        from ui import THEME
+        page = QWidget()
+        lay = QHBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        split = QSplitter()
+        left = QWidget()
+        lv = QVBoxLayout(left)
+        lv.setContentsMargins(0, 0, 0, 0)
+        lv.addWidget(QLabel("角色库（角色即能力 —— 工具/技能/纪律都在角色卡上，"
+                            "PM 不再代配）"))
+        self.roles_list = QListWidget()
+        self.roles_list.currentItemChanged.connect(self._on_role_selected)
+        lv.addWidget(self.roles_list, 1)
+        b_role_new = QPushButton("+ 新建角色")
+        b_role_new.clicked.connect(self._add_standalone_role)
+        lv.addWidget(b_role_new)
+        split.addWidget(left)
+        right = QWidget()
+        rv = QVBoxLayout(right)
+        rv.setContentsMargins(0, 0, 0, 0)
+        self.role_detail = QTextBrowser()
+        self.role_detail.setStyleSheet(
+            f"QTextBrowser{{background:{THEME['card']};border:1px solid {THEME['border']};"
+            f"border-radius:10px;padding:10px 12px;font-size:13px;color:{THEME['text']};}}")
+        rv.addWidget(self.role_detail, 1)
+        rb = QHBoxLayout()
+        self.role_edit_btn = QPushButton("✏️ 编辑此角色")
+        self.role_edit_btn.clicked.connect(self._edit_current_role)
+        rb.addWidget(self.role_edit_btn)
+        rb.addStretch(1)
+        rv.addLayout(rb)
+        split.addWidget(right)
+        split.setSizes([260, 640])
+        lay.addWidget(split)
+        return page
+
+    def _current_role_library(self):
+        """角色库数据源：默认角色库（已叠加角色成长库 override）。"""
+        try:
+            return legion.default_role_library()
+        except Exception:
+            return []
+
+    def _refresh_roles_page(self, keep_sel=True):
+        cur = (self.roles_list.currentItem().data(Qt.UserRole)
+               if keep_sel and hasattr(self, "roles_list")
+               and self.roles_list.currentItem() else None)
+        self.roles_list.blockSignals(True)
+        self.roles_list.clear()
+        lib = self._current_role_library()
+        for r in lib:
+            tools = r.get("tools") or []
+            sk = r.get("skills") or []
+            tag = f"（{len(tools)} 工具 · {len(sk)} 技能）" if (tools or sk) else ""
+            it = QListWidgetItem(f"{r.get('emoji') or '▫️'} {r.get('name', '?')}  {tag}")
+            it.setData(Qt.UserRole, r.get("name"))
+            self.roles_list.addItem(it)
+        self.roles_list.blockSignals(False)
+        _hit = None
+        if cur:
+            for i in range(self.roles_list.count()):
+                if self.roles_list.item(i).data(Qt.UserRole) == cur:
+                    _hit = i
+                    break
+        self.roles_list.setCurrentRow(_hit if _hit is not None else 0)
+
+    def _on_role_selected(self, cur, _prev=None):
+        if cur is None:
+            return
+        name = cur.data(Qt.UserRole)
+        role = next((r for r in self._current_role_library()
+                     if r.get("name") == name), None)
+        if not role:
+            return
+        tools = "、".join(role.get("tools") or []) or "（无）"
+        skills = "、".join(role.get("skills") or []) or "（无）"
+        body = (role.get("constraints") or "").replace("&", "&amp;") \
+                                               .replace("<", "&lt;")
+        body = body.replace("\n", "<br>")
+        self.role_detail.setHtml(
+            f"<h2 style='margin:4px 0'>{role.get('emoji') or ''} "
+            f"{role.get('name', '')} <span style='font-size:13px;color:#888'>"
+            f"{role.get('category') or ''}</span></h2>"
+            f"<p><b>使命：</b>{role.get('mission', '')}</p>"
+            f"<p><b>🧰 工具集：</b>{tools}<br>"
+            f"<b>🧩 技能：</b>{skills}</p>"
+            f"<p><b>📦 交付形态：</b>{role.get('output_format', '')}<br>"
+            f"<b>⭐ 质量线：</b>{role.get('quality', '')}<br>"
+            f"<b>🔍 自检：</b>{role.get('self_check', '')}</p>"
+            f"<hr><div style='white-space:pre-wrap'>{body}</div>")
+
+    def _edit_current_role(self):
+        """编辑当前选中的角色卡（复用 RoleEditor，改完写回角色成长库并刷新）。"""
+        cur = self.roles_list.currentItem()
+        if not cur:
+            return
+        name = cur.data(Qt.UserRole)
+        role = next((r for r in self._current_role_library()
+                     if r.get("name") == name), None)
+        if not role:
+            return
+        dlg = RoleEditor(role=role, parent=self)
+        if dlg.exec() != RoleEditor.Accepted:
+            return
+        new = dlg.get_role()
+        # 写进角色成长库（role_library_override.json）—— 与「装技能挂角色」同一落点，
+        # 下一次 default_role_library() 就带上改动；本会话立即刷新。
+        try:
+            ov = legion._cm_json_load(legion.ROLE_OVERRIDE_PATH, {})
+            if not isinstance(ov, dict):
+                ov = {}
+            ov[name] = dict(ov.get(name) or {})
+            for k in ("emoji", "mission", "constraints", "tools", "skills",
+                      "output_format", "quality", "self_check"):
+                if k in new and new[k] is not None:
+                    ov[name][k] = new[k]
+            legion._cm_json_save(legion.ROLE_OVERRIDE_PATH, ov)
+        except Exception as e:
+            QMessageBox.warning(self, "保存失败", f"角色改动未能写入成长库：{e}")
+        self._refresh_roles_page(keep_sel=True)
+
+    def _add_standalone_role(self):
+        """从角色库直接新建角色（进成长库；入队仍由团队页/PM 拉人完成）。"""
+        dlg = RoleEditor(role=legion.new_role(name="新角色"), parent=self)
+        if dlg.exec() != RoleEditor.Accepted:
+            return
+        new = dlg.get_role()
+        try:
+            ov = legion._cm_json_load(legion.ROLE_OVERRIDE_PATH, {})
+            if not isinstance(ov, dict):
+                ov = {}
+            ov[new.get("name") or "新角色"] = {
+                k: new[k] for k in ("emoji", "mission", "constraints", "tools",
+                                    "skills", "output_format", "quality",
+                                    "self_check") if k in new
+            }
+            legion._cm_json_save(legion.ROLE_OVERRIDE_PATH, ov)
+        except Exception as e:
+            QMessageBox.warning(self, "保存失败", f"新角色未能写入成长库：{e}")
+        self._refresh_roles_page(keep_sel=False)
+
+    # ---- v4.148.1：团队库页 ----
+    def _build_teams_page(self):
+        """团队库：项目即成品配方（角色×波次×口径已冻结），克隆即用。"""
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        top = QHBoxLayout()
+        top.addWidget(QLabel("团队库（每个团队 = 角色 × 波次 × 口径的配方；"
+                             "点「克隆」改个主题就能开跑）"))
+        top.addStretch(1)
+        b_new_team = QPushButton("+ 新建团队")
+        b_new_team.clicked.connect(self._add_project)
+        top.addWidget(b_new_team)
+        b_pm_team = QPushButton("🧙 PM 出方案（我审批）")
+        b_pm_team.clicked.connect(self._auto_team)
+        top.addWidget(b_pm_team)
+        # v4.148.2（跑通即存配方）：把当前跑通的项目冻结成命名配方进团队库
+        b_save_recipe = QPushButton("💾 存为配方（当前项目）")
+        b_save_recipe.setToolTip(
+            "把当前选中项目跑通后的 阵容+波次+纪律+数据口径 冻结成配方：\n"
+            "可命名、可配填空变量（inputs）和任务模板，之后从团队库一键克隆启动。")
+        b_save_recipe.clicked.connect(self._save_as_recipe)
+        top.addWidget(b_save_recipe)
+        lay.addLayout(top)
+        self.teams_list = QListWidget()
+        self.teams_list.setSpacing(4)
+        self.teams_list.itemDoubleClicked.connect(self._on_team_launch)
+        lay.addWidget(self.teams_list, 1)
+        brow = QHBoxLayout()
+        b_launch = QPushButton("▶ 启动此团队")
+        b_launch.clicked.connect(self._on_team_launch)
+        b_clone = QPushButton("⧉ 克隆")
+        b_clone.clicked.connect(self._on_team_clone)
+        b_edit = QPushButton("✏️ 编辑成员/波次")
+        b_edit.clicked.connect(self._on_team_edit)
+        b_del = QPushButton("🗑 删除")
+        b_del.clicked.connect(self._on_team_delete)
+        for b in (b_launch, b_clone, b_edit, b_del):
+            b.setCursor(Qt.PointingHandCursor)
+            brow.addWidget(b)
+        brow.addStretch(1)
+        lay.addLayout(brow)
+        return page
+
+    def _refresh_teams_page(self):
+        """团队列表：emoji + 名称 + 成员头像串 + 波次流程线 + 续跑标记。"""
+        cur = (self.teams_list.currentItem().data(Qt.UserRole)
+               if hasattr(self, "teams_list") and self.teams_list.currentItem()
+               else None)
+        self.teams_list.blockSignals(True)
+        self.teams_list.clear()
+        for p in self.data.get("projects", []):
+            # v4.148.2（⑤a）：流程线 —— 「🌐研究员+⚔️竞品分析师 → 📊分析师 → ✍️写手」
+            flow = []
+            for w in (p.get("waves") or []):
+                names = [f"{m.get('emoji') or ''}{m.get('name') or '?'}"
+                         for m in (w.get("members") or []) if m.get("name")]
+                if names:
+                    flow.append("+".join(names))
+            flow_line = " → ".join(flow) or "（空团队）"
+            ck = legion.has_checkpoint(p.get("id", ""))
+            tag = ""
+            if ck and ck.get("corrupt"):
+                tag = "  ⚠️ 存档损坏"
+            elif ck:
+                tag = f"  🟡 可续跑(第{ck.get('last_completed_wave', 0) + 2}波起)"
+            recipe_tag = "  📦配方" if (p.get("inputs") and p.get("task_template")) else ""
+            line2 = f"　　{(p.get('description') or '').strip()[:48]}"
+            it = QListWidgetItem(
+                f"{p.get('emoji') or '🧩'} {p.get('name', '未命名')}{tag}{recipe_tag}\n"
+                f"　　🔗 {flow_line}\n"
+                f"{line2}")
+            it.setData(Qt.UserRole, p.get("id"))
+            self.teams_list.addItem(it)
+        self.teams_list.blockSignals(False)
+        if cur:
+            for i in range(self.teams_list.count()):
+                if self.teams_list.item(i).data(Qt.UserRole) == cur:
+                    self.teams_list.setCurrentRow(i)
+                    break
+            else:
+                self.teams_list.setCurrentRow(0)
+        else:
+            self.teams_list.setCurrentRow(0)
+
+    def _save_as_recipe(self):
+        """v4.148.2（跑通即存配方）：把当前项目冻结成命名配方。
+
+        深拷贝阵容/波次/闸门配置 + 继承 briefing（组织记忆），剥掉运行期状态
+        （锁定标的/否决黑名单/补录挂载/存档），配 inputs + task_template 后
+        作为一个新项目落盘 —— 团队库里从此多一个可克隆的成品。
+        """
+        p = self._cur_project()
+        if not p:
+            QMessageBox.information(self, "未选择项目",
+                                    "先在左侧或团队库选中要固化的项目。")
+            return
+        if not legion.wave_members(p):
+            QMessageBox.information(self, "团队是空的", "这个项目还没有成员，没有可固化的阵容。")
+            return
+        dlg = ProjectEditor(p, self)
+        dlg.setWindowTitle("存为配方")
+        if dlg.exec() != QDialog.Accepted:
+            return
+        d = dlg.get_data()
+        if not d["name"]:
+            return
+        np = copy.deepcopy(p)
+        np["id"] = str(__import__("uuid").uuid4())
+        np["name"] = d["name"]
+        np["emoji"] = d["emoji"] or p.get("emoji", "")
+        np["description"] = d["description"]
+        np["category"] = d["category"]
+        # 配方字段来自编辑器（含 inputs / task_template）
+        np["inputs"] = d.get("inputs") or []
+        np["task_template"] = d.get("task_template") or ""
+        # 剥运行期状态：配方是干净的可复用成品，不背旧任务的包袱
+        for k in ("locked_target", "dead_directions", "manual_files"):
+            np.pop(k, None)
+        self.data.setdefault("projects", []).append(np)
+        legion.save_legion(self.data)
+        self._refresh_projects(select_id=np["id"])
+        self._refresh_teams_page()
+        QMessageBox.information(
+            self, "已存为配方",
+            f"「{np['name']}」已进团队库（📦配方）。\n"
+            + ("配了填空变量 —— 团队库点「▶ 启动此团队」即可填空开跑。"
+               if np["inputs"] else
+               "未配填空变量 —— 启动时手动输任务即可。"))
+
+    def _teams_cur_project(self):
+        it = self.teams_list.currentItem() if hasattr(self, "teams_list") else None
+        if not it:
+            return None
+        return legion.find_project(self.data, it.data(Qt.UserRole))
+
+    def _on_team_launch(self, *_a):
+        """从团队库启动：选中该项目 → 切到聊天页 → 聚焦聊天输入框。
+
+        v4.148.2：项目配了 inputs/task_template（配方）→ 先弹填空表单，
+        渲染出任务后直接开跑；普通项目保持原行为（切聊天页聚焦）。
+        """
+        p = self._teams_cur_project()
+        if not p:
+            return
+        self._on_select_project_by_id(p.get("id"))
+        self._switch_page(0)
+        # v4.148.2：配方填空启动
+        if (p.get("inputs") or []) and (p.get("task_template") or "").strip():
+            dlg = RecipeLaunchDialog(p, self)
+            if dlg.exec() != QDialog.Accepted:
+                return
+            task = legion.render_task_template(p, dlg.values())
+            if self.worker is not None and self.worker.isRunning():
+                self.chat_panel.say("系统", "军团正在跑 —— 等它跑完，或先「⛔ 停止」。")
+                return
+            self.task_edit.setText(task)
+            self._run_legion()
+            self.chat_panel.say("系统", f"🚀 配方「{p.get('name')}」已按填空启动。"
+                                        "浏览器弹出后记得点 VPN 扩展「连接」。")
+            return
+        if hasattr(self.chat_panel, "input"):
+            self.chat_panel.input.setFocus()
+
+    def _on_team_clone(self):
+        """克隆当前选中的团队（复用 _dup_project，完成后刷新团队列表并选中新团）。"""
+        p = self._teams_cur_project()
+        if not p:
+            return
+        self.cur_project_id = p.get("id")
+        self._dup_project()
+        self._refresh_teams_page()
+
+    def _on_team_edit(self):
+        p = self._teams_cur_project()
+        if not p:
+            return
+        self._on_select_project_by_id(p.get("id"))
+        self._switch_page(3)      # 编辑成员/波次 → 编排（高级）页
+        self._gear_btn.setChecked(True)
+        self._edit_project()
+
+    def _on_team_delete(self):
+        p = self._teams_cur_project()
+        if not p:
+            return
+        self._on_select_project_by_id(p.get("id"))
+        self._del_project()
+        self._refresh_teams_page()
+
+    def _on_select_project_by_id(self, pid):
+        for i in range(self.proj_list.count()):
+            if self.proj_list.item(i).data(Qt.UserRole) == pid:
+                self.proj_list.setCurrentRow(i)
+                break
+
+    # ---- 对话页回调（由 LegionChatPanel 注入）----
+    def _chat_launch(self, task_text):
+        """v4.148.1：聊天框「启动军团 <任务>」→ 用当前选中团队开跑。"""
+        p = self._cur_project()
+        if not p:
+            self.chat_panel.say("系统", "还没有选中团队 —— 先去「🧩 团队库」选一个"
+                                        "（或克隆/新建一个），再回来启动。")
+            return
+        if not legion.wave_members(p):
+            self.chat_panel.say("系统", f"团队「{p.get('name')}」还没有成员 —— "
+                                        "去「🧩 团队库 → 编辑成员/波次」加人后再启动。")
+            return
+        if self.worker is not None and self.worker.isRunning():
+            self.chat_panel.say("系统", "军团正在跑 —— 等它跑完，或先「⛔ 停止」。")
+            return
+        self.task_edit.setText(task_text)
+        self._run_legion()
+        self.chat_panel.say("系统", f"🚀 已用团队「{p.get('name')}」启动军团，"
+                                    "任务已下达。浏览器弹出后记得点 VPN 扩展「连接」。")
+
+    def _chat_send_pm(self, text, urgent=False):
+        """对话页输入框 → PM 留言（复用既有 _on_send_pm 的投送逻辑）。"""
+        if self.worker is None or not self.worker.isRunning():
+            self.log_view.append(f"\n💬 你 → 项目经理：{text}\n（军团未运行，消息未发送）\n")
+            return
+        if self.worker.send_message(text, urgent=urgent):
+            kind = "急件" if urgent else "备忘"
+            self.log_view.append(f"\n💬 你 → 项目经理（{kind}）：{text}\n")
+
+    def _chat_resolve_auth(self, intent, text):
+        """对话页一句话决策 → 送回 worker（intent∈pass/reject/abort）。"""
+        if self.worker is None or not self.worker.isRunning():
+            self.log_view.append("\n⚠️ 授权上下文已失效（军团未运行），忽略。\n")
+            if hasattr(self, "chat_panel"):
+                self.chat_panel.auth_resolved()
+            return
+        try:
+            if intent == "reject" and text:
+                self.worker.set_auth_revision(text)
+                self.log_view.append(f"\n✍️ 你的改稿要求：{text}\n")
+            self.worker.set_auth_result(intent)
+            _zh = {"pass": "✅ 放行下一波", "reject": "↩︎ 打回重做",
+                   "abort": "⛔ 终止军团"}.get(intent, intent)
+            self.log_view.append(f"\n{_zh}\n")
+            if hasattr(self, "chat_panel"):
+                self.chat_panel.say("你", f"授权决定：{_zh}")
+        except Exception as e:
+            self.log_view.append(f"\n⚠️ 授权结果发送失败：{e}\n")
 
     # ---- 工具 ----
     def _clear_layout(self, lay):
@@ -1299,9 +2214,14 @@ class LegionWindow(QWidget):
         self.proj_list.clear()
         for p in self.data.get("projects", []):
             ck = legion.has_checkpoint(p.get("id", ""))
-            if ck:
+            if ck and ck.get("corrupt"):
+                # v4.125 M-03：存档损坏——明示，不再静默当作"没有"
+                tag = "  ⚠️ 存档损坏"
+            elif ck:
                 # v4.124.6：有 checkpoint → 项目后加 🟡 + 提示文字
-                tag = f"  🟡 续(第{ck.get('last_completed_wave', 0)+1}波)"
+                # v4.124.8 修正：续跑起点 = last_completed_wave + 2（+1 会显示成
+                # 「上次完成的波」而非「下次要跑的波」，与日志提示差 1 让人困惑）。
+                tag = f"  🟡 续(第{ck.get('last_completed_wave', 0)+2}波)"
             else:
                 tag = ""
             it = QListWidgetItem(f"{p.get('emoji', '')} {p.get('name', '未命名')}".strip() + tag)
@@ -1327,20 +2247,29 @@ class LegionWindow(QWidget):
         self.cur_project_id = cur.data(Qt.UserRole)
         self._refresh_head()
         self._rebuild_waves()
+        # v4.135.0：换项目同步切对话页历史（legion_chat/<pid>.json）
+        if hasattr(self, "chat_panel"):
+            try:
+                self.chat_panel.reload_for_project(self.cur_project_id)
+            except Exception:
+                pass
 
     def _refresh_head(self):
         p = self._cur_project()
         # v4.124.6：续跑按钮的可见性（依赖 cur_project_id 是否有 ckpt）
-        has_ck = bool(p and legion.has_checkpoint(p.get("id", "")))
+        _ck_raw = legion.has_checkpoint(p.get("id", "")) if p else None
+        has_ck = bool(_ck_raw) and not _ck_raw.get("corrupt")
         if hasattr(self, "resume_btn"):
             self.resume_btn.setVisible(bool(has_ck))
             if has_ck:
-                ck = legion.has_checkpoint(p["id"])
+                ck = _ck_raw
+                # v4.124.8 修正：续跑起点 = last_completed_wave + 2（与日志「从第 N 波启动」对齐）
                 self.resume_btn.setText(
-                    f"⏵ 续跑(第{ck.get('last_completed_wave', 0)+1}波)")
+                    f"⏵ 续跑(第{ck.get('last_completed_wave', 0)+2}波)")
                 self.resume_btn.setToolTip(
                     f"上次中断于：{ck.get('saved_at_human', '')}\n"
                     f"已完成 {ck.get('last_completed_wave', 0)+1} 波\n"
+                    f"续跑从第 {ck.get('last_completed_wave', 0)+2} 波启动\n"
                     "点击会弹窗让你选：续/重/取")
         if not p:
             self.head.setText("尚未选择项目")
@@ -1348,12 +2277,154 @@ class LegionWindow(QWidget):
             return
         ck_tag = ""
         if has_ck:
-            ck = legion.has_checkpoint(p["id"])
+            ck = _ck_raw
             ck_tag = (f"  ·  💾 上次中断：第 {ck.get('last_completed_wave', 0)+1} 波完成 "
                       f"({ck.get('saved_at_human', '')})")
+        elif _ck_raw and _ck_raw.get("corrupt"):
+            # v4.125 M-03：损坏存档要在界面明示
+            ck_tag = "  ·  ⚠️ 存档损坏，无法续跑（重新开跑将从第 1 波开始）"
+        # v4.124.14：记忆层状态直接显示在标题栏 —— 「看不见的记忆＝失控的记忆」
+        mem_bits = []
+        _raw = p.get("locked_target")
+        _lt = (_raw.get("text", "") if isinstance(_raw, dict)
+               else str(_raw or "")).strip()
+        if _lt:
+            mem_bits.append(f"🔒{_lt[:18]}")
+        _nd = len(p.get("dead_directions") or [])
+        if _nd:
+            mem_bits.append(f"🚫{_nd}")
+        _nm = len(p.get("manual_files") or [])
+        if _nm:
+            mem_bits.append(f"📎{_nm}")
+        mem_tag = ("  ·  " + " ".join(mem_bits)) if mem_bits else ""
         self.head.setText(f"{p.get('emoji', '')} {p.get('name', '')}".strip())
         self.sub.setText(f"{p.get('category', '')} · {legion.project_summary(p)}"
-                         f"{(' · ' + p['description']) if p.get('description') else ''}{ck_tag}")
+                         f"{(' · ' + p['description']) if p.get('description') else ''}"
+                         f"{ck_tag}{mem_tag}")
+
+    # ---- v4.124.14：记忆层管理（补录数据归属 / 清空记忆）----
+    def _manage_manual(self):
+        """手工补录文件归属管理：挂载到本项目 / 归档（移出自动扫描）。"""
+        p = self._cur_project()
+        if not p:
+            QMessageBox.information(self, "补录数据", "先选一个项目。")
+            return
+        files = legion.list_manual_files(include_archived=True)
+        if not files:
+            QMessageBox.information(
+                self, "补录数据",
+                f"还没发现手工补录文件。\n\n"
+                f"把 JSON 放进：{legion.MANUAL_DIR}\n"
+                f"文件名以 manual_ 开头（例：manual_competitor_research_xxx.json）")
+            return
+        attached = set(p.get("manual_files") or [])
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("📎 手工补录数据 · 归属管理")
+        dlg.resize(620, 380)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel(
+            "只有**挂载到本项目**的补录文件才会注入 PM 提示词。\n"
+            "未挂载的文件不会被任何任务自动读取 —— 上一份跨境电商的补录不会再把新任务带跑偏。"))
+        lst = QListWidget()
+        lst.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        for name in files:
+            mark = "✅ 已挂载" if name in attached else "　未挂载"
+            archived = name.startswith("archive/")
+            if archived:
+                mark = "🗄 已归档"
+            lst.addItem(f"{mark} · {name}")
+        v.addWidget(lst, 1)
+
+        def _names_from_selected():
+            out = []
+            for it in lst.selectedItems():
+                out.append(it.text().split(" · ", 1)[-1].strip())
+            return out
+
+        def _toggle():
+            names = _names_from_selected()
+            if not names:
+                return
+            for n in names:
+                if n.startswith("archive/"):
+                    continue
+                legion.attach_manual_file(p.get("id", ""), n, on=(n not in attached))
+            self._refresh_head()
+            self._manage_manual_refresh = True
+            dlg.accept()
+            self._manage_manual()
+
+        def _archive():
+            names = _names_from_selected()
+            if not names:
+                return
+            if QMessageBox.question(
+                    self, "归档补录文件",
+                    f"把 {len(names)} 份文件移入 manual_archive/ ？\n"
+                    "归档后不再被任何任务自动扫描（文件不删除，可手动放回）。",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                return
+            for n in names:
+                legion.archive_manual_file(n)
+                legion.attach_manual_file(p.get("id", ""), n, on=False)
+            self._refresh_head()
+            dlg.accept()
+            self._manage_manual()
+
+        row = QHBoxLayout()
+        b_tog = QPushButton("挂载 / 取消挂载")
+        b_tog.clicked.connect(_toggle)
+        b_arc = QPushButton("🗄 归档（移出扫描）")
+        b_arc.clicked.connect(_archive)
+        b_close = QPushButton("关闭")
+        b_close.clicked.connect(dlg.accept)
+        row.addWidget(b_tog)
+        row.addWidget(b_arc)
+        row.addStretch(1)
+        row.addWidget(b_close)
+        v.addLayout(row)
+        dlg.exec()
+
+    def _wipe_memory(self):
+        """清空本项目的标的记忆 / 否决名单 / 教训本。"""
+        p = self._cur_project()
+        if not p:
+            QMessageBox.information(self, "清空记忆", "先选一个项目。")
+            return
+        raw = p.get("locked_target")
+        lt = (raw.get("text", "") if isinstance(raw, dict) else str(raw or "")).strip()
+        n_dead = len(p.get("dead_directions") or [])
+        box = QMessageBox(self)
+        box.setWindowTitle("🧹 清空本项目的记忆")
+        box.setText("要清掉哪一项？（换任务跑偏时，先清「锁定标的」）")
+        box.setInformativeText(
+            f"当前：🔒 锁定标的＝{lt or '（无）'}\n"
+            f"　　　🚫 否决黑名单＝{n_dead} 项\n"
+            f"　　　📓 项目教训本＝随项目\n\n"
+            "否决黑名单一般不用清（打死的方向到哪都别提）。")
+        b_t = box.addButton("清 锁定标的", QMessageBox.AcceptRole)
+        b_l = box.addButton("清 教训本", QMessageBox.AcceptRole)
+        b_d = box.addButton("清 否决名单", QMessageBox.DestructiveRole)
+        b_a = box.addButton("全部清空", QMessageBox.DestructiveRole)
+        box.addButton("取消", QMessageBox.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        what = None
+        if clicked is b_t:
+            what = "target"
+        elif clicked is b_l:
+            what = "lessons"
+        elif clicked is b_d:
+            what = "dead"
+        elif clicked is b_a:
+            what = "all"
+        if not what:
+            return
+        did = legion.clear_target_memory(p.get("id", ""), what)
+        self._refresh_projects()
+        self._refresh_head()
+        QMessageBox.information(self, "已清空", did or "没有可清的内容")
 
     # ---- 项目增删改 ----
     def _add_project(self):
@@ -1391,9 +2462,48 @@ class LegionWindow(QWidget):
         self._rebuild_waves()
 
     def _install_skill(self):
-        """独立入口：不组队也能补技能（PM 请示之外，你自己想装也行）。"""
+        """独立入口：**任何时候**都能补技能，装完直接挂给在编角色（v4.134.2）。
+
+        此前这个入口只装不挂 —— 装完 slug 就丢了。而「挂给角色」的逻辑只写在
+        组队弹窗里，开工之后/波间/打回重跑根本走不到那个弹窗，于是「能装但没处挂」，
+        等于没补（这正是断口）。现在装完弹角色下拉，挂上立即生效。
+        """
         dlg = SkillInstallDialog(mw=self.mw, parent=self)
         dlg.exec()
+        slug = getattr(dlg, "installed_slug", None)
+        if not slug:
+            return
+        p = self._cur_project()
+        if not p:
+            QMessageBox.information(
+                self, "已装进技能库",
+                "「%s」已装好。\n\n当前没选项目 —— 选一个项目（或先组队）后，"
+                "再挂给需要的角色。" % slug)
+            return
+        roster = legion.project_members(p)
+        if not roster:
+            QMessageBox.information(
+                self, "已装进技能库",
+                "「%s」已装好。\n\n项目「%s」还没有在编成员 —— 先组队，"
+                "组队时可以直接勾上这个技能。" % (slug, p.get("name", "")))
+            return
+        labels = ["%s%s（第 %d 波）%s"
+                  % (r.get("emoji", ""), r["name"], r["wave"],
+                     "｜已挂" if slug in (r.get("skills") or []) else "")
+                  for r in roster]
+        pick, ok = QInputDialog.getItem(
+            self, "挂给谁",
+            "把「%s」挂给谁？\n挂上后**下一波 / 打回重跑立即生效**（不用重新组队）。" % slug,
+            labels, 0, False)
+        if not ok or not pick:
+            return
+        role_name = roster[labels.index(pick)]["name"]
+        _waves, msg = legion.attach_skill_to_project(p, slug, role_name)
+        if _waves:
+            legion.save_legion(self.data)
+            self._rebuild_waves()
+        self.log_view.append(msg)
+        QMessageBox.information(self, "挂载结果", msg)
 
     def _edit_project(self):
         p = self._cur_project()
@@ -1423,6 +2533,34 @@ class LegionWindow(QWidget):
         p = self._cur_project()
         if not p:
             return
+        pid = p.get("id", "")
+        # v4.137 病根修复：过去这里只删数据、不停 worker，于是造出「僵尸任务」——
+        # 它继续烧 API、继续写产出；而 _run_legion 用 isRunning() 守卫，
+        # 把整个军团的启动入口锁死；终止按钮又只存在于 human 模式的授权弹窗里，
+        # 波内执行时没有任何出口 —— 三者叠加＝删了团队却停不下来、新团队也跑不了。
+        if self._worker_running(pid):
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("该项目正在执行")
+            box.setText(
+                f"「{p.get('name', '')}」的军团正在执行中。\n\n"
+                "只删配置不会让它停下 —— 它会在后台继续烧 API、继续写产出，\n"
+                "而且会挡住其它项目启动。\n\n"
+                "你要：")
+            b_kill = box.addButton("⛔ 立即停止并删除（推荐）", QMessageBox.AcceptRole)
+            b_keep = box.addButton("照删，让它在后台跑完", QMessageBox.DestructiveRole)
+            b_cancel = box.addButton("取消", QMessageBox.RejectRole)
+            box.setDefaultButton(b_cancel)   # 破坏性操作，默认停在「取消」
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is b_cancel or clicked is None:
+                return
+            if clicked is b_kill:
+                self._detach_worker()
+                # 信号已断开，不会再有 finished 回调来复位按钮，这里手动复位
+                self._set_running_ui(False)
+                self.log_view.append(
+                    "\n⛔ 已向正在执行的军团发出停止指令（跑完当前这一步就收尾）。\n")
         r = QMessageBox.question(
             self, "删除项目",
             f"确定删除「{p.get('name', '')}」？该项目的团队配置会一起删掉（角色库不受影响）。")
@@ -1448,7 +2586,7 @@ class LegionWindow(QWidget):
 
         row1 = QHBoxLayout()
         row1.addWidget(QLabel("模式"))
-        mode_combo = QComboBox()
+        mode_combo = _NoWheelCombo()
         mode_combo.addItem("关闭（一路跑完，不验收）", "off")
         mode_combo.addItem("顾问模式（PM 出建议，按建议走）", "advisory")
         mode_combo.addItem("人手把关（每波暂停等你批准）", "human")
@@ -1520,7 +2658,9 @@ class LegionWindow(QWidget):
         gv.addLayout(row2)
 
         # 先 setCurrentIndex/setValue 再 connect：避免重建 UI 时触发一次无谓的写盘
-        mode_combo.currentIndexChanged.connect(
+        # v4.149.0：currentIndexChanged → activated —— 授权模式只认「用户真选」，
+        # 键盘上下/程序化改动都不再落盘（原写法会把「滚过/划过」当成「改配置」）。
+        mode_combo.activated.connect(
             lambda _i: self._on_gate_changed(mode=mode_combo.currentData()))
         gate_spin.valueChanged.connect(
             lambda v: self._on_gate_changed(retry=int(v)))
@@ -1806,6 +2946,325 @@ class LegionWindow(QWidget):
         self._refresh_head()
 
     # ---- 执行 ----
+    # v4.137：worker 的生命周期以前散在三处各管一半 —— 启动处只管置位、
+    # _on_finished 只管复位、删除项目处压根不管。于是「删了团队还在跑、
+    # 而且停不下来、新团队也跑不了」。下面四个小工具把它收拢成一处。
+
+    def _set_running_ui(self, running: bool):
+        """统一维护执行态的三个控件：启动按钮 / 停止按钮 / 联系项目经理。
+
+        以前只有 _on_finished 会复位；一旦那条路没走到（worker 被 detach，
+        或项目被删导致信号断开），按钮就永远卡在「执行中…」，谁也点不动。
+        """
+        self.run_btn.setEnabled(not running)
+        self.run_btn.setText("执行中…" if running else "▶ 启动军团")
+        if hasattr(self, "stop_btn"):
+            self.stop_btn.setVisible(running)
+            self.stop_btn.setEnabled(True)
+            self.stop_btn.setText("⛔ 停止")
+        # 对话页那颗同步显隐（两页共用一个 worker，停的入口也该有两处）
+        _cp = getattr(self, "chat_panel", None)
+        if _cp is not None and hasattr(_cp, "stop_btn"):
+            _cp.stop_btn.setVisible(running)
+            _cp.stop_btn.setEnabled(True)
+        if hasattr(self, "pm_box"):
+            self.pm_box.setEnabled(running)
+
+    def _worker_running(self, pid="") -> bool:
+        """当前有个在跑的 worker（传 pid 则进一步限定是它所属的项目）。"""
+        if self.worker is None or not self.worker.isRunning():
+            return False
+        if pid and getattr(self, "_worker_pid", "") != pid:
+            return False
+        return True
+
+    def _detach_worker(self):
+        """切断与当前 worker 的一切联系：断信号 → 请求停止 → 丢弃引用。
+
+        关键在「断信号」：worker 是合作式停止，调 abort 后线程不会立刻退出，
+        它还会跑一小段；若不断开连接，它的 log/done/finished 会串进新任务的
+        执行过程 —— 表现为新任务日志里混着旧日志，或者新任务还没跑完，
+        按钮就被旧 worker 的 finished 提前解锁。
+        """
+        w = getattr(self, "worker", None)
+        if w is None:
+            return
+        for _sig in ("log_line", "done", "finished", "auth_request", "replan_request"):
+            _s = getattr(w, _sig, None)
+            if _s is None:
+                continue
+            try:
+                _s.disconnect()
+            except Exception:
+                pass
+        try:
+            w.abort()
+        except Exception:
+            pass
+        self.worker = None
+        self._worker_pid = ""
+
+    # ---- v4.139 P2：对话里的技能指令（查缺口 / 去 GitHub 找 / 装）----
+    def _skill_say(self, text):
+        """把技能相关回复写进对话流（复用对话页的记录口）。"""
+        cp = getattr(self, "chat_panel", None)
+        if cp is None:
+            return
+        try:
+            cp._record("系统", text)
+        except Exception:
+            pass
+
+    def _skill_cmd(self, kind, arg):
+        """对话页技能指令统一入口（由 LegionChatPanel.set_skill_helper 注入）。
+
+        kind：list=查当前缺口；search=去 GitHub 找；install=装（序号 / owner/repo / 关键词）。
+        「缺口 → 找 → 装」全程在对话里说完，不必等跑完弹窗、也不必点按钮。
+        """
+        if kind == "list":
+            meta = getattr(getattr(self, "worker", None), "last_meta", None) or {}
+            gaps = meta.get("skill_gaps") or []
+            res = meta.get("skill_candidates") or {}
+            if not gaps:
+                self._skill_say("当前没检测到技能缺口（PM 没报、成员产出里也没扫到信号）。"
+                                "若你知道缺什么，说「去GitHub找 <关键词>」。")
+                return
+            self._skill_say(legion.skill_candidates_report_text(gaps, res))
+            return
+        if kind == "search":
+            q = (arg or "").strip()
+            if not q:
+                self._skill_say("要搜什么？说「去GitHub找 <关键词>」。")
+                return
+            self._skill_say("⏳ 正在去 GitHub 找「%s」…" % q)
+            w = GHWorker("search", self, query=q)
+            w.done.connect(lambda pl, err, _q=q: self._on_skill_search(pl, err, _q))
+            w.start()
+            return
+        if kind == "install":
+            a = (arg or "").strip()
+            if a.isdigit():
+                idx = int(a) - 1
+                cands = getattr(self, "_last_skill_cands", None) or []
+                if 0 <= idx < len(cands):
+                    self._skill_install(cands[idx])
+                else:
+                    self._skill_say("没有第 %s 个候选 —— 先说「去GitHub找 <关键词>」，"
+                                    "我再按序号装。" % a)
+                return
+            if "/" in a and " " not in a:
+                self._skill_install({"full_name": a})
+                return
+            self._skill_say("「%s」不是序号也不是 owner/repo —— 我先搜，"
+                            "你再按序号说「装第N个」。" % a)
+            self._skill_cmd("search", a)
+            return
+
+    def _on_skill_search(self, payload, err, q):
+        repos = payload or []
+        self._last_skill_cands = repos
+        if err:
+            self._skill_say("❌ GitHub 搜索失败：%s" % err)
+            return
+        if not repos:
+            self._skill_say("GitHub 没搜到「%s」相关仓库 —— 换个关键词再试。" % q)
+            return
+        lines = ["🔎 「%s」候选（搜到 %d 个）：" % (q, len(repos))]
+        for i, r in enumerate(repos[:5]):
+            lines.append("  %d) %s ★%s ｜ %s" % (
+                i + 1, r.get("full_name", "?"), r.get("stars", 0),
+                str(r.get("description") or "")[:60]))
+        lines.append("说「装第N个」我就装（装前自动安全审计）。")
+        self._skill_say("\n".join(lines))
+
+    def _skill_install(self, repo):
+        full = (repo or {}).get("full_name") or ""
+        if not full:
+            self._skill_say("这个候选没有仓库名，装不了。")
+            return
+        self._skill_say("⏳ 正在列 %s 里的 SKILL.md…" % full)
+        w = GHWorker("list", self, repo=full, branch=(repo or {}).get("branch"))
+        w.done.connect(lambda pl, err, _r=repo: self._on_skill_list(pl, err, _r))
+        w.start()
+
+    def _on_skill_list(self, files, err, repo):
+        if err:
+            self._skill_say("❌ 列文件失败：%s" % err)
+            return
+        files = files or []
+        if not files:
+            self._skill_say("这个仓库里没找到 SKILL.md。")
+            return
+        f = files[0]
+        if len(files) > 1:
+            self._skill_say("仓库里有 %d 个 SKILL.md，先装第一个「%s」"
+                            "（想挑别的去主窗口「🔧 装技能」）。"
+                            % (len(files), f.get("slug")))
+        self._skill_say("⏳ 正在安装 %s（含内容级安全审计）…" % (f.get("slug") or ""))
+        w = GHWorker("install", self, repo=(repo or {}).get("full_name"),
+                     path=f.get("path"), branch=(repo or {}).get("branch"),
+                     slug=f.get("slug"))
+        w.done.connect(
+            lambda pl, err, _s=f.get("slug"): self._on_skill_installed(pl, err, _s))
+        w.start()
+
+    def _on_skill_installed(self, payload, err, slug):
+        if err:
+            self._skill_say("❌ 安装失败：%s" % err)
+            return
+        p = payload or {}
+        if p.get("ok"):
+            self._skill_say("✅ 已装好技能「%s」——%s\n若要让某个角色用上，"
+                            "在「编排」页把这个技能挂给它即可。"
+                            % (slug, p.get("msg") or ""))
+        else:
+            self._skill_say("❌ 没装成：%s" % (p.get("msg") or "未知原因"))
+
+    def _on_stop_clicked(self):
+        """⛔ 停止：向 worker 发出合作式停止指令（保留已产出、可续跑）。
+
+        v4.137 新增：此前「终止军团」只存在于 human 模式的授权弹窗里，
+        波内执行阶段（最耗时、也正是最想停的时候）界面上没有任何出口。
+        """
+        if not self._worker_running():
+            self._set_running_ui(False)
+            return
+        r = QMessageBox.question(
+            self, "停止军团",
+            "向军团发出停止指令：\n"
+            "  • 它会跑完正在进行的这一步再收尾，不拦腰砍断成员调用\n"
+            "  • 已产出的东西都保留，可以续跑\n\n"
+            "确定停止？")
+        if r != QMessageBox.Yes:
+            return
+        self.worker.abort()
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.setText("停止中…")
+        _cp = getattr(self, "chat_panel", None)
+        if _cp is not None and hasattr(_cp, "stop_btn"):
+            _cp.stop_btn.setEnabled(False)
+        self.log_view.append(
+            "\n⛔ 停止指令已发出 —— 当前这一步跑完就收尾，产出不会丢。\n")
+
+    def _ask_kill_zombie(self) -> bool:
+        """僵尸任务：worker 还在跑，但它所属的项目已经被删了。
+
+        过去这里只会弹「等它跑完」——可项目都没了，它跑完也只是堆垃圾，
+        产出还没地方挂；同时它占着执行名额，别的项目一律启动不了。
+        返回 True 表示已清理干净、可以继续启动新的。
+        """
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("上一个军团已无处安放")
+        box.setText(
+            "检测到还在执行的军团，它所属的项目已经被删除了（僵尸任务）。\n\n"
+            "它会继续烧 API、继续写产出，产出也没地方挂；\n"
+            "同时它还占着执行名额，别的项目一律启动不了。\n\n"
+            "你要：")
+        b_kill = box.addButton("⛔ 终止它，然后启动这次的", QMessageBox.AcceptRole)
+        b_wait = box.addButton("算了，等它自己跑完", QMessageBox.RejectRole)
+        box.setDefaultButton(b_kill)
+        box.exec()
+        if box.clickedButton() is not b_kill:
+            return False
+        self._detach_worker()
+        self._set_running_ui(False)
+        self.log_view.append(
+            "\n🧹 已终止僵尸任务（项目被删导致的残留执行），现在可以重新开始了。\n")
+        return True
+
+    # ---- v4.146：任务模板（反复任务一键加载）----
+    def _open_task_templates(self):
+        """任务模板管理：保存当前任务为模板 / 套用 / 删除。
+
+        模板存 ~/Documents/小臭玩AI/task_templates.json（legion.save_task_template /
+        load_task_template / save_all_task_templates）。套用把 task_hint 填进任务输入框，
+        开工前能力审计据此跑；建议角色从当前项目团队抽样记录。
+        """
+        dlg = QDialog(self)
+        dlg.setWindowTitle("任务模板")
+        dlg.resize(420, 380)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("已存模板（套用 = 把任务提示填进输入框）："))
+        lst = QListWidget()
+        tpls = legion.load_task_template() or {}
+        for nm in sorted(tpls.keys()):
+            lst.addItem(nm)
+        lay.addWidget(lst, 1)
+        row = QHBoxLayout()
+        b_apply = QPushButton("套用")
+        b_save = QPushButton("存当前任务为模板")
+        b_del = QPushButton("删除")
+        row.addWidget(b_apply)
+        row.addWidget(b_save)
+        row.addWidget(b_del)
+        lay.addLayout(row)
+
+        def _project_roles():
+            if not self.cur_project_id:
+                return []
+            for p in (self.data.get("projects") or []):
+                if isinstance(p, dict) and p.get("id") == self.cur_project_id:
+                    out = []
+                    for w in (p.get("waves") or []):
+                        for m in (w.get("members") or []):
+                            if isinstance(m, dict) and m.get("name"):
+                                out.append(m["name"])
+                    return out[:12]
+            return []
+
+        def _apply():
+            it = lst.currentItem()
+            if not it:
+                QMessageBox.information(dlg, "提示", "先选中一个模板。")
+                return
+            tpl = tpls.get(it.text()) or {}
+            hint = tpl.get("task_hint") or ""
+            if hint:
+                self.task_edit.setText(hint)
+            _more = []
+            if tpl.get("must_roles"):
+                _more.append("建议角色：" + "、".join(tpl["must_roles"]))
+            if tpl.get("must_capabilities"):
+                _more.append("建议能力：" + "、".join(tpl["must_capabilities"]))
+            if _more:
+                self.log_view.append("📋 套用模板「%s」\n  %s"
+                                     % (it.text(), "\n  ".join(_more)))
+            dlg.accept()
+
+        def _save():
+            nm, ok = QInputDialog.getText(dlg, "存为模板", "模板名（如 toutiao_爆文）：")
+            nm = (nm or "").strip()
+            if not ok or not nm:
+                return
+            tpl = {
+                "task_hint": self.task_edit.text().strip(),
+                "must_roles": _project_roles(),
+                "must_capabilities": [],
+            }
+            legion.save_task_template(nm, tpl)
+            tpls[nm] = tpl
+            lst.addItem(nm)
+            self.log_view.append("📋 已存模板「%s」" % nm)
+
+        def _del():
+            it = lst.currentItem()
+            if not it:
+                return
+            nm = it.text()
+            allt = legion.load_task_template() or {}
+            if nm not in allt:
+                return
+            del allt[nm]
+            legion.save_all_task_templates(allt)
+            lst.takeItem(lst.row(it))
+            self.log_view.append("📋 已删模板「%s」" % nm)
+
+        b_apply.clicked.connect(_apply)
+        b_save.clicked.connect(_save)
+        b_del.clicked.connect(_del)
+        dlg.exec()
+
     def _run_legion(self):
         """点 ▶ 启动军团 按钮：默认走"从头重跑"模式。
 
@@ -1817,6 +3276,13 @@ class LegionWindow(QWidget):
             QMessageBox.information(self, "未选择项目", "先在左侧选一个项目。")
             return
         task = self.task_edit.text().strip()
+        # v4.124.8 修复：续跑模式下任务框可能为空（用户中断后没重新填），
+        # 从 checkpoint 复用原任务兜底，别让「缺任务」拦住续跑。
+        if not task and self._pending_resume == "resume":
+            ck = legion.load_checkpoint(p.get("id", ""))
+            if ck and (ck.get("task") or "").strip():
+                task = ck["task"].strip()
+                self.task_edit.setText(task)
         if not task:
             QMessageBox.information(self, "缺任务", "给军团下个任务再启动。")
             return
@@ -1825,28 +3291,55 @@ class LegionWindow(QWidget):
                                     "这个项目还没有成员，先给波次里加人。")
             return
         if self.worker is not None and self.worker.isRunning():
-            QMessageBox.information(self, "军团运行中",
-                                    "已有一个军团在执行，等它跑完再启动。")
-            return
+            # v4.137：分两种情况。项目还在 → 维持「等它跑完」（现在多了 ⛔ 停止 可选）；
+            # 项目已经被删了 → 僵尸任务，必须给「终止它再开跑」的活路，
+            # 否则整个军团从此永久卡在「执行中…」，谁也救不回来。
+            _wpid = getattr(self, "_worker_pid", "")
+            # 认不出归属（_wpid 为空）时按「还在」处理 —— 宁可让人多等一会儿、
+            # 或自己点 ⛔ 停止，也不误伤正在跑的正事。
+            _still_exists = (not _wpid) or any(
+                x.get("id") == _wpid for x in self.data.get("projects", []))
+            if _still_exists:
+                QMessageBox.information(
+                    self, "军团运行中",
+                    "已有一个军团在执行，等它跑完再启动。\n"
+                    "（不想等：点右边的「⛔ 停止」让它先收尾）")
+                return
+            if not self._ask_kill_zombie():
+                return
 
         self.log_view.clear()
-        self.run_btn.setEnabled(False)
-        self.run_btn.setText("执行中…")
+        self._set_running_ui(True)
         # 传 self.data：让验收用上用户在角色库里定制过的「项目经理」
         # v4.124.6：续跑模式 → 带 resume_from + ckpt_run_id
         kwargs = {"legion_data": self.data}
         if self._pending_resume == "resume":
             ck = legion.has_checkpoint(p["id"])
-            if ck:
+            if ck and not ck.get("corrupt"):
                 kwargs["resume_from"] = ck.get("last_completed_wave", 0) + 1
                 kwargs["ckpt_run_id"] = ck.get("run_id", "")
+            elif ck:
+                # v4.125 M-03：存档损坏——明示后全新开跑，不静默跳波
+                self._on_log("⚠️ 检测到损坏的存档：无法续跑，本次从第 1 波全新开始"
+                             "（旧产出仍在运行记录与报告中）。\n")
         self.worker = LegionWorker(self.mw, p, task, **kwargs)
+        self._worker_pid = p.get("id", "")   # v4.137：认得出跑的是哪个项目
         self.worker.log_line.connect(self._on_log)
+        self.worker.log_line.connect(self.chat_panel.on_log)   # v4.135.0 对话页同步
         self.worker.done.connect(self._on_done)
+        self.worker.done.connect(self.chat_panel.on_done)       # v4.135.0 成果进对话流
         self.worker.finished.connect(self._on_finished)
         # 宪法第二章：人手授权闸门（PM 只有建议权，批不批在这里由你定）
         self.worker.auth_request.connect(self._on_auth_request)
+        # v4.124.8：PM 判定「需重走流程」时的拍板弹窗
+        self.worker.replan_request.connect(self._on_replan_request)
+        self.worker.replan_request.connect(self.chat_panel.on_replan)  # v4.135.0 对话页同步
         self.worker.start()
+        # v4.124.8：启用「联系项目经理」（仅验收开启、有 PM 时才有意义）
+        gate_mode = (p.get("gate_mode") or "").strip()
+        if not gate_mode:
+            gate_mode = "advisory" if p.get("gate_enabled") else "off"
+        self.pm_box.setEnabled(gate_mode != "off")
         # 续跑模式用完即清
         self._pending_resume = None
 
@@ -1864,6 +3357,13 @@ class LegionWindow(QWidget):
         if not ck:
             QMessageBox.information(self, "没有 checkpoint",
                                     "这个项目没有存档可续跑。")
+            return
+        if ck.get("corrupt"):
+            # v4.125 M-03：损坏存档——告知而非冒充可续跑
+            QMessageBox.warning(
+                self, "存档损坏",
+                "检测到该项目的存档文件已损坏，无法续跑。\n"
+                "旧产出仍在运行记录与军团报告中；重新开跑将从第 1 波全新开始。")
             return
         # 自定义 QMessageBox 让默认按钮 = "从头重跑"
         box = QMessageBox(self)
@@ -1883,6 +3383,12 @@ class LegionWindow(QWidget):
         clicked = box.clickedButton()
         if clicked is btn_resume:
             self._pending_resume = "resume"
+            # v4.124.8 修复：续跑自动复用存档里的任务，否则任务框空着、
+            # 点「▶ 启动军团」会被 _run_legion 的「缺任务」检查拦住。
+            if not self.task_edit.text().strip():
+                full = legion.load_checkpoint(p.get("id", ""))
+                if full and (full.get("task") or "").strip():
+                    self.task_edit.setText(full["task"].strip())
             self._log_line("📌 已选「从上次续跑」——点「▶ 启动军团」即从第 "
                            f"{ck.get('last_completed_wave', 0)+2} 波启动")
         elif clicked is btn_rescratch:
@@ -1893,33 +3399,161 @@ class LegionWindow(QWidget):
             self._pending_resume = None
 
     def _on_auth_request(self, title, detail):
-        """波次授权弹窗：放行 / 打回重做 / 终止（宪法第二章）。
+        """波次授权（宪法第二章）：渲染进对话页 + 自动切到对话页。
 
-        子线程 emit → Qt 自动排队到主线程，这里是主线程，可安全弹模态框。
+        v4.135.0 改动：**不再自动弹模态框**——模态框会挡住对话页输入，
+        违背「在对话框里说话做决策」的定调。改为把授权渲染进对话时间线，
+        并自动切到对话页；大哥一句话「放行 / 打回 / 终止」即可决策。
+        模态按钮弹窗作为兜底（对话页「授权弹窗」按钮触发 _open_auth_dialog）。
         """
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Question)
-        box.setWindowTitle("⏸ 等待你授权 · 宪法第二章")
-        box.setText(title)
-        box.setInformativeText(
-            "项目经理已给出建议（详情展开）。它是**建议**，不是放行。\n"
-            "放不放行由你点头 —— 这是重要节点的授权闸。")
-        box.setDetailedText(detail)
-        b_pass = box.addButton("✅ 放行下一波", QMessageBox.AcceptRole)
-        b_reject = box.addButton("↩︎ 打回重做", QMessageBox.DestructiveRole)
-        b_abort = box.addButton("⛔ 终止军团", QMessageBox.RejectRole)
-        box.setDefaultButton(b_pass)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is b_pass:
-            val = "pass"
-        elif clicked is b_reject:
-            val = "reject"
-        else:
-            val = "abort"
+        self._auth_title = title
+        self._auth_detail = detail
+        if hasattr(self, "chat_panel"):
+            try:
+                self.chat_panel.begin_auth(title, detail)
+                self._switch_page(1)
+                # v4.145 修复①：把承载军团的顶层页提到前台——用户可能在别的页
+                # （导演台/主对话），否则授权被渲染进不可见的对话页，600s 后静默超时、
+                # 整轮多波次运行被破坏性中止（人不在必「卡死」）。
+                try:
+                    mw = getattr(self, "mw", None)
+                    if mw is not None and hasattr(mw, "_open_legion"):
+                        mw._open_legion()
+                except Exception:
+                    pass
+            except Exception:
+                # v4.145 修复①：聊天渲染失败兜底——弹模态授权框，保证一定有可见入口
+                # （宪法第二章：授权权必须在大哥手里，但入口不能隐身）。
+                try:
+                    self._open_auth_dialog()
+                except Exception:
+                    pass
+
+    def _open_auth_dialog(self):
+        """兜底：用按钮打开授权模态弹窗（与对话输入决策二选一）。
+
+        v4.135.0：从 _on_auth_request 抽出的原弹窗逻辑；只在大哥主动点
+        「授权弹窗」时打开，不自动挡对话输入。宪法第二章按钮兜底保留。
+        """
+        title = getattr(self, "_auth_title", "") or "等待你授权"
+        detail = getattr(self, "_auth_detail", "") or ""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("⏸ 等待你授权 · 宪法第二章")
+        dlg.setMinimumWidth(660)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel(f"<b>{title}</b>"))
+        body = QTextEdit()
+        body.setReadOnly(True)
+        body.setPlainText(detail)
+        body.setMinimumHeight(300)   # v4.131-C：报告原文较长，加高可滚动
+        lay.addWidget(body, 1)
+
+        # v4.131-E：手写的改稿要求（选填）—— 打回时拼在 PM 指令最前面，
+        # 优先级最高。过去大哥看到「建议打回」却没地方说「到底要改成啥样」。
+        lay.addWidget(QLabel("我的改稿要求（选填）：打回时拼在打回指令最前面，"
+                             "优先级高于项目经理的意见"))
+        rev_edit = QTextEdit()
+        rev_edit.setPlaceholderText(
+            "例：数据必须带来源；别写「待核」这种模糊词；结论控制在 3 条以内")
+        rev_edit.setFixedHeight(58)
+        lay.addWidget(rev_edit)
+
+        # v4.124.13：记忆一笔（选填）
+        lay.addWidget(QLabel("记忆一笔（选填）：打回＝打死这个方向（永不再提）；"
+                             "放行＝锁定这个标的（后续波只围绕它）"))
+        note_edit = QLineEdit()
+        note_edit.setPlaceholderText("例：香薰蜡烛 / 逗猫棒 —— 多个方向用顿号分隔")
+        lay.addWidget(note_edit)
+        cb_remember = QCheckBox("跨项目记住（写进长期教训，下次组队自动提醒相关角色）")
+        lay.addWidget(cb_remember)
+
+        btn_row = QHBoxLayout()
+        b_pass = QPushButton("✅ 放行下一波")
+        b_reject = QPushButton("↩︎ 打回重做")
+        b_abort = QPushButton("⛔ 终止军团")
+        b_pass.setDefault(True)
+        btn_row.addWidget(b_pass)
+        btn_row.addWidget(b_reject)
+        btn_row.addWidget(b_abort)
+        lay.addLayout(btn_row)
+
+        result = {"val": "abort"}
+
+        def _finish(val):
+            result["val"] = val
+            dlg.accept()
+
+        b_pass.clicked.connect(lambda: _finish("pass"))
+        b_reject.clicked.connect(lambda: _finish("reject"))
+        b_abort.clicked.connect(lambda: _finish("abort"))
+        dlg.exec()
+
+        val = result["val"]
+        _rev = rev_edit.toPlainText().strip()
         try:
             if self.worker is not None:
+                # v4.131-E：先送改稿要求（worker 端打回时才用），再送记忆与结果
+                if _rev and val == "reject":
+                    self.worker.set_auth_revision(_rev)
+                    self.log_view.append(f"\n✍️ 你的改稿要求：{_rev}\n")
+                elif _rev:
+                    self.log_view.append(
+                        f"\n✍️ 你写了改稿要求但选了放行 —— 只在打回时生效：{_rev}\n")
+                # v4.124.13：先送记忆再送结果（worker 端在 set_auth_result 里解阻塞）
+                self.worker.set_auth_note(note_edit.text(), cb_remember.isChecked())
                 self.worker.set_auth_result(val)
+        except Exception:
+            pass
+        # v4.135.0：同步进对话页（清授权待决态 + 记一句决策）
+        if hasattr(self, "chat_panel"):
+            try:
+                self.chat_panel.auth_resolved()
+                _zh = {"pass": "✅ 放行下一波", "reject": "↩︎ 打回重做",
+                       "abort": "⛔ 终止军团"}.get(val, val)
+                _note = (f"｜改稿：{_rev}" if (_rev and val == "reject") else "")
+                self.chat_panel.say("你", f"授权决定（弹窗）：{_zh}{_note}")
+            except Exception:
+                pass
+
+    def _on_send_pm(self):
+        """v4.124.8：把「联系项目经理」输入框里的话投进 PM 收件箱。
+
+        默认备忘（进队列，下一波界交给 PM）；勾「急件」则本波跑完立即响应。
+        只入队不打断正在跑的波 —— 原子波不可中途杀成员。
+        """
+        text = self.pm_msg_edit.text().strip()
+        if not text:
+            return
+        if self.worker is None or not self.worker.isRunning():
+            QMessageBox.information(self, "军团未运行",
+                                    "军团没在跑，没有项目经理可联系。")
+            return
+        urgent = self.pm_urgent_cb.isChecked()
+        if self.worker.send_message(text, urgent=urgent):
+            kind = "急件" if urgent else "备忘"
+            self.log_view.append(f"\n💬 你 → 项目经理（{kind}）：{text}\n")
+            self.pm_msg_edit.clear()
+            self.pm_urgent_cb.setChecked(False)
+
+    def _on_replan_request(self, reply):
+        """v4.124.8：PM 判定「这条要求会影响后续波次，需重走流程」→ 让你拍板。
+
+        继续 = 忽略重编建议，按原计划跑（要求已留痕）；
+        停下重编 = 中止当前执行（保留已产出、可续跑），你回去改波次再启动。
+        """
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("📋 项目经理：需要重新编计划")
+        box.setText("项目经理认为你这条要求会影响后续波次，需要重新编计划、重新走审批。")
+        box.setInformativeText((reply or "")[:800])
+        b_cont = box.addButton("▶ 继续按原计划跑", QMessageBox.AcceptRole)
+        b_stop = box.addButton("⏹ 停下，我去重编计划", QMessageBox.DestructiveRole)
+        box.setDefaultButton(b_stop)
+        box.exec()
+        clicked = box.clickedButton()
+        try:
+            if self.worker is not None:
+                self.worker.set_replan_result(clicked is b_cont)
         except Exception:
             pass
 
@@ -1928,10 +3562,22 @@ class LegionWindow(QWidget):
         sb = self.log_view.verticalScrollBar()
         sb.setValue(sb.maximum())
 
+    def _log_line(self, text):
+        """往执行日志区追加一行本地提示（续跑/重跑选择等，不走 worker 信号）。
+
+        v4.124.8 修复：此前 _on_resume_clicked 调了 self._log_line() 但本类
+        根本没这个方法 → 选「从上次续跑」后抛 AttributeError 静默失败，
+        用户看不到「还得再点一次启动」的提示，体感就是"点续跑没动静"。
+        """
+        self.log_view.append(text)
+
     def _on_done(self, text):
         if text:
             self.log_view.append("\n" + "=" * 30 + " 军团产出 " + "=" * 30 + "\n")
             self.log_view.append(text)
+        # v4.124.15：报告落盘 —— 此前成稿只在日志区（内存）里显示一遍，
+        # 关掉窗口就什么都没了（「成功跑完了，但是我的报告没有给我」）。
+        self._save_and_deliver_report(text)
         # v4.124：跑完给班子档案记一笔战绩——这个阵容到底行不行，
         # 下次同类需求 PM 翻旧账时会优先推荐跑通过的。
         try:
@@ -1943,16 +3589,122 @@ class LegionWindow(QWidget):
                 legion.save_legion(self.data)
         except Exception as e:
             log.warning("回填班子战绩失败: %s", e)
+        # v4.135：跑批检测到的技能缺口 → 自动去 GitHub 找候选，弹「你批了才装」面板，
+        # 闭合「差技能→找→批→装→挂」断环（此前缺口只写文字、搜索只活在手按钮里）。
+        try:
+            _gm = getattr(self.worker, "last_meta", None) or {}
+            _sk = _gm.get("skill_gaps") or []
+            if _sk:
+                dlg = SkillGapCandidateDialog(
+                    self, _sk, mw=self.mw,
+                    project=self._cur_project(), data=self.data)
+                dlg.exec()
+        except Exception as e:
+            log.warning("技能缺口候选面板打开失败: %s", e)
+
+    # ---- v4.124.15：报告落盘 + 交付 ----
+    def _save_and_deliver_report(self, text):
+        """把军团成稿写成 md 落盘、挂进交付物区，并给「打开」入口。"""
+        p = self._cur_project() or {}
+        meta = getattr(self.worker, "last_meta", None) or {}
+        # 兜底：UI 没收到正文（崩溃/信号丢失）→ 从落盘产出重建，至少把稿捞回来
+        if (not text or text.strip() == "（军团未产出内容）") and meta.get("run_id"):
+            text = legion.rebuild_output_text(meta.get("run_id", ""))
+            if text:
+                self.log_view.append("♻️ 产出已从运行记录重建（自动找回，避免白跑）")
+        if not text or text.strip() == "（军团未产出内容）":
+            self.log_view.append("⚠️ 本次没有可交付的产出（未落盘报告）")
+            return
+        # v4.125 M-09：worker 线程内已兜底落盘（关窗也不丢）——UI 直接复用，
+        # 不再重复写第二份；仅当 worker 落盘失败（如目录被锁）才由 UI 补写。
+        path = meta.get("report_path") or ""
+        if not path or not os.path.exists(path):
+            path = legion.save_report(
+                p.get("name", "") or "军团",
+                meta.get("task", "") or (self.task_edit.text() if hasattr(self, "task_edit") else ""),
+                text,
+                run_id=meta.get("run_id", ""),
+                n_waves=meta.get("n_waves", 0),
+                n_done=meta.get("n_done", 0),
+                status=meta.get("status", "done"),
+                gate_reports=meta.get("gate_reports"),
+                summary=meta.get("summary", ""),
+                capability=meta.get("capability_text", ""),
+                missing_skills=meta.get("missing_skills_text", ""),
+            )
+        if not path:
+            self.log_view.append("⚠️ 报告落盘失败（内容仍在上方日志里，可手动复制）")
+            return
+        self._last_report = path
+        _has_sum = bool((meta.get("summary") or "").strip())
+        self.log_view.append(
+            f"\n📄 报告已保存：{path}"
+            + ("（含项目经理结项总结）" if _has_sum else "（⚠️ 缺结项总结，仅产出拼接）"))
+        # 挂进主窗口交付物区（双击即可打开）
+        try:
+            mw = getattr(self, "mw", None)
+            if mw is not None and hasattr(mw, "_on_deliverable_added"):
+                mw._on_deliverable_added(path, "md", os.path.basename(path))
+                self.log_view.append("📦 已加入交付物区（主界面右侧，双击可打开）")
+        except Exception as e:
+            log.warning("登记交付物失败: %s", e)
+        # 直接问一句要不要打开 —— 跑完最想要的就是看到它
+        try:
+            box = QMessageBox(self)
+            box.setWindowTitle("军团跑完了")
+            box.setText("报告已生成，要现在打开吗？")
+            box.setInformativeText(path)
+            b_open = box.addButton("📄 打开报告", QMessageBox.AcceptRole)
+            box.addButton("稍后", QMessageBox.RejectRole)
+            box.setDefaultButton(b_open)
+            box.exec()
+            if box.clickedButton() is b_open:
+                self._open_path(path)
+        except Exception:
+            pass
+
+    def _open_last_report(self):
+        """打开最近一份报告（手动入口，防止弹窗被略过后找不回来）。"""
+        path = getattr(self, "_last_report", "") or legion.latest_report()
+        if not path or not os.path.exists(path):
+            QMessageBox.information(self, "报告", "还没有生成过报告。")
+            return
+        if not self._open_path(path):
+            QMessageBox.information(self, "报告", f"已找到但打不开：\n{path}")
+
+    @staticmethod
+    def _open_path(path):
+        try:
+            os.startfile(path)
+            return True
+        except Exception:
+            try:
+                import subprocess
+                subprocess.Popen(["notepad", path])
+                return True
+            except Exception:
+                return False
 
     def _on_finished(self):
-        self.run_btn.setEnabled(True)
-        self.run_btn.setText("▶ 启动军团")
+        # v4.137：统一由 _set_running_ui 复位（顺带关闭「联系项目经理」入口）
+        self._set_running_ui(False)
+        self._worker_pid = ""
+        # v4.124.7：任务结束（跑完/中断/续跑）后刷新项目列表与续跑入口，
+        # 让刚写入的 checkpoint 立即变成可见的 🟡 + ⏵ 续跑按钮。
+        # 否则按钮停留在启动前的隐藏状态，用户会以为"没存上"。
+        try:
+            self._refresh_projects()
+            self._refresh_head()
+        except Exception as e:
+            log.warning("_on_finished 刷新续跑入口失败: %s", e)
 
     def closeEvent(self, e):
-        if self.worker is not None and self.worker.isRunning():
+        if self._worker_running():
             r = QMessageBox.question(
                 self, "军团运行中",
-                "军团仍在执行。关闭窗口不会中断它，产出也不会丢（会写进日志）。确定关闭？")
+                "军团仍在执行。关闭窗口不会中断它，产出也不会丢（会写进日志）。\n\n"
+                "（想让它停下来：点任务框右边的「⛔ 停止」，别关窗口。）\n\n"
+                "确定关闭？")
             if r != QMessageBox.Yes:
                 e.ignore()
                 return
