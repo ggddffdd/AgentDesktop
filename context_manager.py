@@ -179,6 +179,22 @@ class ContextManager:
 
 _MGRS = {}
 
+# 审计修复 E1：context 工具（context_compress/context_summary）在 worker 线程里
+# 无参调用 get_context_manager()，而 v4.73 的按 sid 隔离只改了 ui.py 填充侧 →
+# 工具永远读从未 add_message 的 _global 空实例，功能静默失效。
+# 默认 sid 用**线程局部**存：AgentWorker.run() 起头注入、并发工具池的包装里注入；
+# 不同 worker/线程互不污染，GUI 线程不设则维持 _global 旧行为。
+_SID_LOCAL = threading.local()
+
+
+def set_default_sid(sid):
+    """为当前线程绑定默认上下文管理器 sid（None=清除回退 _global）。"""
+    _SID_LOCAL.sid = sid
+
+
+def get_default_sid():
+    return getattr(_SID_LOCAL, "sid", None)
+
 
 def get_context_manager(sid=None):
     """返回与指定会话绑定的上下文管理器（按 sid 隔离，避免跨会话记忆/摘要串台）。
@@ -187,8 +203,11 @@ def get_context_manager(sid=None):
     导致不同对话的上下文摘要、提取的关键信息互相污染（对话A聊小说、对话B聊电力会混在一起）。
     现在按 sid 缓存独立实例，各自读写 context_summary_{sid}.json / key_info_{sid}.json。
 
-    sid 为 None 时回退全局实例（兼容旧调用），但正常路径必须由调用方传入会话 sid。
+    sid 为 None 时先回退当前线程默认 sid（E1 的 set_default_sid），仍无则回退
+    全局实例（兼容旧调用）；正常路径必须由调用方传入会话 sid。
     """
+    if sid is None:
+        sid = get_default_sid()
     if sid is None:
         sid = "_global"
     key = str(sid)

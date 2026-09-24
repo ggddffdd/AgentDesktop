@@ -443,7 +443,12 @@ def _h_legion_board(cfg, app_dir, args, progress=None):
 def _h_write_file(cfg, app_dir, args, progress=None):
     p = args.get("path", "")
     r = tool_write_file(app_dir, p, args.get("content", ""))
-    return (r, [(p, "file", os.path.basename(p))] if p else [], None)
+    # 审计修复 E3：仅写入成功才登记交付物。原实现只要 path 非空就挂号，
+    # "写入失败：…"/"拒绝：…"/"未提供路径" 也会生成假文件卡片；
+    # 顺带把交付物路径解析为真实落盘的绝对路径（tool_write_file 内部同规则），可点击打开。
+    if p and r.startswith("已写入"):
+        return (r, [(os.path.abspath(os.path.join(app_dir, p)), "file", os.path.basename(p))], None)
+    return (r, [], None)
 
 @register_tool("run_command", dangerous=True)
 def _h_run_command(cfg, app_dir, args, progress=None):

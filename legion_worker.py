@@ -1670,7 +1670,10 @@ class LegionWorker(QThread):
                     if _brief:
                         self._briefing = _brief   # 成员派发也用（纪律+交接物注 prompt）
                         _rid = (proj or {}).get("recipe_id") or ""
-                        if legion.save_team_briefing(_rid, task, _brief):
+                        # 审计修复 E5：save_team_briefing 返回 (ok, recipe_id) 二元组，
+                        # 非空元组真值恒为 True → 失败也会弹"已存档"。显式解包判断。
+                        _bok, _brid = legion.save_team_briefing(_rid, task, _brief)
+                        if _bok:
                             self._log("📋 本队规矩已存档（工作纪律/交接物/交付形态）"
                                       "——下次同类任务直接复用")
                 except Exception as _be:

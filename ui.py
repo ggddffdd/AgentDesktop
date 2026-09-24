@@ -434,6 +434,23 @@ class PerfWorker(QThread):
             self.done.emit({"error": str(e)})
 
 
+class GuiAsyncJob(QThread):
+    """审计修复 D1：把阻塞型 subprocess/网络调用丢到后台线程跑，
+    结果（或异常信息）经 result 信号回投主线程处理，GUI 不再假死。
+    约定 res = {"ok": True, "data": fn返回值} 或 {"ok": False, "error": str}。"""
+    result = Signal(object)
+
+    def __init__(self, fn):
+        super().__init__()
+        self._fn = fn
+
+    def run(self):
+        try:
+            self.result.emit({"ok": True, "data": self._fn()})
+        except Exception as e:
+            self.result.emit({"ok": False, "error": str(e)})
+
+
 class OrchestrateWorker(QThread):
     """小说一条龙（3Phase+2检查）。短篇按目标字数一次性写满；长篇按章，用「续写」出下一章。
     交互：爆款雷达后弹出选项让你选定（模型不自决）；运行中可随时暂停并插入修改意见。"""
@@ -5701,8 +5718,19 @@ class ChatWindow(QMainWindow):
             self.status_label.setText(f"加密操作失败：{e}")
 
     # ============ v4.76：自动备份 / 版本更新 处理器 ============
+    def _async_job(self, fn, on_done, busy_msg=""):
+        """审计修复 D1：子线程跑阻塞 fn，结果经信号回主线程 on_done(res)。
+        线程引用挂在 _spawn_thread graveyard，跑完自动摘除，规避提前析构崩溃。"""
+        if busy_msg:
+            self.status_label.setText(busy_msg)
+        w = GuiAsyncJob(fn)
+        w.result.connect(on_done)
+        self._spawn_thread(w)
+        w.start()
+        return w
+
     def _save_autobackup_settings(self):
-        """保存自动备份计划：写入 config，并用 schtasks 创建/更新/删除系统任务。"""
+        """保存自动备份计划：写入 config（本地即时），schtasks 调用转后台线程。"""
         import subprocess
         freq = self.ab_freq_combo.currentData()
         t = self.ab_time_edit.time().toString("HH:mm")
@@ -5711,46 +5739,61 @@ class ChatWindow(QMainWindow):
         self._save_cfg()
         exe = sys.executable
         task = "小臭玩AI自动备份"
+
+        def _status(res):
+            # D1：统一回投处理器——成功显示子线程返回文案，异常显示错误
+            self.status_label.setText(
+                res["data"] if res.get("ok") else f"自动备份操作失败：{res.get('error')}")
+
         if not freq:
-            try:
-                subprocess.run(["schtasks", "/Delete", "/TN", task, "/F"],
-                               capture_output=True, text=True, timeout=20,
-                               creationflags=_NO_WINDOW)
-            except Exception:
-                pass
-            self.status_label.setText("已关闭自动备份（系统计划任务已移除）")
+            def _del(_task=task, _sub=subprocess):
+                try:
+                    _sub.run(["schtasks", "/Delete", "/TN", _task, "/F"],
+                             capture_output=True, text=True, timeout=20,
+                             creationflags=_NO_WINDOW)
+                except Exception:
+                    pass  # 任务本就不存在/无权限：状态文案照旧
+                return "已关闭自动备份（系统计划任务已移除）"
+            self._async_job(_del, _status, "正在移除计划任务…")
             return
         cmd = f'"{exe}" --autobackup'
-        try:
-            r = subprocess.run(
-                ["schtasks", "/Create", "/TN", task, "/TR", cmd,
-                 "/SC", freq.upper(), "/ST", t, "/F", "/RL", "HIGHEST"],
-                capture_output=True, text=True, timeout=30,
-                creationflags=_NO_WINDOW)
-            ok = r.returncode == 0
-            msg = (r.stdout or r.stderr or "").strip()
-        except Exception as e:
-            ok, msg = False, str(e)
-        if ok:
-            self.status_label.setText(f"自动备份已设置：{freq} {t}（系统任务计划程序）")
-        else:
-            self.status_label.setText(f"自动备份设置失败：{msg}")
+
+        def _create(_task=task, _cmd=cmd, _freq=freq, _t=t, _sub=subprocess):
+            try:
+                r = _sub.run(
+                    ["schtasks", "/Create", "/TN", _task, "/TR", _cmd,
+                     "/SC", _freq.upper(), "/ST", _t, "/F", "/RL", "HIGHEST"],
+                    capture_output=True, text=True, timeout=30,
+                    creationflags=_NO_WINDOW)
+                ok = r.returncode == 0
+                msg = (r.stdout or r.stderr or "").strip()
+            except Exception as e:
+                ok, msg = False, str(e)
+            if ok:
+                return f"自动备份已设置：{_freq} {_t}（系统任务计划程序）"
+            return f"自动备份设置失败：{msg}"
+        self._async_job(_create, _status, "正在创建计划任务…")
 
     def _run_backup_now(self):
-        """立即执行一次备份（调用本 exe 的 --autobackup）。"""
+        """立即执行一次备份（整目录 copytree 可长达分钟级——审计修复 D1：转后台线程）。"""
         import subprocess
-        try:
-            r = subprocess.run([sys.executable, "--autobackup"],
-                               capture_output=True, text=True, timeout=60,
-                               creationflags=_NO_WINDOW)
-            msg = (r.stdout or r.stderr or "备份完成").strip()
-        except Exception as e:
-            msg = f"备份失败：{e}"
-        QMessageBox.information(self, "立即备份", msg)
-        self.status_label.setText(msg)
+
+        def _do(_sub=subprocess):
+            r = _sub.run([sys.executable, "--autobackup"],
+                         capture_output=True, text=True, timeout=600,
+                         creationflags=_NO_WINDOW)
+            return (r.stdout or r.stderr or "备份完成").strip()
+
+        def _done(res):
+            msg = res["data"] if res.get("ok") else f"备份失败：{res.get('error')}"
+            QMessageBox.information(self, "立即备份", msg)
+            self.status_label.setText(msg)
+
+        self._async_job(_do, _done, "正在后台备份（大目录可能需较长时间，界面可正常操作）…")
 
     def _check_update(self):
-        """v4.76：检查更新——本地构建说明 或 访问 update_check_url 比对版本。"""
+        """v4.76：检查更新——本地构建说明 或 访问 update_check_url 比对版本。
+        审计修复 D1：网络请求转后台线程，失败/超时不再冻结 GUI 8 秒。"""
         import json
         from config import APP_VERSION, APP_BUILD_DATE, UPDATE_CHECK_URL
         url = self.cfg.get("update_check_url", "") or UPDATE_CHECK_URL
@@ -5761,11 +5804,20 @@ class ChatWindow(QMainWindow):
                 "本程序为本地构建版本，无在线更新通道。\n"
                 "如需更新，请联系构建者重新打包新版即可。")
             return
-        try:
+
+        def _fetch(_url=url):
             import urllib.request
-            req = urllib.request.Request(url, headers={"User-Agent": "小臭玩AI"})
+            req = urllib.request.Request(_url, headers={"User-Agent": "小臭玩AI"})
             with urllib.request.urlopen(req, timeout=8) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+                return json.loads(resp.read().decode("utf-8"))
+
+        def _done(res):
+            if not res.get("ok"):
+                QMessageBox.warning(
+                    self, "检查更新",
+                    f"检查失败：{res.get('error')}\n（网络受限时属正常，本地构建无需在线更新）")
+                return
+            data = res.get("data") or {}
             latest = data.get("version", "")
             if not latest or latest == APP_VERSION:
                 QMessageBox.information(self, "检查更新", f"已是最新版本：{APP_VERSION}")
@@ -5778,10 +5830,8 @@ class ChatWindow(QMainWindow):
                 dlg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
                 if dlg.exec() == QMessageBox.Yes and data.get("url"):
                     QDesktopServices.openUrl(QUrl(data["url"]))
-        except Exception as e:
-            QMessageBox.warning(
-                self, "检查更新",
-                f"检查失败：{e}\n（网络受限时属正常，本地构建无需在线更新）")
+
+        self._async_job(_fetch, _done, "正在检查更新…")
 
     def _run_perf(self, save_baseline=False):
         """v4.78：后台跑性能基线，避免阻塞 UI。"""
@@ -9752,6 +9802,41 @@ class ChatWindow(QMainWindow):
             if w is not None and w.isRunning():
                 w.request_stop()
                 w.wait(3000)
+        except Exception:
+            pass
+        # 审计修复 D2：其余后台线程统一回收（原只收 _agent_worker，ASR/TTS/图像/
+        # 视频/编排跑着关窗 → 退出时多个 "QThread: Destroyed while thread is
+        # still running" 崩溃弹窗）。先礼貌 request_stop，超时才 terminate。
+        for _attr in ("_asr_thread", "_tts_thread", "_image_thread", "_video_thread",
+                      "_orch_worker", "_perf_worker"):
+            try:
+                _w = getattr(self, _attr, None)
+                if _w is None or not _w.isRunning():
+                    continue
+                if hasattr(_w, "request_stop"):
+                    try:
+                        _w.request_stop()
+                    except Exception:
+                        pass
+                if not _w.wait(2000):
+                    _w.terminate()  # 进程即将退出，硬停可接受
+                    _w.wait(1000)
+            except Exception:
+                pass
+        # graveyard 里的短任务线程（D1 计划任务/备份/检查更新等）也给一次收尾机会
+        try:
+            for _w in list(getattr(self, "_thread_graveyard", [])):
+                try:
+                    if _w.isRunning():
+                        if not _w.wait(500):
+                            _w.terminate()
+                            _w.wait(500)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            self.clipboard_monitor.stop()  # D2：停剪贴板 QTimer 轮询
         except Exception:
             pass
         try:

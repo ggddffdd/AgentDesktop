@@ -18,6 +18,7 @@ import task_resume  # v4.101：断点续传检查点
 from config import MAX_AGENT_STEPS, TOOL_RESULT_LIMIT, get_all_tools
 import tools
 import memory_store
+import context_manager  # 审计修复 E1：context 工具按当前会话取管理器
 from step_tracer import StepTracer  # v4.59 步级追踪
 from task_graph import TaskGraph      # v4.60 任务图引擎
 from agent_node import AgentNode      # v4.60 多Agent节点
@@ -178,6 +179,13 @@ class AgentWorker(QThread):
         except Exception:
             pass
         self.mcp_clients = mcp_clients or []
+        # 审计修复 E1：GUI 线程（__init__ 所在线程）安全读取当前激活会话 sid，
+        # run() 与并发工具池线程据此绑定默认上下文管理器，避免误用 _global。
+        try:
+            self._ctx_sid = (None if self._isolated
+                             else getattr(mw.store.active(), "sid", None))
+        except Exception:
+            self._ctx_sid = None
         self._confirm_event = threading.Event()
         self._confirm_val = False
         self._stop_requested = False
@@ -956,6 +964,9 @@ class AgentWorker(QThread):
 
     def run(self):
         mw = self.mw
+        # 审计修复 E1：本 worker 线程绑定当前会话的上下文管理器（线程局部，
+        # 不污染其他 worker/GUI 线程；tools.py 的 context 工具无 sid 参数走此默认值）
+        context_manager.set_default_sid(self._ctx_sid)
         import config
         from config import APP_DIR
         mw.app_dir = APP_DIR  # 缓存供工具调用使用
@@ -1606,7 +1617,13 @@ class AgentWorker(QThread):
                     "name": name, "args": args, "index": idx, "total": total
                 })
                 t0 = time.time()
-                futures[pool.submit(tools.exec_tool, mw.cfg, APP_DIR, name, args)] = (tc, t0, idx)
+                # 审计修复 E1：线程池工作线程是全新线程，不继承 thread-local——
+                # 在任务函数内先注入默认 sid，并发执行的 context 工具同样命中当前会话。
+                _ctx_sid = self._ctx_sid
+                def _exec_with_ctx(_name=name, _args=args, _sid=_ctx_sid):
+                    context_manager.set_default_sid(_sid)
+                    return tools.exec_tool(mw.cfg, APP_DIR, _name, _args)
+                futures[pool.submit(_exec_with_ctx)] = (tc, t0, idx)
 
             for future in as_completed(futures):
                 # v4.58：stop 后跳过剩余并发工具的结果渲染（工具已提交无法取消，但不渲染）

@@ -3397,6 +3397,13 @@ def _load_legion_inner():
         data.setdefault("version", SCHEMA_VERSION)
         data.setdefault("role_library", default_role_library())
         data.setdefault("projects", [])
+        # 审计修复 E4：projects 被污染成非列表（dict/str）时，后续任何遍历都会在
+        # _load_legion_inner 里抛异常 → 整库回落 default_legion()（用户军团"消失"）。
+        # 这里先纠正类型，下面的自愈/种子循环再逐项防御，保证坏数据只隔离不扩散。
+        if not isinstance(data.get("projects"), list):
+            log.warning("legion.json 的 projects 不是列表（%s），已重置为空列表",
+                        type(data.get("projects")).__name__)
+            data["projects"] = []
         # v4.124：班子档案（组织记忆）—— 跑通过的阵容留档，下次同类需求复用
         data.setdefault("team_recipes", [])
         # 预置角色缺失自动补齐：旧数据升级能拿到新增预置角色（如电商标），
@@ -3413,7 +3420,8 @@ def _load_legion_inner():
         # v4.148.2：成品配方种子 —— 新增默认配方（竞品监控团）只种一次；
         # 用户手动删掉后靠 preset_projects_seeded 标记不复活，尊重用户数据。
         if not data.get("preset_projects_seeded"):
-            _names = [str(p.get("name") or "") for p in data["projects"]]
+            # 审计修复 E4：逐项 isinstance 过滤（原假设全是 dict，混入脏元素即整库回落）
+            _names = [str(p.get("name") or "") for p in data["projects"] if isinstance(p, dict)]
             if not any(n == "竞品监控团" for n in _names):
                 for _p in default_projects():
                     if _p.get("name") == "竞品监控团":
@@ -4070,13 +4078,14 @@ def save_team_briefing(recipe_id, need, briefing):
     自带落盘，不依赖调用方持有内存引用）。
     优先挂 recipe_id 对应的班子；项目没绑班子（recipe_id 空）则按相似度
     挂最像的历史班子；实在没有就新建一条轻量档案（无阵容、只有 briefing）。
+    返回 (ok: bool, recipe_id: str)（审计修复 E5：全路径统一二元组，早退分支不再裸 False）。
     """
     if not isinstance(briefing, dict) or not any((briefing or {}).values()):
-        return False
+        return False, ""  # 审计修复 E5：统一返回 (ok, recipe_id) 二元组
     try:
         data = load_legion()
     except Exception:
-        return False
+        return False, ""  # 审计修复 E5：同上（原裸 False 被调用方解包即崩）
     recipes = data.setdefault("team_recipes", [])
     if not isinstance(recipes, list):
         recipes = []

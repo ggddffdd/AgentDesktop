@@ -189,5 +189,7 @@ class SessionStore:
         if query:
             q = query.strip().lower()
             items = [s for s in items if q in (s.title or "").lower()]
-        items.sort(key=lambda s: (not s.pinned, s.created), reverse=True)
+        # 审计修复 E2：原 (not pinned, created)+reverse=True 使 pinned=False→0 排在最后，
+        # 置顶会话沉底（与 docstring「置顶优先」相反）。改用 (pinned, created) 降序。
+        items.sort(key=lambda s: (s.pinned, s.created), reverse=True)
         return items
