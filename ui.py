@@ -9776,8 +9776,11 @@ class ChatWindow(QMainWindow):
 
     def _clear_ghost(self):
         try:
-            QApplication.processEvents()
-            self.repaint()
+            # 审计修复 D5：去掉同步 QApplication.processEvents()——本函数会在
+            # QTimer.singleShot 回调（_fire_reminder）与流式槽内被调，
+            # processEvents 重入 _on_automation_tick/流式槽可致双弹提醒、嵌套渲染错乱。
+            # update() 异步标脏 + RedrawWindow 硬刷新已足够去残影，不处理事件队列。
+            self.update()
             if sys.platform.startswith("win"):
                 user32 = ctypes.windll.user32
                 RDW_ERASE = 0x0001

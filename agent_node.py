@@ -153,8 +153,14 @@ class AgentNode:
                 messages.append({"role": "assistant", "content": content})
                 break
         else:
-            # 达到最大轮次：拿最后一轮的文本
-            output = messages[-1].get("content", "") if messages else ""
+            # 达到最大轮次：审计修复 E10——for-else 触发时最后一条必是 role="tool"
+            # 的截断回执，原实现把它当正文塞进 state，原始工具 JSON 残片会注入
+            # 下游 agent 上下文。改为反向找最近一条非空 assistant 文本。
+            output = next(
+                (m.get("content", "") for m in reversed(messages)
+                 if m.get("role") == "assistant" and m.get("content")),
+                "",
+            )
 
         # 更新 state
         state = dict(state)

@@ -914,11 +914,13 @@ class SkillInstallDialog(QDialog):
 
     def _run(self, mode, **kw):
         self.worker = GHWorker(mode, self, **kw)
-        self.worker.done.connect(self._on_result)
+        # 审计修复 E7：发射时把 mode 绑进闭包。原 _on_result 读 self.worker.mode
+        # 取到的是"最新"worker——快速切换文件/仓库时旧请求回调拿错 mode，
+        # dict payload 被当 list 渲染，列表/预览串写。
+        self.worker.done.connect(lambda p, e, _m=mode: self._on_result(_m, p, e))
         self.worker.start()
 
-    def _on_result(self, payload, err):
-        mode = self.worker.mode if self.worker else ""
+    def _on_result(self, mode, payload, err):
         if err:
             self._busy(False, "❌ " + err)
             return

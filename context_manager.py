@@ -87,16 +87,22 @@ class ContextManager:
 
     # ---------- 核心 ----------
     def add_message(self, role, content, metadata=None):
-        """添加消息到上下文，并在超过阈值时自动压缩"""
-        self.messages.append({
-            "role": role,
-            "content": content,
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "metadata": metadata or {},
-        })
-        self.extract_key_info(content)
-        if len(self.messages) > self.compress_threshold:
-            self._compress()
+        """添加消息到上下文，并在超过阈值时自动压缩。
+
+        审计修复 D4：全程持 RLock（self._lock 本就是 RLock，内层 _save_*/_compress
+        重入安全）——UI 线程 add_message 与 agent 线程 context 工具并发时
+        不再无锁改 messages/key_info。
+        """
+        with self._lock:
+            self.messages.append({
+                "role": role,
+                "content": content,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "metadata": metadata or {},
+            })
+            self.extract_key_info(content)
+            if len(self.messages) > self.compress_threshold:
+                self._compress()
 
     def _compress(self):
         """自动压缩：保留最近 max_window 条，更早的历史做启发式摘要归档"""
@@ -126,9 +132,15 @@ class ContextManager:
         return summary
 
     def compress_with_llm(self, cfg=None):
-        """调用免费 LLM 对超窗历史做真实摘要，返回摘要文本。失败回退启发式。"""
-        history = (self.messages[:-self.max_window]
-                   if len(self.messages) > self.max_window else self.messages)
+        """调用免费 LLM 对超窗历史做真实摘要，返回摘要文本。失败回退启发式。
+
+        审计修复 D4：读历史/写摘要/裁剪 messages 都持锁；唯独网络 LLM 调用
+        放在锁外——否则压缩期间会阻塞 GUI 线程的 add_message 数十秒。
+        """
+        with self._lock:
+            history = (list(self.messages[:-self.max_window])
+                       if len(self.messages) > self.max_window
+                       else list(self.messages))
         if not history:
             return "（没有可压缩的历史）"
         text = "\n".join(f"{m['role']}: {m['content']}" for m in history)
@@ -137,44 +149,60 @@ class ContextManager:
             "保留：1)关键决策 2)待办事项 3)关键实体(人名/项目名) 4)用户偏好。"
             "用编号列表输出，不要编造信息。\n\n" + text
         )
-        llm_text = _call_summary_llm(prompt, cfg)
-        if llm_text is None:
-            s = self._heuristic_summary(history)
-            self.summaries.append({**s, "method": "heuristic-fallback"})
+        llm_text = _call_summary_llm(prompt, cfg)  # 锁外网络调用
+        with self._lock:
+            if llm_text is None:
+                s = self._heuristic_summary(history)
+                self.summaries.append({**s, "method": "heuristic-fallback"})
+                self._save_summaries()
+                return "（LLM 不可用，已用启发式摘要）\n" + json.dumps(s, ensure_ascii=False)[:600]
+            entry = {
+                "period": f"{history[0]['timestamp']} ~ {history[-1]['timestamp']}",
+                "message_count": len(history),
+                "summary": llm_text,
+                "method": "llm",
+            }
+            self.summaries.append(entry)
             self._save_summaries()
-            return "（LLM 不可用，已用启发式摘要）\n" + json.dumps(s, ensure_ascii=False)[:600]
-        entry = {
-            "period": f"{history[0]['timestamp']} ~ {history[-1]['timestamp']}",
-            "message_count": len(history),
-            "summary": llm_text,
-            "method": "llm",
-        }
-        self.summaries.append(entry)
-        self._save_summaries()
-        # 真实摘要后，把超窗部分裁剪，仅留最近窗口
-        self.messages = self.messages[-self.max_window:]
-        return llm_text
+            # 真实摘要后，把超窗部分裁剪，仅留最近窗口
+            self.messages = self.messages[-self.max_window:]
+            return llm_text
 
     def get_compressed_context(self):
-        """获取压缩后的上下文（供工具/调试查看）"""
-        return {
-            "recent_messages": self.messages,
-            "key_info": self.key_info,
-            "summaries": self.summaries,
-        }
+        """获取压缩后的上下文（供工具/调试查看）。
+
+        审计修复 D4：持锁取快照（浅拷贝即可——调用方只读，但防迭代期间
+        另一线程 append 导致 dict/list changed size 异常）。
+        """
+        with self._lock:
+            return {
+                "recent_messages": list(self.messages),
+                "key_info": {k: list(v) for k, v in self.key_info.items()},
+                "summaries": list(self.summaries),
+            }
 
     def extract_key_info(self, text):
-        """从文本中提取关键信息（轻量正则）"""
+        """从文本中提取关键信息（轻量正则）。
+
+        审计修复 D4：持锁修改 key_info（与 add_message/compress 同一把锁）；
+        去重后截断（todos 200 / entities 500，保留最近），防无界增长
+        ——英文词正则会把 key_info_{sid}.json 单调撑大（F5 的落盘节流另批处理）。
+        """
         todos = re.findall(r'(?:待办|TODO|任务)[:：]\s*(.+)', text)
         entities = re.findall(r'([A-Za-z]{2,})', text)
-        self.key_info["todos"] = list(dict.fromkeys(self.key_info["todos"] + todos))
-        self.key_info["entities"] = list(dict.fromkeys(self.key_info["entities"] + entities))
-        self._save_key_info()
+        with self._lock:
+            self.key_info["todos"] = list(
+                dict.fromkeys(self.key_info["todos"] + todos))[-200:]
+            self.key_info["entities"] = list(
+                dict.fromkeys(self.key_info["entities"] + entities))[-500:]
+            self._save_key_info()
 
     def clear(self):
-        self.messages = []
-        self.summaries = []
-        self._save_summaries()
+        # 审计修复 D4：与 add_message/compress 同锁，防清空与追加竞态
+        with self._lock:
+            self.messages = []
+            self.summaries = []
+            self._save_summaries()
 
 
 _MGRS = {}

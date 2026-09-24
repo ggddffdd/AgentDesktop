@@ -1446,6 +1446,25 @@ def tool_write_file(app_dir, path, content):
         return f"写入失败：{e}"
 
 
+def _kill_proc_tree(proc):
+    """审计修复 E9：超时后杀掉整棵进程树。subprocess.run 的 timeout 只 kill
+    直接子进程（powershell/sh），它拉起的 python/ffmpeg 等孙进程成孤儿，
+    继续占 CPU/文件锁，原返回文案"已终止"属谎报。"""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                           capture_output=True, timeout=10,
+                           creationflags=_NO_WINDOW)
+        else:
+            import signal
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
 def tool_run_command(app_dir, command):
     if not command or not command.strip():
         return "未提供命令"
@@ -1453,21 +1472,33 @@ def tool_run_command(app_dir, command):
         import platform
         # v4.60：Windows 上强制走 PowerShell，避免 cmd.exe 不认识 Get-ChildItem 等命令
         if platform.system() == "Windows":
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 ["powershell", "-Command", command],
-                cwd=app_dir, capture_output=True, timeout=60,
-                creationflags=_NO_WINDOW,
+                cwd=app_dir, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, creationflags=_NO_WINDOW,
             )
         else:
-            proc = subprocess.run(
+            # POSIX 维持 shell 既定语义（C1 只收敛 Windows 注入面）；
+            # start_new_session 使子进程独立成组，超时可 killpg 杀全树。
+            proc = subprocess.Popen(
                 command, shell=True, cwd=app_dir,
-                capture_output=True, timeout=60, creationflags=_NO_WINDOW,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                start_new_session=True,
             )
-    except subprocess.TimeoutExpired:
-        return "命令执行超时（>60s），已终止"
     except Exception as e:
         return f"命令执行失败：{e}"
-    raw = (proc.stdout or b"") + (proc.stderr or b"")
+    try:
+        stdout, stderr = proc.communicate(timeout=60)
+    except subprocess.TimeoutExpired:
+        _kill_proc_tree(proc)
+        try:
+            stdout, stderr = proc.communicate(timeout=10)
+        except Exception:
+            stdout = stderr = b""
+        return "命令执行超时（>60s），已连同其子进程一并终止"
+    except Exception as e:
+        return f"命令执行失败：{e}"
+    raw = (stdout or b"") + (stderr or b"")
     try:
         out = raw.decode("utf-8")
     except UnicodeDecodeError:
@@ -1551,7 +1582,12 @@ def tool_run_python(app_dir, code):
     # run_python 产物落进了空壳目录——改回真实用户数据目录（小臭玩AI）。
     ws = os.path.join(USER_DATA_DIR, "workspace")
     os.makedirs(ws, exist_ok=True)
-    fname = f"run_{datetime.now().strftime('%Y%m%d%H%M%S')}.py"
+    # 审计修复 E8：秒级文件名在同秒并发（首次确认后 trust_tool → _run_concurrent
+    # 可并行两个 run_python）时互相覆盖，先完成者 finally 删脚本会删掉对方正在
+    # 执行的文件 → "can't open file"。加毫秒+随机后缀（同 _save_gen_image v4.120 做法）。
+    import uuid as _uuid
+    fname = (f"run_{datetime.now().strftime('%Y%m%d%H%M%S%f')[:-3]}"
+             f"_{_uuid.uuid4().hex[:6]}.py")
     fpath = os.path.join(ws, fname)
     try:
         with open(fpath, "w", encoding="utf-8") as f:
@@ -1602,7 +1638,10 @@ def _tool_run_python_legacy(app_dir, code):
         return "未找到 Python 解释器，请先安装 Python 并加入 PATH", []
     gen_dir = os.path.join(app_dir, "gen")
     os.makedirs(gen_dir, exist_ok=True)
-    fname = f"run_{datetime.now().strftime('%Y%m%d%H%M%S')}.py"
+    # 审计修复 E8：同款秒级撞名问题（legacy 路径两处调用同秒也会互覆盖）
+    import uuid as _uuid
+    fname = (f"run_{datetime.now().strftime('%Y%m%d%H%M%S%f')[:-3]}"
+             f"_{_uuid.uuid4().hex[:6]}.py")
     fpath = os.path.join(gen_dir, fname)
     frel = _safe_relpath(fpath, app_dir)
     try:

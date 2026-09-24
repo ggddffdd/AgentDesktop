@@ -5619,8 +5619,14 @@ def parse_candidate_evaluation(text, n_candidates):
             sc = 3
         if rec in ("强推", "推") and sc < 4:
             sc = 4
+        # 审计修复 E6：同 score/danger 一样容错——PM 回 "idx":"第一"/[1]/"1,2" 时
+        # 裸 int() 抛 ValueError 会让整轮候选评估作废（异常冒到 legion_ui）。
+        try:
+            _ix = int(it.get("idx"))
+        except Exception:
+            _ix = len(out)
         out.append({
-            "idx": int(it.get("idx") or len(out)),
+            "idx": _ix,
             "recommend": rec,
             "score": sc,
             "reasons": [str(x).strip() for x in (it.get("reasons") or []) if str(x).strip()][:5],
