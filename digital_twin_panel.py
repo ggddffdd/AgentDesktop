@@ -1020,6 +1020,12 @@ class TwinGenThread(QThread):
 
 
 def _twin_generate(app):
+    # 审计修复 B5：生成需数分钟，期间再点「生成」会替换仍在运行的 twin_thread，
+    # 旧 QThread 被 GC → 「Destroyed while thread is still running」整进程崩溃。
+    _th = getattr(app, "twin_thread", None)
+    if _th is not None and _th.isRunning():
+        app.twin_status.setText("上一次生成仍在进行，请等待完成。")
+        return
     if not app.twin_selected_portrait:
         app.twin_status.setText("请先选择 / 添加一张本人照片作为参考图。")
         return

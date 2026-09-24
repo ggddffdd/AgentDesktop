@@ -1897,12 +1897,36 @@ class ChatWindow(QMainWindow):
         # v4.36 MCP 服务器异步初始化（不阻塞 UI 启动）
         # v4.59：初始化完成后更新状态栏显示 MCP 工具数
         def _init_mcp():
+            # 审计修复 B6：main.py 启动时已同步 init_mcp_clients，此处曾无条件重建——
+            # init 内部直接 mcp_clients=[] 丢弃旧 client（子进程/reader 线程泄漏），
+            # 且单服务器握手同步等待最长 30s，会冻结 GUI。已初始化则只刷状态栏。
+            total_tools = sum(len(c.tools) for c in config.mcp_clients)
+            if total_tools:
+                names = ", ".join(c.name for c in config.mcp_clients)
+                self.status_label.setText(f"🔌 MCP: {names} ({total_tools} 工具)")
+                return
+            if config.mcp_clients:
+                return  # 已连上但无工具：不重复初始化
             config.init_mcp_clients(self.cfg)
             total_tools = sum(len(c.tools) for c in config.mcp_clients)
             if total_tools:
                 names = ", ".join(c.name for c in config.mcp_clients)
                 self.status_label.setText(f"🔌 MCP: {names} ({total_tools} 工具)")
         QTimer.singleShot(100, _init_mcp)
+
+    def _spawn_thread(self, w):
+        """审计修复 B（统一方案）：把运行中的 QThread 挂到 graveyard，
+        线程 finished 前始终持有引用，规避「QThread: Destroyed while thread
+        is still running」GC 析构崩溃；terminate() 后同样适用（异步收尾）。"""
+        pool = getattr(self, "_thread_graveyard", None)
+        if pool is None:
+            pool = self._thread_graveyard = []
+        pool.append(w)
+        try:
+            w.finished.connect(lambda _w=w: pool.remove(_w) if _w in pool else None)
+        except (RuntimeError, TypeError):
+            pass  # 线程已结束/信号不可连：留在池中，随窗口一起释放
+        return w
 
     # ============ UI 搭建 ============
     def _init_ui(self):
@@ -2902,8 +2926,10 @@ class ChatWindow(QMainWindow):
             return
         if self._asr_thread and self._asr_thread.isRunning():
             self._asr_thread.terminate()
+            self._spawn_thread(self._asr_thread)  # 审计修复 B2：terminate 异步，旧线程须持有到真退出
         sf = self.cfg.get("siliconflow", {})
         self._asr_thread = _ASRWorker(wav, sf)
+        self._spawn_thread(self._asr_thread)
         self._asr_thread.sig_text.connect(self._on_asr_done)
         self._asr_thread.sig_error.connect(self._on_asr_error)
         self._asr_thread.start()
@@ -2926,8 +2952,10 @@ class ChatWindow(QMainWindow):
             return
         if self._tts_thread and self._tts_thread.isRunning():
             self._tts_thread.terminate()
+            self._spawn_thread(self._tts_thread)  # 审计修复 B4：旧线程持有到真退出
         tts = self.cfg.get("tts", {})
         self._tts_thread = _TTSWorker(text, tts)
+        self._spawn_thread(self._tts_thread)
         self._tts_thread.sig_mp3.connect(self.play_audio)
         self._tts_thread.start()
 
@@ -2947,7 +2975,13 @@ class ChatWindow(QMainWindow):
             log.error("托盘通知失败: %s", e)
         try:
             tts = self.cfg.get("tts", {})
+            # 审计修复 B4：完成通知语音不得静默覆盖仍在跑的朗读线程（GC 崩溃），
+            # 旧线程显式终止并持有到退出，再挂新线程。
+            if self._tts_thread and self._tts_thread.isRunning():
+                self._tts_thread.terminate()
+                self._spawn_thread(self._tts_thread)
             self._tts_thread = _TTSWorker(message, tts)
+            self._spawn_thread(self._tts_thread)
             self._tts_thread.sig_mp3.connect(self._play_notify_audio)
             self._tts_thread.start()
         except Exception as e:
@@ -3628,9 +3662,15 @@ class ChatWindow(QMainWindow):
         if not prompt:
             self.image_status.setText("请输入画面描述")
             return
+        # 审计修复 B3：上一次生成还在跑时禁止替换 _image_thread（旧线程会被 GC → 崩溃）
+        _th = getattr(self, "_image_thread", None)
+        if _th is not None and _th.isRunning():
+            self.image_status.setText("上一次生图仍在进行，请等待完成。")
+            return
         size = self.image_size_combo.currentText().split()[0]  # "1024x768 横版 4:3" -> "1024x768"
         self.image_status.setText(f"生成中…（{size}）")
         self._image_thread = _GenThread(tools_mod.tool_image_gen, self.cfg, APP_DIR, prompt, size)
+        self._spawn_thread(self._image_thread)
         self._image_thread.result.connect(self._on_image_result)
         self._image_thread.start()
 
@@ -3837,10 +3877,16 @@ class ChatWindow(QMainWindow):
         mode_txt = ("参考图模式" if refs else
                     ("首尾帧模式" if (first or last) else "文生视频"))
         self.video_status.setText(f"提交任务中…（{mode_txt}；可能需数分钟）")
+        # 审计修复 B3：视频线程同图——运行中不得被替换
+        _vt = getattr(self, "_video_thread", None)
+        if _vt is not None and _vt.isRunning():
+            self.video_status.setText("上一次视频仍在进行，请等待完成。")
+            return
         self._video_thread = _GenThread(
             tools_mod.tool_video_gen, self.cfg, APP_DIR, prompt,
             self.video_duration.value(), aspect, resolution=res,
             first_frame=first, last_frame=last, images=refs)
+        self._spawn_thread(self._video_thread)
         self._video_thread.result.connect(self._on_video_result)
         self._video_thread.start()
 
@@ -5170,6 +5216,7 @@ class ChatWindow(QMainWindow):
             return
         self.status_label.setText(f"🎧 音频识别中：{os.path.basename(path)}")
         worker = _ASRWorker(path, sf)
+        self._spawn_thread(worker)  # 审计修复 B2：局部 QThread 必须持有到 finished
         worker.sig_text.connect(
             lambda txt, p=path: self._on_attach_asr_done(p, txt)
         )

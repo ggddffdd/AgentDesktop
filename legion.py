@@ -21,6 +21,7 @@ import glob
 import uuid
 import copy
 import time
+import shutil
 import logging
 import threading
 import hashlib
@@ -3343,13 +3344,16 @@ def _upgrade_preset_role_cards(data):
                     n += 1
                     details.append("%s·%s" % (proj.get("name") or "?", m.get("name")))
     if n:
-        # 一次性备份可回滚（失败不影响本次升级结果）
+        # 一次性备份可回滚（审计修复 A2：原缺 import shutil，NameError 被静默吞掉，
+        # 备份从未生效；现改为显式记错并校验备份文件真实存在）
         try:
             if os.path.isfile(LEGION_PATH):
                 bak = LEGION_PATH + ".bak_cardmig_" + time.strftime("%Y%m%d_%H%M%S")
                 shutil.copy2(LEGION_PATH, bak)
-        except Exception:
-            pass
+                if not os.path.isfile(bak):
+                    raise OSError("备份文件未生成: %s" % bak)
+        except Exception as _be:
+            log.error("角色卡迁移备份失败（升级仍继续，但本次不可回滚）：%s", _be)
     return n, details
 
 

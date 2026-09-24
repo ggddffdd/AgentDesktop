@@ -3003,6 +3003,17 @@ class LegionWindow(QWidget):
             pass
         self.worker = None
         self._worker_pid = ""
+        # 审计修复 B1：abort 是合作式的，线程还会跑数十秒（当前 LLM 调用）。
+        # 丢引用后 PySide6 会在 QThread 仍运行时析构 → qFatal 整进程崩溃。
+        # 挂进 graveyard 持有到真正 finished 再释放（信号已断开，不会串进新任务）。
+        pool = getattr(self, "_dead_workers", None)
+        if pool is None:
+            pool = self._dead_workers = []
+        pool.append(w)
+        try:
+            w.finished.connect(lambda _w=w: pool.remove(_w) if _w in pool else None)
+        except (RuntimeError, TypeError):
+            pass
 
     # ---- v4.139 P2：对话里的技能指令（查缺口 / 去 GitHub 找 / 装）----
     def _skill_say(self, text):
