@@ -4599,9 +4599,9 @@ class ChatWindow(QMainWindow):
             "QPushButton:hover{{background:rgba(32,33,36,0.06);color:{text};}}"
         ).format(dim=THEME["dim"], text=THEME["text"])
         close_base = (
-            "QPushButton{{background:transparent;color:{dim};border:none;font-size:14px;}}"
+            f"QPushButton{{background:transparent;color:{THEME['dim']};border:none;font-size:14px;}}"
             f"QPushButton:hover{{background:{THEME['danger']};color:white;}}"
-        ).format(dim=THEME["dim"])
+        )
         btn_w, btn_h = 44, 48
         self.min_btn = QPushButton("—")
         self.min_btn.setFixedSize(btn_w, btn_h)
