@@ -246,11 +246,83 @@ SOFTWARE_CONTROL_TOOL_DEFS = [
 # ============================================================
 
 import os
+import shlex
 import subprocess
 import time
 
 from datetime import datetime
 from pathlib import Path
+
+
+def _split_app_args(s):
+    """审计修复 C1：把参数字符串按 Windows 习惯切成 argv 列表（posix=False 保留
+    反斜杠路径，再剥成对外层引号）。供 shell=False 的进程启动使用，消除 cmd.exe 注入面。"""
+    if not s or not str(s).strip():
+        return []
+    try:
+        toks = shlex.split(str(s), posix=False)
+    except ValueError:
+        toks = str(s).split()
+    out = []
+    for t in toks:
+        if len(t) >= 2 and t[0] == t[-1] and t[0] in ("\"", "'"):
+            t = t[1:-1]
+        out.append(t)
+    return out
+
+
+def _grab_window_image(qapp, x, y, cw, ch):
+    """审计修复 C4（同款收口）：窗口截图统一走 GUI 线程 + 负坐标换算 + 转 QImage。
+
+    QPixmap 属 GUI 线程专属；左侧副屏全局坐标为负，max(0,·) 钳位会截错区域。
+    返回 QImage（可跨线程安全传递），失败返回 None。
+    """
+    import threading
+
+    def _screen_at_local(app, px, py):
+        scr = app.primaryScreen()
+        try:
+            for s in (app.screens() or []):
+                if s.geometry().contains(px, py):
+                    scr = s
+                    break
+        except Exception:
+            pass
+        return scr, px - scr.geometry().x(), py - scr.geometry().y()
+
+    box = {}
+
+    def _do():
+        scr, lx, ly = _screen_at_local(qapp, x, y)
+        box["img"] = scr.grabWindow(0, lx, ly, cw, ch).toImage()
+
+    if qapp.thread().isCurrentThread():
+        try:
+            _do()
+        except Exception:
+            return None
+    else:
+        from PySide6.QtCore import QObject, Signal
+
+        class _Call(QObject):
+            go = Signal()
+        holder = _Call()
+        done = threading.Event()
+
+        def _slot():
+            try:
+                _do()
+            except Exception:
+                pass
+            finally:
+                done.set()
+
+        holder.go.connect(_slot)
+        holder.moveToThread(qapp.thread())
+        holder.go.emit()
+        if not done.wait(15):
+            return None
+    return box.get("img")
 
 
 # ---------- pywinauto 初始化 ----------
@@ -402,7 +474,11 @@ def tool_app_launch(cfg, app_dir, args):
             except Exception:
                 return (f"已启动 {target}（窗口未就绪）", [], None)
         else:
-            subprocess.Popen(full_cmd, shell=True)
+            # 审计修复 C1：原 shell=True 拼接命令行经 cmd.exe 解析，target/args 里的
+            # `&`、`|` 等元字符即任意命令注入 → shell=False + 参数列表。
+            # （上面 wait_ready 分支的 pywinauto .start() 走 CreateProcess，不经
+            #   cmd.exe，元字符只作字面量参数，非注入面，保持原样。）
+            subprocess.Popen([target] + _split_app_args(shell_args))
             return (f"已发起启动 {target}", [], None)
 
     except ImportError:
@@ -704,12 +780,14 @@ def tool_app_screenshot(cfg, app_dir, args):
         if not qapp:
             return ("Qt Application 未初始化", [], None)
 
-        x, y = max(0, rect.left), max(0, rect.top)
+        # 审计修复 C4：原 max(0,·) 钳位丢负坐标 + 工作线程直接用 QPixmap（跨线程未定义）
+        img = _grab_window_image(qapp, rect.left, rect.top, rect.width(), rect.height())
+        if img is None or img.isNull():
+            return ("窗口截图失败：未取到像素（GUI 线程无响应 / 坐标越界？）", [], None)
         w_px, h_px = rect.width(), rect.height()
-        pixmap = qapp.primaryScreen().grabWindow(0, x, y, w_px, h_px)
 
         os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
-        pixmap.save(save_path, "PNG")
+        img.save(save_path, "PNG")
         return (f"窗口截图已保存到 {save_path} ({w_px}x{h_px})", [save_path], None)
 
     except ImportError:

@@ -5709,16 +5709,19 @@ def audit_skill_text(txt):
     很活跃、PM 评「强推」的仓库，正文里写着「绕过确认」「关闭杀毒软件」或含
     os.system() 的，原流程会照装不误、还顺手挂给角色。这一关补上机器级扫描。
 
-    返回 (level, reasons)：P0 拒绝安装 / P1 放行但提示 / P2 干净 / NA 审计器不可用。
+    返回 (level, reasons)：P0 拒绝安装 / P1 放行但提示 / P2 干净。
+    审计修复 C3：审计器异常一律按 P0 硬拒（fail-closed）—— "没扫过"不等于"没扫出"。
     """
     try:
         import skill_installer_tools as _sit
         lvl, why = _sit.audit_skill(txt, txt)
         return lvl, list(why or [])
     except Exception as e:
-        # 审计器本身起不来（极端环境）不该把正常安装堵死，但要明说这次没扫
-        log.warning("静态安全审计不可用，降级放行: %s", e)
-        return "NA", ["静态安全审计器不可用（%s），本次未做内容级扫描" % e]
+        # 审计修复 C3：原实现返回 "NA" 降级放行 —— 审计器一坏，这道门就等于不存在，
+        # 恶意 SKILL.md 可无扫描直通安装并被全文注入成员 system prompt。
+        # 改为 fail-closed：按 P0 硬拒，确需安装走人工审查后手动放目录。
+        log.exception("静态安全审计异常，按硬拒绝处理（fail-closed）: %s", e)
+        return "P0", ["安全审计器不可用/异常（%s），未扫描即视为高危，本次拒绝安装" % e]
 
 
 def install_skill_from_github(repo, path, branch=None, skills_dir=None,
@@ -5758,7 +5761,10 @@ def install_skill_from_github(repo, path, branch=None, skills_dir=None,
     if _lvl == "P1":
         _warn = "\n⚠️ 安全审计提示（已放行）：%s" % "；".join(_why[:3])
     elif _lvl == "NA":
-        _warn = "\n⚠️ %s" % "；".join(_why[:1])
+        # 审计修复 C3：兜底 —— audit_skill_text 已把自身异常折成 P0，若未来审计器
+        # 实现直接吐 NA（未扫描态），同样硬拒，不再"警告即放行"。
+        return False, ("⛔ 安全审计未能完成（%s），未扫描即视为高危，拒绝安装「%s」。"
+                       % ("；".join(_why[:1]) or "审计器返回 NA", target_slug))
     # 装前先验货：解析不了 frontmatter 的技能装进去也是废的
     try:
         os.makedirs(dst_dir, exist_ok=True)

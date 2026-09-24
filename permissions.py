@@ -71,10 +71,20 @@ class PermissionEngine:
         if not self.scope_paths:
             return True
         try:
-            p = os.path.abspath(path)
+            p = os.path.normcase(os.path.abspath(path))
         except Exception:
             return False
-        return any(p.startswith(s) for s in self.scope_paths)
+        # 审计修复 C2：裸 startswith 会让作用域 "D:\docs\小臭玩AI" 放行兄弟目录
+        # "D:\docs\小臭玩AI_backup\..."（前缀越界写文件出沙箱）。改为「相等，或
+        # 以带分隔符的目录前缀开头」；normcase 统一 Windows 盘符大小写。
+        for s in self.scope_paths:
+            s = os.path.normcase(s)
+            if p == s:
+                return True
+            prefix = s if s.endswith((os.sep, "/")) else s + os.sep
+            if p.startswith(prefix):
+                return True
+        return False
 
     # ---------- 核心决策 ----------
     def decide(self, name, args=None):

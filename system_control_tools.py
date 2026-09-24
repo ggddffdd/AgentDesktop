@@ -300,6 +300,7 @@ SYSTEM_CONTROL_TOOL_DEFS = [
 
 import os
 import time
+import shlex
 import subprocess
 import threading
 
@@ -308,6 +309,25 @@ from pathlib import Path
 
 
 # ---------- 内部工具 ----------
+
+def _split_win_args(s):
+    """审计修复 C1：把 LLM 传入的参数字符串按 Windows 习惯切成 argv 列表。
+
+    shlex posix=False 不把反斜杠当转义符（C:\\Users\\... 路径原样保留），
+    再把成对的外层引号剥掉即可交给 subprocess 的列表模式（shell=False）。
+    """
+    if not s or not str(s).strip():
+        return []
+    try:
+        toks = shlex.split(str(s), posix=False)
+    except ValueError:  # 引号不闭合等畸形输入 → 退化为空白切分
+        toks = str(s).split()
+    out = []
+    for t in toks:
+        if len(t) >= 2 and t[0] == t[-1] and t[0] in ("\"", "'"):
+            t = t[1:-1]
+        out.append(t)
+    return out
 
 def _resolve_save_path(save_path, prefix="screenshot", app_dir=None):
     """解析截图保存路径。
@@ -331,6 +351,67 @@ def _resolve_save_path(save_path, prefix="screenshot", app_dir=None):
     return os.path.join(base, f"{prefix}_{ts}.png")
 
 
+# ---------- 审计修复 C4：截图必须在 GUI 线程执行 ----------
+# exec_tool 跑在 AgentWorker 线程（agent.py），而 QPixmap 系列 API 属 GUI 线程
+# 专属，Qt6 下跨线程创建/使用属未定义行为（release 构建常"碰巧能跑"）。
+# 这里用 QObject+Signal 把闭包投递回 GUI 线程同步执行（自持 Event 等待，
+# 不依赖 BlockingQueuedConnection 对 Python 槽的支持）；QPixmap 在 GUI 线程内
+# 就地转 QImage（可安全跨线程）后回传。
+
+def _run_on_gui_thread(app, fn, timeout=15):
+    """在 GUI 线程执行 fn()（已在则直接执行）。返回 (ok, err)。"""
+    import threading
+    from PySide6.QtCore import QObject, Signal
+    if app.thread().isCurrentThread():
+        try:
+            fn()
+            return True, None
+        except Exception as e:
+            return False, e
+    box = {}
+    done = threading.Event()
+
+    class _Call(QObject):
+        go = Signal()
+
+    holder = _Call()
+
+    def _slot():
+        try:
+            fn()
+        except Exception as e:
+            box["err"] = e
+        finally:
+            done.set()
+
+    holder.go.connect(_slot)
+    holder.moveToThread(app.thread())   # 只能在创建者线程 move：此处即 worker 线程
+    holder.go.emit()                    # AutoConnection → 队列到 GUI 线程执行
+    if not done.wait(timeout):
+        return False, RuntimeError(f"GUI 线程 {timeout}s 内未响应（界面正忙？），本次截图放弃")
+    if box.get("err") is not None:
+        return False, box["err"]
+    return True, None
+
+
+def _screen_at_local(app, x, y):
+    """找到包含全局坐标 (x,y) 的屏幕，返回 (screen, 该屏幕内的正坐标 lx,ly)。
+
+    左侧副屏的全局 left/top 是负数：原实现 max(0,·) 钳位后宽高不校正 → 截错区。
+    换算成所在屏幕局部坐标后恒为非负，grabWindow 不再依赖负坐标语义。
+    """
+    scr = app.primaryScreen()
+    try:
+        for s in (app.screens() or []):
+            if s.geometry().contains(x, y):
+                scr = s
+                break
+    except Exception:
+        pass
+    gx, gy = scr.geometry().x(), scr.geometry().y()
+    return scr, x - gx, y - gy
+
+
 # ---------- 截图 ----------
 
 def tool_screenshot(cfg, app_dir, args):
@@ -344,23 +425,40 @@ def tool_screenshot(cfg, app_dir, args):
         if not app:
             return ("调用失败：Qt Application 未初始化。screenshot 必须在主进程内执行。", [], None)
 
-        if region:
-            x, y, w, h = region.get("x", 0), region.get("y", 0), region.get("w", 0), region.get("h", 0)
-            pixmap = app.primaryScreen().grabWindow(0, x, y, w, h)
-        elif window_title:
-            import pygetwindow as gw
-            wins = gw.getWindowsWithTitle(window_title)
-            if not wins:
-                return (f"未找到标题含 '{window_title}' 的窗口", [], None)
-            w = wins[0]
-            # pygetwindow 坐标可能含负值（多屏），需矫正
-            x, y = max(0, w.left), max(0, w.top)
-            pixmap = app.primaryScreen().grabWindow(0, x, y, w.width, w.height)
-        else:
-            pixmap = app.primaryScreen().grabWindow(0)
+        box = {}
+
+        def _do():
+            if region:
+                x, y = region.get("x", 0), region.get("y", 0)
+                w, h = region.get("w", 0), region.get("h", 0)
+                scr, lx, ly = _screen_at_local(app, x, y)
+                box["img"] = scr.grabWindow(0, lx, ly, w, h).toImage()
+            elif window_title:
+                import pygetwindow as gw
+                wins = gw.getWindowsWithTitle(window_title)
+                if not wins:
+                    box["ret"] = (f"未找到标题含 '{window_title}' 的窗口", [], None)
+                    return
+                win = wins[0]
+                # 用窗口中心点定位所在屏幕（跨屏大窗也稳定），不再 max(0,·) 钳负坐标
+                scr, lx, ly = _screen_at_local(
+                    app, win.left + win.width // 2, win.top + win.height // 2)
+                box["img"] = scr.grabWindow(0, lx, ly, win.width, win.height).toImage()
+            else:
+                # wId=0 全域截图：保持原语义（Windows 下覆盖所有显示器）
+                box["img"] = app.primaryScreen().grabWindow(0).toImage()
+
+        ok, err = _run_on_gui_thread(app, _do)
+        if "ret" in box:
+            return box["ret"]
+        if not ok:
+            return (f"截图失败：{err}", [], None)
+        img = box.get("img")
+        if img is None or img.isNull():
+            return ("截图失败：未取到屏幕像素（坐标越界 / 屏幕休眠？）", [], None)
 
         os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
-        pixmap.save(save_path, "PNG")
+        img.save(save_path, "PNG")
         return (f"截图已保存到 {save_path}", [save_path], None)
 
     except ImportError as e:
@@ -605,15 +703,14 @@ def tool_process_start(cfg, app_dir, args):
     working_dir = args.get("working_dir", "")
 
     try:
-        # 拼完整命令行
-        full_cmd = target
-        if shell_args:
-            full_cmd += " " + shell_args
-
+        # 审计修复 C1：原 shell=True 拼接命令行经 cmd.exe 解析，target/args 里的
+        # `&`、`|`、`%VAR%` 等元字符即任意命令注入。改为 shell=False + 参数列表：
+        # 可执行文件与参数分离，元字符只作字面量传给目标进程，不再被 shell 解释。
+        argv = [target] + _split_win_args(shell_args)
         if working_dir:
-            proc = subprocess.Popen(full_cmd, shell=True, cwd=working_dir)
+            proc = subprocess.Popen(argv, cwd=working_dir)
         else:
-            proc = subprocess.Popen(full_cmd, shell=True)
+            proc = subprocess.Popen(argv)
 
         return (f"已启动进程，PID: {proc.pid}", [], None)
     except FileNotFoundError:
