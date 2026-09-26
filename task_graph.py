@@ -4,7 +4,7 @@
 用 WorkBuddy 任务编排同款模式：
   TaskCreate(subject, description) → 新建节点
   addBlockedBy(task_id)             → 定义依赖边
-  status: pending→in_progress→completed → 状态流转
+  status: pending→in_progress→completed / failed / cancelled / incomplete → 状态流转
   TaskList()                        → 全局进度
 
 Agent 拿到复杂任务后，先拆成 TaskGraph，再逐个推进（自动完成依赖就绪的任务）。
@@ -18,6 +18,17 @@ import time
 # v4.167.0：统一取消令牌（纯标准库，无 Qt 依赖）
 from cancel_token import CancelledError
 
+# v4.168.0（审查 #2 残余）：执行器的返回字典里带这个保留键 = 「跑完了，但没有产出」。
+#
+# 为什么要有独立的 incomplete 态：`AgentNode` 跑满 max_turns 却始终只有工具调用、
+# 没有正文时，旧实现会把一句可读说明当 output 正常返回 —— TaskGraph 见「正常返回」
+# 就标 completed，于是「只跑了工具、什么都没写」被记成「成员已完成」，
+# PM 与最终报告都以为真交了东西。现在这条线有了自己的终态，
+# 既不冒充成功（completed），也不冤枉成崩溃（failed）。
+INCOMPLETE_FLAG = "__incomplete__"
+# 保留键（不写进 state，避免污染下游上下文）
+_RESERVED_KEYS = (INCOMPLETE_FLAG,)
+
 
 class Task:
     """一个可执行节点：有 subject、有 executor、有依赖、有状态。"""
@@ -28,7 +39,11 @@ class Task:
         self.description = description
         self.blocked_by: List[str] = []  # 依赖的任务 ID 列表
         self.blocks: List[str] = []      # 被本任务阻塞的任务 ID 列表
-        self.status = "pending"          # pending | in_progress | completed | failed
+        # v4.168.0：状态机补 incomplete —— 终态集合＝
+        #   completed（正常交活）/ failed（执行异常）/ cancelled（被叫停）
+        #   / incomplete（跑完但没有正文产出）
+        self.status = "pending"          # pending | in_progress | completed
+        #                                  | failed | cancelled | incomplete
         self.result = None               # 执行结果
 
     def is_ready(self, task_map: Dict[str, "Task"]) -> bool:
@@ -142,6 +157,10 @@ class TaskGraph:
         写进 `task.result["cancel_state"]`（cancelled_before_start /
         cancelled_during_model_call / cancelled_after_tool_call / ...），
         这样"谁真干了、谁被停了"一目了然。
+
+        v4.168.0（审查 #2 残余）：执行器若在返回字典里带 `INCOMPLETE_FLAG`，
+        该节点标 `incomplete`（跑完了但没产出）—— 既不冒充 completed，
+        也不冤枉成 failed。下游拿到的 state 里会带 `incomplete: True`。
         """
         state = dict(state)
         # 无任务的空图直接返回
@@ -164,14 +183,15 @@ class TaskGraph:
                      if self._tasks[tid].is_ready(self._tasks)]
 
             if not ready:
-                # 检查是否全部完成（被取消的算"已终态"，不再等待）
-                all_done = all(t.status in ("completed", "cancelled")
+                # 检查是否全部完成（被取消 / 无产出的都算"已终态"，不再等待）
+                all_done = all(t.status in ("completed", "cancelled", "incomplete")
                                for t in self._tasks.values())
-                any_failed = any(t.status == "failed" for t in self._tasks.values())
+                any_failed = any(t.status in ("failed", "incomplete")
+                                 for t in self._tasks.values())
                 if all_done:
                     break
                 if any_failed:
-                    # 有失败的不阻塞全局，跳过 failed 继续
+                    # 有失败/无产出的不阻塞全局，跳过它们继续（但绝不当作成功）
                     break
                 # 没有就绪但有未完成的 → 可能有循环依赖
                 pending = [t for t in self._tasks.values() if t.status == "pending"]
@@ -206,6 +226,15 @@ class TaskGraph:
                     t = self._tasks[tid]
                     try:
                         r = f.result()
+                        # v4.168.0（审查 #2 残余）：执行器自报「跑完但无产出」→
+                        # 标 incomplete，不得冒充 completed。
+                        if isinstance(r, dict) and r.get(INCOMPLETE_FLAG):
+                            t.status = "incomplete"
+                            t.result = {k: v for k, v in r.items()
+                                        if k not in _RESERVED_KEYS}
+                            t.result["incomplete"] = True
+                            results[tid] = t.result
+                            continue
                         t.status = "completed"
                         t.result = r
                         results[tid] = r

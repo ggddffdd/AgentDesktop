@@ -24,6 +24,13 @@ from task_graph import TaskGraph      # v4.60 任务图引擎
 from agent_node import AgentNode      # v4.60 多Agent节点
 from token_compressor import compress # v4.60 Token 压缩
 
+# v4.168.0：顶层 import 统一判据（与 UI / 模型调用层同源）。
+# 显式声明而非只在函数内 import —— 这条判据漏打包会导致评价句误触生成工具。
+try:
+    import intent_guard            # noqa: F401
+except Exception:                  # pragma: no cover
+    intent_guard = None
+
 # 自动记忆提取：对话结束后 LLM 自检是否产生了值得跨对话保留的信息
 AUTO_REMEMBER_PROMPT = """
 你是一个对话归档助手。请从以上对话中提取值得长期记忆的信息，以 JSON 数组格式输出。
@@ -730,21 +737,27 @@ class AgentWorker(QThread):
         #    否则用户说「别生成视频了」反被强制生成（危害链：force 非空 → 思考模型注入伪指令）
         if self._neg_hit(text):
             return None
-        # 0.1) 评价句式前置短路（v4.161 方案A补全集）：用户用「生成动词 + 的/得 + 褒义评价」
-        #      描述已完成/赞赏的结果（『这个封面做的漂亮』『图画的太好了』『文章写得很棒』），
-        #      属动补结构而非祈使生成指令，前置拦截避免误触 image_gen/video_gen（实证：封面做的
-        #      漂亮→image_gen；做得很到位→强制生图）。去程度副词限制更稳：允许 0~1 个程度副词，
-        #      褒义词集合补全，且要求动词紧贴『的/得』才命中，正常祈使句（『做一张好看的图』动词
-        #      后无『的/得』紧贴）不受影响。
-        if re.search(
-            r"(做|干|写|拍|画|剪|整|弄|搞|设计|生成|制作|编辑)"
-            r"(的|得)"
-            r"(很|挺|真|超|太|非常|十分|特别|蛮|相当|还|更|极|够|贼|巨|老|最)?"
-            r"(好|漂亮|不错|棒|美|清楚|干净|到位|赞|妙|厉害|完美|出色|好看|惊艳|绝|顶|"
-            r"牛|强|神|一流|优秀|好极了|无可挑剔|惊为天人|强悍|牛逼|绝了)",
-            text,
-        ):
-            return None
+        # 0.1) 评价句式前置短路（v4.161 方案A补全集；**v4.168.0 收归共享判据**）：
+        #      用户用「生成动词 + 的/得 + 褒义评价」描述已完成/赞赏的结果
+        #      （『这个封面做的漂亮』『图画的太好了』『文章写得很棒』），属动补结构
+        #      而非祈使生成指令，前置拦截避免误触 image_gen/video_gen。
+        #      v4.168.0 不再在本文件维护正则副本 —— UI / Agent / 模型调用三层统一
+        #      取 intent_guard.is_praise（正则原件已迁到该模块，行为只增不减）。
+        try:
+            import intent_guard as _ig
+            if _ig.is_praise(text):
+                return None
+        except Exception:
+            # 共享模块不可用时退回最小正则，绝不因此对评价句放行
+            if re.search(
+                r"(做|干|写|拍|画|剪|整|弄|搞|设计|生成|制作|编辑)"
+                r"(的|得)"
+                r"(很|挺|真|超|太|非常|十分|特别|蛮|相当|还|更|极|够|贼|巨|老|最)?"
+                r"(好|漂亮|不错|棒|美|清楚|干净|到位|赞|妙|厉害|完美|出色|好看|惊艳|绝|顶|"
+                r"牛|强|神|一流|优秀)",
+                text,
+            ):
+                return None
         # 0.5) 引用/质疑语境一票否决（v4.159.2）：用户在谈论/质疑/引用某生成动作而非
         #      下达指令时（「分析下生成视频这件事」「你刚才说的生成个视频，是BUG」
         #      「我什么时候让你生成视频了」），前置拦截，避免强制生成。
@@ -839,6 +852,18 @@ class AgentWorker(QThread):
         if not text:
             return False
         t = text.lower()
+        # v4.168.0（BUG 修，第 2 层）：与 UI 自动路由共用同一条「非指令判据」。
+        # 此前本函数只在下方零散拦否定/引用，评价句（「这个视频生成得真不错」）
+        # 会一路走到 _gen_intent → _needs_action=True → tool_choice=required。
+        # 现在前置短路，三处判据同源（详见 intent_guard.py）。
+        try:
+            import intent_guard as _ig
+            if _ig.is_non_action_message(text):
+                log.info("意图判定：判为非指令消息（%s），不置 _needs_action",
+                         _ig.why_blocked(text))
+                return False
+        except Exception:
+            pass
         is_topic = any(k in text for k in self._TOPIC_KEYWORDS)
         if not is_topic:
             # 隐式：平台 + 方向词 且无"搜/查"字 → 视作选题
@@ -1250,8 +1275,7 @@ class AgentWorker(QThread):
                         _instr = (self._CAP_PERSIST_INSTRUCTION if _persist_cap
                                   else self._SELF_CHECK_INSTRUCTION)
                         self.messages.append({
-                            "role": "user", "content": _instr,
-                            "_internal": True,
+                            "role": "user", "content": _instr, "_internal": True,
                         })
                 # v4.60：去重护栏拦截的工具不算"有效执行"，不清空 _idle_steps
                 if self._guard_blocked:
@@ -1280,7 +1304,9 @@ class AgentWorker(QThread):
                             "（如：运行 Python 代码 XX、把内容写入文件 XX）。")
                         self._sync_to_session(mw)
                         break
-                    self.messages.append({"role": "user", "content": self._AGENT_FAKE_TOOL_INSTR})
+                    self.messages.append({"role": "user",
+                                              "content": self._AGENT_FAKE_TOOL_INSTR,
+                                              "_internal": True})
                     self._idle_steps = 0
                     continue
                 # 正常纯文本分支：模型确实无工具可调用，给出最终回答
@@ -1305,7 +1331,8 @@ class AgentWorker(QThread):
                     if not self._nudged:
                         self._nudged = True
                         _tracer.trace(step, "nudge", reason="模型空回不调工具", idle_steps=self._idle_steps)
-                        self.messages.append({"role": "user", "content": self._AGENT_NUDGE})
+                        self.messages.append({"role": "user", "content": self._AGENT_NUDGE,
+                                              "_internal": True})
                     continue
                 if self._nudge_count >= MAX_FORCE_RETRIES:
                     self.stream_commit.emit("⚠️ 已多次尝试但 Agent 始终未调用工具。请明确指示具体操作（如：搜索XX、读取文件XX、运行Python代码XX）。")
@@ -1389,7 +1416,8 @@ class AgentWorker(QThread):
                             self._emit_status(f"⚠ 续跑中模型连续 {self._idle_steps} 步未调工具，第 {self._nudge_count}/{MAX_FORCE_RETRIES} 次强制…")
                             if not self._nudged:
                                 self._nudged = True
-                                self.messages.append({"role": "user", "content": self._AGENT_NUDGE})
+                                self.messages.append({"role": "user", "content": self._AGENT_NUDGE,
+                                              "_internal": True})
                             continue
                         break
                 else:

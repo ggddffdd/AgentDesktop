@@ -2809,12 +2809,17 @@ def _build_character_cards(app, characters):
 
 def _build_keyframe_cards(app, keyframes):
     """把每镜关键帧+场景图渲染成网页缩略图卡片（含 VLM 质检状态，可灯箱放大）。"""
-    notes = (getattr(app.director_pipeline, "review_notes", {}) or {}) if getattr(app, "director_pipeline", None) else {}
+    _pl = getattr(app, "director_pipeline", None)
+    notes = (getattr(_pl, "review_notes", {}) or {}) if _pl else {}
+    # v4.168.0（审查 #6）：传真实质检状态 —— 只传 note 的话，「质检跳过」的镜头
+    # 界面上什么都不显示，看着跟"没问题"一样。
+    qcs = (getattr(_pl, "qc_status", {}) or {}) if _pl else {}
     vers = _versions_of(app, "keyframe_versions")
     stale = _get_stale(app)["kf"]
     html = "".join(
         keyframe_card_html(i, kf, notes.get(i, ""), can_rollback=bool(vers.get(i)),
-                           can_versions=bool(vers.get(i)), stale=(i in stale))
+                           can_versions=bool(vers.get(i)), stale=(i in stale),
+                           qc_status=qcs.get(i, ""))
         for i, kf in enumerate(keyframes or [])
     )
     if not html:
@@ -3417,6 +3422,13 @@ def _load_session(app):
             # v4.125 P3：建目录失败要留痕——静默吞掉则回滚历史悄悄丢失无从排查。
             log.warning("versions 目录创建失败（回滚历史将不保存）: %s", e)
     app.director_pipeline = p
+    # v4.168.0（审查 #5）：恢复态也要补齐工程脚手架（clips/ manifest.json 等）。
+    # 恢复路径是直接 setattr 拼的 pipeline，不走 prepare —— 不补这一步，
+    # 续跑时片段又掉回公共产物目录（正是本次要消灭的老问题）。
+    try:
+        p.ensure_project_scaffold()
+    except Exception as e:
+        log.warning("工程脚手架补齐失败（片段可能落回公共目录）: %s", e)
     # v4.107：载入续跑任务 → 切换导演对话历史到本项目目录
     if getattr(app, "director_chat", None) is not None:
         app.director_chat.reload_for_project()
@@ -3527,6 +3539,11 @@ def _load_session(app):
         _log(app, "🧹 已清理上次误判为「角色」的条目：" + "、".join(_heal["dropped"]) +
                  "。它们是道具/陈设，人物锁里已不再包含；"
                  "如需锁定它们的外观，请点「🔎 抽取关键道具/场景资产」。")
+    # v4.168.0（审查 #2）：恢复后若还有挂在远端的任务，给大哥两个明确选择
+    try:
+        _maybe_offer_remote_resume(app)
+    except Exception as e:
+        log.warning("远端任务接回横幅创建失败: %s", e)
     return True
 
 
@@ -3584,6 +3601,102 @@ def _maybe_offer_resume(app):
     bl.addWidget(cont)
     bl.addWidget(disc)
     app.director_resume_banner = banner
+    try:
+        app.director_body_lay.insertWidget(0, banner)
+    except Exception:
+        pass
+
+
+# v4.168.0（审查 #2）：远端任务接回横幅
+def _maybe_offer_remote_resume(app):
+    """恢复会话后调用：manifest 里还有挂在远端的任务时，给大哥两个明确选择。
+
+    为什么必须有这一步：视频提交后拿到远端 task_id，一旦关软件 / 断网 / 点停止，
+    远端任务**可能还在跑、还在消耗额度**，而本地完全不知道。以前只能重新提交
+    → 重复生成、重复扣费。现在把 task_id 存进工程 manifest，重启时问一句：
+
+        · 继续查询已提交任务 —— 只轮询 + 下载，不再提交（不重复扣费）
+        · 放弃远端任务并重新生成 —— 标记放弃，之后正常重新生成
+    """
+    p = getattr(app, "director_pipeline", None)
+    if p is None:
+        return
+    try:
+        pend = p.pending_remote_shots()
+    except Exception:
+        return
+    if not pend:
+        return
+    shots = "、".join(f"第{n}镜" for n, _ in pend[:8])
+    more = "" if len(pend) <= 8 else f" 等 {len(pend)} 镜"
+    banner = QFrame()
+    banner.setStyleSheet(
+        f"QFrame{{background:{THEME['card']};border:1px solid {THEME['accent2']};"
+        f"border-radius:10px;}}")
+    bl = QHBoxLayout(banner)
+    bl.setContentsMargins(14, 10, 14, 10)
+    bl.setSpacing(12)
+    label = QLabel(
+        f"🔌 发现 {len(pend)} 个**已提交但没接回**的远端视频任务（{shots}{more}）。\n"
+        f"远端可能仍在生成、仍在消耗额度。建议先「继续查询」，别急着重新生成。")
+    label.setWordWrap(True)
+    label.setStyleSheet(f"color:{THEME['text']};font-size:13px;")
+    bl.addWidget(label, 1)
+    btn_resume = QPushButton("🔌 继续查询已提交任务")
+    btn_resume.setFixedHeight(32)
+    btn_resume.setCursor(Qt.PointingHandCursor)
+    btn_resume.setStyleSheet(_btn_accent_style())
+    btn_abandon = QPushButton("🗑 放弃并重新生成")
+    btn_abandon.setFixedHeight(32)
+    btn_abandon.setCursor(Qt.PointingHandCursor)
+    btn_abandon.setStyleSheet(_btn_style())
+
+    def _do_resume():
+        try:
+            banner.deleteLater()
+        except Exception:
+            pass
+        _log(app, f"🔌 开始接回 {len(pend)} 个远端任务（只轮询下载，不重新提交）…")
+
+        def _work(_p=p):
+            # 不在后台线程碰 UI：done 回调里统一重渲染（_kick_bg 的 done 已带项目令牌校验）
+            return _p.resume_remote_clips()
+
+        def _done(res, err):
+            if err:
+                _log(app, f"❌ 接回远端任务失败：{err}")
+                return
+            try:
+                ok_n, fails = res
+            except Exception:
+                ok_n, fails = 0, []
+            _log(app, f"🔌 接回完成：成功 {ok_n} 镜"
+                      + (f"，失败 {len(fails)} 镜（可单镜重生成）" if fails else ""))
+            try:
+                _render_clips(app)
+            except Exception:
+                pass
+
+        _kick_bg(app, _work, _done, pipeline=p, on_log=lambda t: _log(app, t))
+
+    def _do_abandon():
+        try:
+            banner.deleteLater()
+        except Exception:
+            pass
+        try:
+            marked = p.abandon_remote_clips()
+            _log(app, f"🗑 已放弃 {len(marked)} 个远端任务（不再轮询）。"
+                      f"需要的话点「重生成」重新出片；远端无法真正撤销，"
+                      f"但它不会再影响本项目。")
+        except Exception as e:
+            _log(app, f"⚠️ 放弃远端任务失败：{e}")
+
+    btn_resume.clicked.connect(_do_resume)
+    btn_abandon.clicked.connect(_do_abandon)
+    bl.addWidget(btn_resume)
+    bl.addWidget(btn_abandon)
+    app.director_remote_banner = banner
     try:
         app.director_body_lay.insertWidget(0, banner)
     except Exception:

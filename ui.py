@@ -89,6 +89,14 @@ from agent import AgentWorker
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 import chat_web  # v4.104：WebEngine 聊天渲染引擎
 
+# v4.168.0：**顶层** import 一次统一判据。函数内的 `import intent_guard as _ig`
+# 也能被 PyInstaller 扫到，但这条判据是路由链的一环 ——
+# 万一漏打包，评价句又会误触生成工具（花钱 + 答非所问），代价太高，故显式声明。
+try:
+    import intent_guard            # noqa: F401
+except Exception:                  # pragma: no cover
+    intent_guard = None
+
 log = logging.getLogger("dsdesktop")
 
 # ===== 暗色主题调色板（基于 Codex 参考设计稿浅→暗映射） =====
@@ -9132,23 +9140,21 @@ class ChatWindow(QMainWindow):
         """v4.155 fix3：判断是否为「纯评价 / 夸赞 / 感慨」而非动作指令。
         『这能力颠覆认知』『效果真好』『太强了』『生成得不错』这类句子虽可能含
         『生成 / 视频』等词，但用户是在评价而非让我执行，不应触发生成类工具路由。
-        命中评价特征词、且不含明确祈使动词 → 视为纯评价，返回 True。"""
-        if not text:
-            return False
-        t = text.lower()
-        if any(k in t for k in ("颠覆认知", "真好用", "太强了", "真强", "效果不错",
-                                "效果真好", "好厉害", "绝了", "厉害", "惊艳",
-                                "超出预期", "意想不到", "没想到这么", "生成得不错",
-                                "画得不错", "做得好", "很强", "真不错", "服了",
-                                "牛啊", "太牛了", "有点东西", "可以啊")):
-            # 含明确祈使动词则视为真指令（如「帮我生成一张」「做一张海报」），不豁免
-            if any(v in t for v in ("帮我", "请生成", "请画", "生成一张", "画一张",
-                                    "做一张", "来一张", "出个视频", "做个视频",
-                                    "做一个", "写一段", "帮我做", "帮我画",
-                                    "帮我生成", "来一个", "整一个")):
-                return False
-            return True
-        return False
+        命中评价特征词、且不含明确祈使动词 → 视为纯评价，返回 True。
+
+        v4.168.0：实现**整体迁到 intent_guard.is_praise** —— 这是 UI / Agent /
+        模型调用三层共用的唯一判据。本方法保留为薄包装（外部调用点不动），
+        避免再出现「每层各修一点、规则各自漂移」的老问题。
+        """
+        try:
+            import intent_guard as _ig
+            return _ig.is_praise(text)
+        except Exception:
+            pass
+        # 兜底：intent_guard 不可用时退回最小判据（绝不因此放行误触）
+        t = (text or "").lower()
+        return any(k in t for k in ("颠覆认知", "真好用", "太强了", "真强", "效果真",
+                                    "好厉害", "绝了", "厉害", "惊艳", "真不错", "做得好"))
 
     def _is_reasoning_model(self, model, base_url=""):
         """v4.102 fix10：判断当前模型是否为「思考/推理模式」模型。
@@ -9217,6 +9223,10 @@ class ChatWindow(QMainWindow):
             _base_url, _model, _api_key = self._route_model(
                 messages, force_complex=_route_force, reason=_route_reason)
         url = _base_url.rstrip("/") + "/chat/completions"
+        # v4.168.0：`_internal` 只服务本地判据（路由/nudge 识别），不该回传给 API
+        if any(isinstance(m, dict) and "_internal" in m for m in messages):
+            messages = [{k: v for k, v in m.items() if k != "_internal"}
+                        if isinstance(m, dict) else m for m in messages]
         body = {
             "model": _model,
             "messages": messages,
@@ -9238,14 +9248,42 @@ class ChatWindow(QMainWindow):
             "重新试", "重新来", "再试试", "重新", "换个", "换一张",
         )
         redo = False
+        _last_user_text = ""
         for msg in reversed(messages):
             if msg.get("role") == "user":
+                # v4.168.0：跳过框架自己注入的内部消息（强制指令 / nudge / 撒谎检测），
+                # 它们不是"用户最后一句"。内部消息里常含「不要…」等词，若参与判据
+                # 会把真指令误判成评价句，反而把工具关掉。
+                if msg.get("_internal"):
+                    continue
                 last_user = msg.get("content", "")
-                if isinstance(last_user, str) and any(kw in last_user for kw in _REDO_KEYWORDS):
-                    redo = True
+                if isinstance(last_user, str):
+                    _last_user_text = last_user
+                    if any(kw in last_user for kw in _REDO_KEYWORDS):
+                        redo = True
                 break
+        # ---- 层 3（v4.168.0）：模型调用前的最终保险 ----
+        # 即使用户手动开了 Agent 模式，若最后一句是纯评价 / 引用 / 咨询句，
+        # 也强制 tool_choice="none"。这一步同时挡住：
+        #   ① 非推理模型被 required 强制调用；
+        #   ② 推理模型看见全量 tools 后自行调用；
+        #   ③ 系统提示里「命中关键词必须调用」把模型带偏。
+        _guard_block = ""
+        if _last_user_text:
+            try:
+                import intent_guard as _ig
+                if _ig.blocks_tool_call(_last_user_text):
+                    _guard_block = ",".join(_ig.why_blocked(_last_user_text))
+            except Exception:
+                _guard_block = ""
         # v4.60：强制调用指定工具（如 sys_info / video_gen），优先级最高
-        if force_tool:
+        if _guard_block:
+            body["tool_choice"] = "none"
+            try:
+                log.info("路由：最后一句判为非指令（%s），本轮禁止调工具", _guard_block)
+            except Exception:
+                pass
+        elif force_tool:
             if self._is_reasoning_model(_model, _base_url):
                 # v4.102 fix11：DeepSeek 思考模式不支持任何 tool_choice 自定义——
                 # 连指定函数 {"function":{"name":force_tool}} 也返回 400
@@ -9907,6 +9945,19 @@ class ChatWindow(QMainWindow):
         if not text:
             return False
         t = text.lower()
+        # v4.168.0（BUG 修）：普通评价 / 引用 / 咨询句**先于一切**短路，不进 Agent。
+        #
+        # 根因：本函数下面的 _is_media_gen_request 只判「媒体对象词 + 动作词同现」，
+        # 「这个视频生成得真不错」三者皆中 → 被当成媒体生成请求 → 自动进 Agent
+        # → tool_choice=required → 真去生视频。修法不是再补词表，而是三层共用
+        # intent_guard 这条唯一判据（详见 intent_guard.py 模块头注释）。
+        try:
+            import intent_guard as _ig
+            if _ig.is_non_action_message(text):
+                log.debug("路由：判为非指令消息（%s），不进 Agent", _ig.why_blocked(text))
+                return False
+        except Exception:
+            pass
         # v4.57：纯陈述 / 感慨不当成执行任务，回到普通对话
         if self._message_is_statement_only(text):
             return False

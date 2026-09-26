@@ -2401,7 +2401,8 @@ def is_silent_clip(rel):
 
 def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=None,
                    image=None, first_frame=None, last_frame=None, dialogue=None,
-                   progress=None, images=None, ref_images=None):
+                   progress=None, images=None, ref_images=None,
+                   dest_path=None, on_submit=None, cancel_token=None):
     """生视频（统一内核：委托 video-agent/core 的 AgnesClient）。
 
     与网页版 / director_panel 共用同一套 core/，根除两份 Agnes 视频客户端。
@@ -2419,11 +2420,19 @@ def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=
     ref_images: v4.127 多参考图入参（list，等价 images，最多 5 张，超出截断）；
     first_frame/last_frame: 首尾帧（keyframe 模式）；
     dialogue: 口播台词（中文），模型合成中文语音 + 对口型。
+
+    v4.168.0（导演台审查 #1/#2/#5）：
+      · dest_path  —— 由调用方指定落盘位置（导演台用它把片段归口到
+        项目目录 clips/shot_001_<uuid>.mp4，不再散落到公共产物目录 + 秒级时间戳）。
+      · on_submit  —— 提交成功立刻回调远端 task_id，供调用方落盘进 manifest，
+        关软件/断网后能用 resume 接回来，不重复提交、不重复扣费。
+      · cancel_token —— 轮询与下载都查取消；被取消时**原样抛错**，
+        绝不伪装成"生成失败"（更不许触发免费兜底再生成一次）。
     """
     if not prompt:
         return "未提供视频描述"
     try:
-        from core_agnes import AgnesClient, AgnesError
+        from core_agnes import AgnesClient, AgnesError, is_cancel_error
     except Exception as e:
         return f"视频内核导入失败：{e}"
     base, key = _agnes_creds(cfg)
@@ -2463,10 +2472,17 @@ def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=
             progress("✅ 视频已生成")
     # 保存到产物目录「视频」，路径与旧 _save_gen_video 保持一致（video_pipeline 靠 rel 拼回）
     # v4.129：目录改由 product_layout 计算（dated 时 产物/YYYY-MM-DD/<项目>/视频）
-    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    v_dir = _products_dir(cfg, "video")
-    os.makedirs(v_dir, exist_ok=True)
-    dest_path = os.path.join(v_dir, f"video_{stamp}.mp4")
+    # v4.168.0：调用方给了 dest_path 就听调用方的（导演台工程目录归口）
+    if dest_path:
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
+        except Exception:
+            pass
+    else:
+        stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        v_dir = _products_dir(cfg, "video")
+        os.makedirs(v_dir, exist_ok=True)
+        dest_path = os.path.join(v_dir, f"video_{stamp}.mp4")
     try:
         client = AgnesClient(api_key=key, base_url=base, video_model="agnes-video-2.5-flash",
                              zhipu_key=_zhipu_key(cfg))
@@ -2484,10 +2500,16 @@ def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=
             dest_path=dest_path,
             on_event=_on_event,
             timeout=VIDEO_POLL_TIMEOUT,
+            on_submit=on_submit,
+            cancel_token=cancel_token,
         )
-    except AgnesError as e:
-        return f"视频生成失败（统一内核）：{e.msg}"
     except Exception as e:
+        # v4.168.0：取消不是失败 —— 原样抛出，让 TaskGraph/管线标 cancelled，
+        # 而不是把"用户点了停止"写成"视频生成失败"。
+        if is_cancel_error(e):
+            raise
+        if isinstance(e, AgnesError):
+            return f"视频生成失败（统一内核）：{e.msg}"
         return f"视频生成失败（统一内核）：{e}"
     if not path or not os.path.isfile(path):
         return "视频生成未返回本地文件"

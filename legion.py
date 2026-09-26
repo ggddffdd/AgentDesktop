@@ -648,6 +648,166 @@ def board_reset(project_id):
 AUTH_LOG = os.path.join(LEGION_DIR, "legion_auth.jsonl")
 TRUST_PATH = os.path.join(LEGION_DIR, "legion_trust.json")
 
+# ---------------------------------------------------------------------------
+# v4.168.0（审查 #6）：授权审计的三道加固 —— 不可串写 / 可验真 / 脱敏
+#
+# 问题（v4.164.0 审查）：
+#   · record_auth / record_message 直接 append，没有专用锁 —— 军团本身是多线程
+#     系统，审计又是授权体系的**证据**，不该靠「通常没碰撞」；
+#   · 没有 hash chain —— 事后无法自证「这行没被改过」；
+#   · 用户消息 / PM 判定 / 改稿要求可能带着 API key、Cookie、手机号落盘，
+#     报告一导出就等于泄密。
+#
+# 加固后：
+#   ① 单写入入口 `_auth_append()`，全程持 `AUTH_LOG_LOCK`；
+#   ② 每条带 prev_hash / record_hash，形成可校验链（verify_auth_chain）；
+#   ③ 写入前统一脱敏（_sanitize）—— 密钥/令牌/Cookie/手机号/邮箱/URL 里的 token
+#      一律打码，另存 sha256 摘要与原文长度，既不泄密又能对账。
+# ---------------------------------------------------------------------------
+AUTH_LOG_LOCK = threading.RLock()
+AUTH_GENESIS = "genesis"
+
+# 脱敏规则（顺序敏感：先长特征，后泛化特征）
+_SANITIZE_RULES = (
+    # OpenAI / DeepSeek 风格 key：sk-xxxx
+    (re.compile(r"(sk-[A-Za-z0-9_\-]{5})[A-Za-z0-9_\-]{4,}"), r"\1***"),
+    # Bearer <token>
+    (re.compile(r"(Bearer\s+)[A-Za-z0-9._\-]{8,}", re.I), r"\1***"),
+    # key=value / "key": "value" 形式的敏感字段
+    # 值字符集刻意排除中英文标点 —— 否则 `access_token: zzzz9999，Cookie:` 会把
+    # 后面的「Cookie:」一起吞掉，导致后面那条 Cookie 规则失效（实测踩过）。
+    (re.compile(r"((?:api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|"
+                r"auth[_-]?token|token|secret|password|passwd|pwd)\s*[\"']?\s*[:=]\s*"
+                r"[\"']?)([^\s\"',;)\]}，。；：、！？（）【】]{4,})", re.I), r"\1***"),
+    # URL query 里的 token/sign
+    (re.compile(r"([?&](?:token|key|api_key|access_token|sign|signature|code)=)[^&\s]+",
+                re.I), r"\1***"),
+    # Cookie 请求头：从 Cookie: 到行尾（遇中文标点即停，避免吞掉整段正文）
+    (re.compile(r"(Cookie\s*:\s*)[^\r\n，。；]{4,}", re.I), r"\1***"),
+    # 中国大陆手机号：保留前 3 后 4
+    (re.compile(r"(?<!\d)(1[3-9]\d)\d{4}(\d{4})(?!\d)"), r"\1****\2"),
+    # 邮箱：保留域名
+    (re.compile(r"\b[A-Za-z0-9._%+\-]+@([A-Za-z0-9.\-]+\.[A-Za-z]{2,})\b"),
+     r"***@\1"),
+)
+
+
+# 结构化数据（args/参数 dict）的敏感键名判定 —— 键值分离时文本正则够不着
+_SENSITIVE_KEY_RE = re.compile(
+    r"(api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|auth[_-]?token|"
+    r"token|secret|password|passwd|pwd|cookie|authorization|credential|"
+    r"private[_-]?key)", re.I)
+
+
+def sanitize_text(value, max_len=0):
+    """统一脱敏。非字符串原样返回；max_len>0 时超长截断（保留头尾）。"""
+    if not isinstance(value, str):
+        return value
+    s = value
+    for pat, rep in _SANITIZE_RULES:
+        s = pat.sub(rep, s)
+    if max_len and len(s) > max_len:
+        keep = max(8, (max_len - 20) // 2)
+        s = s[:keep] + f"…（略 {len(s) - keep * 2} 字）…" + s[-keep:]
+    return s
+
+
+def sanitize_args(obj, depth=0, max_len=400):
+    """递归脱敏（dict / list / str）；深度或长度超限时降级为摘要。
+
+    结构化数据靠**键名**判敏（文本正则管不到 `{"password": "..."}` 这种
+    键值分离的形态 —— 实测踩过），整值一律打码。
+    """
+    if depth > 4:
+        return "…"
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in list(obj.items())[:40]:
+            ks = str(k)
+            if _SENSITIVE_KEY_RE.search(ks):
+                out[ks] = "***"
+            else:
+                out[ks] = sanitize_args(v, depth + 1, max_len)
+        return out
+    if isinstance(obj, (list, tuple)):
+        return [sanitize_args(v, depth + 1, max_len) for v in list(obj)[:40]]
+    if isinstance(obj, str):
+        return sanitize_text(obj, max_len=max_len)
+    return obj
+
+
+def _auth_canonical(rec):
+    """规范化序列化（排序键 + 紧凑分隔符），保证哈希可复算。"""
+    body = {k: v for k, v in rec.items() if k != "record_hash"}
+    return json.dumps(body, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":"))
+
+
+def _auth_hash(prev_hash, rec):
+    raw = f"{prev_hash}|{_auth_canonical(rec)}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _auth_tail_hash():
+    """读账本最后一条的 record_hash（供链式续接）。
+
+    只读文件尾部 64KB —— 账本会长期累积，不能每写一笔就整文件扫一遍。
+    """
+    try:
+        if not os.path.exists(AUTH_LOG):
+            return AUTH_GENESIS
+        size = os.path.getsize(AUTH_LOG)
+        if size <= 0:
+            return AUTH_GENESIS
+        with open(AUTH_LOG, "rb") as f:
+            back = min(size, 65536)
+            f.seek(size - back)
+            blob = f.read().decode("utf-8", "ignore")
+        lines = [l for l in blob.splitlines() if l.strip()]
+        if not lines:
+            return AUTH_GENESIS
+        rec = json.loads(lines[-1])
+        return rec.get("record_hash") or AUTH_GENESIS
+    except Exception:
+        # 尾行损坏（半行写入）→ 从 genesis 重起链，并会在 verify 里被发现
+        return AUTH_GENESIS
+
+
+def _auth_append(rec):
+    """**唯一**写入入口：持锁 → 脱敏 → 接链 → 原子追加一行。
+
+    返回落盘后的记录（含 prev_hash / record_hash）；失败返回 None。
+    这是「不可串写」的实现点：多线程/多成员同时授权也不会交错半行。
+    """
+    try:
+        os.makedirs(LEGION_DIR, exist_ok=True)
+        with AUTH_LOG_LOCK:
+            clean = dict(rec)
+            for k in ("reason", "text", "pm_verdict"):
+                if k in clean and isinstance(clean[k], str):
+                    clean[k] = sanitize_text(clean[k])
+            if "args" in clean:
+                clean["args"] = sanitize_args(clean["args"])
+                clean["args_digest"] = hashlib.sha256(
+                    json.dumps(sanitize_args(clean["args"]), ensure_ascii=False,
+                               sort_keys=True).encode("utf-8")).hexdigest()[:16]
+            prev = _auth_tail_hash()
+            clean["prev_hash"] = prev
+            clean["record_hash"] = _auth_hash(prev, clean)
+            line = json.dumps(clean, ensure_ascii=False) + "\n"
+            with open(AUTH_LOG, "a", encoding="utf-8", newline="") as f:
+                f.write(line)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+            return clean
+    except Exception as e:
+        log.warning("授权审计写入失败: %s", e)
+        return None
+
+
 
 def fingerprint(wave_no, members, task=""):
     """授权参数指纹：波次序号 + 成员名单 + 任务摘要。
@@ -662,7 +822,7 @@ def fingerprint(wave_no, members, task=""):
 
 
 def record_auth(project_id, project_name, wave_no, fp, pm_verdict,
-                decision, by="user", reason="", run_id=""):
+                decision, by="user", reason="", run_id="", args=None):
     """写一笔授权审计日志（JSONL，append-only）。
 
     by: "user"= 用户亲手批；"auto"= 围栏内自动放行；"timeout"= 超时（等同不授权）。
@@ -670,24 +830,21 @@ def record_auth(project_id, project_name, wave_no, fp, pm_verdict,
 
     v4.124.5：新增 `run_id` 字段 —— 同一项目所有授权必须串在同一条 run_id 链上，
     续跑复用 ckpt_run_id 不能另开新账，审计谱系不出现"复活节岛"。
+
+    v4.168.0（审查 #6）：改走 `_auth_append` —— 单写入入口 + 哈希链 + 脱敏。
     """
-    try:
-        os.makedirs(LEGION_DIR, exist_ok=True)
-        rec = {
-            "ts": time.time(),
-            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "run_id": run_id or "",     # v4.124.5：跨生死审计谱系
-            "project_id": project_id, "project_name": project_name,
-            "wave": wave_no, "fingerprint": fp,
-            "pm_verdict": pm_verdict, "decision": decision,
-            "by": by, "reason": reason,
-        }
-        with open(AUTH_LOG, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        return rec
-    except Exception as e:
-        log.warning("授权审计写入失败: %s", e)
-        return None
+    rec = {
+        "ts": time.time(),
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "run_id": run_id or "",     # v4.124.5：跨生死审计谱系
+        "project_id": project_id, "project_name": project_name,
+        "wave": wave_no, "fingerprint": fp,
+        "pm_verdict": pm_verdict, "decision": decision,
+        "by": by, "reason": reason,
+    }
+    if args:
+        rec["args"] = args
+    return _auth_append(rec)
 
 
 def record_message(project_id, project_name, run_id, wave_no, text, urgent=False):
@@ -699,41 +856,134 @@ def record_message(project_id, project_name, run_id, wave_no, text, urgent=False
 
     `event="user_message"` 与授权记录（无 event 字段）区分，
     两者都串在同一条 run_id 链上，续跑复用 ckpt_run_id 不断谱系。
+
+    v4.168.0（审查 #6）：改走 `_auth_append`；正文写入前统一脱敏，
+    另存 `text_digest`（sha256 前 16 位）与 `text_len` 供对账 ——
+    用户原话里的 key / Cookie / 手机号不会再随审计文件外泄。
     """
-    try:
-        os.makedirs(LEGION_DIR, exist_ok=True)
-        rec = {
-            "ts": time.time(),
-            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "event": "user_message",
-            "run_id": run_id or "",
-            "project_id": project_id, "project_name": project_name,
-            "wave": wave_no, "urgent": bool(urgent), "text": text or "",
-        }
-        with open(AUTH_LOG, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        return rec
-    except Exception as e:
-        log.warning("用户指令审计写入失败: %s", e)
-        return None
+    raw = text or ""
+    rec = {
+        "ts": time.time(),
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "event": "user_message",
+        "run_id": run_id or "",
+        "project_id": project_id, "project_name": project_name,
+        "wave": wave_no, "urgent": bool(urgent),
+        "text": raw,
+        "text_digest": hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16],
+        "text_len": len(raw),
+    }
+    return _auth_append(rec)
 
 
 def read_auth(limit=200):
     """读最近 N 条授权审计（倒序返回，最新在前）。"""
     out = []
     try:
-        with open(AUTH_LOG, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    out.append(json.loads(line))
-                except Exception:
-                    continue
+        with AUTH_LOG_LOCK:
+            with open(AUTH_LOG, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        out.append(json.loads(line))
+                    except Exception:
+                        continue
     except Exception:
         return []
     return out[-limit:][::-1]
+
+
+def verify_auth_chain(path=None):
+    """校验审计账本的哈希链是否完整（可验真）。
+
+    返回 dict：
+        ok          —— 链是否完整
+        n           —— 校验了多少条
+        broken_at   —— 首个断链/被篡改的行号（1 起，0 表示无）
+        reason      —— 断链原因
+        unchained   —— 哈希链上线之前写入的旧记录条数（历史账本不算篡改）
+        legacy      —— 全部记录都无哈希（v4.168.0 之前的旧账本）
+
+    为什么需要「unchained」：本功能上线前已有历史账本，那些行没有
+    record_hash —— 若一律判失败，等于把正常升级误报成篡改。
+    """
+    p = path or AUTH_LOG
+    recs = []
+    try:
+        with AUTH_LOG_LOCK:
+            with open(p, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        recs.append(json.loads(line))
+    except FileNotFoundError:
+        return {"ok": True, "n": 0, "broken_at": 0, "reason": "账本不存在",
+                "unchained": 0, "legacy": True}
+    except Exception as e:
+        return {"ok": False, "n": 0, "broken_at": 0,
+                "reason": f"账本读取失败：{e}", "unchained": 0, "legacy": False}
+
+    if not recs:
+        return {"ok": True, "n": 0, "broken_at": 0, "reason": "空账本",
+                "unchained": 0, "legacy": True}
+
+    hashed = [r for r in recs if r.get("record_hash")]
+    if not hashed:
+        return {"ok": True, "n": len(recs), "broken_at": 0,
+                "reason": "v4.168.0 之前的旧账本（无哈希链）",
+                "unchained": len(recs), "legacy": True}
+
+    prev = AUTH_GENESIS
+    unchained = 0
+    first_hash_idx = next(i for i, r in enumerate(recs) if r.get("record_hash"))
+    unchained = first_hash_idx
+    # 首条带哈希的记录，其 prev_hash 应为 genesis（或旧账本尾巴 → 也接受 genesis）
+    for i in range(first_hash_idx, len(recs)):
+        rec = recs[i]
+        rh = rec.get("record_hash")
+        if not rh:
+            return {"ok": False, "n": i, "broken_at": i + 1,
+                    "reason": "哈希链之后出现无哈希记录（疑似插入/降级）",
+                    "unchained": unchained, "legacy": False}
+        if rec.get("prev_hash") != prev:
+            return {"ok": False, "n": i, "broken_at": i + 1,
+                    "reason": f"prev_hash 不接上一条（期望 {prev[:12]}…，"
+                              f"实际 {str(rec.get('prev_hash'))[:12]}…）",
+                    "unchained": unchained, "legacy": False}
+        if _auth_hash(prev, rec) != rh:
+            return {"ok": False, "n": i, "broken_at": i + 1,
+                    "reason": "内容与 record_hash 不符（记录被改过）",
+                    "unchained": unchained, "legacy": False}
+        prev = rh
+    return {"ok": True, "n": len(recs), "broken_at": 0, "reason": "",
+            "unchained": unchained, "legacy": False}
+
+
+def auth_digest(limit=50):
+    """审计摘要视图（**默认给报告/UI 用**）：只给可公开的元信息 + 正文摘要。
+
+    完整正文按需用 read_auth 取（且落盘时已脱敏）。这是审查里
+    「报告附录默认只显示审计摘要，完整原文按需打开」的落地。"""
+    out = []
+    for r in read_auth(limit):
+        item = {
+            "time": r.get("time", ""),
+            "run_id": r.get("run_id", ""),
+            "wave": r.get("wave"),
+            "event": r.get("event", "auth"),
+            "decision": r.get("decision", ""),
+            "by": r.get("by", ""),
+            "fingerprint": r.get("fingerprint", ""),
+        }
+        txt = r.get("text") or r.get("reason") or ""
+        item["text_preview"] = sanitize_text(txt, max_len=60)
+        item["text_digest"] = r.get("text_digest") or ""
+        item["chained"] = bool(r.get("record_hash"))
+        out.append(item)
+    return out
+
 
 
 def _trust_load():

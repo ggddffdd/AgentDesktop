@@ -199,6 +199,9 @@ html,body{margin:0;padding:0;background:var(--bg);
 .btns a:hover{background:var(--accent);color:#fff;border-color:var(--accent);}
 .qc{font-size:11px;padding:0 8px 8px;}
 .qc.fail{color:#d98c3f;}
+/* v4.168.0：质检跳过要看得见 —— 灰蓝色，与"通过(默认色)/未通过(橙)"都不同，
+   避免"没质检"在视觉上被当成"通过" */
+.qc.skip{color:#7a8290;}
 .qclink{color:var(--accent);cursor:pointer;}
 .empty{padding:24px;text-align:center;color:var(--dim);font-size:13px;}
 /* lightbox */
@@ -337,12 +340,17 @@ def clip_card_html(i, status, path=None, kf=None, error="", info_text=None,
 
 
 def keyframe_card_html(i, kf, note="", can_rollback=False, can_versions=False,
-                       stale=False):
+                       stale=False, qc_status=""):
     """关键帧卡：首帧图片 + 质检状态；图片可点击灯箱放大。
 
     v4.141：stale=True 表示上游资产（角色/线索）已被回滚，此关键帧是基于旧版本
     生成的。界面必须明示，避免「角色已回到 V1、关键帧却还挂着 V3」这种
     假一致性把人骗过去。
+
+    v4.168.0（审查 #6）：新增 qc_status —— 只按 note 判断时，「质检跳过（没配 key /
+    调用失败）」的镜头在界面上**什么都不显示**，看着跟"没问题"一样。
+    现在按真实状态出徽标：已质检·通过 / 已质检·未通过 / 质检跳过（原因）。
+    「未质检」绝不允许伪装成「通过」。
     """
     if kf and os.path.isfile(kf):
         thumb = (f'<div class="thumb"><img src="{_localres_url(kf)}" '
@@ -354,7 +362,16 @@ def keyframe_card_html(i, kf, note="", can_rollback=False, can_versions=False,
     if stale and kf and os.path.isfile(kf):
         info += " · ⚠️ 基于旧资产"
     qc = ""
-    if note:
+    if qc_status:
+        try:
+            import vision_qc as _vq
+            label = _vq.status_label(qc_status)
+            real = _vq.is_real_qc(qc_status)
+        except Exception:
+            label, real = qc_status, qc_status in ("pass", "fail")
+        cls = "qc fail" if qc_status == "fail" else ("qc" if real else "qc skip")
+        qc = f'<div class="{cls}">{_esc(label)}</div>'
+    elif note:
         failed = "VERDICT: FAIL" in note.upper()
         label = "⚠️ 质检未通过" if failed else "✅ 质检通过"
         cls = "qc fail" if failed else "qc"

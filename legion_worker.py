@@ -59,7 +59,7 @@ from PySide6.QtCore import QThread, Signal
 # 顶层导入（不放在 run() 内）：保证 PyInstaller 静态分析能扫到这三个模块，
 # 否则打包后运行会 ModuleNotFoundError。三者之间无循环依赖，可安全顶层导入。
 import legion
-from task_graph import TaskGraph
+from task_graph import TaskGraph, INCOMPLETE_FLAG
 from agent_node import AgentNode
 
 # v4.167.0：统一取消令牌（纯标准库）
@@ -161,6 +161,10 @@ class LegionWorker(QThread):
         # v4.140 P0-1：wi -> [role_name,...] 记录本波「执行失败（异常）」的成员，
         # 用于杜绝「异常被伪装成 completed」的假成功，并在报告里显式标注。
         self._wave_failed_members = {}
+        # v4.168.0（审查 #2 残余）：wi -> [role_name,...] 记录「跑满轮次但没写出正文」
+        # 的成员。与 failed 分开登记 —— 一个是被打崩了，一个是跑了但没产出，
+        # 复盘时要能分清。结项报告显式补录，绝不冒充「成员已完成」。
+        self._wave_incomplete_members = {}
         # v4.140 P0-2：wi -> [(role_name, err_str),...] 记录提交自检闸（数据/形态）
         # 自身崩溃的成员，fail-closed 不静默放行，但也不无限回炉成员。
         self._gate_errors = {}
@@ -497,15 +501,32 @@ class LegionWorker(QThread):
                 pass
             try:
                 r = agent.run(state)
+                # v4.168.0（审查 #2 残余）：成员跑满轮次却没写出正文 ——
+                # 这不是成功（没有可验收的东西），也不该当崩溃。
+                # 标记出来交给 TaskGraph 记 incomplete，并让任务板/结项报告都看得见。
+                _inc = bool(isinstance(r, dict)
+                            and r.get(getattr(agent, "name", "") + "_incomplete"))
+                if _inc and isinstance(r, dict):
+                    r = dict(r)
+                    r[INCOMPLETE_FLAG] = True
                 try:
                     out_txt = ""
                     if isinstance(r, dict):
                         out_txt = (r.get(tid + "_output") or "").strip()
-                    self._board(board_key, role=role_name, wave=wave_no, status="done",
-                                chars=len(out_txt),
-                                summary=out_txt.replace("\n", " ")[:80])
+                    if _inc:
+                        self._board(board_key, role=role_name, wave=wave_no,
+                                    status="incomplete", chars=len(out_txt),
+                                    summary=(out_txt.replace("\n", " ")[:80]
+                                             or "跑满轮次无正文产出"))
+                        self.log_line.emit(
+                            f"  [{tid}] ⚠️ 成员跑满轮次但未产出正文（incomplete）"
+                            f"—— 不计为完成，已显式标注\n")
+                    else:
+                        self._board(board_key, role=role_name, wave=wave_no, status="done",
+                                    chars=len(out_txt),
+                                    summary=out_txt.replace("\n", " ")[:80])
                 except Exception:
-                    self._board(board_key, status="done")
+                    self._board(board_key, status="incomplete" if _inc else "done")
                 return r
             except Exception as e:
                 # v4.167.0（审查 §3）：**取消不是失败** —— 任务板必须能区分
@@ -629,11 +650,20 @@ class LegionWorker(QThread):
             _tid = f"w{wi}_m{mi}"
             _task = getattr(tg, "_tasks", {}) or {}
             _node = _task.get(_tid)
-            if _node is not None and getattr(_node, "status", None) == "failed":
+            _st = getattr(_node, "status", None) if _node is not None else None
+            if _st == "failed":
                 _rn = self._role_name(role)
                 self._wave_failed_members.setdefault(wi, []).append(_rn)
                 self._log(f"  ⚠️ 成员 {_rn} 执行失败（节点 failed）—— 本波交付不完整，"
                           f"已显式标记，不再伪装成成功")
+            elif _st == "incomplete":
+                # v4.168.0（审查 #2 残余）：跑满轮次没写正文 —— 同样不算交活。
+                # 与 failed 分开登记：一个是"崩了"，一个是"跑了但没产出"，
+                # 复盘时要能分清是模型挂了还是任务本身就写不出东西。
+                _rn = self._role_name(role)
+                self._wave_incomplete_members.setdefault(wi, []).append(_rn)
+                self._log(f"  ⚠️ 成员 {_rn} 跑满轮次未产出正文（incomplete）"
+                          f"—— 不计为完成，已显式标注")
         return _state
 
     # ---- v4.138 P0：交付闸门前移（成员产出 → PM 评审之间的机器闸）----
@@ -993,6 +1023,60 @@ class LegionWorker(QThread):
                     return True
         return False
 
+    def _accept_with_warning(self, wave_no, wi, attempt, max_retry, fp, suggest,
+                             task, plan_text, parts_by_wave, gate_reports, waves):
+        """v4.168.0（审查 #4）：顾问模式重跑耗尽 → **带风险接受**本波。
+
+        原来这里只有「任务板写 rejected + 日志一句『标红放行』+ break」，
+        结果出现语义冲突：
+
+            任务板：第 N 波 rejected
+            实际流程：后续波已执行
+            最终状态：done
+            checkpoint：可能没记录这波已被接受
+
+        现在四条线一次对齐：
+          ① 任务板写 `accepted_with_warning`（不是 rejected）
+          ② 审计账本记一笔 `带风险接受`（by=advisory，写明凭什么）
+          ③ checkpoint 用 last_completed_wave=本波 落盘（与实际继续位置一致）
+          ④ `_warned_waves` 留给结项报告强制标注
+        """
+        note = (f"第 {wave_no} 波未通过验收"
+                f"（项目经理 {attempt} 次判定均为 FAIL，已达顾问模式重跑上限 {max_retry}）"
+                f" —— 按顾问模式**带风险继续**")
+        try:
+            self._board(f"gate_w{wave_no}", wave=wave_no,
+                        status="accepted_with_warning", pm_verdict=suggest)
+        except Exception as e:
+            log.warning("任务板写入 accepted_with_warning 失败: %s", e)
+        try:
+            legion.record_auth(
+                self.pid, self._pname, wave_no, fp, suggest, "带风险接受",
+                by="advisory",
+                reason="顾问模式重跑耗尽：PM 无授权权，此处不是授权，是带风险继续",
+                run_id=self.run_id)
+        except Exception as e:
+            log.warning("带风险接受审计写入失败: %s", e)
+        try:
+            if not isinstance(getattr(self, "_warned_waves", None), dict):
+                self._warned_waves = {}
+            self._warned_waves[int(wave_no)] = note
+        except Exception:
+            pass
+        # 提交自检闸/成员失败等既有缺口一并留痕，避免报告只写一句"带风险"
+        try:
+            legion.save_checkpoint(
+                self.pid, self.run_id, task, plan_text,
+                parts_by_wave, gate_reports,
+                wave_member_texts=self._wave_member_texts,
+                last_completed_wave=wi,
+                waves=waves)
+        except Exception as e:
+            log.warning("带风险接受的 checkpoint 落盘失败: %s", e)
+        self._log(f"  ⚠️ {note}")
+        self._log(f"     （已推进到第 {wi + 1} 波；本波风险已写入任务板 + 审计 + 结项报告，"
+                  f"可随时在报告里回看）")
+
     def _make_final_report(self, pm, status, waves, parts_by_wave,
                            gate_reports, task):
         """v4.124.16：收尾结项 —— PM 汇报链的最后一环。
@@ -1061,6 +1145,26 @@ class LegionWorker(QThread):
                                + "、".join(_rns) + " 执行异常失败（产出缺失）")
                 _sum = (_sum + "\n\n---\n\n## ⚠️ 成员执行失败（系统补录）\n"
                         + "\n".join(_wf)).strip()
+            # v4.168.0（审查 #2 残余）：跑满轮次无正文的成员，结项报告显式补录。
+            # 旧实现会把「只跑了工具、什么都没写」当成功交出去，PM 和报告都看不见。
+            if getattr(self, "_wave_incomplete_members", None):
+                _wf2 = []
+                for _w, _rns in sorted(self._wave_incomplete_members.items(),
+                                       key=lambda x: int(x[0])):
+                    _wf2.append(f"第{int(_w) + 1}波：" + "、".join(_rns)
+                                + " 跑满轮次未产出正文（无有效交付物）")
+                _sum = (_sum + "\n\n---\n\n## ⚠️ 成员无产出（incomplete · 系统补录）\n"
+                        + "\n".join(_wf2)).strip()
+            # v4.168.0（审查 #4）：顾问模式「带风险接受」的波次，结项报告必须点名 ——
+            # 否则最终状态是 done，但某几波其实没过验收，事后无从追溯。
+            _warned = getattr(self, "_warned_waves", None) or {}
+            if _warned:
+                _wl = [f"· 第 {int(w)} 波：{_warned[w][:160]}" for w in sorted(_warned)]
+                _sum = (_sum + "\n\n---\n\n## ⚠️ 带风险接受（顾问模式 · 系统补录）\n"
+                        + "\n".join(_wl)
+                        + "\n\n> 这些波次**未通过项目经理验收**，因顾问模式重跑上限已到而"
+                          "带风险继续。放行权始终在大哥手里：可在任务板按波次回看，"
+                          "重新生成对应产出。").strip()
             return _sum
         except Exception as e:
             log.warning("结项总结生成失败: %s", e)
@@ -1905,6 +2009,9 @@ class LegionWorker(QThread):
         # v4.127 Bug-1：同一问题打回 ≥2 次后升级「人工介入」的登记簿。
         # 结项总结必须显式列出这些项，不许悄悄放行。
         self._human_needed = []
+        # v4.168.0（审查 #4）：顾问模式「带风险接受」的波次登记簿（波号 → 风险说明）。
+        # 结项报告必须显式补录 —— 最终状态是 done，但某几波其实没过验收，不能无从追溯。
+        self._warned_waves = {}
 
         # v4.124.5：续跑注入（skip 计划 → 直接装入 parts_by_wave / plan_text / gate_reports）
         if self._resume_from is not None and ckpt_data:
@@ -1918,6 +2025,26 @@ class LegionWorker(QThread):
             last_passed_wave = (self._resume_from or 1) - 1
             self._log(f"📦 续跑装入：plan_text {len(plan_text)} 字 / "
                       f"{len(parts_by_wave)} 波产出 / {len(gate_reports)} 条验收记录\n")
+            # v4.168.0（审查 #4）：续跑时把「带风险接受」的波次从审计账本重建回来。
+            # 不重建的话，续跑跑出来的结项报告会漏掉上一段生命里带过的风险 ——
+            # 而审计账本是 append-only + 哈希链的，正好是这个事实的权威来源。
+            try:
+                for _r in (legion.read_auth(400) or []):
+                    if (_r.get("decision") == "带风险接受"
+                            and str(_r.get("project_id")) == str(self.pid)
+                            and (not _r.get("run_id") or _r.get("run_id") == self.run_id)):
+                        _w = int(_r.get("wave") or 0)
+                        if _w:
+                            self._warned_waves[_w] = (
+                                f"第 {_w} 波未通过验收（{_r.get('time', '')} "
+                                f"由顾问模式重跑耗尽后带风险继续，"
+                                f"PM 判定：{_r.get('pm_verdict', '')}）")
+                if self._warned_waves:
+                    self._log(f"⚠️ 续跑已恢复 {len(self._warned_waves)} 个"
+                              f"「带风险接受」波次记录：" 
+                              + "、".join(f"第{w}波" for w in sorted(self._warned_waves)))
+            except Exception as _e:
+                log.warning("续跑恢复带风险波次失败: %s", _e)
 
         # v4.148.1（对标 Omnify TeamWork「澄清需求必须先做」）：PM 若判定关键口径
         # 缺失，计划输出只有【澄清问题】一节 —— 程序在此拦停，问题透给大哥；
@@ -2523,11 +2650,19 @@ class LegionWorker(QThread):
                         break
 
                     # ---- decision == "reject"：打回重跑 ----
+                    # v4.168.0（审查 #4）：顾问模式重跑耗尽，不再写「rejected 但继续」这种
+                    # 语义混搭 —— 改成显式终态 `accepted_with_warning`，同时推进
+                    # last_passed_wave / checkpoint / 最终报告，三者与实际执行位置统一。
+                    #   改前：任务板 rejected，流程却继续跑后面的波，最终还标 done，
+                    #         checkpoint 也没记这波已被接受 —— 事后复盘根本看不懂。
+                    if gate_mode == "advisory" and attempt >= max_retry:
+                        self._accept_with_warning(
+                            wave_no, wi, attempt, max_retry, fp, suggest,
+                            task, plan_text, parts_by_wave, gate_reports, waves)
+                        last_passed_wave = wi
+                        break
                     self._board(f"gate_w{wave_no}", wave=wave_no,
                                 status="rejected", pm_verdict=suggest)
-                    if gate_mode == "advisory" and attempt >= max_retry:
-                        self._log(f"  ⛔ 已达重跑上限（{max_retry} 次）—— 标红放行，不卡流水线")
-                        break
                     if user_rejects >= max(3, max_retry + 2):
                         self._log(
                             f"  ⛔ 已连续打回 {user_rejects} 次（硬上限）—— "

@@ -19,6 +19,8 @@ import re
 import json
 import sys
 import time
+import uuid
+import hashlib
 import base64
 import shutil
 import subprocess
@@ -28,7 +30,20 @@ _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 import urllib.request
 
 from tools import (_agnes_creds, _build_video_prompt, tool_video_gen,
-                   tool_image_gen, PRODUCTS_DIR, is_silent_clip)
+                   tool_image_gen, PRODUCTS_DIR, is_silent_clip,
+                   VIDEO_POLL_TIMEOUT, _zhipu_key)
+# v4.168.0：统一视频模型名与轮询超时（manifest 里落盘的就是这个模型名）
+AGNES_VIDEO_MODEL = "agnes-video-2.5-flash"
+VIDEO_POLL_TIMEOUT_DEFAULT = VIDEO_POLL_TIMEOUT
+
+# "取消"类异常判定（core 内核的 AgnesCancelled / 上层的 CancelledError）。
+# 用内核提供的谓词；内核不可用时按类名兜底 —— 绝不能让"用户点了停止"
+# 被误判成"生成失败"。
+try:                                       # pragma: no cover - 环境相关
+    from core_agnes import is_cancel_error as _is_cancel_error
+except Exception:                          # pragma: no cover
+    def _is_cancel_error(exc):
+        return type(exc).__name__ in ("CancelledError", "AgnesCancelled")
 # 参考图硬上限：Agnes reference 模式实测 6 张报 400，固定 5。
 # （原为 tools 导出，视频统一内核后归 video_pipeline 自管，避免悬空依赖 tools）
 AGNES_MAX_REF_IMAGES = 5
@@ -612,6 +627,10 @@ class VideoPipeline:
         self.scene_images = {}        # {scene_id: 环境概念图路径}（纯场景、无人物）
         self.vision_review = True     # VLM 质检开关（走 DeepSeek 视觉模型）
         self.review_notes = {}        # {shot_index: 最近一次质检的诊断文本}
+        # v4.168.0（审查 #6）：{shot_index: QC 状态}。与 review_notes 的区别：
+        # notes 只在"有话说"时才有，看界面分不清「质检通过」与「压根没质检」。
+        # qc_status 把六种结局全记下来，UI 才能如实显示「已质检 / 质检跳过」。
+        self.qc_status = {}
         # 抗崩坏 v3（参考 ArcReel 的 clues）：跨镜复用的「关键道具 / 场景资产」追踪。
         # 人物锁只锁人，道具与陈设照样会跨镜漂移（同一把剑换了造型、同一块招牌换了字）。
         # clues 为空时全链路不注入任何文本/参考图 —— Auto 默认行为与旧版完全一致。
@@ -697,7 +716,28 @@ class VideoPipeline:
                                     f"director_{ts}")
         os.makedirs(clip_dir, exist_ok=True)
         self.project_dir = clip_dir
-        # 版本回滚：建 versions/ 子目录 + 清空历史栈（保证每次新建工程干净起步）
+        # v4.168.0（导演台审查 #5）：工程目录一次建全，素材按类型归口 ——
+        # 关键帧、片段、成片、日志、角色图都在**同一个项目文件夹**里。
+        # 此前 project_dir 只承载 versions/，关键帧与片段散落在公共产物目录
+        # （还带秒级时间戳文件名），结果是：多项目素材混在一起、拷走一个工程
+        # 拿不齐素材、同名秒级文件理论上会撞名。
+        self.asset_dirs = {
+            "keyframes": os.path.join(clip_dir, "keyframes"),
+            "clips": os.path.join(clip_dir, "clips"),
+            "characters": os.path.join(clip_dir, "characters"),
+            "final": os.path.join(clip_dir, "final"),
+            "logs": os.path.join(clip_dir, "logs"),
+        }
+        for _d in self.asset_dirs.values():
+            try:
+                os.makedirs(_d, exist_ok=True)
+            except Exception:
+                pass
+        # 工程唯一事实源：manifest.json（每镜状态 / 远端 task_id / 提示词 / 目标路径）
+        self.project_id = uuid.uuid4().hex[:12]
+        self._manifest_cache = None
+        self._manifest_lock = threading.Lock()
+        self._init_manifest(topic=topic, style_key=style_key)        # 版本回滚：建 versions/ 子目录 + 清空历史栈（保证每次新建工程干净起步）
         self.versions_dir = os.path.join(clip_dir, "versions")
         os.makedirs(self.versions_dir, exist_ok=True)
         self.clip_versions = {}
@@ -714,6 +754,298 @@ class VideoPipeline:
         self.timeline = None
         self._trans_cache = {}
         return self.project_dir
+
+    # ================= v4.168.0 工程 manifest（导演台审查 #2 / #5）=================
+    #
+    # 为什么要有 manifest：此前「工程目录」只承载 versions/，关键帧与片段散在
+    # 公共产物目录；每镜的远端 task_id 拿到就丢。于是关软件 / 断网 / 点停止后：
+    #   · 远端任务可能还在跑、还在消耗额度，本地却完全不知道；
+    #   · 只能重新提交 → 重复生成、重复扣费；
+    #   · 会话恢复依赖一堆散落的绝对路径，迁移/归档全都对不上。
+    #
+    # 现在 manifest.json 是工程**唯一事实源**：
+    #   镜号 / job_id / 远端 task_id / 模型 / prompt 指纹 / 提交时间 /
+    #   本地目标路径 / 状态(pending|downloading|done|failed|cancelled)
+    # 路径一律存**相对 project_dir 的路径** —— 整个工程文件夹拷走即可完整迁移。
+
+    MANIFEST_MAGIC = "xiaochou-director-manifest"
+
+    def ensure_project_scaffold(self):
+        """确保工程脚手架齐全（**恢复会话时必须调**）。
+
+        prepare() 会建这些目录与 manifest；但会话恢复是直接 setattr 拼出 pipeline 的，
+        不走 prepare —— 不补这一步，续跑时 clips/ 不存在、manifest 写不进去，
+        片段又会掉回公共产物目录（正是本次要消灭的老问题）。
+        """
+        d = getattr(self, "project_dir", None)
+        if not d:
+            return False
+        want = {
+            "keyframes": os.path.join(d, "keyframes"),
+            "clips": os.path.join(d, "clips"),
+            "characters": os.path.join(d, "characters"),
+            "final": os.path.join(d, "final"),
+            "logs": os.path.join(d, "logs"),
+        }
+        for _k, _p in want.items():
+            try:
+                os.makedirs(_p, exist_ok=True)
+            except Exception:
+                pass
+        if not getattr(self, "asset_dirs", None):
+            self.asset_dirs = want
+        if getattr(self, "_manifest_lock", None) is None:
+            self._manifest_lock = threading.Lock()
+        self._manifest_cache = None          # 强制从磁盘重读（尊重已有工程）
+        m = self.manifest_load()
+        if not m.get("project_id"):
+            m["project_id"] = (getattr(self, "project_id", "")
+                               or uuid.uuid4().hex[:12])
+        self.project_id = m.get("project_id")
+        self.manifest_save()
+        return True
+
+    def manifest_path(self):
+        d = getattr(self, "project_dir", None)
+        return os.path.join(d, "manifest.json") if d else ""
+
+    def _init_manifest(self, topic="", style_key=""):
+        m = {
+            "magic": self.MANIFEST_MAGIC,
+            "version": 1,
+            "project_id": getattr(self, "project_id", ""),
+            "created": time.time(),
+            "updated": time.time(),
+            "topic": topic or "",
+            "style": style_key or "",
+            "shots": {},
+            "final": {},
+        }
+        self._manifest_cache = m
+        self.manifest_save()
+        return m
+
+    def manifest_load(self):
+        """读 manifest（带进程内缓存）。文件损坏/不存在时返回空骨架，绝不抛。"""
+        with getattr(self, "_manifest_lock", threading.Lock()):
+            if getattr(self, "_manifest_cache", None) is not None:
+                return self._manifest_cache
+        p = self.manifest_path()
+        m = None
+        if p and os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    m = json.load(f)
+                if not isinstance(m, dict) or m.get("magic") != self.MANIFEST_MAGIC:
+                    m = None
+            except Exception:
+                m = None
+        if m is None:
+            m = {"magic": self.MANIFEST_MAGIC, "version": 1,
+                 "project_id": getattr(self, "project_id", ""),
+                 "created": time.time(), "topic": "", "style": "",
+                 "shots": {}, "final": {}}
+        if not m.get("project_id") and getattr(self, "project_id", ""):
+            m["project_id"] = self.project_id
+        self._manifest_cache = m
+        return m
+
+    def manifest_save(self):
+        """原子写 manifest（临时文件 + os.replace）。失败不抛，返回 True/False。"""
+        p = self.manifest_path()
+        if not p:
+            return False
+        try:
+            m = self._manifest_cache if getattr(self, "_manifest_cache", None) else {}
+            m["updated"] = time.time()
+            tmp = p + ".tmp"
+            with getattr(self, "_manifest_lock", threading.Lock()):
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+                    json.dump(m, f, ensure_ascii=False, indent=2)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except Exception:
+                        pass
+                os.replace(tmp, p)
+            return True
+        except Exception as e:
+            try:
+                self.log(f"  ⚠️ manifest 落盘失败：{e}")
+            except Exception:
+                pass
+            return False
+
+    def manifest_update_shot(self, i, **fields):
+        """更新第 i 镜（0 基，存盘用 1 基镜号）的记录并落盘，返回该记录。"""
+        m = self.manifest_load()
+        key = str(int(i))
+        rec = dict(m.get("shots", {}).get(key) or {})
+        rec.update(fields)
+        rec["shot"] = int(i) + 1
+        rec["updated"] = time.time()
+        rec.setdefault("job_id", getattr(self, "_job_name", ""))
+        rec.setdefault("model", AGNES_VIDEO_MODEL)
+        m.setdefault("shots", {})[key] = rec
+        self.manifest_save()
+        return rec
+
+    def manifest_shot(self, i):
+        return (self.manifest_load().get("shots") or {}).get(str(int(i))) or {}
+
+    def clip_dest_path(self, i):
+        """第 i 镜片段的**固定目标路径**（工程 clips/shot_001_<uuid>.mp4）。
+
+        uuid 一旦生成就写进 manifest 复用 —— 重试不会换文件名，
+        这样「这一镜的产物到底是哪个文件」永远对得上。
+        """
+        rec = self.manifest_shot(i)
+        rel = rec.get("target") or ""
+        if rel:
+            p = os.path.join(self.project_dir, rel)
+            try:
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+            except Exception:
+                pass
+            return p
+        rel = os.path.join("clips", f"shot_{int(i) + 1:03d}_{uuid.uuid4().hex[:8]}.mp4")
+        self.manifest_update_shot(i, target=rel, status="pending")
+        return os.path.join(self.project_dir, rel)
+
+    @staticmethod
+    def prompt_fingerprint(prompt):
+        """提示词指纹（前 16 位 sha256）—— 用于判断"这是不是同一次请求"。"""
+        try:
+            return hashlib.sha256(str(prompt or "").encode("utf-8")).hexdigest()[:16]
+        except Exception:
+            return ""
+
+    def pending_remote_shots(self):
+        """返回**还挂在远端**的镜头 [(镜号1基, 记录), ...]。
+
+        启动/恢复时用它问大哥：「继续查询已提交任务」还是「放弃远端任务并重新生成」。
+        """
+        out = []
+        for k, rec in sorted((self.manifest_load().get("shots") or {}).items(),
+                             key=lambda x: int(x[0]) if str(x[0]).isdigit() else 0):
+            st = (rec or {}).get("status") or ""
+            if (rec or {}).get("task_id") and st in ("pending", "downloading", "submitted"):
+                out.append((int(k) + 1, rec))
+        return out
+
+    def manifest_summary(self):
+        """给 UI/报告用的一行摘要。"""
+        m = self.manifest_load()
+        shots = m.get("shots") or {}
+        cnt = {}
+        for r in shots.values():
+            st = (r or {}).get("status") or "unknown"
+            cnt[st] = cnt.get(st, 0) + 1
+        pend = len(self.pending_remote_shots())
+        return (f"工程 {os.path.basename(self.project_dir or '')}："
+                f"{len(shots)} 镜已登记，状态 {cnt or '{}'}"
+                + (f"；远端待接回 {pend} 镜" if pend else ""))
+
+    def _agnes_client(self):
+        """构造 Agnes 客户端（接回远端任务用）。凭据缺失时返回 None。"""
+        try:
+            from tools import _agnes_creds, _zhipu_key
+            from core_agnes import AgnesClient
+            base, key = _agnes_creds(self.cfg)
+            if not key:
+                return None
+            return AgnesClient(api_key=key, base_url=base,
+                               video_model=AGNES_VIDEO_MODEL,
+                               zhipu_key=_zhipu_key(self.cfg))
+        except Exception as e:
+            try:
+                self.log(f"  ⚠️ Agnes 客户端构造失败：{e}")
+            except Exception:
+                pass
+            return None
+
+    def resume_remote_clips(self, on_clip=None):
+        """**接回已提交的远端任务**：只轮询 + 下载，不重新提交（不重复扣费）。
+
+        v4.168.0（导演台审查 #2）：这是「关软件/断网/点停止之后还能续跑」的关键。
+        逐镜处理 `pending_remote_shots()`；每镜成功后写回 manifest（status=done）。
+
+        返回 (成功数, 失败列表)。
+        """
+        self.begin_job("resume_remote")
+        todo = self.pending_remote_shots()
+        if not todo:
+            self.log("📭 没有需要接回的远端任务")
+            return 0, []
+        self.log(f"🔌 接回远端任务：共 {len(todo)} 镜待查询")
+        client = self._agnes_client()
+        if client is None:
+            self.log("  ⚠️ 缺少 Agnes 凭据，无法接回远端任务")
+            return 0, [(n, "缺少凭据") for n, _ in todo]
+        ok_n, fails = 0, []
+        for n, rec in todo:
+            i = int(n) - 1
+            if self._is_cancelled():
+                self.log("  ⏹ 已停止接回")
+                break
+            tid = rec.get("task_id") or ""
+            rel = rec.get("target") or ""
+            dest = os.path.join(self.project_dir, rel) if rel else self.clip_dest_path(i)
+            self.manifest_update_shot(i, status="downloading")
+            try:
+                self.log(f"  ⏳ 镜{n} 接回远端任务 {tid}（不再重新提交）…")
+                client.resume_video(
+                    tid, dest,
+                    model=rec.get("model") or AGNES_VIDEO_MODEL,
+                    cancel_token=getattr(self, "_job_token", None),
+                    timeout=int(rec.get("timeout") or VIDEO_POLL_TIMEOUT_DEFAULT),
+                )
+                self.manifest_update_shot(i, status="done", error="",
+                                          done_at=time.time())
+                if i < len(self.clip_paths or []):
+                    self.clip_paths[i] = dest
+                ok_n += 1
+                self.log(f"  ✅ 镜{n} 已接回：{os.path.basename(dest)}")
+                if callable(on_clip):
+                    try:
+                        on_clip(i, dest)
+                    except Exception:
+                        pass
+            except Exception as e:
+                # 取消不是失败：标记取消并停止，不写 failed（远端可能还在跑）
+                if _is_cancel_error(e):
+                    self.manifest_update_shot(i, status="cancelled",
+                                              error="用户取消接回")
+                    self.log(f"  ⏹ 镜{n} 接回被取消（远端任务未标记失败）")
+                    break
+                self.manifest_update_shot(i, status="failed", error=str(e)[:300])
+                fails.append((n, str(e)[:200]))
+                self.log(f"  ❌ 镜{n} 接回失败：{e}")
+        self.log(f"🔌 接回结束：成功 {ok_n} 镜"
+                 + (f"，失败 {len(fails)} 镜" if fails else ""))
+        return ok_n, fails
+
+    def abandon_remote_clips(self):
+        """放弃远端任务并标记为可重新生成（用户选「放弃并重生成」时调用）。
+
+        注意：只标记本地状态 —— 远端无法真正撤销，但从此不再轮询它，
+        也不会再被「接回」提示打扰。返回被标记的镜号列表。
+        """
+        marked = []
+        for n, rec in self.pending_remote_shots():
+            i = int(n) - 1
+            self.manifest_update_shot(i, status="cancelled",
+                                      error="用户选择放弃远端任务并重新生成")
+            marked.append(n)
+        if marked:
+            self.log(f"🗑 已放弃 {len(marked)} 个远端任务（镜 {marked}），"
+                     f"可重新生成")
+        return marked
+
+    def log_dir(self):
+        return (getattr(self, "asset_dirs", {}) or {}).get("logs", "") or (
+            self.project_dir or "")
 
     # ---------- v4.132 项目制作规格（文档区） ----------
     # 五个字段都是「人写给 AI 看」的中文短文，空着就不注入任何东西。
@@ -1393,14 +1725,20 @@ class VideoPipeline:
                                 max_tokens=max_tokens, log=self.log)
 
     def review_keyframe(self, i, image_path):
-        """审查单张关键帧，返回 (ok, note)。
+        """审查单张关键帧，返回 (ok, note)，并把状态记进 `self.qc_status[i]`。
 
         ⚠️ 质检不可用时一律放行（返回 True）——VLM 是增强手段，
         绝不能因为没配 key 或接口抖动就把整条流水线卡死。
+
+        v4.168.0（审查 #6）：放行 ≠ 通过。`qc_status[i]` 明确区分
+        「已质检·通过 / 未通过 / 质检跳过（无key / 调用失败 / 无文件）/ 未开启」，
+        导演台卡片据此显示，**绝不把「未质检」伪装成「通过」**。
         """
         if not image_path or not os.path.isfile(image_path):
+            self.qc_status[i] = "skipped_nofile"
             return True, ""
         if not self.vision_review:
+            self.qc_status[i] = vq.QC_OFF
             return True, ""
         shot = self.shots[i] if i < len(self.shots) else {}
         desc = shot.get("en") or shot.get("zh") or ""
@@ -1411,12 +1749,46 @@ class VideoPipeline:
                      "report any mismatch under ISSUES.")
         question = (f"Required shot description: {desc}\n"
                     f"{self._locks_text()}{extra}\n\n{self.REVIEW_QUESTION}")
-        note = self._vision_review(image_path, question)
-        if not note:
-            return True, ""
-        self.review_notes[i] = note
-        ok = "VERDICT: FAIL" not in note.upper()
+        meta = {}
+        note = vq.review_images(self.cfg, [image_path], question,
+                                max_tokens=400, log=self.log, meta=meta)
+        status = meta.get("status") or ""
+        if not status:
+            if not note:
+                status = vq.QC_PASS       # 有响应但没内容：沿用旧语义（放行）
+            else:
+                status = (vq.QC_PASS if "VERDICT: FAIL" not in note.upper()
+                          else vq.QC_FAIL)
+        self.qc_status[i] = status
+        if note:
+            self.review_notes[i] = note
+        if vq.is_real_qc(status) and meta.get("downscaled"):
+            self.log(f"  🔎 镜{i+1} 质检图片已降采样 "
+                     f"{meta.get('src_bytes', 0)//1024}KB → "
+                     f"{meta.get('sent_bytes', 0)//1024}KB")
+        elif not vq.is_real_qc(status):
+            self.log(f"  ⏭ 镜{i+1} {vq.status_label(status)}（按放行处理，"
+                     f"不代表画面合格）")
+        ok = "VERDICT: FAIL" not in (note or "").upper()
         return ok, note
+
+    def qc_status_of(self, i):
+        """第 i 镜的质检状态（UI 用；未见过的镜返回空串）。"""
+        return (getattr(self, "qc_status", {}) or {}).get(i, "")
+
+    def qc_status_label(self, i):
+        st = self.qc_status_of(i)
+        return vq.status_label(st) if st else ""
+
+    def qc_summary(self):
+        """本项目的质检汇总（给导演台状态条/报告用）。"""
+        s = dict(vq.stats())
+        if getattr(self, "qc_status", None):
+            local = {}
+            for st in self.qc_status.values():
+                local[st] = local.get(st, 0) + 1
+            s["by_shot"] = local
+        return s
 
     # ---------- 参考图智能装配（参考 ViMax 的 reference image selection） ----------
     def _shot_characters(self, i):
@@ -2327,11 +2699,28 @@ class VideoPipeline:
         # 这样 shot_idx 与 self.shots 全量对齐，避免索引错配。
         self.log(f"📦 合成输入：{len(clips)} 个有效片段 / 原始 {len(self.clip_paths)} 镜")
         ts = time.strftime("%Y%m%d_%H%M%S")
-        # v4.129：同上，成片也落分层目录
-        out_path = os.path.join(_vp_products_dir(getattr(self, "cfg", None), "video"),
-                                f"director_final_{ts}.mp4")
+        # v4.129：成片落分层目录
+        # v4.168.0（审查 #5）：有工程目录就归口到 工程/final/ —— 拷走一个导演工程
+        # 就能拿齐关键帧 + 片段 + 成片，不用再去公共产物目录翻。
+        _final_dir = (getattr(self, "asset_dirs", {}) or {}).get("final")
+        if _final_dir:
+            try:
+                os.makedirs(_final_dir, exist_ok=True)
+            except Exception:
+                _final_dir = None
+        out_path = os.path.join(_final_dir or _vp_products_dir(
+            getattr(self, "cfg", None), "video"), f"director_final_{ts}.mp4")
         ok, detail = self._merge(self.clip_paths, self.shots, out_path, self.burn_subtitles)
         if ok:
+            # v4.168.0：成片路径进 manifest（工程唯一事实源）
+            try:
+                self.manifest_load().setdefault("final", {}).update({
+                    "path": (os.path.relpath(out_path, self.project_dir)
+                             if self.project_dir else out_path),
+                    "updated": time.time()})
+                self.manifest_save()
+            except Exception:
+                pass
             return out_path, ""
         # 合并详细错误信息
         err_parts = ["ffmpeg 合成失败"]
@@ -2865,11 +3254,45 @@ class VideoPipeline:
         for attempt in range(max_retry + 1):
             if self._is_cancelled():
                 return None
+            # v4.168.0（审查 #5）：片段落进**本工程目录** clips/shot_001_<uuid>.mp4，
+            # 不再散到公共产物目录 + 秒级时间戳（多项目混料 / 同秒撞名 / 拷走不齐）。
+            try:
+                dest = self.clip_dest_path(idx)
+            except Exception:
+                dest = None
+            # v4.168.0（审查 #2）：提交成功立刻把远端 task_id 落 manifest。
+            # 放在轮询之前 —— 一旦开始轮询，崩溃/断网/点停止都可能发生。
+            def _on_submit(tid, _idx=idx, _dest=dest):
+                try:
+                    self.manifest_update_shot(
+                        _idx, task_id=str(tid), status="pending",
+                        model=AGNES_VIDEO_MODEL,
+                        prompt=self.last_prompts.get(_idx, "")[:4000],
+                        prompt_hash=self.prompt_fingerprint(self.last_prompts.get(_idx, "")),
+                        submitted_at=time.time(),
+                        target=(os.path.relpath(_dest, self.project_dir)
+                                if _dest else ""),
+                        attempt=attempt + 1)
+                    self.log(f"  🧷 镜{_idx+1} 远端任务已登记：{tid}"
+                             f"（关软件/断网后可接回，不重复扣费）")
+                except Exception as e:
+                    self.log(f"  ⚠️ 镜{_idx+1} 远端任务登记失败：{e}")
+
             try:
                 res = tool_video_gen(self.cfg, self.app_dir, prompt, duration, None,
                                      resolution=resolution, first_frame=first_frame,
-                                     dialogue=dialogue, images=ref_images)
+                                     dialogue=dialogue, images=ref_images,
+                                     dest_path=dest, on_submit=_on_submit,
+                                     cancel_token=getattr(self, "_job_token", None))
             except Exception as e:
+                # v4.168.0：取消原样抛（让上层标 cancelled），不伪装成"生成失败"
+                if _is_cancel_error(e):
+                    try:
+                        self.manifest_update_shot(idx, status="cancelled",
+                                                  error="用户停止")
+                    except Exception:
+                        pass
+                    raise
                 res = f"异常：{e}"
             if isinstance(res, tuple):
                 rel, kind, name = res
@@ -2882,6 +3305,13 @@ class VideoPipeline:
                             if not hasattr(self, "silent_shots"):
                                 self.silent_shots = set()
                             self.silent_shots.add(idx)
+                    except Exception:
+                        pass
+                    # v4.168.0：本镜完成 → manifest 记 done（含最终短路径）
+                    try:
+                        self.manifest_update_shot(
+                            idx, status="done", error="", done_at=time.time(),
+                            clip=os.path.relpath(clip, self.project_dir))
                     except Exception:
                         pass
                     return clip

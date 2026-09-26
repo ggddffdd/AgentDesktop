@@ -42,6 +42,8 @@ if os.path.isdir(os.path.join(_VA, "core")) and _VA not in sys.path:
     # 避免 video-agent 顶层同名模块被误导入。
     sys.path.append(_VA)
 
-from core.agnes import AgnesClient, AgnesError  # noqa: E402,F401
+from core.agnes import (AgnesClient, AgnesError, AgnesCancelled,   # noqa: E402,F401
+                        is_cancel_error, check_cancel)
 
-__all__ = ["AgnesClient", "AgnesError"]
+__all__ = ["AgnesClient", "AgnesError", "AgnesCancelled",
+           "is_cancel_error", "check_cancel"]

@@ -84,7 +84,11 @@ icon.ico
 # 探针脚本（_probe_*/probe_* 前缀）
 _probe_*.py
 probe_*.py
-vision_qc.py
+# ⚠️ 2026-09-27 修正：`vision_qc.py` 曾被误写进这一组忽略规则（它夹在 probe 脚本
+#    之间，看着像探针）。实际它是**生产源码**——被 video_pipeline.py 与
+#    digital_twin_panel.py import，直接决定 VLM 质检行为。被忽略的后果是：
+#    这个模块的历次修改从未进版本库，事后无法回溯「质检为什么变了」。
+#    已从忽略列表移除并纳入版本管理。
 # 冒烟 / 启动脚本（_smoke_*/smoke_*/offscreen_smoke_* 前缀）
 _smoke_*.py
 smoke_*.py
