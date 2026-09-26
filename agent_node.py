@@ -129,7 +129,15 @@ class AgentNode:
         incomplete = False   # v4.166.0：跑满轮次而无正文时置位
         # v4.125 M-08：角色级模型——角色卡「模型」字段填了档位名则锁定该档位。
         _model_ov = (self.model_cfg or {}).get("profile", "")
+        # v4.167.0：取消令牌（由 legion_worker._wrap 挂上；主对话链为 None → 行为不变）
+        _token = getattr(self, "token", None)
         for turn in range(1, self.max_turns + 1):
+            # v4.167.0（审查 §3）：轮次之间检查取消 —— 用户点了停止，
+            # 已开始的成员**不再发起下一次模型调用**（原来只在波开始前查一次，
+            # 波内成员进去之后没人再看 → "点了停止还继续扣费"）。
+            if _token is not None:
+                _token.raise_if_cancelled("model_call")
+
             try:
                 resp = self.mw._agent_call(messages, my_tools, model_override=_model_ov,
                                            thinking=self.thinking)
@@ -148,6 +156,11 @@ class AgentNode:
                 asst = {"role": "assistant", "content": content, "tool_calls": tool_calls}
                 messages.append(asst)
                 for tc in tool_calls:
+                    # v4.167.0（审查 §3）：工具调用前再查一次令牌 ——
+                    # 已开始的任务"不再进入下一次工具调用"，不再为停止后的动作付费。
+                    if _token is not None:
+                        _token.raise_if_cancelled("tool_call")
+
                     fn = tc.get("function", {})
                     t_name = fn.get("name", "")
                     try:
@@ -157,11 +170,38 @@ class AgentNode:
                     # 调工具（v4.125 M-04：执行端白名单二次校验——schema 过滤
                     # 防君子不防幻觉，幻觉出的白名单外工具在这里被硬拒。）
                     from tools import exec_tool
-                    try:
-                        result, _, _ = exec_tool(self.mw.cfg, APP_DIR, t_name, args,
-                                                 allowed_tools=self.tool_names)
-                    except Exception as _te:
-                        result = f"工具执行异常：{_te}"
+                    # v4.167.0（审查 #1，P0）：军团成员的工具调用必须过权限闸门。
+                    #
+                    # 主对话链有 UI 逐项确认；军团是**无人值守的批量执行**，
+                    # 走的是另一套：默认只读 + 本波授权 + 工作区作用域 + 逐笔审计。
+                    # 适配器只由 legion_worker._wrap 挂上（agent.perm）；
+                    # 主对话链的 AgentNode 没有这个属性 → 行为与改动前完全一致。
+                    #
+                    # fail-closed：闸门自身出错时**拒绝**，绝不放行。
+                    _perm = getattr(self, "perm", None)
+                    _blocked = ""
+                    if _perm is not None:
+                        try:
+                            _dec = _perm.check(t_name, args, role=self.name,
+                                               wave=getattr(self, "wave_no", 0))
+                            if not _dec.allowed:
+                                _blocked = _dec.reason
+                        except Exception as _pe:
+                            _blocked = f"权限闸门检查异常，按保守策略拒绝（{_pe}）"
+                    if _blocked:
+                        result = (f"⛔ 权限闸门拒绝执行 {t_name}：{_blocked}"
+                                  "（若这是本任务必需的能力，请让大哥在授权弹窗放行本波）")
+                        try:
+                            log.warning("AgentNode [%s] 工具被权限闸门拒绝: %s — %s",
+                                        self.name, t_name, _blocked)
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            result, _, _ = exec_tool(self.mw.cfg, APP_DIR, t_name, args,
+                                                     allowed_tools=self.tool_names)
+                        except Exception as _te:
+                            result = f"工具执行异常：{_te}"
                     # 截断过长结果
                     result = str(result)
                     if len(result) > 4000:

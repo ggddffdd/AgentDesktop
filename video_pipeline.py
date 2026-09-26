@@ -22,6 +22,7 @@ import time
 import base64
 import shutil
 import subprocess
+import threading
 # v4.125 M-14：windowed 打包下调 ffmpeg 不闪黑窗
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 import urllib.request
@@ -576,6 +577,16 @@ class VideoPipeline:
         self.auto_approve = auto_approve
         self.ffmpeg = find_ffmpeg()
         self.cancelled = False
+
+        # ---- v4.167.0（审查 §1）：任务级取消令牌，取代「永久布尔」 ----
+        # 原实现只有 self.cancelled 一个全局永久布尔：停止置 True 后**永不恢复**，
+        # 于是 regenerate_clip() 一看到 True 就直接返回 None —— 用户点了停止
+        # 就只能「重置项目」，前面写好的剧本/分镜/关键帧被迫全丢。
+        # 现在：停止只取消**当前这一轮**；重试/继续会 begin_job() 换发新令牌。
+        self._job_token = None
+        self._job_seq = 0
+        self._job_name = ""
+        self._job_lock = threading.Lock()
         # 运行期状态
         self.shots = []
         self.width = 768
@@ -1203,7 +1214,7 @@ class VideoPipeline:
         fb = f"[修改意见：{feedback}] " if feedback else ""
         kfs = []
         for i, shot in enumerate(self.shots):
-            if self.cancelled:
+            if self._is_cancelled():
                 kfs.append(None)
                 continue
             qc_fix = ""
@@ -1784,14 +1795,85 @@ class VideoPipeline:
                       f"保持其余设定（主体 / 风格 / 机位）不变]")
         return prompt
 
+    # ---------- v4.167.0（审查 §1）：任务级取消与「停止后可重试」 ----------
+
+    def _is_cancelled(self):
+        """本轮是否被取消（兼容旧读点 + 新令牌）。
+
+        两处都要看：`self.cancelled` 是历史遗留的全局标志（外部可能仍在置位），
+        `self._job_token` 是本轮的取消令牌。任一为真即视为取消。
+        """
+        if getattr(self, "cancelled", False):
+            return True
+        tk = getattr(self, "_job_token", None)
+        try:
+            return bool(tk is not None and tk.is_cancelled)
+        except Exception:
+            return False
+
+    def begin_job(self, name="", reset_cancel=True):
+        """开始新一轮生成：**换发新令牌**（这就是「停止后还能重试」的关键）。
+
+        为什么必须有这一步：原来的 `cancelled` 一置 True 就永不复位，
+        重试路径 `regenerate_clip()` 第一行就 `return None`。
+        换发令牌后，新一轮从"未取消"开始，而上一轮的取消状态不会污染它。
+        """
+        try:
+            from cancel_token import CancellationToken
+        except Exception:
+            CancellationToken = None
+        with self._job_lock:
+            self._job_seq += 1
+            self._job_name = name or f"job{self._job_seq}"
+            if CancellationToken is not None:
+                self._job_token = CancellationToken(
+                    name=f"director/{self._job_name}#{self._job_seq}")
+            if reset_cancel:
+                # 复位历史全局标志 —— 否则旧读点仍会认为"已取消"
+                self.cancelled = False
+            token = self._job_token
+        return token
+
+    def cancel_job(self, reason="用户点了停止", stage=""):
+        """取消**当前这一轮**（幂等）。不动已完成产出，也不影响下一轮。
+
+        与旧行为的差别：以前是给一个永不复位的全局布尔置 True；现在只终结
+        当前令牌，`begin_job()` 一换发就恢复可用 → 用户能"从第 X 镜继续"。
+        """
+        with self._job_lock:
+            self.cancelled = True          # 兼容仍在读它的旧路径
+            token = self._job_token
+        if token is not None:
+            try:
+                return token.cancel(reason, stage=stage)
+            except Exception:
+                return False
+        return False
+
+    def job_state(self):
+        """本轮任务状态快照（供 UI 显示「已停止，可从第 X 镜继续」）。"""
+        tk = getattr(self, "_job_token", None)
+        done = len([p for p in (getattr(self, "clip_paths", None) or []) if p])
+        return {
+            "job": getattr(self, "_job_name", ""),
+            "seq": getattr(self, "_job_seq", 0),
+            "cancelled": self._is_cancelled(),
+            "reason": getattr(tk, "reason", "") if tk is not None else "",
+            "stage": getattr(tk, "stage", "") if tk is not None else "",
+            "done_clips": done,
+            "total_shots": len(getattr(self, "shots", None) or []),
+        }
+
     def generate_all_clips(self, on_clip=None):
         """第3步：顺序生成全部分镜，接力尾帧；每完成一镜回调 on_clip(i, path|None)。返回成功数。"""
+        # v4.167.0：整批生成 = 一个新任务（换发令牌 → 上一轮的"停止"不再粘住本轮）
+        self.begin_job("generate_all_clips")
         self.clip_paths = [None] * len(self.shots)
         prev_tail = None
         prev_scene = None
         ok = 0
         for i, shot in enumerate(self.shots):
-            if self.cancelled:
+            if self._is_cancelled():
                 break
             # 抗崩坏 v2：为本镜装配最多 5 张参考图（关键帧 > 角色三视图 > 场景图）
             # v4.127：带上一镜尾帧入槽（reference 模式下首帧被置空，靠它续连贯）
@@ -1842,7 +1924,11 @@ class VideoPipeline:
 
     def regenerate_clip(self, i, feedback=None):
         """单独重生成某一镜（用户说「这一镜要改」）。不接力，独立生成。"""
-        if self.cancelled or i < 0 or i >= len(self.shots):
+        # v4.167.0（审查 §1）：单镜重生成 = 新任务。原来这里第一行就检查
+        # 全局永久 cancelled，一旦停止过就永远 return None，只能重置整个项目。
+        # 换发令牌后「停止 → 重试这一镜」成立。
+        self.begin_job(f"regenerate_clip#{i}")
+        if i < 0 or i >= len(self.shots):
             return None
         # 抗崩坏 v2：重生成同样装配多参考图，保证「改这一镜」不会把人物改崩
         # v4.127：重生成也带上一镜尾帧（有的话），保持与整批生成一致
@@ -2777,7 +2863,7 @@ class VideoPipeline:
         max_retry = 2
         last_err = "生成失败（模型未返回视频）"
         for attempt in range(max_retry + 1):
-            if self.cancelled:
+            if self._is_cancelled():
                 return None
             try:
                 res = tool_video_gen(self.cfg, self.app_dir, prompt, duration, None,
@@ -3346,7 +3432,7 @@ class VideoPipeline:
         self.log(f"🔧 ffmpeg 合成（{mode}）：{m} 路输入，共 {len(args)} 参数")
         try:
             rc, out, err = self._run_ff(args, timeout=600,
-                                        cancel_check=lambda: self.cancelled)
+                                        cancel_check=lambda: self._is_cancelled())
             if rc != 0:
                 # 提取关键错误信息（ffmpeg stderr 通常很长，取最后几行）
                 err_lines = err.strip().splitlines()
@@ -3458,7 +3544,7 @@ class VideoPipeline:
             return True, ""
         # v4.108 M-06：被「停止」中断（cancel_check 命中 kill）不算失败，
         # 直接返回取消文案，不再触发静音轨降级重试（避免取消后白跑一次合并）。
-        if self.cancelled or "已取消" in (detail or ""):
+        if self._is_cancelled() or "已取消" in (detail or ""):
             return False, "合成已取消"
         # v4.133：sidechaincompress 在部分 ffmpeg 构建上不可用（报 filter 找不到）。
         # 这不是素材问题，关掉闪避重混一次即可；再失败才继续走下面的静音轨兜底。

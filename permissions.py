@@ -93,6 +93,9 @@ class PermissionEngine:
         v4.74 边界安全增强：
         - 对外动作白名单（external_allow）：EXTERNAL 工具未授权一律阻止，防 agent 私自对外。
         - auto 模式不再无脑放行：EXEC/EXTERNAL 仍需用户确认（防越权自动化）。
+
+        v4.167.0 顺序修正：**硬围栏（外发白名单 / 路径作用域）先于会话信任**。
+        原顺序让"本次会话全部信任"绕过这两道边界；信任只该省掉弹窗，不该放开边界。
         """
         risk = classify(name)
         tier = tier_of(name)  # v4.42 三级语义（auto/semi/manual）
@@ -105,29 +108,33 @@ class PermissionEngine:
                 return Decision(True, False, "规划模式：允许只读操作", "mode:plan")
             return Decision(False, False, "规划模式：仅允许只读，不实际执行写入/命令", "mode:plan")
 
-        # 2) 会话信任（"*" 或具体工具名）
-        if self.session_trusted or "*" in self.session_allow or name in self.session_allow:
-            return Decision(True, False, "本次会话已信任该操作", "session")
-
-        # 3) 对外动作白名单：EXTERNAL 必须显式授权，否则一律阻止（防 agent 私自对外）
-        if risk == RiskClass.EXTERNAL:
-            if name not in self.external_allow:
-                log.warning("对外操作被白名单拦截: %s", name)
-                return Decision(False, False,
-                                f"对外操作需白名单授权，'{name}' 未授权已阻止", "external_block")
-            if self.mode == "auto":
-                return Decision(True, False, "对外操作已在白名单，自动放行", "external_allow")
-
-        # 4) 配置白名单（auto_allow）：自定义模式靠它放行指定手动工具
-        if name in self.auto_allow:
-            return Decision(True, False, "在免确认白名单中", "auto_allow")
-
-        # 5) 路径作用域：写文件必须落在允许目录（越界直接阻止）
+        # 2) 硬围栏（**必须先于会话信任**）
+        #    v4.167.0：原实现把 session trust 放在最前，于是「本次会话全部信任」
+        #    会把外发白名单与路径作用域一起跳过 —— 这与大哥定的三道边界不一致：
+        #    信任的意义是"省一次弹窗"，不是"放开边界"。越界写入与未授权外发，
+        #    任何时候都不该被"信任"放行。
+        if risk == RiskClass.EXTERNAL and name not in self.external_allow:
+            log.warning("对外操作被白名单拦截: %s", name)
+            return Decision(False, False,
+                            f"对外操作需白名单授权，'{name}' 未授权已阻止", "external_block")
         if name == "write_file":
             path = (args or {}).get("path", "")
             if path and not self.in_scope(path):
                 return Decision(False, False,
                                  f"路径超出允许范围（{path}），已阻止写入", "scope")
+
+        # 3) 会话信任（"*" 或具体工具名）：只免确认，已过上面的硬围栏
+        if self.session_trusted or "*" in self.session_allow or name in self.session_allow:
+            return Decision(True, False, "本次会话已信任该操作", "session")
+
+        # 4) 对外动作已在白名单 + auto 模式 → 自动放行（保留 v4.74 语义）
+        if risk == RiskClass.EXTERNAL and self.mode == "auto":
+            return Decision(True, False, "对外操作已在白名单，自动放行", "external_allow")
+
+        # 5) 配置白名单（auto_allow）：自定义模式靠它放行指定手动工具
+        if name in self.auto_allow:
+            return Decision(True, False, "在免确认白名单中", "auto_allow")
+
 
         # 6) auto 模式：执行类（EXEC）仍需确认，防越权自动化；只读/本地写入直行
         if self.mode == "auto":

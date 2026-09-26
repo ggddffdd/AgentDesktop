@@ -15,6 +15,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import time
 
+# v4.167.0：统一取消令牌（纯标准库，无 Qt 依赖）
+from cancel_token import CancelledError
+
 
 class Task:
     """一个可执行节点：有 subject、有 executor、有依赖、有状态。"""
@@ -90,8 +93,56 @@ class TaskGraph:
 
     # ---- 自动执行引擎 ----
 
-    def run(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """自动推进：找到就绪的任务 → 执行 → 标记完成 → 循环直到全部完成。"""
+    # ---------- v4.167.0：取消支持（审查 §3） ----------
+
+    @staticmethod
+    def _cancel_state_of(stage: str) -> str:
+        """把「取消发生时所处的阶段」归类成大哥能看懂的终态标签。
+
+        注意判断顺序：必须先认 tool 再认 model —— `"tool_call"` 里也含
+        `"call"`，若先判 `"call"` 会把工具阶段的取消误标成模型阶段
+        （实测踩过：tool_call 被归成 cancelled_during_model_call）。
+        """
+        s = (stage or "").lower()
+        if not s or s in ("before_start", "submit", "dispatch"):
+            return "cancelled_before_start"
+        if "tool" in s:
+            return "cancelled_after_tool_call"
+        if "model" in s or "call" in s:
+            return "cancelled_during_model_call"
+        return f"cancelled_mid_stage:{stage}"
+
+    def _mark_pending_cancelled(self, token):
+        """把还没开始的节点标成取消（区分「未开始」与「跑到一半被停」）。
+
+        语义很重要：这不是失败 —— 是"因为大哥喊停所以没跑"。
+        任务板/报告据此能回答"哪些成员真干了、哪些没有"。
+        """
+        n = 0
+        reason = token.reason if token is not None else ""
+        for task in self._tasks.values():
+            if task.status == "pending":
+                task.status = "cancelled"
+                task.result = {"cancelled": True,
+                               "cancel_state": "cancelled_before_start",
+                               "reason": reason}
+                n += 1
+        return n
+
+    def run(self, state: Dict[str, Any], token=None) -> Dict[str, Any]:
+        """自动推进：找到就绪的任务 → 执行 → 标记完成 → 循环直到全部完成。
+
+        token（v4.167.0）：统一取消令牌。检查点有三处，缺一就会出现
+        「明明点了停止，还继续扣费」：
+          1. 每轮派发前 —— 已取消则**不再 submit 任何成员**
+          2. 单个成员 submit 前 —— 已取消则直接标 cancelled（不进线程池队列）
+          3. executor 开头 —— 进了线程池但还没跑的，立刻抛 CancelledError
+
+        终态区分：取消发生在哪个阶段由令牌的 stage 记录归类，
+        写进 `task.result["cancel_state"]`（cancelled_before_start /
+        cancelled_during_model_call / cancelled_after_tool_call / ...），
+        这样"谁真干了、谁被停了"一目了然。
+        """
         state = dict(state)
         # 无任务的空图直接返回
         if not self._tasks:
@@ -102,13 +153,20 @@ class TaskGraph:
             raise ValueError("任务图没有入口节点（所有任务都有依赖，存在循环依赖？）")
 
         while True:
+            # ---- 检查点 1：派发前。用户已喊停 → 一个成员都不再发起 ----
+            if token is not None and token.is_cancelled:
+                self._mark_pending_cancelled(token)
+                state["__cancelled__"] = {"reason": token.reason, "stage": token.stage}
+                break
+
             # 找就绪任务（依赖全部完成 + 状态 pending）
             ready = [tid for tid in self._tasks
                      if self._tasks[tid].is_ready(self._tasks)]
 
             if not ready:
-                # 检查是否全部完成
-                all_done = all(t.status == "completed" for t in self._tasks.values())
+                # 检查是否全部完成（被取消的算"已终态"，不再等待）
+                all_done = all(t.status in ("completed", "cancelled")
+                               for t in self._tasks.values())
                 any_failed = any(t.status == "failed" for t in self._tasks.values())
                 if all_done:
                     break
@@ -130,8 +188,18 @@ class TaskGraph:
                 futures = {}
                 for tid in ready:
                     t = self._tasks[tid]
+                    # ---- 检查点 2：submit 前。已取消 → 不进线程池队列 ----
+                    if token is not None and token.is_cancelled:
+                        t.status = "cancelled"
+                        t.result = {"cancelled": True,
+                                    "cancel_state": "cancelled_before_start",
+                                    "reason": token.reason}
+                        results[tid] = t.result
+                        continue
                     t.status = "in_progress"
-                    futures[pool.submit(t.executor, dict(state))] = tid
+                    # ---- 检查点 3：executor 开头（见 _guarded_exec）----
+                    futures[pool.submit(self._guarded_exec(t.executor, token),
+                                        dict(state))] = tid
 
                 for f in as_completed(futures):
                     tid = futures[f]
@@ -141,6 +209,17 @@ class TaskGraph:
                         t.status = "completed"
                         t.result = r
                         results[tid] = r
+                    except CancelledError as ce:
+                        # 已开始但被取消：不是失败，是"被叫停"
+                        info = {
+                            "cancelled": True,
+                            "cancel_state": self._cancel_state_of(ce.stage),
+                            "stage": ce.stage,
+                            "reason": ce.reason,
+                        }
+                        t.status = "cancelled"
+                        t.result = info
+                        results[tid] = info
                     except Exception as e:
                         t.status = "failed"
                         t.result = {"error": str(e)}
@@ -155,3 +234,16 @@ class TaskGraph:
                         state["context"] = r["context"]
 
         return state
+
+    @staticmethod
+    def _guarded_exec(executor, token):
+        """给 executor 包一层：进线程池后、真正开跑前先查一次令牌。
+
+        为什么必须在这一层查：已经 submit 进线程池的成员，若用户此刻点停止，
+        它们仍会被线程池逐个取出执行 —— 这一查就是拦住它们的那道门。
+        """
+        def _fn(state):
+            if token is not None:
+                token.raise_if_cancelled("before_start")
+            return executor(state)
+        return _fn

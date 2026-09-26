@@ -397,9 +397,22 @@ def _kick_kf_queue(app, jobs, on_item, on_done=None, cancel_old=False):
     if not jobs or getattr(app, "director_pipeline", None) is None:
         return
     th = KfQueueThread(app.director_pipeline, jobs)
-    th.item_done.connect(lambda i, k: on_item(i, k))
+    # v4.167.0（审查 §4）：回调前校验项目令牌 —— 旧项目的抽帧结果
+    # 不得写进新项目的卡片（重置后旧线程晚到是真实会发生的）。
+    _tok = project_token()
+
+    def _guarded_item(i, k, _t=_tok):
+        if _t != project_token():
+            return
+        on_item(i, k)
+
+    th.item_done.connect(_guarded_item)
     if on_done:
-        th.all_done.connect(on_done)
+        def _guarded_all_done(_t=_tok):
+            if _t != project_token():
+                return
+            on_done()
+        th.all_done.connect(_guarded_all_done)
     pool = getattr(app, "director_kf_threads", None)
     if pool is None:
         pool = []
@@ -458,7 +471,15 @@ def _kick_bg(app, fn, on_done, pipeline=None, on_log=None):
     """起一个后台任务，结束回调在 UI 线程。返回线程对象（失败返回 None）。"""
     try:
         th = BgTaskThread(fn, pipeline)
-        th.done.connect(lambda r, e: on_done(r, e))
+        # v4.167.0（审查 §4）：同抽帧队列 —— 旧项目的预览结果不得写进新项目
+        _tok = project_token()
+
+        def _guarded_done(r, e, _t=_tok):
+            if _t != project_token():
+                return
+            on_done(r, e)
+
+        th.done.connect(_guarded_done)
         if on_log:
             th.logged.connect(on_log)
         pool = getattr(app, "director_bg_threads", None)
@@ -471,6 +492,55 @@ def _kick_bg(app, fn, on_done, pipeline=None, on_log=None):
         return th
     except Exception:
         return None
+
+
+def _cancel_all_director_bg(app, reason="项目已重置", stage="reset"):
+    """v4.167.0（审查 §4 P1）：把导演台的后台任务统一收口（五步）。
+
+    为什么需要：原来 `_director_reset` 只完整收口了主 director_thread，
+    抽帧队列（KfQueueThread）与低清预览（BgTaskThread）**没有统一取消与隔离** ——
+    已经重置成新项目后，旧项目的抽帧/预览任务晚到，仍可能往新卡片或
+    新状态里写数据。
+
+    五步（顺序不能换）：
+      ① 广播取消   —— 让还在跑的尽早在检查点退出（协作式，不杀线程）
+      ② 断开回调   —— 即便它跑完，也碰不到 UI
+      ③ 标记孤儿   —— 留下"谁还在收尾"的痕迹，便于排查
+      ④ 清空引用池 —— 新项目不再持有旧线程
+      ⑤ 项目令牌   —— 调用方已换发；漏网的迟到结果会被令牌校验丢弃
+    """
+    killed = {"kf": 0, "bg": 0, "zombie": 0}
+    for attr, key in (("director_kf_threads", "kf"),
+                      ("director_bg_threads", "bg")):
+        pool = getattr(app, attr, None) or []
+        for th in list(pool):
+            try:
+                if hasattr(th, "cancel"):
+                    th.cancel()             # ①
+            except Exception:
+                pass
+            try:
+                th.disconnect()             # ②
+            except Exception:
+                pass
+            try:
+                if th.isRunning():          # ③
+                    killed["zombie"] += 1
+            except Exception:
+                pass
+        killed[key] = len(pool)
+        try:
+            setattr(app, attr, [])          # ④
+        except Exception:
+            pass
+    if killed["kf"] or killed["bg"] or killed["zombie"]:
+        try:
+            _log(app, f"🧹 后台任务已隔离（抽帧 {killed['kf']} / 预览 {killed['bg']}"
+                      f"，其中仍在收尾 {killed['zombie']}）—— 旧结果不会再写进新项目")
+        except Exception:
+            pass
+    return killed
+
 
 
 # ---------- 面板构建 ----------
@@ -3039,13 +3109,36 @@ def _on_merge_ready(app, ok, msg, path):
 
 # ---------- 停止 / 重置 / 错误 ----------
 def _director_stop(app):
+    """停止当前生成任务。
+
+    v4.167.0（审查 §1 P0）：不再给一个**永不复位**的全局布尔置 True。
+    现在只取消**当前这一轮 job**（`cancel_job`）—— 用户随后点
+    「重试 / 续生成 / 单镜重生成」时 `begin_job()` 会换发新令牌，
+    于是"停止了就只能重置整个项目"的困境解除：剧本、分镜、关键帧都不必丢。
+    """
     th = getattr(app, "director_thread", None)
-    if th and app.director_pipeline:
-        app.director_pipeline.cancelled = True
+    _pl = getattr(app, "director_pipeline", None)
+    if th and _pl is not None:
+        if hasattr(_pl, "cancel_job"):
+            try:
+                _pl.cancel_job("用户点了停止", stage="user_stop")
+            except Exception:
+                _pl.cancelled = True        # 兜底：至少保持旧语义
+        else:
+            _pl.cancelled = True
     # v4.141 P1：取消是独立结果态。解锁抓快照时据此回报 cancelled，
     # 避免 Agent 把「用户主动取消」理解成任务完成或任务失败。
     app._director_agent_cancelled = True
-    _set_status(app, "正在取消…")
+    # v4.167.0：把"还能从哪继续"直接告诉用户，别让人以为只能重置
+    _hint = ""
+    try:
+        if _pl is not None and hasattr(_pl, "job_state"):
+            _st = _pl.job_state()
+            if _st.get("done_clips"):
+                _hint = f"（已完成 {_st['done_clips']} 镜，可继续或单镜重生成）"
+    except Exception:
+        _hint = ""
+    _set_status(app, f"已停止{_hint} —— 可直接重试 / 续生成，不必重置项目")
 
 
 def _director_reset(app):
@@ -3053,10 +3146,24 @@ def _director_reset(app):
     # 同时清空下游标脏表（项目都没了，谈不上谁过期）。
     set_project_token("p" + os.urandom(4).hex())
     app._director_stale = {"kf": set(), "clip": set(), "final": False}
+    # v4.167.0（审查 §4 P1）：后台任务统一收口（抽帧队列 / 低清预览）。
+    # 原来只收口主线程，旧项目的抽帧/预览晚到会往新项目写数据。
+    # 放在换发令牌之后：新项目身份已确立，旧 token 的结果一律被丢弃。
+    try:
+        _cancel_all_director_bg(app, reason="项目已重置", stage="reset")
+    except Exception:
+        pass
     th = getattr(app, "director_thread", None)
     if th and th.isRunning():
         if app.director_pipeline:
-            app.director_pipeline.cancelled = True
+            _pl0 = app.director_pipeline
+            if hasattr(_pl0, "cancel_job"):
+                try:
+                    _pl0.cancel_job("项目已重置", stage="reset")
+                except Exception:
+                    _pl0.cancelled = True
+            else:
+                _pl0.cancelled = True
         th.disconnect()
         # v4.145 修复④：不再在 UI 线程 th.wait(2000) 冻结界面最长 2s——
         # 已 disconnect 全部信号 + 换发项目令牌，旧线程即便仍在收尾也只是安静退出，

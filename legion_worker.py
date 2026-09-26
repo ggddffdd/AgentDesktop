@@ -62,7 +62,42 @@ import legion
 from task_graph import TaskGraph
 from agent_node import AgentNode
 
+# v4.167.0：统一取消令牌（纯标准库）
+from cancel_token import CancelledError
+
 log = logging.getLogger("legion")
+
+
+class _DenyAllAdapter:
+    """权限适配器创建失败时的兜底：拒绝一切非只读（fail-closed）。
+
+    存在的意义：闸门失效绝不能被静默忽略。宁可军团工具报「闸门不可用」，
+    也不要在无人值守下放行 run_command / write_file。
+    """
+
+    def check(self, tool, args=None, role="", wave=0, **_kw):
+        try:
+            from legion_permissions import LegionDecision
+            from risk import RiskClass, classify
+            if classify(tool) == RiskClass.READ:
+                return LegionDecision(True, "只读放行（闸门降级中）", "read_degraded")
+            return LegionDecision(False, "权限闸门不可用，按保守策略拒绝", "adapter_unavailable")
+        except Exception:
+            class _D:
+                allowed = False
+                reason = "权限闸门不可用，按保守策略拒绝"
+                rule = "adapter_unavailable"
+                needs_auth = False
+            return _D()
+
+    def grant_wave(self, *a, **k):
+        return None
+
+    def grant_all(self, *a, **k):
+        return None
+
+    def revoke(self, *a, **k):
+        return None
 
 # PM 输出的《执行计划》最多带多少字进后续验收指令（防止长计划挤爆上下文）
 _PLAN_CTX_LIMIT = 800
@@ -148,6 +183,70 @@ class LegionWorker(QThread):
         self._replan_event = threading.Event()
         self._replan_val = None
         self._pname = ""        # run() 里赋项目显示名，供 record_message 审计用
+        # v4.167.0（审查 #1）：军团权限适配器（run() 里按 gate_mode 创建并预授）
+        self._perm = None
+        # v4.167.0（审查 §3）：本 run 取消令牌（abort / 授权中止时广播）
+        self._cancel = None
+
+    def _ensure_perm(self):
+        """取军团权限适配器（懒创建，保证 _wrap / 授权注入都能拿到）。
+
+        v4.167.0（审查 #1）：成员默认只读，危险能力需本波显式授权；
+        适配器内部自建权限引擎（范围比主对话链窄），**不复用**主链那个
+        （它可能带 session trust，会把信任外溢到无人值守的军团）。
+        """
+        if getattr(self, "_perm", None) is not None:
+            return self._perm
+        try:
+            from legion_permissions import LegionPermissionAdapter
+            self._perm = LegionPermissionAdapter(
+                run_id=getattr(self, "run_id", "") or "",
+                project_id=getattr(self, "pid", "") or "",
+                project_name=getattr(self, "_pname", "") or "",
+            )
+        except Exception as e:
+            # fail-closed：闸门建不起来时，用「拒绝一切非只读」的哨兵兜底，
+            # 宁可军团工具报"闸门不可用"，也不静默放行。
+            try:
+                log.error("军团权限适配器创建失败，降级为保守拒绝: %s", e)
+            except Exception:
+                pass
+            self._perm = _DenyAllAdapter()
+        return self._perm
+
+
+    # ---- v4.167.0：本 run 统一取消令牌（审查 §3）----
+    def _ensure_cancel(self):
+        """取本 run 的取消令牌（懒创建）。
+
+        为什么要它：原来只在**波开始前**看 `self._aborted`，波内成员进去之后
+        没人再查 —— 一次波内并行最多 5 个成员、每个还要跑多轮模型调用，
+        所以"点了停止"最坏要等一整波跑完，期间继续烧 token。
+        令牌把"停止意图"变成成员每个阶段都能看到的东西。
+        """
+        if getattr(self, "_cancel", None) is None:
+            try:
+                from cancel_token import CancellationToken
+                self._cancel = CancellationToken(
+                    name=f"legion/{getattr(self, 'run_id', '') or '-'}")
+            except Exception as e:
+                try:
+                    log.warning("取消令牌创建失败: %s", e)
+                except Exception:
+                    pass
+                return None
+        return self._cancel
+
+    def _cancel_run(self, reason="", stage=""):
+        """广播取消（幂等：重复调只有第一次生效）。返回是否本次真正完成取消。"""
+        tk = self._ensure_cancel()
+        if tk is None:
+            return False
+        try:
+            return tk.cancel(reason, stage=stage)
+        except Exception:
+            return False
+
 
     # ---- 授权：向主线程请求人手批准（PM 无放行权，只有建议权）----
     def _request_auth(self, title, detail, timeout=600):
@@ -226,6 +325,9 @@ class LegionWorker(QThread):
         也兼容任何"立刻停"的场景。若正阻塞在授权/重走流程弹窗，一并解除阻塞。
         """
         self._aborted = True
+        # v4.167.0（审查 §3）：立即广播取消令牌 —— 波内成员在下一轮
+        # 模型调用 / 工具调用前就会看到并停手，不再继续扣费。
+        self._cancel_run("用户点了停止", stage="user_stop")
         try:
             self._auth_val = "abort"
             self._auth_event.set()
@@ -371,6 +473,21 @@ class LegionWorker(QThread):
     # ---- 内部：包装 executor 让 UI 能看到每个成员的起止（状态同步写任务板）----
     def _wrap(self, agent, tid, board_key=None, role_name="", wave_no=0):
         def _exec(state):
+            # v4.167.0（审查 #1）：把权限闸门挂到成员上 —— 成员的工具调用
+            # 在 agent_node.py 里会先过 perm.check()，默认只读、写入限工作区。
+            try:
+                _p = self._ensure_perm()
+                if _p is not None:
+                    agent.perm = _p
+                # v4.167.0（审查 §3）：给成员挂本 run 取消令牌的子令牌 ——
+                # 成员在模型轮次/工具调用之间查它，父取消即全部子取消。
+                _tk = self._ensure_cancel()
+                if _tk is not None:
+                    agent.token = _tk.child(name=f"{role_name or tid}/w{wave_no}")
+                agent.wave_no = wave_no
+            except Exception:
+                pass
+
             self._board(board_key, role=role_name, wave=wave_no, status="running")
             # v4.131：抓取留痕归属 —— 本线程内的 web_search / web_fetch 全记到这位
             # 成员名下。必须线程局部（波内并行），全局会串到别的成员头上。
@@ -391,6 +508,16 @@ class LegionWorker(QThread):
                     self._board(board_key, status="done")
                 return r
             except Exception as e:
+                # v4.167.0（审查 §3）：**取消不是失败** —— 任务板必须能区分
+                # "被大哥叫停"与"成员崩了"，否则事后分不清谁真干了、谁没跑。
+                if isinstance(e, CancelledError):
+                    self.log_line.emit(
+                        f"  [{tid}] ⏹ 已取消"
+                        f"（{getattr(e, 'stage', '') or '停止时'}）\n")
+                    self._board(board_key, role=role_name, wave=wave_no,
+                                status="cancelled",
+                                summary=f"已取消：{getattr(e, 'reason', '')}"[:80])
+                    raise
                 self.log_line.emit(f"  [{tid}] 成员执行异常：{e}\n")
                 self._board(board_key, role=role_name, wave=wave_no, status="error",
                             summary=str(e)[:80])
@@ -416,6 +543,9 @@ class LegionWorker(QThread):
         这是「成员零调用」的最后一道闸（外层 for 顶已挡过，这里是兜底）。
         """
         if getattr(self, "_aborted", False):
+            # v4.167.0（审查 §3）：停止意图必须同步到令牌 —— 否则已经进了
+            # 线程池的成员仍会被逐个取出执行（"点了停止还继续扣费"）。
+            self._cancel_run("用户已终止本次军团运行", stage="wave_dispatch")
             return dict(state)
         tg = TaskGraph()
         wave_no = wi + 1
@@ -490,7 +620,7 @@ class LegionWorker(QThread):
                       self._wrap(agent, tid, board_key=tid,
                                  role_name=role_name, wave_no=wave_no),
                       role.get("mission", ""))
-        _state = tg.run(state)
+        _state = tg.run(state, token=self._ensure_cancel())
         # v4.140 P0-1：二次确认「成员执行异常」已被显式标记失败，杜绝假成功。
         # _wrap 现对异常 re-raise → TaskGraph 把该节点标为 failed（task_graph.py:144）。
         # 这里扫描各节点状态：任何 failed 成员都意味着本波交付不完整，记入
@@ -1438,6 +1568,34 @@ class LegionWorker(QThread):
             gate_enabled = False
             gate_mode = "off"
 
+        # ---- 军团权限闸门（v4.167.0，审查 #1 P0）----
+        # 为什么在这里建：run_id / 项目名 / gate_mode 到这一步才全部确定。
+        # 授权策略：
+        #   · human    —— 不预授：每波放行时逐波授予（人手把关仍在最前）
+        #   · advisory / off —— 用户已放弃逐波把关，预授执行类，
+        #     否则军团角色的 run_command / run_python 会全被拒、功能直接废掉
+        #     （仍受工作区作用域 + 危险命令底线 + 逐笔审计约束，且外发永远要白名单）
+        self._perm = None
+        try:
+            from legion_permissions import LegionPermissionAdapter
+            self._perm = LegionPermissionAdapter(
+                run_id=self.run_id or "",
+                project_id=self.pid or "",
+                project_name=pname or "",
+                gate_mode=gate_mode,
+            )
+            if gate_mode != "human":
+                self._perm.grant_all(classes=("exec", "external"),
+                                     by=f"gate_mode:{gate_mode}",
+                                     reason="非人手把关模式，执行类能力预授（仍受作用域/白名单/审计约束）")
+                self._log(f"  🔑 权限闸门：{gate_mode} 模式 → 预授执行类能力（仍记审计，可抽查）")
+            else:
+                self._log("  🔑 权限闸门：人手把关模式 → 成员默认只读，每波放行时才授予危险能力")
+        except Exception as _pe:
+            self._log(f"  ⚠️ 权限闸门初始化失败：{_pe}（成员工具调用将按保守策略拒绝）")
+            self._perm = None
+
+
         # 任务板：本次执行开始
         self._board("run", status="running", run_id=self.run_id, task=task[:80])
 
@@ -2317,6 +2475,19 @@ class LegionWorker(QThread):
                         # 并开 auto_after 时围栏被架空，违背宪法第二章（放行权必须在大哥手里）。
 
                     if decision == "pass":
+                        # v4.167.0（审查 #1，P0）：放行本波 = 同时授予本波成员危险能力。
+                        # 授权不再只挂在"能不能进下一波"上 —— 成员真要调
+                        # run_command / run_python / 外发时还要过 LegionPermissionAdapter
+                        # 那道闸门（见 agent_node.py 与 legion_permissions.py）。
+                        try:
+                            _p = self._ensure_perm()
+                            if _p is not None:
+                                _p.grant_wave(wave_no, classes=("exec", "external"),
+                                              by="user" if _by_hand else "gate",
+                                              reason=f"第 {wave_no} 波放行")
+                        except Exception as _ge:
+                            self._log(f"  ⚠️ 波次权限授权记录失败：{_ge}")
+
                         # v4.127：只有**人手拍板**过的放行才累积信任（宪法第二章）。
                         # 顾问模式 / 围栏自动放行都不算，否则围栏会被自己攒的次数架空。
                         if _by_hand:

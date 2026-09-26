@@ -22,16 +22,30 @@ python tests/run_all.py --verbose       # 失败时打印该套件完整输出
 |------|----------|------|
 | `test_bridge_security.py` | 浏览器桥接：认证收紧（`?token=` 必须被拒）、请求加固（负数 `Content-Length`→400 / 超限→413）、诚实投递回执（202 未确认 / 200 delivered=true / 200 delivered=false+detail） | 纯标准库 |
 | `test_task_status.py` | 任务状态总线：四态流转、失败原因脱敏与截断、环形缓冲上限、多任务不串台、订阅通知、重试钩子、`track` 上下文管理器、多线程并发 | 纯标准库 |
-| `test_task_status_ui.py` | 状态栏任务条：五种界面状态渲染、按钮显隐、无重试钩子时的诚实提示、清除历史、 `+N` 计数 | 需 PySide6（离屏） |
+| `test_task_status_ui.py` | 状态栏任务条：五种界面状态渲染、按钮显隐、无重试钩子时的诚实提示、清除历史、`+N` 计数 | 需 PySide6（离屏） |
 | `test_task_wiring.py` | **接线契约**：逐个断言 6 个生产者都有 begin + 收口（防「任务永远卡在处理中」）、网页抓取回调的 `nonlocal` 守卫（防 `UnboundLocalError`）、无孤儿登记、界面已订阅/退订 | 纯标准库（只读源码） |
 | `test_cdp_profile_path.py` | **调试浏览器 profile 路径**：必须落在 `%LOCALAPPDATA%`；`_default_cdp_profile` 不接受任何参数（调用方无法把它拽回 app_dir）；源码无 `app_dir` 兜底分支；回退路径也不指向 app_dir | 纯标准库 |
+| `test_workspace_routing.py` | **运行数据归口**：用户数据类目录必须落在 `WORKSPACE_DIR`；资源类（icon / 内置 skills）仍锚 `APP_DIR`；越界写入被拒；含真实读写验证 | 纯标准库 |
+| `test_legion_resume_fill.py` | **军团续跑回填**：只回填 `resume_from` 之前的历史波；未来波不污染（曾因条件写反而整段空转） | 纯标准库（只读源码） |
+| `test_agent_node_failure.py` | **成员失败不得伪装成功**：模型调用异常必须抛 `AgentExecutionError`（不是 `break`）、跑满轮次无正文要标 `incomplete`、`state` 写入标记 | 纯标准库（只读源码） |
+| `test_director_recover.py` | **导演台紧急收口**：回调异常后解锁运行锁、阶段转 ERROR（不覆盖 DONE）、失败回执不污染 cancelled、幂等 | 需 PySide6（离屏） |
+| `test_cancel_token.py` | **取消令牌**：一次性幂等、父链继承（子取消不影响父）、阶段追踪与兜底、回调（已取消后注册立即触发 / 回调内再操作不自死锁）、并发 cancel 只有一个赢 | 纯标准库 |
+| `test_legion_permissions.py` | **军团权限闸门**：成员默认只读、执行类需本波授权、写入限工作区、外发需白名单+授权双条件、危险命令底线、围栏先于信任、审计（参数摘要哈希 + 脱敏 + 并发不串行损坏） | 纯标准库 |
+| `test_task_graph_cancel.py` | **任务图取消**：派发前取消则 executor 零调用、执行中取消则立刻停手、终态区分（before_start / during_model_call / after_tool_call）、已完成者保持 completed、不传令牌时行为不变 | 纯标准库 |
+| `test_director_cancel_retry.py` | **导演台停止后可重试**：`cancel_job` 只终结当前一轮、`begin_job` 换发令牌即复位（核心）、外部置旧标志也能复位、后台任务收口五步齐备、回调带项目令牌校验 | 纯标准库（只读源码） |
 | `regression.py` | 记忆层（钉住召回 / 关键词召回 / 冲突合并 / 中文搜索 / 备份自愈）、上下文隔离、记忆加密 | 纯标准库 |
 
-合计 176 项断言，约 10 秒跑完。
+合计 **410 项断言**，约 15 秒跑完。
 
-> `test_task_wiring.py` 是**静态契约测试**（只读源码不执行）。它的价值在于挡住那类
-> 「不报错、只静默劣化」的回归——例如有人重构时删掉了某个 `task_status.fail(...)`，
+> `test_task_wiring.py`、`test_legion_resume_fill.py`、`test_agent_node_failure.py`、
+> `test_director_cancel_retry.py` 都含**静态契约测试**（只读源码不执行）。它的价值在于
+> 挡住那类「不报错、只静默劣化」的回归 —— 例如有人重构时删掉了某个 `task_status.fail(...)`，
 > 任务就会永远停在「处理中」，比没有状态条还糟。
+>
+> ⚠️ **一条硬边界（实测踩过）**：**互为冗余的双保险**（A 挂了还有 B 兜底）时，
+> **行为测试无法证明某一层还在** —— 删掉 A，B 会兜住，所有行为断言仍全绿。
+> 这类地方**必须补源码契约断言**锁住结构，否则"测过了"是假象。
+> 判断法：注入失效后测试仍绿 → 那是**测试缺口**，先补测试再重验。
 
 ## 新增套件的约定
 
