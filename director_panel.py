@@ -53,6 +53,16 @@ from director_web import (
 # 不走 sys.excepthook，会直接打到 stderr 然后 PyQt 硬崩。这里统一兜底：
 # 崩了也不再静默死，而是写 app.log + 在面板状态栏提示，便于定位。
 def _safe(fn):
+    """信号槽异常兜底。
+
+    PySide6 信号槽（含 QThread.run / 跨线程 queued 槽）里的未捕获异常不走
+    sys.excepthook，会直接打到 stderr 然后硬崩。这里统一兜底：写 app.log +
+    面板状态栏提示。
+
+    v4.166.0 增强：捕获后**必须做紧急收口**（幂等）—— 否则任何一个 *_ready
+    回调抛异常，界面都会永久停在「生成中」（而后台线程早已结束），用户只能重启。
+    _safe 仍只是最后一道保护，不代替正常的任务收口。
+    """
     @functools.wraps(fn)
     def _w(*a, **k):
         try:
@@ -72,8 +82,50 @@ def _safe(fn):
                     sys.excepthook(type(e), e, e.__traceback__)
             except Exception:
                 pass
+            # v4.166.0：强制收口 —— 让界面重新可用，绝不假装成功
+            try:
+                if app is not None:
+                    _emergency_recover(app, fn.__name__)
+            except Exception:
+                pass
             return None
     return _w
+
+
+def _emergency_recover(app, where=""):
+    """回调崩溃后的紧急收口（幂等）：解锁界面 + 转失败态 + 尽力保存现场。
+
+    只做「让用户能继续操作」这一件事：不重试、不改已有产出、不假装成功。
+    每一小步都独立 try —— 收口本身绝不能再抛出。
+    """
+    # 1) 解锁运行锁（本就空闲则不动，免得误清别的标记）
+    try:
+        if getattr(app, "director_busy", False):
+            _set_busy(app, False)
+    except Exception:
+        pass
+    # 2) 阶段转 ERROR（不覆盖已经出片的 DONE）
+    try:
+        if getattr(app, "director_phase", "") != DirectorPhase.DONE:
+            _set_director_phase(app, DirectorPhase.ERROR)
+    except Exception:
+        pass
+    # 3) 标记失败回执 —— 让抓快照的 Agent 拿到 failed，而不是「无结论」
+    try:
+        if not getattr(app, "_director_agent_cancelled", False):
+            app._director_agent_error = f"界面回调异常（{where}）"
+    except Exception:
+        pass
+    # 4) 尽力保存现场（失败也不抛）
+    try:
+        _save_session(app)
+    except Exception:
+        pass
+    # 5) 状态栏给出明确下一步，不让用户猜
+    try:
+        _set_status(app, f"⚠ 步骤异常已中止（{where}）—— 已解锁，可直接重试", err=True)
+    except Exception:
+        pass
 
 # 分辨率预设（与生视频 / 数字人面板保持一致）
 RES_PRESETS = [

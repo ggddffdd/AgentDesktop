@@ -1360,7 +1360,12 @@ class LegionWorker(QThread):
                 _wmt = _ckpt.get("wave_member_texts") or {}
                 for _k2 in sorted(_wmt, key=lambda x: int(x)):
                     _wi2 = int(_k2)
-                    if _wi2 < self._resume_from:
+                    # v4.166.0 修复：条件曾写反（`<` 就 continue）—— 结果是**跳过历史波**、
+                    # 只回填 resume_from 之后的波；而 checkpoint 里根本没有那些波的数据，
+                    # 于是「成员级底稿回填」整段空转，方向与上面的波级回填（parts_by_wave）
+                    # 恰好相反，注释承诺的「续跑后 PM 能看到谁交了什么」完全落空。
+                    # 正确语义：回填 `_wi2 < resume_from` 的历史波，跳过即将重跑的部分。
+                    if _wi2 >= self._resume_from:
                         continue
                     _mmap = _wmt[_k2] or {}
                     self._wave_member_texts.setdefault(_wi2, {})

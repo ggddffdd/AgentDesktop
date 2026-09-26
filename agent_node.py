@@ -30,6 +30,26 @@ from typing import Set, Optional
 log = logging.getLogger("dsdesktop")
 
 
+class AgentExecutionError(RuntimeError):
+    """成员执行的硬失败（模型调用异常等）—— 必须让上层看到失败，而不是空稿。
+
+    v4.166.0：此前模型调用异常被 `break` 吞掉，run() 照常返回空 output，
+    TaskGraph 见「正常返回」即标 completed ——「成员崩了」被记成「交了空稿」，
+    PM 与最终报告都看不见，还会白烧后续波的 token。
+    （工具执行异常那条线 v4.140 已改为 re-raise，本条是同级缺口。）
+    """
+
+    def __init__(self, role: str, stage: str, turn: int, root_error: BaseException):
+        self.role = role
+        self.stage = stage
+        self.turn = turn
+        self.root_error = root_error
+        super().__init__(
+            f"[{role}] {stage} 失败（第 {turn} 轮）："
+            f"{type(root_error).__name__}: {root_error}"
+        )
+
+
 class AgentNode:
     """专用 Agent 节点：包装 LLM 调用 + 工具循环。
 
@@ -106,6 +126,7 @@ class AgentNode:
 
         # Agent 工具循环
         output = ""
+        incomplete = False   # v4.166.0：跑满轮次而无正文时置位
         # v4.125 M-08：角色级模型——角色卡「模型」字段填了档位名则锁定该档位。
         _model_ov = (self.model_cfg or {}).get("profile", "")
         for turn in range(1, self.max_turns + 1):
@@ -114,7 +135,10 @@ class AgentNode:
                                            thinking=self.thinking)
             except Exception as e:
                 log.error("AgentNode [%s] turn %d 调用失败: %s", self.name, turn, e)
-                break
+                # v4.166.0：模型调用异常**必须显式失败**，不能 break ——
+                # 原来 break 之后 run() 照常返回空 output，TaskGraph 见正常返回
+                # 即标 completed（假成功）。现在抛出，由 TaskGraph 标 failed。
+                raise AgentExecutionError(self.name, "model_call", turn, e) from e
 
             content = resp.get("content") or ""
             tool_calls = resp.get("tool_calls") or []
@@ -161,10 +185,24 @@ class AgentNode:
                  if m.get("role") == "assistant" and m.get("content")),
                 "",
             )
+            if not output.strip():
+                # v4.166.0：跑满轮次又没有任何正文，不能静默当「完成」。
+                # 用可读说明兜底（避免空字符串进入下游上下文），并标记 incomplete，
+                # 让上层能区分「真交了东西」与「只跑了工具 / 啥都没出」。
+                _tool_n = sum(1 for m in messages if m.get("role") == "tool")
+                output = (f"（{self.name} 在 {self.max_turns} 轮内未产出正文，"
+                          f"仅完成 {_tool_n} 次工具调用）" if _tool_n else
+                          f"（{self.name} 在 {self.max_turns} 轮内未产出任何内容）")
+                incomplete = True
+                log.warning("AgentNode [%s] 跑满 %d 轮无正文（工具调用 %d 次），标记 incomplete",
+                            self.name, self.max_turns, _tool_n)
 
         # 更新 state
         state = dict(state)
         state[self.name + "_output"] = output
+        if incomplete:
+            # v4.166.0：显式标记，供 PM / 报告区分「真产出」与「只跑了工具」
+            state[self.name + "_incomplete"] = True
         # 把本 agent 的消息追加到 context 供后续用
         history = json.dumps(
             [{"role": m["role"], "content": m.get("content", "")[:500]}
