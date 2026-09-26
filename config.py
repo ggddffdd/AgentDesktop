@@ -18,6 +18,58 @@ if getattr(sys, "frozen", False):
 else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# ---------- 工作区目录（运行时数据的统一落点）----------
+# ⚠️ 必须定义在 APP_DIR 之后、且早于下方的日志初始化（app_log_path 会用到它）。
+#
+# v4.164.0：把「用户数据类」运行时目录与 Agent 的工作目录统一收到用户数据目录下，
+# **不再落 APP_DIR（= exe 所在目录 = dist）**。
+#
+# 为什么必须改：APP_DIR 就是 exe 所在目录，而它**同时是分发源**。运行数据落在那儿
+# 会被连带打包分发 —— 实测曾把 1.2GB 浏览器 profile（含 51 条已存登录）连同
+# Cookies/Local State 一起分发出去（见 v4.163.1）。dist 顶层还堆过
+# incoming/output/outputs/notes/multi_platform/pages/temp/log/rag_data/orchestrate/
+# director_session.json + debug.log，合计十几 MB。
+#
+# 归口规则（重要，别搞混）：
+#   · 用户数据类 → WORKSPACE_DIR：incoming、output(s)、notes、pages、temp、
+#     multi_platform、rag_data、orchestrate、avatars、log、director_session.json、
+#     debug.log，以及 Agent 执行命令 / 读写文件的 cwd 基准。
+#   · 资源类 → 仍用 APP_DIR：icon.ico、内置 skills 兜底、core 包、浏览器扩展。
+#   · 产物类 → PRODUCTS_DIR（本来就是用户目录，未变）。
+#
+# 默认与 USER_DATA_DIR 同值（~\\Documents\\小臭玩AI）；可用 XC_WORKSPACE_DIR 改道。
+WORKSPACE_DIR = os.path.expanduser(
+    os.environ.get("XC_WORKSPACE_DIR")
+    or os.path.join("~", "Documents", "小臭玩AI"))
+
+
+def workspace_path(*parts):
+    """拼一个工作区下的路径（并确保目录存在由调用方决定）。"""
+    return os.path.join(WORKSPACE_DIR, *parts)
+
+
+def ensure_workspace(*parts):
+    """拼一个工作区下的路径，并确保该目录存在。"""
+    p = os.path.join(WORKSPACE_DIR, *parts)
+    try:
+        os.makedirs(p, exist_ok=True)
+    except Exception:
+        pass
+    return p
+
+
+def is_under_app_dir(path):
+    """判断某路径是否落在 APP_DIR（= exe 目录 = dist = 分发源）之内。
+
+    用于把历史遗留在 dist 里的运行数据做一次性迁移改写。
+    """
+    try:
+        if not path:
+            return False
+        return os.path.abspath(str(path)).startswith(os.path.abspath(APP_DIR) + os.sep)
+    except Exception:
+        return False
+
 # ---------- 产物目录（统一落点，便于「打开产物文件夹」） ----------
 # 所有生成类产物（图片/截图/视频）统一写到用户文档下的「产物」目录，
 # 而非程序目录（dist）深处，避免用户难找。UI 端用 os.path.join(APP_DIR, rel)
@@ -25,8 +77,40 @@ else:
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.161.0"
-APP_BUILD_DATE = "2026-09-18"
+APP_VERSION = "v4.165.0"
+APP_BUILD_DATE = "2026-09-27"
+# v4.164.0（2026-09-27）**运行数据归口：彻底治「dist 既是运行目录又是分发源」**：
+#   新增 config.WORKSPACE_DIR（默认 ~/Documents/小臭玩AI，与 USER_DATA_DIR 同值，
+#   可用 XC_WORKSPACE_DIR 改道），把所有「用户数据类」落点从 APP_DIR（= exe 目录 =
+#   dist）统一迁到工作区：
+#     · Agent 执行命令 / run_python 的 cwd（tool_run_command 原为 cwd=app_dir）
+#     · 文件工具 tool_read_file / tool_write_file 的**相对路径基准**（原以 app_dir 为
+#       基准），并把白名单扩为「工作区 + APP_DIR」双根（兼容历史绝对路径）
+#     · incoming / orchestrate / rag_data / temp / log / avatars /
+#       director_session.json / debug.log（app_log_path 默认落点）
+#   资源类（icon.ico / 内置 skills 兜底 / core 包 / 浏览器扩展）**仍锚 APP_DIR**，
+#   否则打包后技能与图标会找不到。产物类仍走 PRODUCTS_DIR（本就是用户目录）。
+#   配套：桌面快捷方式工作目录由 dist 改为 ~/Documents/小臭玩AI；dist 顶层已清空。
+#   测试：tests/test_workspace_routing.py（26 断言）钉住「工作区不在 APP_DIR 内」
+#   「相对路径以工作区为基准」「越界写入被拒」「资源类仍锚 APP_DIR」。
+# v4.163.1（2026-09-26）**修隐私泄露：调试浏览器 profile 不再落在 exe 所在目录**：
+#   `_ensure_cdp` 原用 `app_dir/cdp_edge_profile` 作调试浏览器 profile，而 app_dir
+#   就是 exe 所在目录（dist），它**同时是分发源** —— 实测该 profile 长到 1.2GB /
+#   7558 文件，含 Login Data（51 条已存登录）、Cookies（396 条）、Local State，
+#   缓存里另有明文 API key。**打包分发 = 分发登录态**。
+#   修法：抽出 `_default_cdp_profile()`，固定 `%LOCALAPPDATA%\小臭玩AI\cdp_edge_profile`，
+#   不接任何参数、任何分支都不回落 app_dir（代码对齐 config 里 ② 那条注释的原意，
+#   该注释早前只写了约定、实现没跟上）。现有 profile 已完整迁移到新位置。
+#   测试：tests/test_cdp_profile_path.py 钉住「不接受参数 / 无 app_dir 兜底」不变量。
+# v4.163.0（2026-09-26）**可观测性：任务状态条（新增 task_status.py + 状态栏 UI 接入）**：
+#   把「模型调用 / 网页抓取 / 文件解析 / 视频生成 / 图片生成 / 语音识别 / Agent 整轮」
+#   统一成用户看得懂的状态：已接收 → 处理中 →（完成 | 失败原因 + 可重试）。
+#   此前这些状态只落在日志里，用户感知是「没反应」，排查成本高。
+#   · 新增 task_status.py（纯标准库、线程安全）：四态 + 环形缓冲 + 变更订阅 +
+#     重试钩子；失败原因落库前统一脱敏（data URI / 长 base64 / URL 内 key / 明文 sk-）。
+#   · 新增 ui.py 的 TaskStatusStrip：嵌入既有状态栏，跨线程用 Qt queued 信号渲染，
+#     失败可「重试」（无钩子时诚实提示，不假装成功）、可「清除」。
+#   · 覆盖 6 个生产者：model / browser / image / video / speech / agent。
 # v4.161.0（2026-09-18）**路由强制调工具误触止血（只改 agent.py 路由判据，无功能删减）**：
 #   修复 _route_force_tool() 把「夸赞/评价句式」误判为生成指令、step1 强制注入工具导致白跑的 BUG：
 #     ① 新增 0.1) 评价句式前置短路：动词紧贴「的/得」后接褒义评价（『封面做的漂亮』『图画得太好了』
@@ -619,6 +703,12 @@ APP_BUILD_DATE = "2026-09-18"
 #     宁缺毋滥，绝不把英文送去念。
 #   另外按大哥指示：① VPN 提示已渲染到对话 UI（tool_browser_* 成功/失败分支均挂载 warn）
 #     ② 桌面 lnk 与 _ensure_cdp 的调试 profile 统一到 %LOCALAPPDATA%\小臭玩AI\cdp_edge_profile。
+#     ⚠️ 更正（v4.163.1，2026-09-26）：② 当时**只写了注释、实现没改到位** ——
+#     browser_control_tools._ensure_cdp 里仍是 `if app_dir: profile = app_dir/cdp_edge_profile`，
+#     而 app_dir 就是 exe 所在目录（dist，同时也是分发源）。实测 dist 下 profile 长到
+#     1.2GB / 7558 文件，含 Login Data(51 条登录)/Cookies(396)/Local State，
+#     打包分发即等于分发登录态。v4.163.1 已把实现对齐到本注释：抽出
+#     _default_cdp_profile()，固定 %LOCALAPPDATA% 且**永不回落 app_dir**。
 # v4.147.2（2026-09-14）修复「静默接管无 VPN 浏览器」BUG（BUG 巡检实锤）：
 #   _ensure_cdp 开头 `if _cdp_ready(cdp): return True, ""` 是短路——只要 9222 通就
 #   直接返回，完全不校验那个已存在实例有没有 VPN 扩展。实测：先用「不带扩展」的
@@ -741,9 +831,11 @@ def append_log_line(path, text, max_bytes=None, backups=None):
 def app_log_path():
     """根日志（debug.log）落点。
     v4.134.6：支持 `XC_LOG_DIR` 改道 —— 测试/诊断子进程不再往源码树或 dist 里写
-    （实测源码树那份 debug.log 已被测试跑到 553 KB）。不设该变量 → 行为完全不变。
+    （实测源码树那份 debug.log 已被测试跑到 553 KB）。
+    v4.164.0：默认落点由 APP_DIR 改为 WORKSPACE_DIR —— 日志属运行数据，
+    落 APP_DIR（= exe 目录 = dist = 分发源）会随包分发出去。仍可用 XC_LOG_DIR 改道。
     """
-    return os.path.join(os.environ.get("XC_LOG_DIR") or APP_DIR, "debug.log")
+    return os.path.join(os.environ.get("XC_LOG_DIR") or WORKSPACE_DIR, "debug.log")
 
 
 # ---------- QtWebEngine 自己的日志（v4.134.8）----------
@@ -839,6 +931,9 @@ CONFIG_PATH = os.path.join(USER_DATA_DIR, "config.json")
 
 DEFAULT_CONFIG = {
     "api_key": "",
+    # v4.165.0：run_python 后端解释器路径（留空 = 自动探测）。
+    # 与机型解耦：绿色版 Python / 多版本并存等非标准安装时，在此显式指定。
+    "python_exe": "",
     "base_url": "https://api.deepseek.com",
     "model": "deepseek-chat",
     "hotkey": "ctrl+shift+d",
@@ -1695,8 +1790,13 @@ def init_rag(cfg):
     if not cfg.get("rag_enabled", True):
         return
     rag_data_dir = cfg.get("rag_data_dir", "")
+    # v4.164.0：旧值可能指向 APP_DIR（dist）下的 rag_data —— 属运行数据误落分发目录。
+    # 这里做一次迁移改写（用户若自定义到别处则原样保留）。
+    if rag_data_dir and os.path.abspath(rag_data_dir).startswith(
+            os.path.abspath(APP_DIR) + os.sep):
+        rag_data_dir = ""
     if not rag_data_dir:
-        rag_data_dir = os.path.join(APP_DIR, "rag_data")
+        rag_data_dir = os.path.join(WORKSPACE_DIR, "rag_data")
         cfg["rag_data_dir"] = rag_data_dir
     try:
         from rag import RAGStore

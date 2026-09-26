@@ -127,15 +127,43 @@ def _cdp_ready(cdp_url, timeout=1.0):
         return False
 
 
-def _cdp_profile_candidates():
-    """调试浏览器可能用的 profile 目录（桌面 lnk 与 _ensure_cdp 用的那个 + 模块同级）。"""
-    out = []
+def _default_cdp_profile():
+    """调试浏览器专属 profile 的**唯一权威位置**。
+
+    v4.163.1：固定放 `%LOCALAPPDATA%\\小臭玩AI\\cdp_edge_profile`，**永不回落 app_dir**。
+
+    为什么改（2026-09-26 实测）：`app_dir` 就是 exe 所在目录，而它同时也是**分发源**
+    —— profile 落在那里会被连带打包分发出去。实测 `dist/小臭玩AI/cdp_edge_profile`
+    达 1.2GB / 7558 文件，含 `Default/Login Data`（51 条已存登录）、`Network/Cookies`
+    （396 条）、`Local State`，缓存里另有明文 API key —— 属实打实的隐私泄露面。
+    config.py 的注释一直声称「桌面 lnk 与 _ensure_cdp 的调试 profile 统一到
+    %LOCALAPPDATA%」，但此处实现仍用 app_dir —— 本次把实现对齐到该约定。
+
+    回退顺序：%LOCALAPPDATA% → 用户主目录 → home 根目录。
+    **注意：任何分支都不返回 app_dir**（连极端兜底也不），否则不变量就破了。
+    """
     lap = os.environ.get("LOCALAPPDATA")
     if lap:
-        out.append(os.path.join(lap, "小臭玩AI", "cdp_edge_profile"))
+        return os.path.join(lap, "小臭玩AI", "cdp_edge_profile")
+    home = os.path.expanduser("~")
+    if home:
+        return os.path.join(home, "小臭玩AI", "cdp_edge_profile")
+    return os.path.join(os.path.expanduser("~"), "cdp_edge_profile")
+
+
+def _cdp_profile_candidates():
+    """调试浏览器**可能**用到的 profile 目录（仅用于探测，按可能性排序）。
+
+    首个即权威位置；其后是历史遗留位置 —— v4.163.1 之前 profile 曾放在
+    exe 所在目录（app_dir）下，老机器上可能还留着，探测时一并看看，
+    避免漏判「这个 profile 里装过 VPN 扩展」。
+    """
+    out = [_default_cdp_profile()]
     try:
-        out.append(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "cdp_edge_profile"))
+        legacy = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "cdp_edge_profile")
+        if legacy not in out:
+            out.append(legacy)
     except Exception:
         pass
     return out
@@ -201,6 +229,9 @@ def _ensure_cdp(cdp, app_dir=None):
 
     关键：用**专属 profile 目录**启动 Edge（独立单例锁），永远不和用户真实 Edge 的
     默认 profile 抢锁，因此调试端口必定能起来，自动接管稳定可用。
+
+    注意：`app_dir` 形参**保留仅为调用方兼容**（多处按位置/关键字传入），
+    v4.163.1 起**不再参与 profile 定位** —— profile 固定用 _default_cdp_profile()。
     """
     if _cdp_ready(cdp):
         # v4.147.2：端口通 ≠ 带梯子。端口若被一个「没加载 VPN 扩展」的旧实例占着，
@@ -217,11 +248,10 @@ def _ensure_cdp(cdp, app_dir=None):
         return False, ("未找到 Edge 可执行文件，无法自动启动调试浏览器。"
                        "请确认已安装 Microsoft Edge。")
     port = urllib.parse.urlparse(cdp).port or 9222
-    # 专属 profile：放在 app_dir 下，避免与默认 Edge 单例冲突导致调试端口起不来
-    if app_dir:
-        profile = os.path.join(app_dir, "cdp_edge_profile")
-    else:
-        profile = os.path.expandvars(r"%LOCALAPPDATA%/小臭玩AI/cdp_edge_profile")
+    # 专属 profile：固定放 %LOCALAPPDATA%（**不再放 app_dir** —— dist 会随包分发，
+    # 而 profile 里含登录态，见 _default_cdp_profile 注释）。放独立目录同时也避免了
+    # 与默认 Edge 单例冲突导致调试端口起不来。
+    profile = _default_cdp_profile()
     try:
         os.makedirs(profile, exist_ok=True)
     except Exception:
@@ -374,8 +404,14 @@ def _run_runner(action, url, selector="", text="", cfg=None, headless="1", app_d
             pass
         # 旁路落日志，保证有可追溯的审计痕（任何异常都吞，绝不拖垮主链路）
         try:
-            if app_dir:
-                log = os.path.join(app_dir, "log", "cdp_vpn_warn.log")
+            # v4.164.0：日志属运行数据，落 WORKSPACE_DIR（不再落 app_dir = dist）。
+            # 懒导入 config，保持本模块在缺 config 时仍可用（失败回退 app_dir）。
+            try:
+                from config import WORKSPACE_DIR as _ws
+            except Exception:
+                _ws = app_dir
+            if _ws:
+                log = os.path.join(_ws, "log", "cdp_vpn_warn.log")
                 os.makedirs(os.path.dirname(log), exist_ok=True)
                 with open(log, "a", encoding="utf-8") as f:
                     f.write(time.strftime("%Y-%m-%d %H:%M:%S") + "  " + warn + "\n")

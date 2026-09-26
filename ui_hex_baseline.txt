@@ -1,0 +1,3 @@
+# 已知存量裸 hex 基线（file:#hex，小写）。护栏对基线内静默、只拦新增。
+# 清理一部分存量后，运行 `python ui_hex_guard.py --write-baseline` 重新生成。
+

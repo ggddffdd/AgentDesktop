@@ -6,7 +6,10 @@ debug.log
 
 # ===== 个人内容（对话创作/浏览器登录态/知识库索引/生成产物） =====
 rag_data/
+# 浏览器 Profile：含 Cookies / Login Data / Local State 等登录态（264MB+），
+# 此前未被忽略，一条 `git add -A` 就会把登录凭证灌进版本库 —— 严禁入库
 playwright_profile/
+cdp_edge_profile/
 orchestrate/
 视频/
 frames/
@@ -28,6 +31,8 @@ __pycache__/
 # ===== 备份文件（可能含旧密钥） =====
 *.bak
 *.bak_*
+# 本地手工备份目录（backup_YYYYMMDD_NNN，含源码副本与旧日志，不入库）
+backup_*/
 
 # ===== 本地配置（真实密钥在用户文档目录，此处的 config.json 也不入库） =====
 config.json
@@ -59,7 +64,14 @@ _clean_old.log
 
 # ===== 用户技能目录（可能含个人内容） =====
 skills/
-tests/
+
+# 注：tests/ 不忽略 —— 它是回归测试的正式入口目录，必须入库，
+# 否则"建立回归测试"等于白做。根目录下带本地绝对路径的临时校验脚本，
+# 仍由上面的 test_*.py / _test_*.py / _verify_*.py 等规则忽略。
+#
+# 但上面那些根级规则没有加斜杠锚定，会连带命中 tests/ 下的同名文件
+# （例如 tests/test_bridge_security.py 被 test_*.py 命中），故显式反选：
+!tests/*.py
 
 # ===== 内部分析文档（含品牌名/过程记录，非项目源码） =====
 重构建议评估.md
@@ -81,6 +93,15 @@ offscreen_smoke_*.py
 _dup_out.txt
 _hist_out.txt
 _*.txt
+
+# ===== 开发过程产物（留盘、不入库）=====
+# 迭代过程的一次性产物：验证报告 / 修复任务单 / 探针与一次性脚本 / 诊断截图。
+# 留着可回溯，但入库会让根目录淹没「正式可发布版本」的真实状态。
+# 若某一份确实要保留进仓库，改用非下划线命名，或在此加 ! 反选。
+_*
+
+# 含明文 API key 的一次性脚本（2026-09-27 发现），绝不入库
+_set_brave_key.py
 # 截图
 *_screen*.png
 _probe_ref.png
@@ -92,6 +113,10 @@ _probe_ref.png
 # 生成产物目录
 _real_img_test/
 incoming/
+# scratch / 探针残留目录（与上面的 _probe_*.py / _smoke_*.py 同类，属调试产物）
+temp/
+_arcreel_probe/
+_smoke_merge/
 
 # ===== 调试 / 剖析 / 构建辅助脚本（内部工具，非用户功能，不进版本库） =====
 X

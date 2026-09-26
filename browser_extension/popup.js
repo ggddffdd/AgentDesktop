@@ -36,8 +36,14 @@ function sendCapture(note, mode, autosend) {
         return;
       }
       if (resp && resp.ok) {
-        setStatus("✅ 已发送 " + resp.chars + " 字到小臭" +
-          (resp.autosend ? "（自动处理）" : "（按发送键让 AI 处理）"), "ok");
+        if (resp.delivered) {
+          setStatus("✅ 已投递 " + resp.chars + " 字到小臭" +
+            (resp.autosend ? "（已自动处理）" : "（已填入，按发送键让 AI 处理）"), "ok");
+        } else {
+          // #756：已接收但主程序未确认 / 自动发送失败 —— 诚实提示，不再假装成功
+          var why = resp.detail ? "（" + resp.detail + "）" : "（小臭未确认）";
+          setStatus("⚠️ 已接收但未确认 " + resp.chars + " 字" + why, "warn");
+        }
       } else {
         setStatus("⚠️ " + (resp && resp.error || "失败"), "err");
       }

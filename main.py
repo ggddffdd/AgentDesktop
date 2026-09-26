@@ -65,6 +65,10 @@ except Exception:
 # 性能基线：顶部只依赖标准库（perf_baseline 内部才 import PySide6/业务模块），早期可安全 import
 import perf_baseline
 
+# 可观测性：统一任务状态总线（纯标准库）。桥接回调在 HTTP 线程，
+# 本模块自身线程安全；界面侧 TaskStatusStrip 用 Qt queued 信号渲染。
+import task_status
+
 # 崩溃日志目录（与记忆同级，便于排查）——未捕获异常写这里，崩了能查不静默
 LOG_DIR = os.path.join(os.path.expanduser("~/Documents/小臭玩AI"), "logs")
 
@@ -414,6 +418,51 @@ def main():
     # tray.showMessage()，属跨线程 GUI 调用（H-08 残留），Windows 偶发托盘卡死。
     _ui_bridge = UiBridge()
 
+    # v4.165.0：代码执行能力体检（诚实标注，不假装可用）。
+    # 打包版**不内置** Python —— 若本机没有可用解释器，「写代码 / 做 PPT /
+    # 数据分析」类任务必然失败。提前异步体检并明确告知，比等用户触发后
+    # 再报 ModuleNotFoundError 友好得多。
+    # 放后台线程（探测要起子进程，不能拖慢启动），再经 _ui_bridge 回 GUI 线程。
+    def _probe_python_capability():
+        try:
+            import tools as _tools
+            st = _tools.python_runtime_status(cfg)
+        except Exception as e:
+            log.debug("代码执行能力体检失败: %s", e)
+            return
+        available = st.get("available")
+        reason = st.get("reason", "")
+        missing = st.get("missing_libs") or []
+
+        def _apply():
+            try:
+                if not available:
+                    window.status_label.setText(
+                        f"⚠ 代码运行不可用：{reason}（聊天 / 生图等不受影响）")
+                    try:
+                        tray.tray.showMessage(
+                            "小臭玩AI · 能力提示",
+                            "未找到可用的 Python 解释器，「写代码 / 做 PPT / 数据分析」"
+                            "类任务暂不可用。\n安装 Python 并加入 PATH 后重启即可。")
+                    except Exception:
+                        pass
+                elif missing:
+                    log.info("run_python 解释器 %s 缺少库: %s", st.get("exe"), missing)
+            except Exception:
+                pass
+
+        try:
+            _ui_bridge.post(_apply)
+        except Exception:
+            _apply()
+
+    try:
+        import threading as _threading
+        _threading.Thread(target=_probe_python_capability, daemon=True).start()
+    except Exception:
+        pass
+
+
     # Webhook 服务
     try:
         from webhook_server import get_webhook_server, set_event_callback
@@ -457,7 +506,8 @@ def main():
     try:
         from browser_bridge import (browser_bridge_start, browser_bridge_stop,
                                     set_event_callback as _bridge_set_cb,
-                                    set_persist_callback as _bridge_set_persist)
+                                    set_persist_callback as _bridge_set_persist,
+                                    report_delivery as _bridge_report_delivery)
 
         def _persist_bridge_token(new_tok):
             """v4.125 M-20：/pair 重置 token → 立刻写回 config，重启不再 401。"""
@@ -474,10 +524,28 @@ def main():
         def _bridge_cb(kind, payload):
             if kind != "browser_page":
                 return
+            # 可观测性：网页抓取自「已接收」起就在状态栏可见——此前要等注入完
+            # 才有托盘提示，中间那段时间用户看到的是「没反应」。
+            # 本函数运行在 HTTP 线程，task_status 自身线程安全。
+            _task_browser = ""
+            try:
+                _task_browser = task_status.begin(
+                    "browser", "抓取：" + str(payload.get("title") or "网页")[:30])
+                task_status.progress(_task_browser, "等待注入对话")
+            except Exception:
+                _task_browser = ""
             try:
                 def _inject():
+                    # 收口时要清空该 id（见下方 finally），必须显式 nonlocal，
+                    # 否则赋值会让它变成 _inject 的局部变量 → 读取时 UnboundLocalError
+                    nonlocal _task_browser
+                    _ok = False
+                    _detail = ""
+                    _delivery_id = ""
+                    _append_mode = False
                     try:
                         p = payload
+                        _delivery_id = p.get("delivery_id", "")  # #756：投递回执 ID
                         title = p.get("title", "")
                         url = p.get("url", "")
                         text = p.get("text", "")
@@ -491,6 +559,7 @@ def main():
                         # L1.2/L1.4：优先用 Markdown 正文，其次选中文字，最后纯文本正文
                         body = markdown if markdown else (sel if sel else text)
                         if not body:
+                            _ok, _detail = True, "空正文已忽略"
                             return
                         block = "请帮我处理这个网页内容"
                         if note:
@@ -509,36 +578,84 @@ def main():
                                 block += "　抓取于：" + cap
                             block += "\n"
                         block += "\n---\n" + body + "\n---"
-                        window.input_box.setPlainText(block)
+
+                        # #756(P1)：草稿保护——输入框已有未发送内容时，不覆盖，
+                        # 改为追加到末尾，且本批不自动发送（避免把用户半截话一起发出去）。
+                        existing = window.input_box.toPlainText() or ""
+                        if bool(existing.strip()):
+                            window.input_box.setPlainText(
+                                existing.rstrip() + "\n\n" + block)
+                            autosend = False
+                            _append_mode = True
+                        else:
+                            window.input_box.setPlainText(block)
                         window.input_box.setFocus()
+
                         if autosend:
-                            # L1.1：自动提交，等价于用户按了发送键（若上一条仍在处理则跳过，内容保留在输入框）
+                            # L1.1：自动提交，等价于用户按了发送键
                             try:
                                 window.send()
+                                _ok, _detail = True, "已注入并自动发送"
                             except Exception as e:
+                                # #756(P2#2)：自动发送失败 → 诚实报错，不再假装成功
                                 log.warning("浏览器扩展自动发送失败（已填入输入框）: %s", e)
-                            if getattr(window, "tray_app", None):
-                                from PySide6.QtGui import QSystemTrayIcon
-                                window.tray_app.tray.showMessage(
-                                    "小臭玩AI · 浏览器扩展",
-                                    "已自动发送网页：" + (title[:30] or "（无标题）"),
-                                    QSystemTrayIcon.Information, 4000)
+                                _ok, _detail = False, "已填入但自动发送失败：" + type(e).__name__
                         else:
-                            if getattr(window, "tray_app", None):
-                                from PySide6.QtGui import QSystemTrayIcon
-                                window.tray_app.tray.showMessage(
-                                    "小臭玩AI · 浏览器扩展",
-                                    "已收到网页：" + (title[:30] or "（无标题）")
-                                    + "（按发送键让 AI 处理）",
-                                    QSystemTrayIcon.Information, 4000)
+                            _ok, _detail = True, ("已追加到草稿末尾（未自动发送）"
+                                                  if _append_mode else "已填入输入框（待用户发送）")
+
+                        # 托盘通知：成功/失败用不同图标，不再一律假装成功
+                        if getattr(window, "tray_app", None):
+                            from PySide6.QtGui import QSystemTrayIcon
+                            if autosend and not _ok:
+                                _icon = QSystemTrayIcon.Warning
+                                _msg = "网页已填入，但自动发送失败：" + (title[:30] or "（无标题）") + "（请手动发送）"
+                            elif _append_mode:
+                                _icon = QSystemTrayIcon.Information
+                                _msg = "输入框有未发送草稿，已把网页追加到末尾：" + (title[:30] or "（无标题）") + "（未自动发送）"
+                            elif autosend:
+                                _icon = QSystemTrayIcon.Information
+                                _msg = "已自动发送网页：" + (title[:30] or "（无标题）")
+                            else:
+                                _icon = QSystemTrayIcon.Information
+                                _msg = "已收到网页：" + (title[:30] or "（无标题）") + "（按发送键让 AI 处理）"
+                            window.tray_app.tray.showMessage(
+                                "小臭玩AI · 浏览器扩展", _msg, _icon, 4000)
                     except Exception as e:
                         log.warning("浏览器扩展注入失败: %s", e)
+                        _ok, _detail = False, "注入异常：" + type(e).__name__
+                    finally:
+                        # #756(P2#2)：无论成败都回报投递结果，桥接据此前返回真实状态（非假成功）
+                        if _delivery_id:
+                            try:
+                                _bridge_report_delivery(_delivery_id, _ok, _detail)
+                            except Exception:
+                                pass
+                        # 可观测性：网页抓取任务收口（成功/失败都会在状态栏留下痕迹）
+                        try:
+                            if _task_browser:
+                                if _ok:
+                                    task_status.done(_task_browser, _detail)
+                                else:
+                                    task_status.fail(_task_browser, _detail or "注入失败",
+                                                     retryable=True)
+                                _task_browser = ""
+                        except Exception:
+                            pass
 
                 # 跨线程（HTTP server 线程）→ 主线程执行 UI 操作（H-08：信号 queued 投递，
                 # 替代 QTimer.singleShot——QTimer 依赖创建线程事件循环，HTTP 线程里不触发）
                 _ui_bridge.post(_inject)
             except Exception as e:
                 log.warning("浏览器扩展回调异常: %s", e)
+                # 可观测性：回调整体异常时也要收口，否则任务会永远停在「处理中」
+                try:
+                    if _task_browser:
+                        task_status.fail(_task_browser,
+                                         f"回调异常：{type(e).__name__}", retryable=True)
+                        _task_browser = ""
+                except Exception:
+                    pass
 
         _bridge_set_cb(_bridge_cb)
         tok = browser_bridge_start(cfg)

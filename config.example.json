@@ -1,0 +1,137 @@
+{
+  "api_key": "",
+  "python_exe": "",
+  "base_url": "https://api.deepseek.com",
+  "model": "deepseek-chat",
+  "hotkey": "ctrl+shift+d",
+  "system_prompt": "你是「小臭玩AI」—— 一个 Windows 本地桌面工作台。\n\n## 强制路由表 — 命中以下关键词必须调用对应工具，禁止只给文字回答\n| 场景/关键词 | 必须调用 | 说明 |\n|------------|---------|------|\n| 查/搜/最新/新闻/天气/股价/汇率/事件 | web_search | 联网搜索 |\n| 打开链接/网页内容/URL/抓取 | web_fetch | 抓取网页正文 |\n| 写/保存/创建 文件/笔记 | write_file | 写入工作区 |\n| 读/查看 文件/代码/笔记 | read_file | 读取工作区文件 |\n| 运行命令/执行命令/列文件/跑脚本 | run_command | 工作区内执行 |\n| 计算/分析/数据处理/爬取/写Python | run_python | 执行 Python 代码 |\n| 生成图/画图/配图/海报/插画/再画一张 | image_gen | Agnes 生图 |\n| 生成视频/做视频 | video_gen | Agnes 生视频 |\n| 定时任务/自动化任务/每天/每周/每日/定期/每天早上/每晚 | create_automation | 建自动化任务 |\n| 提醒/闹钟/N分钟后/N小时后/倒计时 | schedule | 一次性提醒 |\n| 截图/截屏 | screenshot | 屏幕截图 |\n| 知识库/Obsidian/我的笔记/规划/项目 | rag_search | 本地知识库搜索 |\n| 记笔记/待办/备忘/素材 | db_insert/db_query | SQLite 数据库 |\n| 图表/柱状图/折线图/饼图/散点图 | chart_gen | 数据可视化 |\n| 日志/报错/错误排查 | log_query | 查询运行日志 |\n| 清空回收站/锁屏/关机/打开设置/系统操作 | system_run | system_* 桌面系统控制 |\n| 打开文件/打开应用/控制软件/输入文字/点按钮 | software_run | software_* 软件控制 |\n| 公众号/写文章/写稿子/续写 | use_skill(公众号文章) | 写作技能 |\n| 技能/装技能/搜索技能 | skill_search/skill_install | 技能管理 |\n| 浏览器打开/网页点击/填表 | browser_open/browser_click | 浏览器操作 |\n| 偏好/记住/长期/约定 | remember | 写入长期记忆 |\n\n## 路由防误触 · 强制\n**先判「是不是动作指令」，再判关键词。** 用户仅仅是**评价 / 夸赞 / 感慨**工具或模型效果（如「这能力颠覆认知」「效果真好」「太强了」「生成得不错」），**严禁**触发 image_gen / video_gen 等生成类工具；只有**明确的祈使动作指令**（含「生成 / 做一张 / 画 / 出个视频 / 帮我做」等）才允许路由到生成类工具。评价句即使命中生成类关键词也不是指令，一律走普通对话，禁止编造或跑生成。\n\n## 全部能力速查\n联网搜索(web_search) | 网页抓取(web_fetch) | 文件读写(read_file/write_file) | 命令(run_command) | Python(run_python) | 生图(image_gen) | 生视频(video_gen) | 定时(schedule) | 自动化任务(create_automation/list_automation/delete_automation) | 截图(screenshot) | 知识库RAG(rag_index/rag_search，Obsidian Vault 可在设置中配置) | 数据库(db_insert/db_query/db_update/db_delete：notes/todos/assets) | 图表(chart_gen) | 日志(log_query) | 上下文(context_compress/context_summary) | Webhook(webhook_start/events/stop，端口9000) | 技能(use_skill/skill_search/skill_install) | ASR(SenseVoiceSmall) | TTS(edge-tts) | 浏览器(browser_open/click/fill/read) | 系统控制(system_*：剪贴板/窗口/进程/输入) | 软件控制(software_*：pywinauto) | 长期记忆(remember)\n\n## 模型\n默认 Agnes（agnes-2.5-flash，官方当前限免，价格随时可能调整）；DeepSeek 为可选付费通道。\n\n## 硬约束\n1. 命中路由表关键词→直接调工具，禁止纯文字回答\n2. 时间/事实性问题→调 web_search，禁止凭模型知识猜测\n3. 工具结果为准，严禁编造不存在的数据\n4. 能推断参数不追问，用合理默认值\n5. 成功报产物路径，失败报真实错误，禁止谎称已完成\n6. 「再来/重新/重做/regenerate」→重新调工具，禁止复用历史结果\n7. 产物路径统一到 ~/Documents/小臭玩AI/ 对应子目录\n8. **禁止承诺式循环**：禁止连续多轮只输出「我现在开始做/马上做/下一步执行」之类的承诺而不真去调工具。每一步要么调工具、要么给出最终成品，否则算任务失败。\n9. **用户意图优先**：用户原话意图明确时，禁止跳到不相关技能/工具（如「清空回收站」→调 system_clean_recycle_bin，不许跑去调 PPT生成）。\n10. **选题/盘点/列方向 类需求优先用训练知识直接出文本**（见下方【爆款选题与盘点模板】），仅在用户明确说「去搜/查最新/爬数据/看实时榜单」时才调 web_search。「搜索」一词在该语境下指的是「检索联网最新数据」，不是「列选题方向」——不要把「给我列几个方向」误解成「去搜实时榜单」。\n",
+  "max_history": 30,
+  "search_enabled": true,
+  "search_provider": "auto",
+  "search_top_k": 5,
+  "search_api_key": "",
+  "agent_skip_confirm": false,
+  "onboarded": false,
+  "image_gen_provider": "agnes",
+  "image_gen_model": "agnes-image-2.5-flash",
+  "image_gen_size": "1920x1080",
+  "agnes_text_model": "agnes-2.5-flash",
+  "agnes_text_fallback": true,
+  "agnes_text_fallback_model": "agnes-2.5-flash",
+  "agnes_thinking_enabled": false,
+  "agnes_thinking_max_tokens": 65536,
+  "agnes_base_candidates": [
+    "https://apihub.agnes-ai.cn/v1",
+    "https://api.agnes-ai.cn/v1"
+  ],
+  "products_layout": "dated",
+  "sd_webui_url": "http://127.0.0.1:7860",
+  "gateway_url": "http://127.0.0.1:8000",
+  "gateway_autostart": true,
+  "gateway_dir": "",
+  "harness_notes_path": "",
+  "task_resume_dir": "",
+  "orch_auto_resume": true,
+  "task_trace_dir": "",
+  "orch_trace_enabled": true,
+  "orch_trace_auto_refine": true,
+  "orch_trace_max": 200,
+  "skills_pending_dir": "",
+  "_mig_v484_self_evolve": false,
+  "mcp_servers": [
+    {
+      "name": "filesystem",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "~/Documents"
+      ],
+      "enabled": true
+    }
+  ],
+  "model_profiles": {
+    "DeepSeek 官方": {
+      "base_url": "https://api.deepseek.com",
+      "model": "deepseek-flash",
+      "api_key": ""
+    },
+    "硅基流动": {
+      "base_url": "https://api.siliconflow.cn/v1",
+      "model": "deepseek-ai/DeepSeek-V3",
+      "api_key": ""
+    },
+    "智谱 GLM": {
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "model": "glm-4-flash",
+      "api_key": ""
+    },
+    "腾讯混元": {
+      "base_url": "https://tokenhub.tencentmaas.com/v1",
+      "model": "hy3-preview",
+      "api_key": ""
+    },
+    "免费网关 free-api-gw": {
+      "base_url": "http://127.0.0.1:8000/v1",
+      "model": "zhipu",
+      "api_key": ""
+    },
+    "魔搭 ModelScope": {
+      "base_url": "https://api-inference.modelscope.cn/v1",
+      "model": "Qwen/Qwen3.5-27B",
+      "api_key": ""
+    },
+    "Agnes": {
+      "base_url": "https://apihub.agnes-ai.cn/v1",
+      "model": "agnes-2.5-flash",
+      "api_key": ""
+    }
+  },
+  "model_lock": "",
+  "model_routing": {
+    "enabled": true,
+    "complex_model": "DeepSeek 官方",
+    "length_threshold": 1500,
+    "complex_hint": [
+      "代码",
+      "编程",
+      "分析",
+      "报告",
+      "深度",
+      "推理",
+      "终审",
+      "架构",
+      "设计",
+      "重构",
+      "review",
+      "写代码"
+    ]
+  },
+  "rag_data_dir": "",
+  "rag_enabled": true,
+  "embedding_api_key": "",
+  "embedding_base_url": "https://api.siliconflow.cn/v1",
+  "embedding_model": "BAAI/bge-large-zh-v1.5",
+  "vision_model": "OpenGVLab/InternVL2-8B",
+  "obsidian_vault_path": "",
+  "obsidian_enabled": true,
+  "obsidian_index_delay_sec": 0,
+  "skills_dir": "",
+  "clipboard_enabled": true,
+  "clipboard_interval": 2,
+  "clipboard_auto_fetch": true,
+  "clipboard_auto_format": true,
+  "clipboard_notification": "tray",
+  "context_enabled": true,
+  "context_max_window": 20,
+  "context_compress_threshold": 10,
+  "webhook_enabled": false,
+  "webhook_port": 9000,
+  "webhook_host": "127.0.0.1",
+  "webhook_token": "",
+  "enabled_skills": [],
+  "enabled_tools": [],
+  "autobackup_freq": "",
+  "autobackup_time": "03:00",
+  "update_check_url": ""
+}

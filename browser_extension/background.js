@@ -64,7 +64,22 @@ async function captureActiveTab(note, opts) {
     if (!r.ok) {
       return { ok: false, error: "桥接服务返回 " + r.status };
     }
-    return { ok: true, chars: resp.text.length, autosend: autosend };
+    // #756：解析桥接 JSON 回执，反映真实投递结果（而非仅 HTTP 200）
+    var delivered = true, detail = "", rstatus = "ok";
+    try {
+      var out = await r.json();
+      delivered = !!out.delivered;
+      detail = out.detail || out.note || "";
+      rstatus = out.status || "ok";
+    } catch (e) { /* 兜底：200 即视为已接收 */ }
+    return {
+      ok: true,
+      chars: resp.text.length,
+      autosend: autosend,
+      delivered: delivered,
+      status: rstatus,
+      detail: detail
+    };
   } catch (e) {
     return {
       ok: false,

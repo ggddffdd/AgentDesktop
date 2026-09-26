@@ -1,13 +1,35 @@
-PySide6>=6.6.0
-requests>=2.31.0
-keyboard>=0.13.5
-pyinstaller>=6.0.0
-chromadb>=0.4.0
-sentence-transformers>=2.2.0
-Pillow>=9.0.0
-RestrictedPython>=6.0
-pyautogui>=0.9.54
-pyperclip>=1.8.8
-pygetwindow>=0.0.9
-pywinauto>=0.6.8
-qt-material>=2.14
+# 小臭玩AI 依赖清单
+# 版本策略：原先全部用 ">=" 浮动区间，上游发新版会导致构建/运行漂移
+# （典型症状：上次能打的包这次打不出来、PySide6/PyInstaller 行为变化）。
+# 现已锁定为 2026-09-26 本机实测通过的精确组合。
+# 升级任一项前，请先完整跑一次 tests 与一次打包验证，再改这里的版本号。
+PySide6==6.11.1
+requests==2.32.5
+keyboard==0.13.5
+pyinstaller==6.19.0
+chromadb==1.5.9
+sentence-transformers==5.6.0
+Pillow==10.4.0
+RestrictedPython==8.4
+pyautogui==0.9.54
+pyperclip==1.11.0
+pygetwindow==0.0.9
+pywinauto==0.6.9
+qt-material==2.17
+
+# ---------- 打包必需、此前漏列（2026-09-27 补齐）----------
+# 之前只列了「显式安装过」的库，漏了「代码里 import 但没写进清单」的直接依赖。
+# 后果：换一台干净电脑 / 新建 venv 时 pip install -r 装不全，
+# 打包会静默少收集模块或运行期才报 ImportError。
+# chart_generator.py 直接 import matplotlib/numpy，PyInstaller 靠静态分析收集
+matplotlib==3.10.9
+numpy==2.4.4
+# rag.py 索引 Word、ui.py 导出 Word；spec 的 hiddenimports 已登记 'docx'
+python-docx==1.2.0
+
+# ---------- run_python（代码执行能力）在目标机的 Python 环境使用，**不进 exe** ----------
+# 这些库是给独立 Python 解释器用的：想用「做 PPT / 数据分析」类能力，
+# 目标机的 Python 需装好它们（不装则相关任务会报 ImportError）。
+python-pptx==1.0.2
+pandas==2.3.3
+openpyxl==3.1.5

@@ -33,6 +33,11 @@ from pathlib import Path
 # 长任务断点续跑 / 心跳（纯标准库模块，无 Qt 依赖）
 import task_resume
 
+# 可观测性：统一任务状态总线（纯标准库模块，无 Qt 依赖）。
+# 把模型调用/网页抓取/文件解析/视频生成统一成「已接收/处理中/完成/失败原因」，
+# 状态栏据此渲染任务状态条，替代此前「状态只落日志 → 用户以为没反应」。
+import task_status
+
 # v4.88：自动化任务（定时提醒 / 定时执行 Agent 任务）
 import automation
 
@@ -71,7 +76,7 @@ _EDGE_MARGIN = 6  # 边缘命中热区像素
 
 import config
 from config import (
-    APP_DIR, CONFIG_PATH, load_config, load_skills,
+    APP_DIR, WORKSPACE_DIR, CONFIG_PATH, load_config, load_skills,
     AGENT_SYS_APPEND, TOOL_RESULT_LIMIT, load_dynamic_skills,
     get_app_icon, APP_VERSION, MAX_RENDERED_MSGS,
 )
@@ -621,9 +626,10 @@ class OrchestrateWorker(QThread):
                            "（正文已在上一步生成，此处不要重复输出大段正文）")
 
     def _save_node(self, name, text):
-        """落盘：每节点产出存 md 到工作区 orchestrate/ 目录。"""
+        """落盘：每节点产出存 md 到工作区 orchestrate/ 目录。
+        v4.164.0：由 APP_DIR（= dist = 分发源）改为 WORKSPACE_DIR，避免随包分发。"""
         try:
-            d = os.path.join(APP_DIR, "orchestrate")
+            d = os.path.join(WORKSPACE_DIR, "orchestrate")
             os.makedirs(d, exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             safe = name.replace(" ", "_").replace("/", "_")
@@ -1530,11 +1536,30 @@ def _vision_debug(msg):
     「超限就滚成 .1」逻辑。此前是裸 open(...,"a") 只增不减（实测已涨到 537 KB）。
     顺带把落点从写死的 expanduser("~/Documents/小臭玩AI") 换成 config.USER_DATA_DIR，
     这样测试子进程注入的改道变量也能生效（否则它会一直往真实目录写）。
+
+    #755 隐私收敛：调试日志绝不落用户文本/图片 base64/密钥。无论调用方传什么，
+    落盘前统一脱敏——data URI、长 base64 块、URL 内 key/token、明文 sk- 密钥
+    一律抹掉，单条限长 500 字符，避免日志无限膨胀且杜绝隐私/密钥外泄。
     """
     try:
+        import re
         from datetime import datetime
+        s = str(msg)
+        # 1) 抹掉 data: URI（图片 base64 内联）
+        s = re.sub(r"data:[^;,\s]+;base64,[A-Za-z0-9+/=]+",
+                   "[REDACTED_DATA_URI]", s)
+        # 2) 抹掉任意长 base64 块（>=80 连续字符，覆盖裸 base64 图片/密钥）
+        s = re.sub(r"[A-Za-z0-9+/]{80,}={0,2}", "[REDACTED_BLOB]", s)
+        # 3) URL 内 key/token 查询参数脱敏
+        s = re.sub(r"([?&](?:key|token|api[_-]?key|access[_-]?token)=)[^&\s]+",
+                   r"\1[REDACTED]", s, flags=re.IGNORECASE)
+        # 4) 明文 sk- 开头密钥脱敏
+        s = re.sub(r"sk-[A-Za-z0-9]{8,}", "[REDACTED_KEY]", s)
+        # 5) 限长，避免单条撑爆日志
+        if len(s) > 500:
+            s = s[:500] + f"...[truncated {len(s) - 500} chars]"
         p = os.path.join(config.USER_DATA_DIR, "vision_debug.log")
-        config.append_log_line(p, f"[{datetime.now().strftime('%H:%M:%S')}] {msg}\n")
+        config.append_log_line(p, f"[{datetime.now().strftime('%H:%M:%S')}] {s}\n")
     except Exception:
         pass
 
@@ -1820,6 +1845,161 @@ def _build_api_history(messages, vision_ok=False, max_history=None):
     if max_history and len(cleaned) > int(max_history):
         cleaned = _repair_tool_pairs(cleaned[-int(max_history):])
     return cleaned
+
+
+class TaskStatusStrip(QWidget):
+    """状态栏内的任务状态条（可观测性）。
+
+    把「模型调用 / 网页抓取 / 文件解析 / 视频生成」等任务统一显示成
+    已接收 / 处理中 / 完成 / 失败原因；对标记为可重试的失败给出「重试」入口。
+    此前这些信息只落在日志里，用户感知是「没反应」。
+
+    跨线程安全：任务状态可能从 HTTP 线程（浏览器桥接回调）或工作线程变更，
+    所以订阅回调只负责 emit 信号，由 Qt 的 queued 连接投递到 GUI 线程渲染，
+    绝不在非 GUI 线程直接碰控件。
+    """
+
+    _changed = Signal(object)   # 任意线程 emit → GUI 线程 _render
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._latest_retryable = None
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+
+        self.icon = QLabel("")
+        self.icon.setStyleSheet(f"color:{THEME['accent']};font-size:11px;")
+        lay.addWidget(self.icon)
+
+        self.text = QLabel("")
+        self.text.setStyleSheet(f"color:{THEME['dim']};font-size:11px;")
+        lay.addWidget(self.text)
+
+        self.retry_btn = QPushButton("重试")
+        self.retry_btn.setFixedHeight(18)
+        self.retry_btn.setCursor(Qt.PointingHandCursor)
+        self.retry_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;border:none;padding:0 4px;"
+            f"color:{THEME['accent']};font-size:11px;}}"
+            f"QPushButton:hover{{color:{THEME['accent_hover']};}}")
+        self.retry_btn.clicked.connect(self._on_retry)
+        self.retry_btn.hide()
+        lay.addWidget(self.retry_btn)
+
+        self.clear_btn = QPushButton("清除")
+        self.clear_btn.setFixedHeight(18)
+        self.clear_btn.setCursor(Qt.PointingHandCursor)
+        self.clear_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;border:none;padding:0 4px;"
+            f"color:{THEME['faint']};font-size:11px;}}"
+            f"QPushButton:hover{{color:{THEME['dim']};}}")
+        self.clear_btn.clicked.connect(self._on_clear)
+        self.clear_btn.hide()
+        lay.addWidget(self.clear_btn)
+
+        self._changed.connect(self._render)
+        try:
+            task_status.subscribe(self._on_change)
+            # 控件销毁时退订：否则状态总线会一直持有已销毁控件的回调引用
+            self.destroyed.connect(self._on_destroyed)
+        except Exception:
+            pass
+
+    def _on_destroyed(self, *_):
+        try:
+            task_status.unsubscribe(self._on_change)
+        except Exception:
+            pass
+
+    # ---- 状态变更入口（可能来自任意线程）----
+    def _on_change(self, snap):
+        try:
+            self._changed.emit(snap)
+        except Exception:
+            pass
+
+    def refresh(self):
+        """立即按当前状态渲染一次（初始化用，不经过信号）。"""
+        try:
+            self._render(task_status.snapshot())
+        except Exception:
+            pass
+
+    # ---- 渲染（GUI 线程）----
+    def _render(self, snap):
+        try:
+            active = (snap or {}).get("active") or []
+            recent = (snap or {}).get("recent") or []
+
+            if active:
+                t = active[0]
+                more = f" +{len(active) - 1}" if len(active) > 1 else ""
+                detail = f" · {t.get('detail')}" if t.get("detail") else ""
+                self.icon.setText("●")
+                self.icon.setStyleSheet(f"color:{THEME['accent']};font-size:11px;")
+                self.text.setStyleSheet(f"color:{THEME['dim']};font-size:11px;")
+                self.text.setText(
+                    f"{t.get('kind_label', '任务')} · {t.get('state_label', '')}{more}{detail}")
+                self.retry_btn.hide()
+                self.clear_btn.hide()
+                self._latest_retryable = None
+                return
+
+            failed = [r for r in recent if r.get("state") == task_status.STATE_FAILED]
+            if failed:
+                t = failed[0]
+                msg = f"{t.get('kind_label', '任务')} 失败"
+                if t.get("detail"):
+                    msg += f"：{t['detail']}"
+                self.icon.setText("⚠")
+                self.icon.setStyleSheet(f"color:{THEME['danger']};font-size:11px;")
+                self.text.setStyleSheet(f"color:{THEME['danger']};font-size:11px;")
+                self.text.setText(msg)
+                self._latest_retryable = t if t.get("retryable") else None
+                self.retry_btn.setVisible(bool(self._latest_retryable))
+                self.clear_btn.show()
+                return
+
+            if recent:
+                t = recent[0]
+                self.icon.setText("✓")
+                self.icon.setStyleSheet(f"color:{THEME['ok']};font-size:11px;")
+                self.text.setStyleSheet(f"color:{THEME['faint']};font-size:11px;")
+                self.text.setText(f"{t.get('kind_label', '任务')} {t.get('state_label', '完成')}")
+                self._latest_retryable = None
+                self.retry_btn.hide()
+                self.clear_btn.show()
+                return
+
+            # 无任何任务：留白，不占视觉
+            self.icon.setText("")
+            self.text.setText("")
+            self.retry_btn.hide()
+            self.clear_btn.hide()
+            self._latest_retryable = None
+        except Exception:
+            pass
+
+    # ---- 交互 ----
+    def _on_retry(self):
+        t = self._latest_retryable
+        if not t:
+            return
+        try:
+            ok = task_status.retry(t.get("id", ""))
+        except Exception:
+            ok = False
+        if not ok:
+            # 诚实反馈：没有注册重试钩子时不假装已重试
+            self.text.setText("该任务无法自动重试，请手动重发")
+
+    def _on_clear(self):
+        try:
+            task_status.clear_finished()
+        except Exception:
+            pass
 
 
 class ChatWindow(QMainWindow):
@@ -2941,6 +3121,12 @@ class ChatWindow(QMainWindow):
         if not wav:
             self.status_label.setText(f"没录到声音：{self.recorder.error or '未知'}")
             return
+        # 可观测性：语音识别任务（识别在后台，此前只有一行 status_label 提示）
+        try:
+            self._task_asr = task_status.begin("speech", "语音识别")
+            task_status.progress(self._task_asr, "识别中")
+        except Exception:
+            self._task_asr = ""
         if self._asr_thread and self._asr_thread.isRunning():
             self._asr_thread.terminate()
             self._spawn_thread(self._asr_thread)  # 审计修复 B2：terminate 异步，旧线程须持有到真退出
@@ -2952,6 +3138,17 @@ class ChatWindow(QMainWindow):
         self._asr_thread.start()
 
     def _on_asr_done(self, text):
+        # 可观测性：语音识别收口（不把识别出的原话写进状态文本）
+        try:
+            _tid = getattr(self, "_task_asr", "")
+            if _tid:
+                if text:
+                    task_status.done(_tid)
+                else:
+                    task_status.fail(_tid, "没听清（无识别结果）", retryable=True)
+                self._task_asr = ""
+        except Exception:
+            pass
         if not text:
             self.status_label.setText("没听清，再说一次 / 或直接打字")
             return
@@ -2959,6 +3156,14 @@ class ChatWindow(QMainWindow):
         self.send()
 
     def _on_asr_error(self, msg):
+        # 可观测性：语音识别失败收口
+        try:
+            _tid = getattr(self, "_task_asr", "")
+            if _tid:
+                task_status.fail(_tid, msg, retryable=True)
+                self._task_asr = ""
+        except Exception:
+            pass
         self.status_label.setText(f"语音识别失败：{msg}")
 
     def _speak(self, text):
@@ -3026,6 +3231,10 @@ class ChatWindow(QMainWindow):
         self.conn_status = QLabel("● 已连接")
         self.conn_status.setStyleSheet(f"color:{THEME['ok']};font-size:11px;")
         sb_lay.addWidget(self.conn_status)
+        # 可观测性：任务状态条（已接收/处理中/完成/失败原因 + 重试）
+        self.task_strip = TaskStatusStrip(self.status_bar)
+        sb_lay.addWidget(self.task_strip)
+        self.task_strip.refresh()
         sb_lay.addStretch(1)
         token_label = QLabel("Agnes 免费 · DeepSeek 已订阅")
         token_label.setStyleSheet(f"color:{THEME['faint']};font-size:11px;")
@@ -3686,12 +3895,29 @@ class ChatWindow(QMainWindow):
             return
         size = self.image_size_combo.currentText().split()[0]  # "1024x768 横版 4:3" -> "1024x768"
         self.image_status.setText(f"生成中…（{size}）")
+        # 可观测性：图片生成任务（跨页面也能在状态栏看到进度）
+        try:
+            self._task_image = task_status.begin("image", f"生图 {size}")
+            task_status.progress(self._task_image, prompt[:60])
+        except Exception:
+            self._task_image = ""
         self._image_thread = _GenThread(tools_mod.tool_image_gen, self.cfg, APP_DIR, prompt, size)
         self._spawn_thread(self._image_thread)
         self._image_thread.result.connect(self._on_image_result)
         self._image_thread.start()
 
     def _on_image_result(self, res):
+        # 可观测性：图片生成收口（字符串=失败原因，元组=成功产物）
+        try:
+            _tid = getattr(self, "_task_image", "")
+            if _tid:
+                if isinstance(res, str):
+                    task_status.fail(_tid, res, retryable=True)
+                else:
+                    task_status.done(_tid, "已生成 " + str(res[2]))
+                self._task_image = ""
+        except Exception:
+            pass
         if isinstance(res, str):
             self.image_status.setText(res)
             return
@@ -3899,6 +4125,12 @@ class ChatWindow(QMainWindow):
         if _vt is not None and _vt.isRunning():
             self.video_status.setText("上一次视频仍在进行，请等待完成。")
             return
+        # 可观测性：视频生成任务（耗时最长，最需要「看得到在处理」）
+        try:
+            self._task_video = task_status.begin("video", f"生视频 {mode_txt}")
+            task_status.progress(self._task_video, f"{res} · " + prompt[:40])
+        except Exception:
+            self._task_video = ""
         self._video_thread = _GenThread(
             tools_mod.tool_video_gen, self.cfg, APP_DIR, prompt,
             self.video_duration.value(), aspect, resolution=res,
@@ -4022,6 +4254,17 @@ class ChatWindow(QMainWindow):
             return None
 
     def _on_video_result(self, res):
+        # 可观测性：视频生成收口（字符串=失败原因，元组=成功产物）
+        try:
+            _tid = getattr(self, "_task_video", "")
+            if _tid:
+                if isinstance(res, str):
+                    task_status.fail(_tid, res, retryable=True)
+                else:
+                    task_status.done(_tid, "已生成 " + str(res[2]))
+                self._task_video = ""
+        except Exception:
+            pass
         if isinstance(res, str):
             self.video_status.setText(res)
             return
@@ -5194,7 +5437,8 @@ class ChatWindow(QMainWindow):
                 # 导致 shutil.copy2 抛非法字符异常、复制失败、图根本没进 incoming，
                 # 标记指向不存在的文件 → 视觉模型收不到图、静默无响应。复制前先清洗
                 # 非法字符，并重名去重避免覆盖；标记里用清洗后的名字，保证能对应上。
-                inc_dir = os.path.join(APP_DIR, "incoming")
+                # v4.164.0：附件落 WORKSPACE_DIR（工作区），不再落 APP_DIR（dist）
+                inc_dir = os.path.join(WORKSPACE_DIR, "incoming")
                 try:
                     os.makedirs(inc_dir, exist_ok=True)
                 except Exception:
@@ -5879,7 +6123,8 @@ class ChatWindow(QMainWindow):
         气泡 HTML 用 <img> 引用。文件已存在且版本标记匹配则跳过；版本升级时强制刷新。
         生成失败不抛异常（降级到无头像）。"""
         try:
-            d = os.path.join(APP_DIR, "avatars")
+            # v4.164.0：头像缓存属运行数据，落 WORKSPACE_DIR（不再落 dist）
+            d = os.path.join(WORKSPACE_DIR, "avatars")
             os.makedirs(d, exist_ok=True)
             ver_file = os.path.join(d, ".version")
             # 版本升级时强制删除旧头像重新生成
@@ -5929,7 +6174,7 @@ class ChatWindow(QMainWindow):
     def _avatar_img_html(self, who):
         """生成头像 <img> 标签 HTML。who='ai'|'user'。文件不存在返回空串（降级无头像）。"""
         name = "avatar_ai.png" if who == "ai" else "avatar_user.png"
-        p = os.path.join(APP_DIR, "avatars", name)
+        p = os.path.join(WORKSPACE_DIR, "avatars", name)
         if not os.path.isfile(p):
             return ""
         return ('<img src="file:///' + p.replace(os.sep, "/") + '" '
@@ -8348,10 +8593,17 @@ class ChatWindow(QMainWindow):
         messages = [sys_msg] + hist
 
         all_tools = config.get_all_tools(self.cfg)
+        # 可观测性：Agent 整轮任务——一次登记覆盖整轮，不按工具调用刷屏
+        try:
+            self._task_agent = task_status.begin("agent", "Agent 任务")
+            task_status.progress(self._task_agent, "规划中")
+        except Exception:
+            self._task_agent = ""
         w = AgentWorker(self, messages, all_tools, config.mcp_clients,
                         task_id=resume_task_id, resume=resume)
         self._agent_worker = w
         w.status.connect(self.status_label.setText)
+        w.status.connect(self._agent_task_progress)
         w.render.connect(self._render_throttled)
         w.tool_log.connect(self._on_tool_log)
         w.tool_started.connect(self._on_tool_started)
@@ -8540,6 +8792,14 @@ class ChatWindow(QMainWindow):
             self.status_label.setText("⏹ 正在停止 Agent…（当前工具完成后生效）")
             self.stop_btn.setEnabled(False)
 
+    def _agent_task_progress(self, s):
+        """把 Agent 阶段文本同步到任务状态条（同一条任务持续更新，不刷屏）。"""
+        try:
+            if getattr(self, "_task_agent", ""):
+                task_status.progress(self._task_agent, str(s)[:80])
+        except Exception:
+            pass
+
     def _on_agent_done(self):
         self._agent_active = False
         self._reset_busy()
@@ -8548,6 +8808,20 @@ class ChatWindow(QMainWindow):
         self.resume_agent_btn.setVisible(False)
         w = self._agent_worker
         stopped = getattr(w, "stopped_by_user", False)
+        # 可观测性：Agent 整轮收口。用户暂停与可续的自动停止（超时/熔断/步数耗尽）
+        # 都记「失败 + 可重试」，因为确实没跑完；其余视为完成。
+        try:
+            _tid = getattr(self, "_task_agent", "")
+            if _tid:
+                _resumable = bool(stopped or getattr(w, "_resumable_stop", False))
+                if _resumable:
+                    task_status.fail(_tid, "已暂停（可点「继续上次任务」接着干）",
+                                     retryable=True)
+                else:
+                    task_status.done(_tid)
+                self._task_agent = ""
+        except Exception:
+            pass
         # v4.125 M-01：用户暂停 **或** 可续的自动停止（超时/熔断/步数耗尽）都给
         # 「继续」入口——检查点已 mark_paused 保留，没理由藏按钮。
         resumable = stopped or getattr(w, "_resumable_stop", False)
@@ -9243,6 +9517,13 @@ class ChatWindow(QMainWindow):
         self._busy_timeout.start(120000)
         self.status_label.setText(
             "联网资料已就绪，生成中…" if search_context else "搜索无结果，使用模型知识回答")
+        # 可观测性：登记「模型调用」任务并记为处理中——状态栏立刻可见，
+        # 不再是「发出去了但界面没反应」。收口在 _on_stream_finished_impl。
+        try:
+            self._task_model = task_status.begin("model", (text or "对话回复")[:40])
+            task_status.progress(self._task_model, "等待模型响应")
+        except Exception:
+            self._task_model = ""
 
         session = self.store.active()
         sys_msg = {"role": "system", "content": self._build_system_prompt()}
@@ -9431,6 +9712,14 @@ class ChatWindow(QMainWindow):
         except Exception as e:
             _vision_debug(f"_on_stream_finished RAISED: {type(e).__name__}: {e}")
             log.error("_on_stream_finished 异常: %s", e)
+            # 可观测性：异常路径同样要收口，否则任务会永远停在「处理中」
+            try:
+                if getattr(self, "_task_model", ""):
+                    task_status.fail(self._task_model,
+                                     f"回复处理异常：{type(e).__name__}", retryable=True)
+                    self._task_model = ""
+            except Exception:
+                pass
             try:
                 self._streaming = False
                 self._streaming_text = ""
@@ -9495,6 +9784,14 @@ class ChatWindow(QMainWindow):
                 # 服务器无错误正文（如连接被重置 / 协议层错误）时，给出可读提示并指向调试日志
                 msg = err_str or f"HTTP {status_code}（无错误详情，详见 vision_debug.log）"
             self.status_label.setText(f"接口错误（HTTP {status_code}）：{msg[:280]}")
+            # 可观测性：模型调用失败 → 状态栏留下可读失败原因 + 可重试标记
+            try:
+                if getattr(self, "_task_model", ""):
+                    task_status.fail(self._task_model,
+                                     f"HTTP {status_code}：{msg}"[:180], retryable=True)
+                    self._task_model = ""
+            except Exception:
+                pass
         else:
             text = self._streaming_text
             if text:
@@ -9508,6 +9805,13 @@ class ChatWindow(QMainWindow):
                 # 成功状态但模型返回空（极少见）：给个提示，避免「发图后毫无反应」
                 self.status_label.setText("（模型返回为空，请重试）")
 
+        # 可观测性：模型调用收口。失败分支已自行收口并清空 id，此处只兜成功路径。
+        try:
+            if getattr(self, "_task_model", ""):
+                task_status.done(self._task_model)
+                self._task_model = ""
+        except Exception:
+            pass
         self._streaming = False
         self._streaming_text = ""
         self._streaming_error = ""

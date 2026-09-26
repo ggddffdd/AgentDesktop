@@ -20,7 +20,8 @@ from pathlib import Path
 from datetime import datetime
 
 import glob
-from config import APP_DIR, TOOL_READ_LIMIT, TOOL_RESULT_LIMIT, PRODUCTS_DIR, USER_DATA_DIR
+from config import (APP_DIR, TOOL_READ_LIMIT, TOOL_RESULT_LIMIT, PRODUCTS_DIR,
+                    USER_DATA_DIR, WORKSPACE_DIR)
 import search as search_mod
 from system_control_tools import SYSTEM_CONTROL_TOOL_TABLE
 from software_control_tools import SOFTWARE_CONTROL_TOOL_TABLE
@@ -447,7 +448,10 @@ def _h_write_file(cfg, app_dir, args, progress=None):
     # "写入失败：…"/"拒绝：…"/"未提供路径" 也会生成假文件卡片；
     # 顺带把交付物路径解析为真实落盘的绝对路径（tool_write_file 内部同规则），可点击打开。
     if p and r.startswith("已写入"):
-        return (r, [(os.path.abspath(os.path.join(app_dir, p)), "file", os.path.basename(p))], None)
+        # v4.164.0：解析基准必须与 tool_write_file 一致（相对路径落 WORKSPACE_DIR），
+        # 否则登记出来的交付物路径会指向不存在的位置、点不开。
+        return (r, [(os.path.abspath(os.path.join(WORKSPACE_DIR, p)), "file",
+                     os.path.basename(p))], None)
     return (r, [], None)
 
 @register_tool("run_command", dangerous=True)
@@ -456,7 +460,7 @@ def _h_run_command(cfg, app_dir, args, progress=None):
 
 @register_tool("run_python", dangerous=True)
 def _h_run_python(cfg, app_dir, args, progress=None):
-    r, d = tool_run_python(app_dir, args.get("code", ""))
+    r, d = tool_run_python(app_dir, args.get("code", ""), cfg=cfg)
     return (r, d, None)
 
 def _asset_register_deliverable(res, prompt, kind):
@@ -1375,20 +1379,60 @@ def _extract_pdf_text(path):
     return None
 
 
+def _tool_roots(app_dir):
+    """文件工具的允许根目录集合。
+
+    v4.164.0：运行数据归口到 WORKSPACE_DIR 后，相对路径要以它为准（与 Agent 执行
+    命令的 cwd 一致）；同时保留 app_dir（APP_DIR）以兼容历史遗留的绝对路径引用。
+    PRODUCTS_DIR 在 WORKSPACE_DIR 之内，无需单列。
+    """
+    out = []
+    for r in (WORKSPACE_DIR, app_dir):
+        try:
+            if r:
+                a = os.path.abspath(r)
+                if a not in out:
+                    out.append(a)
+        except Exception:
+            pass
+    return out
+
+
+def _within_roots(p, roots):
+    """p 是否落在 roots 之一内。是则返回该根，否则 None。"""
+    try:
+        ap = os.path.abspath(p)
+    except Exception:
+        return None
+    for r in roots:
+        if ap == r or ap.startswith(r + os.sep):
+            return r
+    return None
+
+
 def tool_read_file(app_dir, path, offset=0, limit=None):
     if not path:
         return "未提供路径"
     if _is_sensitive_file(path):
         return "已阻止：目标文件是敏感配置（可能含 API key），禁止读取。"
-    p = os.path.abspath(os.path.join(app_dir, path))
-    root = os.path.abspath(app_dir)
+    roots = _tool_roots(app_dir)
+    # v4.164.0：相对路径优先按 WORKSPACE_DIR 解析（与 Agent cwd 一致），
+    # 未命中再回退 app_dir（兼容历史相对路径）。
+    p = os.path.abspath(os.path.join(WORKSPACE_DIR, path))
+    if not os.path.isfile(p):
+        _alt = os.path.abspath(os.path.join(app_dir, path))
+        if os.path.isfile(_alt):
+            p = _alt
     # v4.66：模型若只给文件名（不含斜杠），自动去 incoming/ 子目录找（附件都落那）
     if not os.path.isfile(p) and "/" not in path and "\\" not in path:
-        cand = os.path.abspath(os.path.join(app_dir, "incoming", os.path.basename(path)))
-        if os.path.isfile(cand):
-            p = cand
-    if p != root and not p.startswith(root + os.sep):
-        return f"拒绝：只能读取工作区目录内文件（{root}）"
+        _base = os.path.basename(path)
+        for _r in roots:
+            cand = os.path.abspath(os.path.join(_r, "incoming", _base))
+            if os.path.isfile(cand):
+                p = cand
+                break
+    if _within_roots(p, roots) is None:
+        return f"拒绝：只能读取工作区目录内文件（{WORKSPACE_DIR}）"
     if not os.path.isfile(p):
         return f"文件不存在：{p}"
     ext = os.path.splitext(p)[1].lower()
@@ -1431,10 +1475,11 @@ def tool_read_file(app_dir, path, offset=0, limit=None):
 def tool_write_file(app_dir, path, content):
     if not path:
         return "未提供路径"
-    p = os.path.abspath(os.path.join(app_dir, path))
-    root = os.path.abspath(app_dir)
-    if p != root and not p.startswith(root + os.sep):
-        return f"拒绝：只能写入工作区目录内（{root}）"
+    roots = _tool_roots(app_dir)
+    # v4.164.0：相对路径写进 WORKSPACE_DIR（运行数据归口），不再落 app_dir（dist）
+    p = os.path.abspath(os.path.join(WORKSPACE_DIR, path))
+    if _within_roots(p, roots) is None:
+        return f"拒绝：只能写入工作区目录内（{WORKSPACE_DIR}）"
     try:
         d = os.path.dirname(p)
         if d:
@@ -1468,20 +1513,28 @@ def _kill_proc_tree(proc):
 def tool_run_command(app_dir, command):
     if not command or not command.strip():
         return "未提供命令"
+    # v4.164.0：命令的工作目录由 app_dir（= exe 目录 = dist = 分发源）改为 WORKSPACE_DIR
+    # ——Agent 用相对路径写出的文件（output/notes/pages/multi_platform…）此前全堆进
+    # dist，会被连带打包分发。资源类查找仍走 app_dir，不受影响。
+    try:
+        _ws = WORKSPACE_DIR
+        os.makedirs(_ws, exist_ok=True)
+    except Exception:
+        _ws = app_dir
     try:
         import platform
         # v4.60：Windows 上强制走 PowerShell，避免 cmd.exe 不认识 Get-ChildItem 等命令
         if platform.system() == "Windows":
             proc = subprocess.Popen(
                 ["powershell", "-Command", command],
-                cwd=app_dir, stdout=subprocess.PIPE,
+                cwd=_ws, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, creationflags=_NO_WINDOW,
             )
         else:
             # POSIX 维持 shell 既定语义（C1 只收敛 Windows 注入面）；
             # start_new_session 使子进程独立成组，超时可 killpg 杀全树。
             proc = subprocess.Popen(
-                command, shell=True, cwd=app_dir,
+                command, shell=True, cwd=_ws,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 start_new_session=True,
             )
@@ -1514,9 +1567,12 @@ def tool_run_command(app_dir, command):
 
 
 def snapshot_workspace(app_dir=None):
-    """Capture all files in workspace as relative paths for before/after diff."""
+    """Capture all files in workspace as relative paths for before/after diff.
+
+    v4.164.0：默认基准由 APP_DIR 改为 WORKSPACE_DIR（运行数据归口处）。
+    """
     if app_dir is None:
-        app_dir = APP_DIR
+        app_dir = WORKSPACE_DIR
     result = set()
     base = os.path.abspath(app_dir)
     for dirpath, _, filenames in os.walk(base):
@@ -1536,30 +1592,132 @@ def classify_kind(rel):
     return "file"
 
 
-def _resolve_python_exe():
-    """选一个带完整第三方库（pptx/pandas/...）的 Python 解释器。
-    优先 PATH 里的 python（run_command 已验证其可 import pptx），
-    其次系统 Python312，最后退回当前解释器。
-    """
-    candidates = [
-        "python",
-        r"<PYTHON_EXE>",
-        sys.executable,
-    ]
-    for c in candidates:
-        if not c:
-            continue
+# ---------- run_python 后端解释器探测（v4.165.0）----------
+# 历史坑：v4.165.0 前这里硬编码了开发机的 Python 绝对路径 —— 换台机器必然失效，
+# 且属于「机型耦合」（与本项目「脱离本机 / 可换机」的目标相反）。
+# 现在按「配置指定 → PATH → 常见安装位置」探测；打包态不再把 sys.executable 当候选
+# （frozen 时它指向 exe 自身，不是解释器）。
+#
+# 另一个坑：PATH 里第一个 python 未必是好用的那个（例如某个只跑脚本的隔离环境，
+# 第三方库全缺）。所以候选要**逐个体检**，优先选「装了更多 run_python 常用库」的，
+# 避免「做 PPT / 数据分析」这类任务因为选错解释器而报 ImportError。
+_PY_OPTIONAL_LIBS = ("pptx", "docx", "pandas", "openpyxl", "matplotlib", "numpy")
+# 一次探测同时拿回「真实解释器路径 + 缺失库清单」，避免每个候选跑两遍
+_PY_PROBE_CODE = (
+    "import sys, importlib.util as u;"
+    "miss=[m for m in %r if u.find_spec(m) is None];"
+    "sys.stdout.write(sys.executable + '||' + ' '.join(miss))"
+) % (_PY_OPTIONAL_LIBS,)
+_PY_STATUS_CACHE = {}
+
+
+def _probe_python(exe):
+    """探测解释器：返回 (是否可用, 真实解释器路径, 缺失库列表)。"""
+    if not exe:
+        return False, "", []
+    try:
+        r = subprocess.run([exe, "-c", _PY_PROBE_CODE], capture_output=True,
+                           timeout=20, creationflags=_NO_WINDOW)
+        if r.returncode != 0 or not r.stdout:
+            return False, "", []
+        out = r.stdout.decode("utf-8", "replace").strip()
+        real, _, miss = out.partition("||")
+        return True, (real.strip() or exe), [m for m in miss.split() if m]
+    except Exception:
+        return False, "", []
+
+
+def _looks_like_python(exe):
+    """该路径是否是可用的 Python 解释器。"""
+    return _probe_python(exe)[0]
+
+
+def _python_candidates(cfg=None):
+    """run_python 后端解释器候选（优先级从高到低）。"""
+    out = []
+
+    def _add(p):
+        if p and p not in out:
+            out.append(p)
+
+    # ① 配置里显式指定（解决非标准安装 / 多 Python 环境）
+    try:
+        custom = (cfg or {}).get("python_exe") or ""
+        if isinstance(custom, str) and custom.strip() and os.path.isfile(custom.strip()):
+            _add(custom.strip())
+    except Exception:
+        pass
+    # ② PATH
+    for name in ("python", "python3"):
         try:
-            r = subprocess.run([c, "-c", "import sys; sys.stdout.write(sys.executable)"],
-                               capture_output=True, timeout=10, creationflags=_NO_WINDOW)
-            if r.returncode == 0 and r.stdout:
-                return c
+            _add(shutil.which(name))
+        except Exception:
+            pass
+    # ③ 常见安装位置（覆盖「装了但没加 PATH」）
+    bases = []
+    la = os.environ.get("LOCALAPPDATA")
+    if la:
+        bases.append(os.path.join(la, "Programs", "Python"))
+    for env in ("ProgramFiles", "ProgramFiles(x86)"):
+        b = os.environ.get(env)
+        if b:
+            bases.append(b)
+    bases.append("C:" + os.sep)
+    for base in bases:
+        try:
+            for d in sorted(glob.glob(os.path.join(base, "Python3*")), reverse=True):
+                _add(os.path.join(d, "python.exe"))
         except Exception:
             continue
-    return None
+    # ④ 源码态 sys.executable 就是真解释器；打包态它是 exe 自身，必须排除
+    if not getattr(sys, "frozen", False):
+        _add(sys.executable)
+    return out
 
 
-def tool_run_python(app_dir, code):
+def _resolve_python_exe(cfg=None, detail=False):
+    """挑一个可用解释器：优先「装了更多常用库」的那个。
+
+    detail=True 时返回 (exe, 缺失库列表)；否则只返回 exe（找不到为 None）。
+    用户显式指定的解释器优先（配置里指定就该听他的），其余按缺库多少排序。
+    """
+    cands = _python_candidates(cfg)
+    best, best_miss = None, None
+    for idx, c in enumerate(cands):
+        ok, real, miss = _probe_python(c)
+        if not ok:
+            continue
+        if best is None or len(miss) < len(best_miss):
+            best, best_miss = c, miss
+            if idx == 0 and not miss:
+                break          # 用户指定的解释器且库齐全，不必再找
+        if not best_miss:
+            break              # 找到库齐全的，就是最优
+    if detail:
+        return best, list(best_miss or [])
+    return best
+
+
+def python_runtime_status(cfg=None, refresh=False):
+    """run_python 能力体检（供 UI 诚实标注，不假装可用）。
+
+    返回 {"available": bool, "exe": str, "reason": str, "missing_libs": [...]}
+    同进程内缓存一次；refresh=True 强制重探。
+    """
+    if not refresh and _PY_STATUS_CACHE:
+        return dict(_PY_STATUS_CACHE)
+    exe, miss = _resolve_python_exe(cfg, detail=True)
+    if not exe:
+        st = {"available": False, "exe": "", "missing_libs": [],
+              "reason": "未找到 Python 解释器（未安装，或未加入 PATH）"}
+    else:
+        st = {"available": True, "exe": exe, "missing_libs": miss, "reason": ""}
+    _PY_STATUS_CACHE.clear()
+    _PY_STATUS_CACHE.update(st)
+    return dict(st)
+
+
+def tool_run_python(app_dir, code, cfg=None):
     """代码解释器：用真实 Python 解释器在独立工作区执行代码，可 import 任意已装库。
 
     历史：v4.50.1 前用 RestrictedPython 沙箱，刻意剔除 __import__ 且模块白名单极小，
@@ -1573,9 +1731,11 @@ def tool_run_python(app_dir, code):
     if not code or not code.strip():
         return "未提供代码", []
 
-    exe = _resolve_python_exe()
+    exe = _resolve_python_exe(cfg)
     if not exe:
-        return "未找到可用的 Python 解释器（请确认已安装 Python 并加入 PATH）", []
+        st = python_runtime_status(cfg)
+        return (f"代码执行不可用：{st['reason']}。"
+                "可在「设置」里指定 Python 解释器路径后重试，或安装 Python 并加入 PATH。", [])
 
     # 独立工作区：产物默认落这里，不污染 app 目录
     # v4.108.1：v4.100 脱敏残留把 USER_DATA_DIR 写成了 AgentDesktop/workspace，
@@ -1636,7 +1796,7 @@ def _tool_run_python_legacy(app_dir, code):
     exe = _resolve_python_exe()
     if not exe:
         return "未找到 Python 解释器，请先安装 Python 并加入 PATH", []
-    gen_dir = os.path.join(app_dir, "gen")
+    gen_dir = os.path.join(WORKSPACE_DIR, "gen")
     os.makedirs(gen_dir, exist_ok=True)
     # 审计修复 E8：同款秒级撞名问题（legacy 路径两处调用同秒也会互覆盖）
     import uuid as _uuid
@@ -1649,9 +1809,14 @@ def _tool_run_python_legacy(app_dir, code):
             f.write(code)
     except Exception as e:
         return f"写临时文件失败：{e}", []
-    before = snapshot_workspace(app_dir)
+    before = snapshot_workspace(WORKSPACE_DIR)
     try:
-        proc = subprocess.run([exe, fpath], cwd=app_dir,
+        _ws2 = WORKSPACE_DIR
+        try:
+            os.makedirs(_ws2, exist_ok=True)
+        except Exception:
+            _ws2 = app_dir
+        proc = subprocess.run([exe, fpath], cwd=_ws2,
                                capture_output=True, timeout=60,
                                creationflags=_NO_WINDOW)
     except subprocess.TimeoutExpired:
@@ -1666,7 +1831,7 @@ def _tool_run_python_legacy(app_dir, code):
             out = raw.decode("gbk")
         except Exception:
             out = raw.decode("utf-8", "ignore")
-    after = snapshot_workspace(app_dir)
+    after = snapshot_workspace(WORKSPACE_DIR)
     py_deliverables = []
     for nf in sorted(after - before):
         if nf == frel:
@@ -2201,9 +2366,12 @@ def _image_to_payload_value(value, app_dir):
         return value
     p = value
     if not os.path.isabs(p):
-        p2 = os.path.join(app_dir, p)
-        if os.path.isfile(p2):
-            p = p2
+        # v4.164.0：先按 WORKSPACE_DIR 找（运行数据归口），未命中再回退 app_dir
+        for _base in (WORKSPACE_DIR, app_dir):
+            _cand = os.path.join(_base, p)
+            if os.path.isfile(_cand):
+                p = _cand
+                break
     if os.path.isfile(p):
         try:
             ext = os.path.splitext(p)[1].lower().lstrip(".")
@@ -2624,7 +2792,7 @@ def tool_sys_info(cfg, app_dir, _progress=None):
     # —— 五、运行环境 ——
     lines.append("### 五、运行环境")
     lines.append(f"- 数据目录：{data_dir}")
-    rd = cfg.get("rag_data_dir", "") or os.path.join(app_dir, "rag_data")
+    rd = cfg.get("rag_data_dir", "") or os.path.join(WORKSPACE_DIR, "rag_data")
     lines.append(f"- RAG 目录：{rd}")
     lines.append(f"- 记忆库：{data_dir}/memory.md + memory.db")
     lines.append(f"- 模型：{cfg.get('model', '')}")

@@ -19,12 +19,26 @@ import http.server
 import socketserver
 import threading
 import json
+import os
+import secrets
 import uuid
 from datetime import datetime
 from pathlib import Path
 
 
 MAX_BODY = 256 * 1024  # v4.108 M-28：请求体上限 256KB，防打爆内存
+# #754：处理并发上限，防止大量连接耗尽线程/内存
+MAX_CONCURRENT = 16
+_post_sem = threading.Semaphore(MAX_CONCURRENT)
+# #754：连接读取超时（秒）——防止半开/慢速连接长期占用线程（slowloris 类）
+READ_TIMEOUT = 15
+
+# v4.165.0：事件日志轮转 + 读取上限。
+# 原先 _log_event 只追加、webhook_recent_events 又把整份文件 read_text() 进内存
+# 再切最后 N 条 —— 长期运行下文件无限增长，状态页会越来越慢。
+WEBHOOK_LOG_MAX_BYTES = 5 * 1024 * 1024   # 单文件上限 5MB，超限滚成 <name>.1
+WEBHOOK_EVENT_MAX_CHARS = 4000            # 单条事件序列化上限，超长只留截断预览
+WEBHOOK_TAIL_BLOCK = 8192                 # 尾读块大小（字节）
 
 _event_callback = None
 # v4.108 M-28：共享 token（非空时校验 X-Webhook-Token，不匹配 401）
@@ -49,14 +63,37 @@ def _user_data_dir():
     return p
 
 
+def _events_path():
+    """事件日志路径（用户目录，不污染 app 目录）。"""
+    return _user_data_dir() / "webhook_events.jsonl"
+
+
+def _rotate_if_needed(path):
+    """超过大小上限就把当前文件滚成 <name>.1（覆盖旧 .1），保证总量有上界。"""
+    try:
+        if path.exists() and path.stat().st_size >= WEBHOOK_LOG_MAX_BYTES:
+            os.replace(str(path), str(path.with_name(path.name + ".1")))
+    except Exception:
+        pass
+
+
 def _log_event(kind, payload):
     try:
-        path = _user_data_dir() / "webhook_events.jsonl"
+        path = _events_path()
+        _rotate_if_needed(path)
+        ts = datetime.now().isoformat()
+        line = json.dumps({"kind": kind, "payload": payload, "timestamp": ts},
+                          ensure_ascii=False)
+        if len(line) > WEBHOOK_EVENT_MAX_CHARS:
+            # 巨量 payload 只留「可追溯的预览」，避免单条事件撑爆日志
+            line = json.dumps(
+                {"kind": kind, "timestamp": ts,
+                 "payload": {"_truncated": True,
+                             "note": "payload 过大，已截断为预览",
+                             "preview": line[:400]}},
+                ensure_ascii=False)
         with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(
-                {"kind": kind, "payload": payload,
-                 "timestamp": datetime.now().isoformat()},
-                ensure_ascii=False) + "\n")
+            f.write(line + "\n")
     except Exception:
         pass
     if _event_callback:
@@ -67,15 +104,25 @@ def _log_event(kind, payload):
 
 
 class WebhookHandler(http.server.BaseHTTPRequestHandler):
+    # #754：为整个连接设置 socket 超时，避免恶意/半开连接长期占用处理线程
+    timeout = READ_TIMEOUT
+
     def _token_ok(self):
         """v4.108 M-28：token 校验——_server_token 非空时必须匹配 X-Webhook-Token。"""
         if not _server_token:
             return True
-        return self.headers.get("X-Webhook-Token", "") == _server_token
+        h = self.headers.get("X-Webhook-Token", "")
+        if not h:
+            return False
+        # #755：恒定时间比较，避免时序侧信道
+        return secrets.compare_digest(h, _server_token)
 
     def _read_json(self):
         try:
             length = int(self.headers.get("Content-Length", 0))
+            # #754：负数 Content-Length 会让 rfile.read(-1) 读到连接关闭，占满线程
+            if length < 0:
+                return {"__bad_length__": True}
             if length > MAX_BODY:  # v4.108 M-28：请求体限长
                 return {"__too_large__": True}
             raw = self.rfile.read(length) if length else b""
@@ -98,21 +145,25 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
         if isinstance(data, dict) and data.pop("__too_large__", False):
             self._reject(413, "Payload Too Large")
             return
-        if self.path == "/webhook/github":
-            event = self.headers.get("X-GitHub-Event", "unknown")
-            _log_event("github", {"event": event, "payload": data})
-            body = {"status": "received", "event": event}
-        elif self.path == "/webhook/custom":
-            _log_event("custom", data)
-            body = {"status": "received"}
-        elif self.path == "/api/trigger":
-            action = data.get("action", "")
-            _log_event("trigger", data)
-            body = {"status": "triggered", "action": action}
-        else:
-            self._send(404, {"error": "Not Found"})
+        if isinstance(data, dict) and data.pop("__bad_length__", False):  # #754
+            self._reject(400, "Invalid Content-Length")
             return
-        self._send(200, body)
+        with _post_sem:    # #754：并发处理上限
+            if self.path == "/webhook/github":
+                event = self.headers.get("X-GitHub-Event", "unknown")
+                _log_event("github", {"event": event, "payload": data})
+                body = {"status": "received", "event": event}
+            elif self.path == "/webhook/custom":
+                _log_event("custom", data)
+                body = {"status": "received"}
+            elif self.path == "/api/trigger":
+                action = data.get("action", "")
+                _log_event("trigger", data)
+                body = {"status": "triggered", "action": action}
+            else:
+                self._send(404, {"error": "Not Found"})
+                return
+            self._send(200, body)
 
     def do_GET(self):
         # v4.108 M-28：有 token 时状态页也要校验（回显最近事件 payload，可能含敏感内容）
@@ -176,7 +227,11 @@ class WebhookServer:
         if self._server:
             return False
         try:
-            self._server = socketserver.TCPServer((self.host, self.port), WebhookHandler)
+            # #754：单线程 TCPServer 下一个半开/慢速连接会阻塞所有请求（自我 DoS）；
+            # 改用 ThreadingTCPServer + daemon_threads，每个连接独立线程且随主退出。
+            self._server = socketserver.ThreadingTCPServer(
+                (self.host, self.port), WebhookHandler)
+            self._server.daemon_threads = True
         except Exception as e:
             return f"启动失败：{e}"
         self._thread = threading.Thread(
@@ -231,12 +286,35 @@ def webhook_stop():
     return False
 
 
-def webhook_recent_events(n=20):
+def _tail_lines(path, n):
+    """从文件末尾倒读最多 n 行，不把整个文件读进内存。"""
     try:
-        path = _user_data_dir() / "webhook_events.jsonl"
         if not path.exists():
             return []
-        lines = path.read_text(encoding="utf-8").splitlines()
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            pos = f.tell()
+            buf = b""
+            while pos > 0 and buf.count(b"\n") <= n:
+                step = min(WEBHOOK_TAIL_BLOCK, pos)
+                pos -= step
+                f.seek(pos)
+                buf = f.read(step) + buf
+        parts = [p for p in buf.split(b"\n") if p.strip()]
+        return [p.decode("utf-8", "replace") for p in parts[-n:]]
+    except Exception:
+        return []
+
+
+def webhook_recent_events(n=20):
+    """取最近 n 条事件。
+
+    v4.165.0：改为「从末尾倒读」+ 跨轮转文件（<name>.1 + 当前）合并，
+    文件再大也不会整份读进内存。
+    """
+    try:
+        path = _events_path()
+        lines = _tail_lines(path.with_name(path.name + ".1"), n) + _tail_lines(path, n)
         out = []
         for ln in lines[-n:]:
             try:

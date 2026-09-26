@@ -39,7 +39,7 @@ from PySide6.QtGui import QPixmap, QIcon, QDesktopServices, QColor
 from PySide6.QtCore import Qt, QSize, QThread, Signal, QUrl, QObject
 
 from ui import THEME
-from config import APP_DIR
+from config import APP_DIR, WORKSPACE_DIR
 from director_web import (
     DirectorWebView, register_localres_scheme,
     clip_card_html, keyframe_card_html, character_card_html, merge_card_html,
@@ -3058,7 +3058,8 @@ def _on_error(app, e):
 
 # ---------- 任务持久化（关程序后继续） ----------
 def _session_path():
-    return os.path.join(APP_DIR, "director_session.json")
+    # v4.164.0：任务存档属运行数据，落 WORKSPACE_DIR（不再落 APP_DIR = dist = 分发源）
+    return os.path.join(WORKSPACE_DIR, "director_session.json")
 
 
 def _save_session(app):

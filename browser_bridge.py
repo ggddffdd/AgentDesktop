@@ -5,7 +5,8 @@
 
 安全设计（必须保留）：
 - 只绑 127.0.0.1，外部/局域网无法访问；任意网页发往 127.0.0.1 的请求若无 token 一律 401。
-- 所有写操作（POST /page）必须带 token（Header X-Bridge-Token 或 ?token=），
+- 所有写操作（POST /page）必须带 token（仅接受 Header X-Bridge-Token，
+  不再接受 ?token= 查询参数，避免 token 出现在 URL/日志/历史里泄露），
   防止恶意网页往小臭里灌内容或借机触发工具。
 - 健康检查 GET /health 不需要 token（只读、无副作用）。
 
@@ -20,7 +21,8 @@ import socketserver
 import threading
 import json
 import secrets
-from urllib.parse import urlparse, parse_qs
+import uuid
+from urllib.parse import urlparse
 from pathlib import Path
 
 
@@ -30,6 +32,11 @@ _token = None
 _persist_cb = None       # v4.125 M-20：token 变更持久化回调（由 main 注册）
 DEFAULT_PORT = 9100
 MAX_BODY = 256 * 1024    # v4.125 N-04：body 硬上限（对齐 webhook_server 256KB）
+# #754：POST 处理并发上限，防止大量连接耗尽线程/内存
+MAX_CONCURRENT = 16
+_post_sem = threading.Semaphore(MAX_CONCURRENT)
+# #754：连接读取超时（秒）——防止半开/慢速连接长期占用线程（slowloris 类）
+READ_TIMEOUT = 15
 
 
 def set_persist_callback(fn):
@@ -75,22 +82,58 @@ def _notify(kind, payload):
         pass
 
 
+# #756(P2#2)：投递确认基础设施。桥接在 /page 返回前等待主程序真正完成 UI
+# 注入并回报结果，避免「扩展显示已发送」但实际没进对话（假成功）。
+_deliveries = {}
+_deliveries_lock = threading.Lock()
+DELIVERY_WAIT = 12  # 秒：等待主程序注入确认的最长时限
+
+
+def report_delivery(delivery_id, ok, detail=""):
+    """#756：由主程序（UI 注入完成后）回调，回报该次投递的实际结果。
+
+    args:
+        delivery_id: 与 /page 请求同款的 uuid hex。
+        ok:          注入是否成功（含草稿保护拦截/自动发送失败均算 False）。
+        detail:      失败原因（可选，仅用于回执，不落盘敏感内容）。
+    """
+    try:
+        with _deliveries_lock:
+            entry = _deliveries.get(delivery_id)
+        if entry:
+            entry["res"] = {"ok": bool(ok), "detail": str(detail)[:200]}
+            entry["ev"].set()
+    except Exception:
+        pass
+
+
 def _auth_ok(self):
-    """token 校验：Header X-Bridge-Token 或 query ?token= 任一匹配即可。"""
+    """token 校验：仅接受 Header X-Bridge-Token，恒定时间比较。
+
+    #755 移除 ?token= 查询参数支持——URL 会进入浏览器历史/代理日志/服务端
+    访问日志，token 泄露面过大；扩展侧本就用 X-Bridge-Token 头发送，无兼容损失。
+    """
     global _token
     if not _token:
         return False
     h = self.headers.get("X-Bridge-Token", "")
-    q = parse_qs(urlparse(self.path).query).get("token", [""])[0]
-    return h == _token or q == _token
+    if not h:
+        return False
+    return secrets.compare_digest(h, _token)
 
 
 class BridgeHandler(http.server.BaseHTTPRequestHandler):
+    # #754：为整个连接设置 socket 超时，避免恶意/半开连接长期占用线程
+    timeout = READ_TIMEOUT
+
     def _read_json(self):
         try:
             length = int(self.headers.get("Content-Length", 0))
-            # v4.125 N-04：body 限长——length 取自请求头，恶意/异常请求可虚报
-            # 巨大值打爆内存（webhook 已修 256KB，bridge 对齐）。
+            # #754：负数 Content-Length 会让 rfile.read(-1) 读到连接关闭，
+            # 占满线程 → 直接拒绝。v4.125 N-04：超限同样拒绝。
+            if length < 0:
+                self._send(400, {"error": "invalid content-length"})
+                return None
             if length > MAX_BODY:
                 self._send(413, {"error": "payload too large"})
                 return None
@@ -129,7 +172,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 self._send_401()
                 return
             data = self._read_json()
-            if data is None:   # v4.125 N-04：超限 413 已回，不再处理
+            if data is None:   # v4.125 N-04：超限/非法 413/400 已回，不再处理
                 return
             # 基本字段清洗：只收需要的字段，避免超大 payload 撑爆内存
             # L1：新增 mode / autosend / markdown / meta（扩展侧 L1 增强版才带，
@@ -141,6 +184,8 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 _wc = int(_meta_in.get("wordCount", 0) or 0)
             except (TypeError, ValueError):
                 _wc = 0
+            # #756：投递 ID——用于等待主程序真实注入确认，杜绝「假成功」。
+            delivery_id = uuid.uuid4().hex
             payload = {
                 "title": str(data.get("title", ""))[:500],
                 "url": str(data.get("url", ""))[:2000],
@@ -156,12 +201,32 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                     "wordCount": _wc,
                 },
                 "ts": data.get("ts", ""),
+                "delivery_id": delivery_id,
             }
             if not payload["text"] and not payload["selection"] and not payload["title"]:
                 self._send(400, {"error": "empty payload"})
                 return
-            _notify("browser_page", payload)
-            self._send(200, {"status": "ok"})
+            with _post_sem:    # #754：并发处理上限
+                # 登记投递事件，入队后等待主程序 UI 注入确认（最多 DELIVERY_WAIT 秒）
+                ev = threading.Event()
+                with _deliveries_lock:
+                    _deliveries[delivery_id] = {"ev": ev, "res": None}
+                _notify("browser_page", payload)
+                got = ev.wait(timeout=DELIVERY_WAIT)
+                with _deliveries_lock:
+                    res = _deliveries.pop(delivery_id, {}).get("res")
+                if not got or res is None:
+                    # 超时未确认——诚实返回「已接收但未确认」，不再假装成功
+                    self._send(202, {"status": "accepted", "delivery_id": delivery_id,
+                                     "delivered": False,
+                                     "note": "已接收，等待主程序处理（未确认）"})
+                elif res.get("ok"):
+                    self._send(200, {"status": "ok", "delivery_id": delivery_id,
+                                     "delivered": True})
+                else:
+                    self._send(200, {"status": "ok", "delivery_id": delivery_id,
+                                     "delivered": False,
+                                     "detail": res.get("detail", "")})
         elif path == "/pair":
             # 配对：仅当 token 为空（首次）时返回新 token 供扩展写入；
             # 已配对则要求带旧 token 才能重置，避免被任意网页重置。
@@ -169,16 +234,17 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             data = self._read_json()
             if data is None:   # v4.125 N-04：413 已回，不再处理
                 return
-            if not _token:
-                _token = gen_token()
-                _persist_token(_token)  # v4.125 M-20：新码落 config
-                self._send(200, {"token": _token, "paired": True})
-            elif _auth_ok(self):
-                _token = gen_token()
-                _persist_token(_token)  # v4.125 M-20：重置码落 config
-                self._send(200, {"token": _token, "paired": True, "reset": True})
-            else:
-                self._send_401()
+            with _post_sem:    # #754：并发处理上限
+                if not _token:
+                    _token = gen_token()
+                    _persist_token(_token)  # v4.125 M-20：新码落 config
+                    self._send(200, {"token": _token, "paired": True})
+                elif _auth_ok(self):
+                    _token = gen_token()
+                    _persist_token(_token)  # v4.125 M-20：重置码落 config
+                    self._send(200, {"token": _token, "paired": True, "reset": True})
+                else:
+                    self._send_401()
         else:
             self._send(404, {"error": "not found"})
 

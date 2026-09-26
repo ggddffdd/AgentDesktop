@@ -189,7 +189,6 @@
     var cur = best;
     var pri = pickPriority();
     if (pri) cur = pri;
-    var cur = best;
 
     // ① 向下收敛：若某父节点文本有 ≥90% 集中在唯一一个子节点里，那它只是包裹层
     for (var s = 0; s < 4; s++) {
