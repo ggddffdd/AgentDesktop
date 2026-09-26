@@ -5,6 +5,8 @@
 技术栈：**Python + PySide6 + OpenAI 兼容 API + Chroma 向量库**，配合 pyautogui / pywinauto 做系统与软件自动化。免费可跑、代码可改可练手。
 
 > 当前版本 **v4.165.0**。本项目由个人桌面助手迭代而来，经脱敏后开源，供学习参考与二次开发。
+>
+> 版本变更与发布说明见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
@@ -135,6 +137,18 @@ pyinstaller 小臭玩AI.spec
 ```
 
 产物在 `dist/小臭玩AI/`。首次运行会在 `~/Documents/小臭玩AI/` 生成 `config.json`，填好 key 即可用。
+
+> ⚠️ **一个边界要说明白**：exe 本身免装 Python，但「写代码 / 做 PPT / 数据分析」这类
+> **代码执行能力，需要本机有 Python 解释器**。程序会从 PATH 和常见安装位置自动探测
+> （也可在设置里指定路径），并按「装了更多常用库」择优；没装时其余功能照常，
+> 启动时会**明确提示该能力不可用**，而不是等你用到才报错。所需库见 `requirements.txt` 末节。
+
+打进产物目录的只有 `config.example.json`（脱敏模板），**不含真实配置**；
+分发前建议先跑一次发布门禁：
+
+```bash
+python release_check.py     # 语法 / 回归 / 密钥扫描(含二进制) / 版本三方一致 / 打包卫生
+```
 
 ---
 
