@@ -249,7 +249,9 @@ def main():
                "_last_user_intent_is_action", "_reset_session_trust",
                "_SEARCH_STRONG_FACT_KW",
                # v4.169.0 批次B：复杂度判定接 route_judge + tool_choice 记录
-               "_is_complex_v1", "route_judge", "_last_tool_choice"],
+               "_is_complex_v1", "route_judge", "_last_tool_choice",
+               # v4.172.0：第4处判据同源 + guard 命中时的内部指令
+               "_needs_tool_intent", "本轮不要使用任何工具"],
         "agent": ["is_non_action_message", "_internal",
                   # v4.168.1：程序化抓取否决 + 裸 URL 判据
                   "_prog_fetch_intent", "_is_bare_url", "_PROG_FETCH_KW",
