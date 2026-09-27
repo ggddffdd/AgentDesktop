@@ -77,7 +77,7 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.169.0"
+APP_VERSION = "v4.170.0"
 APP_BUILD_DATE = "2026-09-27"
 # v4.164.0（2026-09-27）**运行数据归口：彻底治「dist 既是运行目录又是分发源」**：
 #   新增 config.WORKSPACE_DIR（默认 ~/Documents/小臭玩AI，与 USER_DATA_DIR 同值，
@@ -1282,6 +1282,53 @@ def _load_enabled_skills():
     return []
 
 
+def skills_disabled_all():
+    """是否**显式**禁用了全部技能（v4.169.0，审查 P1-2）。
+
+    背景：`enabled_skills = []` 同时承担了两个含义 ——「未配置」（向后兼容 = 全启用）
+    与用户想表达的「全部不启用」，而实现只会当成前者，于是**没法真正关掉所有技能**。
+    这里给一个显式开关，不再靠"空列表"猜意图。
+
+    配置：config.json 里 `"skills_disabled_all": true`
+    """
+    try:
+        if os.path.exists(CONFIG_PATH):
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                return bool(json.load(f).get("skills_disabled_all"))
+    except Exception as e:
+        log.warning("读取 skills_disabled_all 失败: %s", e)
+    return False
+
+
+def is_skill_enabled(name):
+    """该技能是否处于启用状态（v4.169.0 抽公共判据）。
+
+    口径（必须与清单渲染一致，否则会出现「清单里看不到、却能按名加载」）：
+      1) `skills_disabled_all` = True → 全部禁用；
+      2) `enabled_skills` 非空      → 白名单，只放行列出的；
+      3) `enabled_skills` 为空      → 全部启用（向后兼容）。
+
+    为什么需要它：`tool_use_skill` 原来只按名字扫目录找技能，**不查启用状态** ——
+    模型记住或猜出一个已被禁用技能的名字，照样能加载进来。
+    """
+    try:
+        n = normalize_skill_name(name or "")
+    except Exception:
+        n = (name or "").strip()
+    if not n:
+        return False
+    if skills_disabled_all():
+        return False
+    enabled = _load_enabled_skills()
+    if not enabled:
+        return True
+    try:
+        keep = {normalize_skill_name(x) for x in enabled}
+    except Exception:
+        keep = set(enabled)
+    return n in keep
+
+
 def _load_enabled_tools():
     """读取 config.json 的 enabled_tools 白名单（v4.111 起用于工具注入过滤）。
 
@@ -1383,14 +1430,23 @@ def load_dynamic_skills(compact=False):
                 "（当前无可用技能；把技能放进 技能名/SKILL.md 目录，"
                 "置于 ~/Documents/小臭玩AI/skills 即可被自动识别）")
 
-    # 「技能必须落地」硬约束——堵住「连续多轮只输出承诺不调工具」的承诺式循环（compact/完整都保留）
+    # 技能执行要求（v4.169.0 收窄，审查 P1-1）
+    #
+    # 原版写的是「加载技能后**必须立即调用 run_python / write_file / run_command 落地**」
+    # —— 那会把「模型觉得某技能可能合适」升级成「必须产生文件或执行动作」，
+    # 是"技能带偏 + 自动调工具"的重要放大器：用户只是问一句、或只是聊聊，
+    # 一旦模型自行 use_skill，就被这条规则逼着去写文件。
+    #
+    # 改为：**技能只服务用户当前明确的目标；要不要动工具由本轮请求与权限判定决定。**
+    # 保留的部分是治"承诺式循环"（只输出计划不落地）—— 但那要在**用户确实要产出**时生效。
     HARD = [
-        "## ⚠️ 技能执行硬约束（适用所有可用技能）",
-        "1. 加载技能后**必须立即调用 run_python / write_file / run_command 落地**，禁止只输出大纲/计划/承诺。",
-        "2. 交付物必须是**实物**（文件/写入/计算结果），不是文字描述。",
-        "3. 完成后必须返回**产物绝对路径**（默认 ~/Documents/小臭玩AI/ 对应子目录）。",
-        "4. 不允许「我先思考一下」「下一步再调工具」之类的纯文字回应——每一步必须产生可验证的副产物。",
-        "5. 用户说「做 X」= 立即产出 X，不是「先列 X 的章节大纲」。",
+        "## ⚠️ 技能执行要求（适用所有可用技能）",
+        "1. 技能只服务**用户当前明确的目标**。不要因为「这个技能看起来相关」就自行开工或加载。",
+        "2. 用户确实要产出时：**动手做**（调工具），禁止只输出大纲 / 计划 / 承诺。",
+        "3. 交付物以**实物**为准（文件 / 写入 / 计算结果），完成后给出产物绝对路径"
+        "（默认 ~/Documents/小臭玩AI/ 对应子目录）。",
+        "4. **讨论、咨询、评估、问原因**类请求不需要产出文件或执行动作——直接回答即可。",
+        "5. 用户说「做 X」= 产出 X，不是「先列 X 的章节大纲」。",
     ]
     if compact:
         lines = ["\n\n【可用技能】（用 use_skill 按 name 加载，name 不含 emoji 前缀）："]

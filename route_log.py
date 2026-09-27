@@ -15,6 +15,9 @@
   event=route  路由决策：model / base_url / upgraded / reason / lock / msgs_len
   event=usage  调用成本：model / base_url / prompt_tokens / completion_tokens / total_tokens
   event=skill  技能使用（v4.110）：name / source(auto|manual) / ok
+  event=tool   工具决策（v4.169.0）：tool / args_digest / decision(allow|confirm|deny)
+               / rule / allowed / need_confirm / source(explicit|implicit)
+  route 事件另补（v4.169.0）：intent(action|non_action:原因) / tool_choice
 前两者用 ts + model 关联；tier 标注 paid/free，便于直接统计付费通道花费。
 
 v4.110 增 event=skill：回答「50 个技能里到底哪几个真在用」。
@@ -78,6 +81,29 @@ def log_route(**fields):
                 pass
             with open(p, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
+        return True
+    except Exception:
+        return False
+
+
+def log_tool_decision(name="", args_digest="", decision="", rule="",
+                      allowed=True, need_confirm=False, source="", **extra):
+    """v4.169.0 工具执行埋点：把「模型想调什么 → 权限怎么判 → 实际调没调」串起来。
+
+    为什么要它（审查 P1-5）：原来 route_log 只记"用了哪个模型"，
+    事后**只看得到模型档位，看不到为什么调用了这个工具** ——
+    拼不出「用户原话 → 意图 → tool_choice → 权限 → 实际工具」这条链，
+    误调用发生时只能靠猜。
+
+    `args_digest` 请传**脱敏摘要**（如 permissions.args_fingerprint 的前 12 位，
+    或截断预览），不要把原始参数整段写进日志。
+    """
+    try:
+        log_route(event="tool", tool=str(name or ""),
+                  args_digest=str(args_digest or ""),
+                  decision=str(decision or ""), rule=str(rule or ""),
+                  allowed=bool(allowed), need_confirm=bool(need_confirm),
+                  source=str(source or ""), **extra)
         return True
     except Exception:
         return False

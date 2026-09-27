@@ -378,7 +378,14 @@ class SkillManagerWindow(QMainWindow):
         return d
 
     def import_skill(self):
-        """选择本地技能文件夹，复制到用户 skills 目录"""
+        """选择本地技能文件夹，复制到用户 skills 目录。
+
+        v4.169.0（审查 P1-3）：导入前**先做一次安全审计**。
+        原来只是一句 `shutil.copytree` —— 文件夹里写了什么就原样进来，
+        而技能是**会被后续加载、直接影响模型行为的指令文件**，
+        跟"复制一堆图片"完全不是一回事。
+        分级：P0 → 拒绝导入；P1 → 弹窗确认；审计不可用 → 提示后放行（不因工具问题堵死功能）。
+        """
         src = QFileDialog.getExistingDirectory(self, "选择技能文件夹（内含 SKILL.md 或 .py）")
         if not src:
             return
@@ -388,6 +395,48 @@ class SkillManagerWindow(QMainWindow):
         if os.path.exists(dst):
             QMessageBox.warning(self, "提示", f"目标已存在：\n{dst}\n\n请先删除或重命名后再导入。")
             return
+
+        # ---- 安全审计（v4.169.0）----
+        try:
+            from skill_installer_tools import audit_skill
+            _txt = ""
+            for _cand in ("SKILL.md", "skill.md"):
+                _p = os.path.join(src, _cand)
+                if os.path.isfile(_p):
+                    with open(_p, encoding="utf-8", errors="replace") as _f:
+                        _txt = _f.read()
+                    break
+            if not _txt:
+                for _f in sorted(os.listdir(src)):
+                    if _f.endswith(".py"):
+                        with open(os.path.join(src, _f), encoding="utf-8",
+                                  errors="replace") as _fh:
+                            _txt = _fh.read()
+                        break
+            if _txt:
+                level, reasons = audit_skill(_txt, _txt)
+                why = "；".join(reasons) or "（无明细）"
+                if level == "P0":
+                    QMessageBox.critical(
+                        self, "安全审计拒绝",
+                        f"该技能含危险指令 / 代码，已阻止导入：\n\n{why}")
+                    return
+                if level == "P1":
+                    if QMessageBox.question(
+                            self, "安全审计提醒",
+                            f"该技能被标记为有风险：\n\n{why}\n\n仍要导入吗？"
+                    ) != QMessageBox.Yes:
+                        return
+        except Exception as e:
+            # 审计自身出问题不该把功能堵死；但要让用户知道"这次没检查"
+            try:
+                QMessageBox.information(
+                    self, "提示",
+                    f"未能完成安全审计（{e}），已跳过检查直接导入。\n"
+                    f"请只导入你信任的来源。")
+            except Exception:
+                pass
+
         try:
             shutil.copytree(src, dst)
             self.status_bar.setText(f"已导入技能到 {dst}")

@@ -13,6 +13,8 @@ SKILL.md → 安全审计（P0 拒绝 / P1 警告 / P2 通过）→ 规整为统
 import os
 import re
 import json
+import time
+import shutil
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -361,11 +363,24 @@ def tool_skill_install(cfg, app_dir, args):
         )
 
     # 4) 写盘：用户目录 技能名/SKILL.md（唯一完整来源，统一格式，重打包不丢）
+    #    v4.169.0（审查 P1-3）：**覆盖同名技能前先备份**。
+    #    原来是 `open(fpath, "w")` 直接覆盖 —— 用户原有的同名技能会被静默冲掉，
+    #    而且没有任何回退路径（技能是会被后续加载并影响行为的指令文件，不能这么覆盖）。
     skills_dir = _user_skills_dir()
     os.makedirs(skills_dir, exist_ok=True)
     folder = os.path.join(skills_dir, _safe_filename(name))
     os.makedirs(folder, exist_ok=True)
     fpath = os.path.join(folder, "SKILL.md")
+    _backup = ""
+    if os.path.exists(fpath):
+        try:
+            _backup = f"{fpath}.bak_{time.strftime('%Y%m%d_%H%M%S')}"
+            shutil.copy2(fpath, _backup)
+            log.warning("技能「%s」已存在，安装前已备份 → %s", name, _backup)
+        except Exception as e:
+            # 备份失败就不覆盖 —— 宁可装不上，也不要把用户原技能弄丢
+            return (f"失败：已存在同名技能「{name}」，但备份失败（为安全起见未覆盖）：{e}",
+                    [], None)
     try:
         with open(fpath, "w", encoding="utf-8") as f:
             f.write(norm_md)
@@ -389,15 +404,23 @@ def tool_skill_install(cfg, app_dir, args):
     except Exception as e:
         log.warning("更新 config skills_dir 失败: %s", e)
 
-    warn_note = ""
+    _bk_note = f"\n原同名技能已备份：{_backup}" if _backup else ""
+    _p1_note = ""
     if level == "P1":
-        warn_note = f"\n⚠️ 审计提示（已放行）：{audit_summary}"
+        # v4.169.0（审查 P1-3）：P1 警告**放到结果最前面**并落日志 ——
+        # 用户第一眼就能看到"这个技能被审计标记过风险"，而不是埋在一行小字里。
+        _p1_note = (f"\n⚠️⚠️ 安全审计标记为 **P1（有风险）**：{audit_summary}\n"
+                    f"    若你不信任这个来源，请立刻删掉它并恢复上面的备份。")
+        try:
+            log.warning("技能安装被审计标记 P1: %s — %s", name, audit_summary)
+        except Exception:
+            pass
     return (
-        f"✅ 已安装技能「{name}」\n"
+        f"✅ 已安装技能「{name}」{_p1_note}\n"
         f"分类：{category}\n"
         f"来源：{url}\n"
-        f"文件：{fpath}\n"
-        f"安全等级：{level}{warn_note}\n\n"
+        f"文件：{fpath}{_bk_note}\n"
+        f"安全等级：{level}\n\n"
         f"重启小臭后，它会出现在【技能市场 / 可用技能】清单，用 use_skill 传入「{name}」即可加载。",
         [], None,
     )

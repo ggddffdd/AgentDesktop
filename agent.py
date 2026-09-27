@@ -1614,6 +1614,20 @@ class AgentWorker(QThread):
             # 模型自主发起的非只读操作要确认（P0-3 来源闸）。
             dec = engine.decide(name, args,
                                 explicit_intent=getattr(self, "explicit_intent", True))
+            # v4.169.0（审查 P1-5）：把这次工具决策写进旁路日志 ——
+            # 事后能对上「模型想调什么 → 权限怎么判 → 实际调没调」。
+            try:
+                import route_log as _rl
+                from permissions import args_fingerprint as _af
+                _rl.log_tool_decision(
+                    name=name, args_digest=_af(args)[:12],
+                    decision=("deny" if not dec.allowed
+                              else ("confirm" if dec.needs_user else "allow")),
+                    rule=dec.rule, allowed=dec.allowed, need_confirm=dec.needs_user,
+                    source=("explicit" if getattr(self, "explicit_intent", True)
+                            else "implicit"))
+            except Exception:
+                pass
             if not dec.allowed:
                 # 被引擎阻止（仅讨论/规划模式、路径越界等）
                 result_str = dec.reason
@@ -2159,9 +2173,20 @@ class AgentWorker(QThread):
         # 不该被提炼成用户画像事实污染全局记忆。
         if getattr(self, "_isolated", False):
             return
-        # 快速判断：本轮对话是否有实质性操作
+        # 快速判断：**本轮**对话是否有实质性操作（v4.169.0 审查：只看本轮）。
+        #
+        # 原来写的是 `any(msg.get("role") == "tool" for msg in self.messages)` ——
+        # 扫的是**整个历史**（含 baseline 里带进来的旧工具消息）。
+        # 于是只要历史上曾经调过工具，本轮**什么都没干**也会触发自动记忆提炼，
+        # 属于"没有明确下令却产生持久副作用"：用户只是闲聊两句，
+        # 记忆库里却多了一条推断出来的"事实"。
+        #
+        # "本轮"的界定直接复用既有的 _seq 机制：__init__ 给 baseline 打 _seq=0，
+        # 运行内新生成的消息 _seq 单调递增（见 __init__ 注释），> 0 即本轮新增。
         has_tool_msg = any(
-            msg.get("role") == "tool" for msg in self.messages
+            isinstance(msg, dict) and msg.get("role") == "tool"
+            and isinstance(msg.get("_seq"), int) and msg["_seq"] > 0
+            for msg in self.messages
         )
         if not has_tool_msg:
             return

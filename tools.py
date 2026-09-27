@@ -2598,6 +2598,19 @@ def tool_use_skill(cfg, app_dir, skill_name):
     if not skill_name:
         return "未提供有效的 skill_name"
 
+    # v4.169.0（审查 P1-2）：加载前校验**启用状态**。
+    # 原实现只把启用的技能显示在系统提示清单里，但加载时会重新扫描全部目录，
+    # 不查 enabled_skills —— 模型只要记住（或猜出）某个被禁用技能的名字，
+    # 照样能把它加载进来（清单里看不到 ≠ 加载不了）。
+    try:
+        from config import is_skill_enabled
+        if not is_skill_enabled(skill_name):
+            _log_skill_hit(skill_name, ok=False)
+            return (f"技能「{skill_name}」当前处于**禁用**状态，无法加载。"
+                    f"如需使用，请先在技能管理里启用它。")
+    except Exception:
+        pass   # 配置读取异常时不拦（不因配置问题把功能整个关掉）
+
     # 解析要扫描的技能目录（与 config.get_skill_scan_dirs 保持一致）
     try:
         from config import get_skill_scan_dirs
@@ -2641,8 +2654,10 @@ def tool_use_skill(cfg, app_dir, skill_name):
         f"【已加载技能：{skill_name}】\n"
         f"技能目录：{skill_dir}\n（如技能引用 references/ 下的文件，可用 read_file 读取该目录下的文件）\n"
         f"请严格按以下专家指令完成本次任务：\n\n{prompt}\n\n"
-        f"【执行要求】加载技能后必须立即调用相应工具（如 run_python / image_gen）动手执行任务，"
-        f"禁止只列出计划或大纲而不实际行动。"
+        f"【执行要求】技能只服务**用户当前明确的目标**：\n"
+        f"· 用户要产出时 → 动手做（调工具），不要只列计划/大纲；\n"
+        f"· 用户只是在问、在讨论、在评估时 → **直接回答**，不要为了「用上技能」而写文件或执行动作。\n"
+        f"（要不要调工具由用户的请求决定，不是由「加载了技能」决定。）"
     )
 
 

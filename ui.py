@@ -9266,7 +9266,24 @@ class ChatWindow(QMainWindow):
         return base_url, model, api_key
 
     def _complexity_reason(self, messages, routing):
-        """v4.109：复杂度判定的具体归因（命中哪个关键词 / 长度超阈值），供旁路日志复盘。"""
+        """复杂度判定的具体归因（命中哪个关键词 / 长度超阈值），供旁路日志复盘。
+
+        v4.169.0（审查 P1-4）：与 `_is_complex` **同源**切到 route_judge ——
+        两边口径必须一致，否则会写出"判成复杂了、归因却说不出为什么"的自相矛盾日志。
+        """
+        if self.cfg.get("route_complex_v1"):
+            return self._complexity_reason_v1(messages, routing)
+        try:
+            import route_judge
+            hints = routing.get("complex_hint") or []
+            threshold = routing.get("length_threshold", 1500)
+            ok, why = route_judge.is_complex_v2(messages, hints, threshold)
+            return why or ("complex" if ok else "simple")
+        except Exception:
+            return self._complexity_reason_v1(messages, routing)
+
+    def _complexity_reason_v1(self, messages, routing):
+        """旧归因（v4.109 原实现）：遍历整个 messages。保留供回退开关使用。"""
         hints = routing.get("complex_hint") or []
         threshold = routing.get("length_threshold", 1500)
         total = 0
@@ -9290,15 +9307,53 @@ class ChatWindow(QMainWindow):
                 _c = _m.get("content")
                 if isinstance(_c, str):
                     _n += len(_c)
+            # v4.169.0（审查 P1-5）：补证据链 —— 事后能回答"这轮到底下没下命令"。
+            # intent=action 表示用户明确要干活；non_action:xxx 表示被判成讨论/评价句。
+            _intent = ""
+            try:
+                import intent_guard as _ig
+                _last = self._recent_user_query()
+                if _last:
+                    _why = _ig.why_blocked(_last)
+                    _intent = ("non_action:" + ",".join(_why)) if _why else "action"
+            except Exception:
+                pass
             route_log.log_route(event="route", model=model, base_url=base_url,
                                 upgraded=upgraded, reason=reason,
                                 lock=getattr(self, "_model_lock", "") or "",
-                                msgs_len=_n)
+                                msgs_len=_n, intent=_intent,
+                                tool_choice=getattr(self, "_last_tool_choice", "") or "")
         except Exception:
             pass
 
     def _is_complex(self, messages, routing):
-        """复杂任务判定：命中关键词 或 消息总长度超阈值。"""
+        """复杂任务判定（v4.169.0 审查 P1-4：改用 `route_judge.is_complex_v2`）。
+
+        原实现遍历**整个 messages** —— 含 system prompt、历史 assistant 回复、
+        tool 结果 —— 累计长度并扫 complex_hint 关键词。而**系统提示本身就含
+        「代码 / 分析 / 报告 / 设计」这类词**，于是几乎每轮都判"复杂"，
+        Agent 长期升舱到付费模型（钱与速度都受影响）。
+
+        新判定只看**最近 2 条 user 消息的纯文本**（用户真正说的话），
+        词表与阈值都没动，只把"判定读什么"换掉。项目里其实早就写好了
+        `route_judge.is_complex_v2()`（它明确记录了 v1 的这个根因），只是一直没接上。
+
+        回退开关：config.json 里 `"route_complex_v1": true` → 用回旧行为。
+        """
+        if self.cfg.get("route_complex_v1"):
+            return self._is_complex_v1(messages, routing)
+        try:
+            import route_judge
+            hints = routing.get("complex_hint") or []
+            threshold = routing.get("length_threshold", 1500)
+            ok, _why = route_judge.is_complex_v2(messages, hints, threshold)
+            return bool(ok)
+        except Exception:
+            # 判定模块不可用 → 退回旧实现，绝不因它把路由搞挂
+            return self._is_complex_v1(messages, routing)
+
+    def _is_complex_v1(self, messages, routing):
+        """旧判定（线上原实现）：遍历整个 messages。保留供回退开关使用。"""
         hints = routing.get("complex_hint") or []
         threshold = routing.get("length_threshold", 1500)
         total = 0
@@ -9632,6 +9687,7 @@ class ChatWindow(QMainWindow):
         # v4.60：强制调用指定工具（如 sys_info / video_gen），优先级最高
         if _guard_block:
             body["tool_choice"] = "none"
+            self._last_tool_choice = "none(guard)"
             try:
                 log.info("路由：最后一句判为非指令（%s），本轮禁止调工具", _guard_block)
             except Exception:
@@ -9663,11 +9719,13 @@ class ChatWindow(QMainWindow):
                 ]
             else:
                 body["tool_choice"] = {"type": "function", "function": {"name": force_tool}}
+                self._last_tool_choice = "force:" + str(force_tool)
         elif _refuse_tools:
             # v4.100：用户明确要求"不调工具/纯聊天"且其后无新工具指令时，
             # 本轮彻底禁止调工具（即便命中工具意图也尊重用户约束），避免
             # 闲聊被 remember 等工具自发调用打断。
             body["tool_choice"] = "none"
+            self._last_tool_choice = "none(refuse)"
         elif (force_required or redo or _tool_intent) and not self._is_reasoning_model(_model, _base_url):
             # v4.98：工具意图任务强制 required，杜绝弱模型退化成"文字演工具"
             # v4.102 hotfix：仅因含图进入视觉模型时，不强制 required，让模型自由描述图片。
@@ -9675,6 +9733,7 @@ class ChatWindow(QMainWindow):
             # 命中时降级为不设 tool_choice（默认/auto），让模型自然决定输出文本或调工具，
             # 否则 API 返回 400「Thinking mode does not support this tool_choice」→ 空 content。
             body["tool_choice"] = "required"
+            self._last_tool_choice = "required"
         # v4.102 fix12：请求 usage 统计——多数 OpenAI 兼容通道在末个 chunk 返回 usage。
         # 少数通道不认识该参数会返回 400，下方 _stream_once 会自动去掉参数重试一次，
         # 因此新增参数永远不会让原本能跑通的调用失败。
