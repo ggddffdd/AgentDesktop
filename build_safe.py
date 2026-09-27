@@ -202,6 +202,45 @@ def _rotate_exe_backups(folder, keep=None):
         return 0
 
 
+# v4.175.0：dist 顶层「运行数据目录」清扫（与 release_check.DIST_RUNTIME_DIRS 同源）
+#
+# 背景：从 dist 直接启动 exe 时 APP_DIR = dist/小臭玩AI，个别运行期组件会在**程序目录**
+# 里建出 log/ 这类目录（2026-09-28 实测出现过一次，空的，且冷启动 80 秒不复现 ——
+# 属某个交互/依赖触发的一次性副作用）。它们不是"打进包"的数据，却会让发布门禁的
+# 「dist 顶层无运行数据」直接判红，而且原因不明（门禁只报个目录名）。
+#
+# 为什么在**打包流程**里清而不是放宽门禁：门禁的职责是"别把运行数据分发出去"，
+# 判红是对的；放宽它就会真的漏数据。正确做法是在打包前把这种副作用清扫掉。
+#
+# 原则（安全底线）：**只清扫空的**；有内容的一律保留并显式喊出来
+# —— 那很可能是真实用户数据（dist 里本来也混着用户的文档/技能）。
+RUNTIME_DIRS = ("cdp_edge_profile", "incoming", "output", "outputs", "notes", "pages",
+                "temp", "log", "multi_platform", "orchestrate", "rag_data")
+
+
+def _sweep_empty_runtime_dirs(dist):
+    """清扫 dist 顶层的**空**运行目录；有内容的一律保留。返回 (已清扫, 保留非空)。"""
+    swept, kept = [], []
+    if not os.path.isdir(dist):
+        return swept, kept
+    for name in RUNTIME_DIRS:
+        p = os.path.join(dist, name)
+        if not os.path.isdir(p):
+            continue
+        try:
+            if any(os.scandir(p)):
+                kept.append(name)
+                print('[build_safe] ⚠️ dist 顶层 %s/ 非空，保留不动（可能含真实数据）' % name)
+                continue
+            os.rmdir(p)
+            swept.append(name)
+            print('[build_safe] 🧹 已清扫 dist 顶层的空运行目录：%s/' % name)
+        except Exception as e:
+            kept.append(name)
+            print('[build_safe] ⚠️ 清扫 %s/ 失败（跳过）: %s' % (name, e))
+    return swept, kept
+
+
 def _sync_to_dist():
     """把 %TEMP% 中转目录的产物增量同步回 dist/小臭玩AI（只覆盖/新增，不删除）。"""
     staged = os.path.join(stage_dist, '小臭玩AI')
@@ -312,6 +351,10 @@ try:
     if not _ui_hex_guard_fn(here):
         sys.exit(1)
     pyi_main.run()
+    try:
+        _sweep_empty_runtime_dirs(live_dist)
+    except Exception as e:
+        print('[build_safe] ⚠️ 运行目录清扫失败（继续）: %r' % (e,))
     try:
         _sync_to_dist()
     except Exception as e:  # 同步失败不影响「包已打好」的事实，但要显式喊出来
