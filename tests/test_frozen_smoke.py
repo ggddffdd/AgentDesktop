@@ -204,7 +204,10 @@ def main():
     print("\n-- 2) 本次新增行为真的在包里（不是旧构建）--")
     marks = {
         "intent_guard": ["is_non_action_message", "blocks_tool_call",
-                         "praise", "negation", "imperative"],
+                         "praise", "negation", "imperative",
+                         # v4.168.3：否定判据两道闸（长度 + 位置）
+                         "_neg_hits", "_neg_is_constraint",
+                         "_NEG_MAX_LEN", "_TASK_VERB_RE"],
         "legion_permissions": ["grant_wave", "LegionPermissionAdapter"],
         "task_graph": ["incomplete", "__incomplete__"],
         "vision_qc": ["qc_skipped_no_key", "qc_pass", "encode_image_for_qc",
@@ -225,7 +228,11 @@ def main():
                "不要臆造参数", "以最后一条用户消息为准",
                # v4.168.2：思考模式必须回传 reasoning_content + 400 要能自证
                "_ensure_reasoning_content", "_is_thinking_channel",
-               "_api_error_text", "reasoning_content"],
+               "_api_error_text", "reasoning_content",
+               # v4.168.3：自动化会话不注入陈旧 goal + 内部标注不外泄
+               "_session_carries_automation", "_prompt_section_session_goal",
+               "_AUTO_TASK_PREFIX", "_META_SILENCE_RULE",
+               "本会话说明", "元认知说明"],
         "agent": ["is_non_action_message", "_internal",
                   # v4.168.1：程序化抓取否决 + 裸 URL 判据
                   "_prog_fetch_intent", "_is_bare_url", "_PROG_FETCH_KW",

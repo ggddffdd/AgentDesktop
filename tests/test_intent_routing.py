@@ -139,8 +139,15 @@ def part_a():
              "现在必须立即调用真实工具来完成任务：检索资料用 web_search、"
              "写文件用 write_file。禁止再输出承诺性文字。"
              "若任务确实已全部完成，请直接给出最终成果与产物路径，不要再空头承诺。")
-    check("nudge 文本本身会命中判据（所以必须靠 _internal 跳过）",
-          ig.blocks_tool_call(nudge))
+    # v4.168.3：长度闸上线后，真实 nudge（168 字）**不再**命中判据。
+    # 这是判据变准了（长文里的「不要」本就是约束/句式，不是喊停），不是退化。
+    check("真实 nudge 文案（168 字）现在不再命中判据（长度闸生效）",
+          not ig.blocks_tool_call(nudge), f"explain={ig.explain(nudge)}")
+    # 但 _internal 标记**仍然必需**：nudge 文案随时会改，短文案 + 含「不要」照样命中。
+    # 用它来验证机制，而不是赌某条具体文案恰好命中。
+    _short_inject = "不要再空头承诺了"
+    check("短注入文案仍会命中判据（所以 _internal 跳过机制必须保留）",
+          ig.blocks_tool_call(_short_inject), f"explain={ig.explain(_short_inject)}")
 
     print("\n-- A9 explain() 结构化输出 --")
     e = ig.explain("这个视频生成得真不错")

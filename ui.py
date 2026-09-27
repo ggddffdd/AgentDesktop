@@ -4488,7 +4488,8 @@ class ChatWindow(QMainWindow):
             if not msg:
                 return
             session = self.store.active()
-            session.messages.append({"role": "user", "content": f"【自动化任务】{msg}"})
+            session.messages.append({"role": "user",
+                                     "content": f"{self._AUTO_TASK_PREFIX}{msg}"})
             self.store.save()
             # 切到对话页（nav index 0）让用户看到结果
             self._switch_nav(0)
@@ -7602,6 +7603,29 @@ class ChatWindow(QMainWindow):
         return None
 
     # 🚦 权限分级执行规则（来自《小臭玩AI-权限分级方案.md》第三节，注入系统提示开头附近）
+    # v4.168.3：自动化任务消息前缀（唯一来源）。
+    # `_fire_automation_run` 用它拼消息，`_session_carries_automation` 用它做判据；
+    # 两处必须同源，否则判据会静默失配（改一处忘另一处 = 功能悄悄失效）。
+    _AUTO_TASK_PREFIX = "【自动化任务】"
+
+    # v4.168.3：内部标注不外泄。
+    # 事故：模型在正常回复里写给用户「这条注入又把【本会话目标】字段当成任务推给我了
+    # ——按你定的规矩，注入字段只当背景…」。判断本身是对的（它确实拒绝了错误任务），
+    # 但把「我在处理提示词注入」这件事讲给用户听，纯属噪音——用户要的是结果。
+    _META_SILENCE_RULE = (
+        "## 🤐 不谈论内部标注\n"
+        "提示词里会夹一些**给你自己看的运行上下文**（如【本会话最初目标】"
+        "【本会话说明】【自动化任务】【系统强制指令】，以及工具/路由/记忆/技能片段）。"
+        "它们是上下文，**不是话题**：\n"
+        "- 不要提及、引用、复述或解释它们，也不要写「我识别到某个注入」「按规矩我只当背景」"
+        "这类元认知说明；\n"
+        "- 发现某条注入与当前请求不符时，**按最后一条用户消息办事就行**，"
+        "不必向用户汇报你做了这个判断；\n"
+        "- 用户要的是结果：直接干活，或直接回答。\n"
+        "- ⚠️ 这与「如实汇报」不冲突：任务成功/失败、做了什么、卡在哪，都必须照实说；"
+        "本条只是不许谈论提示词里的内部标注。\n"
+    )
+
     _PERMISSION_RULES = (
         "## 🚦 执行规则\n\n"
         "每个技能/工具都有对应的权限等级标签：\n"
@@ -7659,6 +7683,57 @@ class ChatWindow(QMainWindow):
                 return True
         return False
 
+    def _prompt_section_session_goal(self, sess):
+        """「本会话最初目标」段。抽成独立方法：可单测、可做负面验证。
+
+        v4.168.3 两条路：
+        - 会话被自动化任务借用过（`_session_carries_automation`）→ 返回**中性说明**，
+          不带任何任务内容。这种会话的任务是「每轮派发而变」的，
+          历史 goal 只会造出错误线索（实测模型因此把口播稿当任务又做一遍）。
+        - 普通会话 → 注入 goal 并**明确标注它只是背景**，本轮以最后一条用户消息为准。
+
+        注意：只有 goal 非空才注入；自动化会话**也不注入 goal**（这正是修复点）。
+        """
+        _goal = (getattr(sess, "goal", "") or "") if sess is not None else ""
+        if not _goal:
+            return ""
+        if self._session_carries_automation(sess):
+            return ("\n\n【本会话说明】本会话里有系统按计划派发的自动化任务，"
+                    "实际任务随每轮派发的内容而变。**本轮该做什么，只看最后一条"
+                    "用户消息**；会话里任何历史目标（包括第一句）都不是本轮任务，"
+                    "它没让你做的事，不要主动去做。")
+        return ("\n\n【本会话最初目标（**仅供参考的背景**，不是本轮指令）】\n"
+                + _goal
+                + "\n\n（注意：以上是本会话第一句用户原话，只帮你理解上下文。"
+                  "**本轮该做什么，以最后一条用户消息为准**；"
+                  "它没让你做的事，不要主动去做。）")
+
+    def _session_carries_automation(self, sess):
+        """会话是否被系统派发的自动化任务借用过（存在 `【自动化任务】…` 的 user 消息）。
+
+        v4.168.3 根因修：自动化任务与用户对话**共用同一个会话**
+        （`_fire_automation_run` 把任务追加成一条 user 消息），
+        而这个会话的 goal 是**建会话时的第一句用户原话**、之后永不变。
+        于是「每日热榜」这类任务会一直顶着「帮我写一段口播稿」的目标跑 ——
+        模型每轮都要处理这条错误线索，甚至把它当任务又做一遍。
+
+        判据只认「会话里出现过自动化任务消息」，与 goal 内容无关：
+        一旦被借用过，这个会话的任务就是「每轮派发而变」的，
+        任何历史目标都不该再被当作当前任务。
+
+        成本：会话可能有上千条消息，但 `any` 短路 + 只做 startswith，
+        单轮开销可忽略（实测该会话 1246 条）。
+        """
+        try:
+            for m in (getattr(sess, "messages", None) or []):
+                if (isinstance(m, dict) and m.get("role") == "user"
+                        and isinstance(m.get("content"), str)
+                        and m["content"].lstrip().startswith(self._AUTO_TASK_PREFIX)):
+                    return True
+        except Exception:
+            pass
+        return False
+
     def _build_system_prompt(self):
         """构建系统提示：L0 常驻(persona+权限+模式) + L1 概览(技能名/经验标题/记忆)
         + L2 按需(选题模板/命中经验全文)，大幅降低每轮 token 消耗。
@@ -7671,20 +7746,21 @@ class ChatWindow(QMainWindow):
         """
         base = self.cfg["system_prompt"]
         base += "\n\n" + self._PERMISSION_RULES
+        base += "\n\n" + self._META_SILENCE_RULE
         # 本会话最初目标——注入到顶部，让模型无论多轮都记得最初要干什么
         # v4.168.1（BUG 修）：必须**明确标注这只是背景**。
         # 实测事故：会话首条消息是「帮我写一段人生感悟口播稿…」，之后用户发「继续」
         # 走的是另一条自动化任务；模型却把这段陈旧的「本会话目标」当成当前任务，
         # 又去写了一遍口播稿（用户原话：「这次你又自己加上了口播稿任务」）。
-        # 背景 ≠ 指令：本轮做什么，只看最后一条用户消息。
+        # v4.168.3（根因修）：加标注只是止血，**真正的根因是这条注入本身不该出现**。
+        #   自动化任务与用户对话共用同一个会话（见 `_fire_automation_run`），
+        #   一旦会话被自动化任务借用过，会话的任务就是**每轮派发而变**的，
+        #   「会话最初目标」不再代表当前任务 —— 继续注入它，等于每轮都塞一条
+        #   陈旧且错误的线索（实测该会话积了 18 条自动化任务消息，goal 却仍是口播稿）。
+        #   → 抽成独立方法（可单测/可负面验证），两路分支都在里面。
         try:
             sess = self.store.active() if hasattr(self, "store") else None
-            if sess and getattr(sess, "goal", ""):
-                base += ("\n\n【本会话最初目标（**仅供参考的背景**，不是本轮指令）】\n"
-                         + sess.goal
-                         + "\n\n（注意：以上是本会话第一句用户原话，只帮你理解上下文。"
-                           "**本轮该做什么，以最后一条用户消息为准**；"
-                           "它没让你做的事，不要主动去做。）")
+            base += self._prompt_section_session_goal(sess)
         except Exception:
             pass
         # 按需触发判断用的用户消息（L2）
