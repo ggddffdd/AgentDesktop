@@ -8,9 +8,18 @@
 - EXTERNAL    : 触碰外部服务/网络（发邮件、webhook、MCP…）
 
 这是权限引擎（permissions.py）的唯一事实来源；旧 TOOL_TIER 已迁移到此。
+
+v4.171.0 合并：原先「风险类」与「显示档位」分在两张表
+（`RISK_MAP` + `_TIER_OVERRIDE`），而 permissions.decide 的 auto 分支只看前者 ——
+于是标在后者上的「手动」在自动模式下整套失效。现在**一个工具的
+风险类 / 档位覆盖 / 硬确认全部写在同一条声明里**，
+结构上不可能再出现「某处只看了两张表中的一张」。
 """
 
+import logging
 from enum import Enum
+
+log = logging.getLogger(__name__)
 
 
 class RiskClass(str, Enum):
@@ -62,15 +71,17 @@ RISK_MAP = {
     "use_skill": RiskClass.WRITE_LOCAL,
     "remember": RiskClass.WRITE_LOCAL,
     "clipboard_write": RiskClass.WRITE_LOCAL,
-    "schedule": RiskClass.WRITE_LOCAL,
-    "write_file": RiskClass.WRITE_LOCAL,
-    "db_insert": RiskClass.WRITE_LOCAL,
-    "db_update": RiskClass.WRITE_LOCAL,
-    "db_delete": RiskClass.WRITE_LOCAL,
-    "skill_install": RiskClass.WRITE_LOCAL,
-    "create_skill": RiskClass.WRITE_LOCAL,  # v4.84(热修15·B)：模型自动建技能→落待审核目录，仅本地写、无外发，解除外部白名单拦截
+    "schedule": (RiskClass.WRITE_LOCAL, "manual"),
+    # 档位覆盖：本地写默认 semi，这几个保持旧 manual 标签（比默认**更严**）
+    "write_file": (RiskClass.WRITE_LOCAL, "manual"),
+    "db_insert": (RiskClass.WRITE_LOCAL, "manual"),
+    "db_update": (RiskClass.WRITE_LOCAL, "manual"),
+    # 第三列 True = 硬确认（任何模式都要人点）
+    "db_delete": (RiskClass.WRITE_LOCAL, "manual", True),
+    "skill_install": (RiskClass.WRITE_LOCAL, "manual", True),
+    "create_skill": (RiskClass.WRITE_LOCAL, None, True),  # v4.84(热修15·B)：模型自动建技能→落待审核目录，仅本地写、无外发，解除外部白名单拦截
     "create_automation": RiskClass.WRITE_LOCAL,  # v4.89：建自动化任务→写本地 automation_tasks.json，仅本地写、无外发
-    "delete_automation": RiskClass.WRITE_LOCAL,  # v4.89：删自动化任务，仅本地写
+    "delete_automation": (RiskClass.WRITE_LOCAL, None, True),  # v4.89：删自动化任务，仅本地写
     "run_workflow": RiskClass.WRITE_LOCAL,  # v4.92：编排入口，仅通知主线程启动、不直接执行；内部危险步骤各自过 risk（此前漏登记）
     # ── v4.169.0 补登记：此前遗漏的工具 ──
     # `classify()` 对未登记工具 fallback 成 EXTERNAL，而 EXTERNAL 必须出现在
@@ -133,10 +144,35 @@ RISK_MAP = {
 }
 
 
+def _policy(name):
+    """解析一条工具策略声明 → (风险类, 档位覆盖, 硬确认)。
+
+    **唯一入口**：`classify` / `tier_of` / `ALWAYS_CONFIRM` 全部从这里取。
+    合并的意义就在这 —— 一个工具的性质与等级永远出自同一条声明，
+    不可能再出现「permissions 只看了风险类、没看档位覆盖」那类静默失效。
+
+    声明形态（见 RISK_MAP 内注释）：
+        RiskClass.X                   → (X, None, False)
+        (RiskClass.X, "manual")       → (X, "manual", False)
+        (RiskClass.X, None, True)     → (X, None, True)
+        (RiskClass.X, "manual", True) → (X, "manual", True)
+    """
+    v = RISK_MAP.get(name)
+    if v is None:
+        return None, None, False
+    if isinstance(v, tuple):
+        risk = v[0] if len(v) > 0 else None
+        tier = v[1] if len(v) > 1 else None
+        hard = bool(v[2]) if len(v) > 2 else False
+        return risk, tier, hard
+    return v, None, False
+
+
 def classify(name):
     """返回工具风险档，未知工具默认 EXTERNAL（最严格、需确认）。"""
-    if name in RISK_MAP:
-        return RISK_MAP[name]
+    risk, _tier, _hard = _policy(name)
+    if risk is not None:
+        return risk
     # 前缀兜底（动态扩展工具）
     if (name.startswith(("browser_", "app_", "mouse_", "keyboard_",
                          "window_focus", "process_kill", "process_start",
@@ -161,43 +197,66 @@ _RISK_TO_TIER = {
     RiskClass.EXEC: "manual",
     RiskClass.EXTERNAL: "manual",
 }
-# 个别覆盖：保持旧 manual 标签（写文件/定时/数据库写/装技能 仍标「手动」）
-_TIER_OVERRIDE = {
-    "write_file": "manual",
-    "schedule": "manual",
-    "db_insert": "manual",
-    "db_update": "manual",
-    "db_delete": "manual",
-    "skill_install": "manual",
-}
+# 档位严格度（校验「覆盖只能更严」用）
+_TIER_ORDER = {"auto": 0, "semi": 1, "manual": 2}
 
 
 def tier_of(name):
-    """返回工具显示等级：'auto' | 'semi' | 'manual'（默认 manual）。"""
-    if name in _TIER_OVERRIDE:
-        return _TIER_OVERRIDE[name]
+    """返回工具显示等级：'auto' | 'semi' | 'manual'（默认 manual）。
+
+    v4.171.0：档位覆盖不再单独存一张表，直接读 `RISK_MAP` 里同一条声明。
+    """
+    risk, tier, _hard = _policy(name)
+    if tier:
+        return tier
     return _RISK_TO_TIER[classify(name)]
 
 
 # v4.169.0（审查 P0-3）：**任何模式都必须人工确认**的硬档。
 #
-# 背景：`_TIER_OVERRIDE` 把几个工具标成 manual（意图＝"必须人工确认"），但
-# permissions.decide 的 auto 模式分支原本只看 risk 不看 tier：
-#     if self.mode == "auto":
-#         if risk == RiskClass.EXEC: 需确认
-#         return 允许                     # ← WRITE_LOCAL 全放行
-# 于是那份 override 在 auto 模式下**整套失效** —— 标了"手动"的技能安装
-# 在自动模式下直接装、直接覆盖同名 SKILL.md。
-#
 # 这组工具的共同点：**要么让可执行指令落盘（技能），要么删持久数据**，
-# 误触代价不可逆。所以单独立一档，不受 mode（含 auto）、session trust、
+# 误触代价不可逆。所以单立一档，不受 mode（含 auto）、session trust、
 # auto_allow 白名单影响 —— 用户必须亲手点。
-ALWAYS_CONFIRM = frozenset({
-    "skill_install",      # 装技能（可能覆盖同名 SKILL.md）
-    "create_skill",       # 建技能（写入会被后续加载的指令文件）
-    "delete_automation",  # 删自动化任务
-    "db_delete",          # 删数据库记录
-})
+#
+# v4.171.0：改为**从 RISK_MAP 推导**（声明里第三列为 True 的那些）。
+# 原来是一份手抄的第二名单 —— 加一个硬确认工具要改两处，迟早漏一处。
+ALWAYS_CONFIRM = frozenset(n for n in RISK_MAP if _policy(n)[2])
+
+
+def validate_policy():
+    """自检工具策略表，返回问题清单（空 = 没问题）。
+
+    合并成一张表之后，这些以前会**静默生效**的问题现在能一次性查出来：
+      · 档位值非法；
+      · **覆盖档位比默认更松** —— 说明风险类定错了（该改风险类，
+        而不是用档位覆盖放松），否则又是一个"标了却没生效"；
+      · 只读工具被标硬确认（只读不该要求人点）。
+    """
+    problems = []
+    for n in RISK_MAP:
+        risk, tier, hard = _policy(n)
+        if risk not in _RISK_TO_TIER:
+            problems.append(f"{n}: 未知风险类 {risk!r}")
+            continue
+        default = _RISK_TO_TIER[risk]
+        if tier is not None:
+            if tier not in _TIER_ORDER:
+                problems.append(f"{n}: 非法档位 {tier!r}")
+            elif _TIER_ORDER[tier] < _TIER_ORDER[default]:
+                problems.append(
+                    f"{n}: 覆盖档位 {tier!r} 比默认 {default!r} 更松 —— "
+                    f"若它其实不危险，应当改风险类，而不是用档位覆盖放松")
+        if hard and risk == RiskClass.READ:
+            problems.append(f"{n}: 只读工具不该标硬确认")
+    return problems
+
+
+# 导入时自检：有问题只记 error 日志、不抛异常（生产不能因此起不来）；
+# 测试套件会硬性断言 validate_policy() 返回空。
+_policy_problems = validate_policy()
+if _policy_problems:
+    for _pb in _policy_problems:
+        log.error("工具策略表有问题：%s", _pb)
 
 
 def grouped_tools():

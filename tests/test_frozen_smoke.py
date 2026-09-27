@@ -214,11 +214,11 @@ def main():
         "permissions": ["explicit_intent", "args_fingerprint", "is_trusted",
                         # 两道新闸的 rule 名（常量字符串）
                         "implicit_intent", "always_confirm"],
-        "risk": ["ALWAYS_CONFIRM"],
+        "risk": ["ALWAYS_CONFIRM", "validate_policy", "_policy", "_TIER_ORDER"],
         # v4.169.0 批次B：技能启用判据 + 复杂度切换 + 日志证据链
         "config": ["is_skill_enabled", "skills_disabled_all"],
         "route_log": ["log_tool_decision", "event=tool"],
-        "tools": ["is_skill_enabled"],
+        "tools": ["is_skill_enabled", "__getattr__", "TOOL_TIER"],
         "legion_permissions": ["grant_wave", "LegionPermissionAdapter"],
         "task_graph": ["incomplete", "__incomplete__"],
         "vision_qc": ["qc_skipped_no_key", "qc_pass", "encode_image_for_qc",

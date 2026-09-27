@@ -189,8 +189,24 @@ _register_extension_tools()
 # 等级 / 风险档定义见 risk.py（RiskClass + RISK_MAP + classify + tier_of + grouped_tools）。
 # 这里仅做向后兼容再导出，避免散落各处的 tools.tier_of / tools.TOOL_TIER 引用失效。
 from risk import RiskClass, RISK_MAP, classify, tier_of, grouped_tools
-# 兼容别名：旧代码可能直接查 TOOL_TIER（name -> 等级）
-TOOL_TIER = {n: tier_of(n) for n in RISK_MAP}
+
+
+def __getattr__(name):
+    """模块级惰性属性（PEP 562）——只用于向后兼容 `tools.TOOL_TIER`。
+
+    v4.171.0：`TOOL_TIER` 原来是**导入时算好的一份 dict 快照**
+    （`{n: tier_of(n) for n in RISK_MAP}`）。但 `RISK_MAP` 是可以被
+    `@tool(risk=...)` **动态写入**的（见本文件 `_register_extension_tools`），
+    所以快照必然与真实策略**失同步** —— 又是一份"第二来源"，
+    正是本轮"工具策略表合并"要根治的东西（跟 `_TIER_OVERRIDE` 同一类隐患）。
+
+    改成按需现算：名字还在、语义不变（name -> 等级），而且永远跟策略表一致。
+    """
+    if name == "TOOL_TIER":
+        from risk import RISK_MAP as _RM, tier_of as _to
+        return {n: _to(n) for n in _RM}
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 # Agnes 2.5 生视频参考图硬上限（实测传 6 张报 400）—— v4.127 多参考图截断用
 MAX_REF_IMAGES = 5
