@@ -77,7 +77,7 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.173.0"
+APP_VERSION = "v4.174.0"
 APP_BUILD_DATE = "2026-09-27"
 # v4.164.0（2026-09-27）**运行数据归口：彻底治「dist 既是运行目录又是分发源」**：
 #   新增 config.WORKSPACE_DIR（默认 ~/Documents/小臭玩AI，与 USER_DATA_DIR 同值，
@@ -760,6 +760,17 @@ APP_BUILD_DATE = "2026-09-27"
 
 # 更新检查源（留空=本地构建，无自动更新通道；联系构建者重打包新版即可）
 UPDATE_CHECK_URL = ""
+
+# 视觉模型「追加识别」清单（子串匹配，小写）——v4.174.0
+# 用途：`ui._model_supports_vision()` 的内置词表之外，用它补认新模型名。
+# **什么时候必须动它**：改了 `model_routing.complex_model` 指向的 profile 或其模型名，
+# 而新模型不是内置词表能认出来的（内置含 vision/vl/gpt-4o/deepseek-flash 等）。
+# 认不出来的后果很隐蔽：图像链路会把图**归一化成纯文本**发给模型 ——
+# 图进了会话、路由日志也记了 reason="image"，但模型收到的是文字，只能回
+# 「我这边没有收到任何图片」（v4.174.0 实测事故根因）。
+# 改完跑 `tests/test_vision_channel.py`：它会拿配置里图像链路实际指向的模型
+# 来核对这里认不认，用真实配置而不是写死的名字。
+VISION_MODEL_EXTRA_HINTS = ()
 
 # ---------- 日志 ----------
 # v4.134.6：四条诊断日志统一改成「有上限 + 自动滚动」。

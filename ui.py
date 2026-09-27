@@ -1661,19 +1661,51 @@ def _normalize_image_dataurl(url):
         return url
 
 
+# 视觉模型识别词表（子串匹配，小写）。
+#
+# ⚠️ 这张表与「图像链路路由」是**一对**，必须一起改：
+#   `_start_stream` 检测到带图 → force_complex=True, reason="image"
+#     → 走 `model_routing.complex_model`（默认 profile「DeepSeek 官方」= deepseek-flash）
+#   → 再用 `_model_supports_vision(_m)` 决定「图要不要保留成 image_url」
+#   → 认不出 → `_flatten_text_content()` 把图归一化成纯文本 → 模型说"我没收到图"
+#
+# v4.174.0 修（实测事故）：表里**没有** `deepseek-flash`，而路由偏偏往它发图 ——
+# 于是整条图像链路被自己关掉：图进了会话、升舱也发生了（route_log 的
+# reason="image"），但发给模型的 payload 里图已被抹成文字，模型只能回
+# 「我这边没有收到任何图片」。**实测定案：deepseek-flash 认图** ——
+# 128×128 纯红 PNG → 答「红色」，且 reasoning 里明确写着看图过程
+# （同一实测也确认 deepseek-v4-flash-vision-exp 认图）。
+VISION_MODEL_KW = (
+    "vision", "vl", "gpt-4o", "gpt-4v", "gpt-4.1", "qwen-vl", "qwen2-vl",
+    "qwen2.5-vl", "qwen2_5-vl", "glm-4v", "glm-4v-plus", "yi-vl",
+    "internvl", "minicpm-v", "deepseek-vl", "step-1v", "moondream",
+    "cogvlm", "fuyu", "idefics", "kosmos",
+    # v4.174.0：图像链路实际使用的 DeepSeek 通道模型（实测支持视觉）
+    "deepseek-flash",
+)
+
+
 def _model_supports_vision(model):
     """模块级：判断模型是否支持图像输入（多模态视觉）。仅这些模型才在
-    _sanitize_msg_for_api 中保留 image_url；其余模型图像被归一化为纯文本标签，
-    避免把 list content 原样发给不支持视觉的接口导致 400。"""
+    `_sanitize_msg_for_api` 中保留 image_url；其余模型图像被归一化为纯文本标签，
+    避免把 list content 原样发给不支持视觉的接口导致 400。
+
+    v4.174.0：除内置词表外，额外接受 `config.VISION_MODEL_EXTRA_HINTS`
+    —— 换视觉模型时改配置即可，不必改代码。
+    **改完请跑 `tests/test_vision_channel.py`**（它会拿配置里图像链路实际指向的
+    模型来核对本函数认不认，正是这次漏掉的那道守护）。
+    """
     if not model:
         return False
     m = str(model).lower()
-    return any(k in m for k in (
-        "vision", "vl", "gpt-4o", "gpt-4v", "gpt-4.1", "qwen-vl", "qwen2-vl",
-        "qwen2.5-vl", "qwen2_5-vl", "glm-4v", "glm-4v-plus", "yi-vl",
-        "internvl", "minicpm-v", "deepseek-vl", "step-1v", "moondream",
-        "cogvlm", "fuyu", "idefics", "kosmos",
-    ))
+    if any(k in m for k in VISION_MODEL_KW):
+        return True
+    try:
+        import config
+        extra = getattr(config, "VISION_MODEL_EXTRA_HINTS", ()) or ()
+        return any(str(k).lower() in m for k in extra)
+    except Exception:
+        return False
 
 
 def _strip_attachment_refs(text):

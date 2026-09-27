@@ -9,6 +9,38 @@
 
 ---
 
+## v4.174.0 — 2026-09-27
+
+**修「附图片问图里有什么，它回『我这边没有收到任何图片』」—— 图像链路被自己关掉了。**
+
+- **根因**：链路里有两处对**同一个模型的看法相反**：
+  - 路由：带图 → `force_complex=True, reason="image"` → 走 `model_routing.complex_model`
+    profile「DeepSeek 官方」= **`deepseek-flash`**；
+  - 判定：`_model_supports_vision("deepseek-flash")` = **False**（内置词表里没有它）。
+  于是 payload 构造时走「非视觉模型」分支，把图**归一化成纯文本**（只剩 `[图片]` 占位符）
+  发给模型 → 模型只能回「只有文字，没有图片路径」。
+  隐蔽点：图**确实附上了**（路由日志有 `reason="image"`、payload 79 万字符），
+  从表面看像是"模型不认图"，实际上是本地把图抹掉了。
+
+- **实测定案**：`deepseek-flash` **认图**。用 128×128 纯红 PNG 直连发问，
+  答「红色」，且 `reasoning_content` 里明确写着看图过程
+  （`deepseek-v4-flash-vision-exp` 同样认图）。
+
+- **修法**：词表补上图像链路实际使用的模型；并把视觉词表提为模块常量
+  `VISION_MODEL_KW`，另在 `config.VISION_MODEL_EXTRA_HINTS` 留一个可编辑的追加清单
+  —— **换视觉模型不必改代码**。
+
+- **顺带补上真正该守住这条的守护测试**：仓库根目录一直躺着一个
+  `test_v4102_vision.py`，第 12 行就断言 `_model_supports_vision("deepseek-flash") is True`
+  —— 但它**不在 `tests/` 下，`run_all.py` 收不到，所以它红了很久没人知道**。
+  本版新增 `tests/test_vision_channel.py`，核心是**漂移守卫**：不写死模型名，
+  而是拿配置里图像链路**实际指向**的模型去核对判定函数认不认
+  （以后换模型忘了同步词表，这里立刻红）。
+
+全量回归 33 套件 / 1579 断言全绿。
+
+---
+
 ## v4.173.0 — 2026-09-27
 
 **修两处「附件相关」的老毛病 —— 一处让消息被整条吞掉，一处让附件对模型不可见（已坏 8 个版本）。**

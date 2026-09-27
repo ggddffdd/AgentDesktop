@@ -220,7 +220,9 @@ def main():
                         "implicit_intent", "always_confirm"],
         "risk": ["ALWAYS_CONFIRM", "validate_policy", "_policy", "_TIER_ORDER"],
         # v4.169.0 批次B：技能启用判据 + 复杂度切换 + 日志证据链
-        "config": ["is_skill_enabled", "skills_disabled_all"],
+        "config": ["is_skill_enabled", "skills_disabled_all",
+                   # v4.174.0：视觉模型追加识别清单（词表在 ui，这里只放可配置清单）
+                   "VISION_MODEL_EXTRA_HINTS"],
         "route_log": ["log_tool_decision", "event=tool"],
         "tools": ["is_skill_enabled", "__getattr__", "TOOL_TIER"],
         "legion_permissions": ["grant_wave", "LegionPermissionAdapter"],
@@ -257,7 +259,9 @@ def main():
                # v4.172.0：第4处判据同源 + guard 命中时的内部指令
                "_needs_tool_intent", "本轮不要使用任何工具",
                # v4.173.0：附件名不得点着判据 + 附件路径基准归口
-               "_strip_attachment_refs", "_director_kw_same_sentence"],
+               "_strip_attachment_refs", "_director_kw_same_sentence",
+               # v4.174.0：图像链路「路由目标 ↔ 视觉能力判定」必须一致
+               "VISION_MODEL_KW", "deepseek-flash"],
         "agent": ["is_non_action_message", "_internal",
                   # v4.168.1：程序化抓取否决 + 裸 URL 判据
                   "_prog_fetch_intent", "_is_bare_url", "_PROG_FETCH_KW",
