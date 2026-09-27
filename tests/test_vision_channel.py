@@ -26,9 +26,35 @@ import ui      # noqa: E402
 
 _p = _f = 0
 
+import base64
+import struct
+import zlib
+
+
+def _good_png():
+    """合法 8×8 纯色 PNG（自己按 PNG 规范算 CRC）。
+
+    ⚠️ 别再用 `data:image/png;base64,AAAA` 这种假图当测试向量 ——
+    v4.175.0 起「解不开的图会在发送前被丢掉」，假图会被判无效，
+    断言"图被保留"就会假红（真发生过一次）。测试向量必须真能解码。
+    """
+    def chunk(tag, data):
+        c = tag + data
+        return (struct.pack(">I", len(data)) + c
+                + struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF))
+
+    w = h = 8
+    raw = b"".join(b"\x00" + bytes((200, 30, 30)) * w for _ in range(h))
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw))
+            + chunk(b"IEND", b""))
+
+
+IMG_URL = "data:image/png;base64," + base64.b64encode(_good_png()).decode()
 IMG_MSG = {"role": "user", "content": [
     {"type": "text", "text": "这张图里有什么"},
-    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    {"type": "image_url", "image_url": {"url": IMG_URL}},
 ]}
 
 

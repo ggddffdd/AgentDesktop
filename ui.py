@@ -1635,7 +1635,15 @@ def _compress_image_for_api(path, max_dim=1568, quality=85):
 def _normalize_image_dataurl(url):
     """v4.102 fix6：把任意 image data URL 重编码为 DeepSeek 视觉模型稳接受的 RGB JPEG。
     作为「最后一道关卡」覆盖所有发图来源（贴图/附件/历史消息/兜底回退）——只要进 API
-    前统一过一遍，即可规避特殊格式/超大图被拒（HTTP 400 无正文）的情况。无法解码则原样返回。"""
+    前统一过一遍，即可规避特殊格式/超大图被拒（HTTP 400 无正文）的情况。
+
+    v4.175.0 改语义：**解不开就返回空串（＝判为无效，由调用方丢掉）**。
+    原实现「无法解码则原样返回」，等于把坏图原封不动送给 API ——
+    实测事故：会话历史里一张 71 字节的坏 PNG（IDAT 校验和错，libpng 拒收）
+    被原样发出 → DeepSeek 判 `.messages[1].image[0]: unsupported image` 400
+    → **该会话此后每次带图都失败**（等于整个会话被一张坏图毒死），
+    而界面只显示「HTTP Error 400: Bad Request」，完全看不出原因。
+    一张坏图顶多让模型少看一张图（还能用文字回答），远比整轮失败轻。"""
     if not isinstance(url, str) or not url.startswith("data:image/"):
         return url
     try:
@@ -1648,7 +1656,8 @@ def _normalize_image_dataurl(url):
         raw = _b64.b64decode(b64)
         img = QImage.fromData(raw)
         if img.isNull():
-            return url
+            _vision_debug("normalize: 图片无法解码，判为无效（将被丢弃）")
+            return ""            # v4.175.0：解不开 ⇒ 无效
         fmt_rgb = QImage.Format.Format_RGB888
         if img.format() != fmt_rgb:
             img = img.convertToFormat(fmt_rgb)
@@ -1658,7 +1667,7 @@ def _normalize_image_dataurl(url):
         return f"data:image/jpeg;base64,{_b64.b64encode(out).decode()}"
     except Exception as e:
         _vision_debug(f"_normalize_image_dataurl EXC: {e}")
-        return url
+        return ""                # v4.175.0：异常同样判为无效（原来会原样放行）
 
 
 # 视觉模型识别词表（子串匹配，小写）。
@@ -1805,6 +1814,7 @@ def _sanitize_msg_for_api(m, vision_ok=False):
         if has_img and vision_ok:
             # 视觉模型：保留 list 结构，只留 text / image_url 两种合法 part
             cleaned = []
+            _dropped_img = 0
             for p in c:
                 if not isinstance(p, dict):
                     continue
@@ -1814,8 +1824,23 @@ def _sanitize_msg_for_api(m, vision_ok=False):
                         cleaned.append(p)
                 elif t == "image_url":
                     # v4.102 fix6：统一重编码图片为 RGB JPEG（兜底所有来源）
+                    # v4.175.0：**解不开的图必须丢掉** —— 一张坏图会让整个请求被判
+                    # 「unsupported image」400，且该会话此后每次带图都失败。
                     u = (p.get("image_url") or {}).get("url", "")
-                    cleaned.append({"type": "image_url", "image_url": {"url": _normalize_image_dataurl(u)}})
+                    _nu = _normalize_image_dataurl(u)
+                    if _nu:
+                        cleaned.append({"type": "image_url",
+                                        "image_url": {"url": _nu}})
+                    else:
+                        _dropped_img += 1
+            # v4.175.0：占位要在 `if cleaned` **之前**补 —— 否则"整条消息只有图、
+            # 且图全被丢掉"时会掉到下面的纯文本分支，退化成一句 `[图片]`，
+            # 既看不出发生了什么，也丢掉了"这里原本有图"的信息。
+            if _dropped_img and not any(
+                    isinstance(x, dict) and x.get("type") == "text"
+                    for x in cleaned):
+                cleaned.insert(0, {"type": "text",
+                                   "text": "[图片无法解析，已忽略]"})
             if cleaned:
                 return {"role": role, "content": cleaned}
         # 非视觉（默认或视觉模型但无图）：归一化为纯文本
@@ -1897,6 +1922,28 @@ def _api_error_text(exc, limit=800):
     except Exception:
         pass
     return str(body or "")[:limit]
+
+
+def _attach_api_body(exc, limit=800):
+    """把 API 真实报文挂到异常对象上（v4.175.0）。
+
+    为什么需要：`HTTPError.read()` **只能读一次**，而 `_api_error_text` 在日志那层
+    已经把正文读掉；等异常上抛到上层（agent 弹给用户）时，报文已经没了，
+    用户只看到「HTTP Error 400: Bad Request」这种毫无信息量的句子
+    （实测事故：真正的 `unsupported image` 只躺在 debug.log 里，界面啥都不说）。
+
+    做法：**读它的那一处顺手挂到异常上**，上层用 `getattr(e, "_api_body", "")` 取。
+    """
+    try:
+        _b = _api_error_text(exc, limit=limit)
+        if _b:
+            try:
+                exc._api_body = _b
+            except Exception:
+                pass
+        return _b
+    except Exception:
+        return ""
 
 
 def _is_thinking_channel(base_url, model):
@@ -9980,9 +10027,9 @@ class ChatWindow(QMainWindow):
                         return _stream_once(body, strict=_strict)
                     except Exception as e2:
                         # v4.108 H-04：失败必须上抛交给 agent.py 兜底弹错，不能吞掉装"成功"。
+                        _b2 = _attach_api_body(e2)
                         _logging.getLogger("dsdesktop").error(
-                            "Agent 流式调用失败: %s（接口报文：%s）",
-                            e2, (_api_error_text(e2) or "")[:300])
+                            "Agent 流式调用失败: %s（接口报文：%s）", e2, _b2[:300])
                         raise
                 elif _backoff and _code in (429, 500, 502, 503, 504):
                     # v4.108 H-04：限流/网关抖动 → 退避重试 2 次（2s/4s），仍失败则上抛。
@@ -9993,10 +10040,12 @@ class ChatWindow(QMainWindow):
                             return _stream_once(body, strict=_strict)
                         except Exception as e3:
                             _last = e3
+                    _attach_api_body(_last)
                     _logging.getLogger("dsdesktop").error("Agent 流式调用重试仍失败: %s", _last)
                     raise
                 else:
                     # v4.108 H-04：其余失败（超时/断流等）同样上抛，禁止静默返回空响应。
+                    _attach_api_body(e)
                     _logging.getLogger("dsdesktop").error("Agent 流式调用失败: %s", e)
                     raise
 
@@ -10184,12 +10233,23 @@ class ChatWindow(QMainWindow):
                 # 真·多模态（含图片）：保留原样发给视觉模型，但图片统一重编码为 RGB JPEG
                 # v4.102 fix6：兜底各种来源（贴图/附件/历史），避免特殊格式/超大图被拒
                 norm_lc = []
+                _dropped_cur = 0
                 for _part in lc:
                     if isinstance(_part, dict) and _part.get("type") == "image_url":
                         _u = (_part.get("image_url") or {}).get("url", "")
-                        norm_lc.append({"type": "image_url", "image_url": {"url": _normalize_image_dataurl(_u)}})
+                        _nu = _normalize_image_dataurl(_u)
+                        if _nu:                      # v4.175.0：无效图丢弃
+                            norm_lc.append({"type": "image_url",
+                                            "image_url": {"url": _nu}})
+                        else:
+                            _dropped_cur += 1
                     else:
                         norm_lc.append(_part)
+                if _dropped_cur and not any(
+                        isinstance(x, dict) and x.get("type") == "text"
+                        for x in norm_lc):
+                    norm_lc.insert(0, {"type": "text",
+                                       "text": "[图片无法解析，已忽略]"})
                 api_messages.append({"role": "user", "content": norm_lc})
             else:
                 # 纯文本 list（语音/粘贴等）或非视觉模型 → 归一化为字符串

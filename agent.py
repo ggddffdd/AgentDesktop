@@ -1246,7 +1246,13 @@ class AgentWorker(QThread):
                     pass
                 self.tool_log.emit({"name": "错误", "args": "", "result": str(e)})
                 # v4.108 H-04：失败要让用户在气泡里看得见，不再静默结束装"完成"。
-                self.stream_commit.emit(f"\n\n⚠️ 模型调用失败：{e}")
+                # v4.175.0：把 API 真实报文一并显示 —— 只说「HTTP Error 400」
+                # 等于没说（实测那张坏图的事故，真正原因只在 debug.log 里）。
+                _api_b = getattr(e, "_api_body", "") or ""
+                _notice = f"\n\n⚠️ 模型调用失败：{e}"
+                if _api_b:
+                    _notice += f"\n\n接口原文：{_api_b[:400]}"
+                self.stream_commit.emit(_notice)
                 break
 
             # v4.102 fix12：累计工具名 + token 预算熔断（超预算即停，保留阶段性结果）

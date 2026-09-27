@@ -270,7 +270,9 @@ def main():
                   # v4.169.0：run_workflow 过闸 + 硬确认档 force 通道
                   "_run_workflow_guarded", "explicit_intent", "_confirm_force",
                   # v4.169.0 批次B：工具决策日志
-                  "log_tool_decision"],
+                  "log_tool_decision",
+                  # v4.175.0：400 时把接口原文一起显示给用户
+                  "_api_body", "接口原文"],
     }
     for mod, keys in marks.items():
         mi = info.get(mod) or {}
