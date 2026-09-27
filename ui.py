@@ -5603,7 +5603,28 @@ class ChatWindow(QMainWindow):
         except Exception:
             pass
 
+    def _reset_session_trust(self):
+        """清空「本次会话信任」（v4.169.0 审查 P0-6）。
+
+        `permission_engine` 只在窗口初始化时构造**一次**（见 `__init__`），
+        而 `session_allow` / `session_trusted` 是**引擎实例上的状态**。
+        原实现的切会话 / 新建会话 / 关闭会话都不清它 ——
+        于是会话 A 里信任过 `run_python`，新建会话 B 仍然免确认，
+        与弹窗上写的"本次会话"完全对不上（信任跨了会话边界）。
+
+        三个入口都调用本方法：`_switch_session` / `_new_session` / `_close_session`。
+        """
+        try:
+            pe = getattr(self, "permission_engine", None)
+            if pe is not None:
+                pe.session_allow.clear()
+                pe.session_trusted = False
+        except Exception:
+            pass
+        self.session_trusted = False
+
     def _switch_session(self, sid):
+        self._reset_session_trust()   # v4.169.0 P0-6：信任不跨会话
         self.store.switch(sid)
         self._sync_product_context()   # v4.129
         self._rendered_msg_count = 0  # v4.60：切换会话重置增量渲染计数
@@ -5620,6 +5641,7 @@ class ChatWindow(QMainWindow):
         self._scan_agent_resume()  # v4.101：切到有暂停任务的会话时提示「继续」
 
     def _new_session(self):
+        self._reset_session_trust()   # v4.169.0 P0-6：信任不跨会话
         self.store.new_session()
         self._sync_product_context()   # v4.129
         self._rendered_msg_count = 0  # v4.60：新建会话重置增量渲染计数
@@ -5635,7 +5657,16 @@ class ChatWindow(QMainWindow):
         if self._busy:
             self.status_label.setText("正在处理，稍后再关闭会话")
             return
+        # v4.169.0 P0-6：关掉的是**当前**会话时才清信任（关别的会话不该影响手头的操作）
+        _was_active = False
+        try:
+            _cur = self.store.active()
+            _was_active = (_cur is not None and getattr(_cur, "sid", None) == sid)
+        except Exception:
+            pass
         self.store.remove(sid)
+        if _was_active:
+            self._reset_session_trust()
         # v4.73：删除会话时一并清理其独立的上下文摘要文件，避免残留串台
         try:
             import os as _os
@@ -5963,7 +5994,8 @@ class ChatWindow(QMainWindow):
         elif topic_only:
             self.status_label.setText(f"选题生成中…（用 AI 常识列方向）{tag_suf}")
             self._start_stream(trigger, None)
-        elif self.cfg.get("search_enabled", True):
+        elif self.cfg.get("search_enabled", True) and self._needs_web_search(trigger):
+            # v4.169.0（P0-1）：与主发送入口同一口径 —— 允许搜索 ≠ 默认搜索
             self.status_label.setText(f"搜索中…{tag_suf}")
             self._do_search(trigger)
         else:
@@ -7670,6 +7702,38 @@ class ChatWindow(QMainWindow):
             pass
         return ""
 
+    def _last_user_intent_is_action(self):
+        """本轮用户消息是否表达了「执行意图」（v4.169.0 P0-3 来源闸用）。
+
+        与 `_stream_once` 取"最后一句"同一纪律：**跳过框架注入的 `_internal` 消息**
+        （强制指令 / nudge / 撒谎检测都不是"用户的话"，且都含"不要"等词，
+        拿它们判意图会把结果带偏）。
+
+        判不了就返回 True（保守）：宁可少拦，也不要让正常任务每步都弹确认 ——
+        来源闸的定位是"补最后一道网"，不是"把所有操作都变成确认"。
+        """
+        try:
+            import intent_guard as _ig
+            msgs = self.store.active().messages if getattr(self, "store", None) else []
+            text = ""
+            for m in reversed(msgs or []):
+                if not isinstance(m, dict) or m.get("role") != "user":
+                    continue
+                if m.get("_internal"):
+                    continue
+                c = m.get("content")
+                if isinstance(c, str):
+                    text = c
+                elif isinstance(c, list):
+                    text = "".join(p.get("text", "") for p in c
+                                   if isinstance(p, dict) and p.get("type") == "text")
+                break
+            if not text:
+                return True
+            return not _ig.is_non_action_message(text)
+        except Exception:
+            return True
+
     def _is_topic_request(self, q):
         """选题/盘点/方向类需求才注入完整选题模板（其余轮次省下这段 token）。"""
         if not q:
@@ -8687,7 +8751,13 @@ class ChatWindow(QMainWindow):
             self._busy_timeout.start(120000)
             self.status_label.setText("选题生成中…（用 AI 常识列方向）")
             self._start_stream(clean_text, None)
-        elif self.cfg.get("search_enabled", True):
+        elif self.cfg.get("search_enabled", True) and self._needs_web_search(clean_text):
+            # v4.169.0（审查 P0-1）：这里原本是 `elif self.cfg.get("search_enabled", True):`
+            # —— 只要没进 Agent、也没命中前几个特判，**一律联网搜索**。
+            # 于是「你好」「解释一下闭包」「为什么会自动搜索？」这类既非执行、
+            # 也非检索的消息，都会被 UI 直接发起网络搜索，看起来就像"没下命令却自己干活"。
+            # 改法：search_enabled 的语义从「默认搜」改为「**允许**搜」，
+            # 是否真搜由 _needs_web_search() 按明确检索意图决定。
             self._busy = True
             self.send_btn.setEnabled(False)
             self._busy_timeout.start(120000)
@@ -8695,6 +8765,52 @@ class ChatWindow(QMainWindow):
             self._do_search(clean_text)
         else:
             self._start_stream(clean_text, None)
+
+    # v4.169.0：联网搜索的触发词表（P0-1）。
+    # 设计取向：**宁可少搜**。漏搜的代价是模型用已有知识回答（用户再加一句"搜一下"即可），
+    # 误搜的代价是"没下命令却联网"——正是本次要治的病。
+    _SEARCH_VERB_KW = (
+        "搜一下", "搜下", "搜搜", "搜索", "搜一搜", "查一下", "查下", "查查", "查询",
+        "检索", "帮我查", "帮我搜", "帮我找", "上网查", "上网搜", "查一查", "搜个",
+    )
+    _SEARCH_TIME_KW = ("最新", "实时", "今天", "今日", "昨天", "现在", "当前", "最近", "刚刚")
+    _SEARCH_FACT_KW = (
+        "新闻", "价格", "股价", "汇率", "天气", "赛程", "比分", "热搜", "榜单", "排行",
+        "政策", "进展", "动态", "行情", "多少钱", "发布", "上线", "更新", "多少钱",
+    )
+    # 单独出现就足以说明"要外部实时信息"的词（不依赖时效词搭配）
+    _SEARCH_STRONG_FACT_KW = (
+        "股价", "汇率", "天气", "赛程", "比分", "热搜", "榜单", "行情", "多少钱", "价格",
+    )
+
+    def _needs_web_search(self, text):
+        """普通对话兜底前，判断这条消息**是否真的需要联网**。
+
+        三档：
+          ① 明确检索动词（搜一下 / 查一下 / 帮我查）→ 要搜；
+          ② 强外部事实词（股价 / 汇率 / 天气 / 价格 / 热搜 …）→ 要搜；
+          ③ 时效词 + 事实词同现（"最新的 AI 新闻"）→ 要搜。
+        其余一律不搜，交给普通对话直答。
+        """
+        if not text:
+            return False
+        # 先过统一判据：讨论/评价/否定句一律不联网。
+        # 否则「为什么会自动搜索？」会因为含「搜索」二字被判成检索意图 —— 实测踩到。
+        try:
+            import intent_guard as _ig
+            if _ig.is_non_action_message(text):
+                return False
+        except Exception:
+            pass
+        t = text.lower()
+        if any(k in t for k in self._SEARCH_VERB_KW):
+            return True
+        if any(k in t for k in self._SEARCH_STRONG_FACT_KW):
+            return True
+        if (any(k in t for k in self._SEARCH_TIME_KW)
+                and any(k in t for k in self._SEARCH_FACT_KW)):
+            return True
+        return False
     def _do_search(self, text):
         chain = search_mod.provider_chain(self.cfg.get("search_provider", "auto"))
         self._search_text = text
@@ -8770,7 +8886,8 @@ class ChatWindow(QMainWindow):
         except Exception:
             self._task_agent = ""
         w = AgentWorker(self, messages, all_tools, config.mcp_clients,
-                        task_id=resume_task_id, resume=resume)
+                        task_id=resume_task_id, resume=resume,
+                        explicit_intent=self._last_user_intent_is_action())
         self._agent_worker = w
         w.status.connect(self.status_label.setText)
         w.status.connect(self._agent_task_progress)
@@ -8896,7 +9013,10 @@ class ChatWindow(QMainWindow):
 
     def _on_confirm_action(self, title, detail):
         w = self._agent_worker
-        if self.permission_engine.session_trusted:
+        # v4.169.0：硬确认档（装/建技能、删数据）会带 _confirm_force，
+        # 此时**即使本会话已全部信任也必须弹窗** —— 否则那道 always_confirm 白设。
+        if (self.permission_engine.session_trusted
+                and not getattr(w, "_confirm_force", False)):
             w._confirm_val = True
             w._confirm_event.set()
             return
@@ -10156,10 +10276,15 @@ class ChatWindow(QMainWindow):
         "图表", "柱状图", "折线图", "饼图", "散点图", "可视化",
         "浏览器", "清空回收站", "锁屏", "关机", "打开文件", "打开应用", "控制软件", "输入文字", "点击",
         "记笔记", "待办", "备忘",
-        "装技能", "搜索技能", "安装技能",
+        "装技能", "搜索技能", "安装技能", "装个技能", "装一下技能", "导入技能",
         "公众号", "写文章", "续写", "写稿", "写文案",
         "做ppt", "做 ppt", "做报告", "生成报告", "生成ppt", "做一张",
         "下载", "导出", "批量", "整理文件",
+        # v4.169.0：文件操作类动词原本整类缺失 —— 实测「帮我删掉昨天的临时文件」
+        # 既没命中本表、也没命中媒体组合，于是 na=False → 不进 Agent 反而去联网搜。
+        # 真指令被漏掉和"没下命令却干活"一样是路由错误，一并补上。
+        "删除", "删掉", "移动文件", "重命名", "复制文件", "清理文件", "整理目录",
+        "清空目录", "归档", "压缩包", "解压",
     )
 
     # v4.57：纯陈述 / 感慨拦截词。命中且不含执行意图时，不当成"需要研究/执行"的任务，

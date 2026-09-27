@@ -152,7 +152,8 @@ class AgentWorker(QThread):
     # ---- 主循环 ----
 
     def __init__(self, mw, messages, tool_defs, mcp_clients=None, task_id=None,
-                 resume=False, isolated=False, force_complex=False):
+                 resume=False, isolated=False, force_complex=False,
+                 explicit_intent=True):
         super().__init__()
         self.mw = mw
         self.messages = messages
@@ -164,6 +165,13 @@ class AgentWorker(QThread):
         # force_complex=True：绕过工具意图判定，直接升舱 complex_model（DeepSeek）。
         # 导演台独立会话用——工具集虽小但都是写操作，弱模型容易退化成文字演工具。
         self._force_complex = bool(force_complex) or bool(isolated)
+        # v4.169.0（审查 P0-3）：本轮用户消息是否表达了「执行意图」。
+        # False（纯提问 / 讨论 / 评价句）时，权限引擎会拦住模型**自主发起**的
+        # 非只读操作（写入 / 执行 / 外发），只读照旧放行。
+        # 由 UI 启动 Agent 时按 intent_guard 判定后传入；默认 True（不改既有行为）。
+        self.explicit_intent = bool(explicit_intent)
+        # 本次确认是否"强制弹窗"（硬确认档用）；UI 侧据此跳过会话信任短路。
+        self._confirm_force = False
         # v4.101：断点续传——每个 Agent 任务带唯一 task_id，停止时标记 paused、正常完成删除。
         self.task_id = task_id or task_resume.new_task_id()
         self.resume = bool(resume)
@@ -257,13 +265,21 @@ class AgentWorker(QThread):
     def _stop_heartbeat(self):
         self._heartbeat_alive = False
 
-    def _maybe_confirm(self, title, detail):
-        """危险操作：向主线程请求确认，子线程阻塞等待结果。"""
+    def _maybe_confirm(self, title, detail, force=False):
+        """危险操作：向主线程请求确认，子线程阻塞等待结果。
+
+        v4.169.0（P0-3 配套）：`force=True` 时**跳过**"本次会话已全部信任"的短路。
+        硬确认档（装/建技能、删自动化、删数据）必须真的弹一次 ——
+        否则用户早先点过一回"全部信任"，这些不可逆操作就再也不会被问，
+        decide() 里那道 always_confirm 等于白设。
+        """
         engine = getattr(self.mw, "permission_engine", None)
-        if engine is not None and engine.session_trusted:
-            return True
-        if getattr(self.mw, "session_trusted", False):
-            return True
+        if not force:
+            if engine is not None and engine.session_trusted:
+                return True
+            if getattr(self.mw, "session_trusted", False):
+                return True
+        self._confirm_force = bool(force)
         self._confirm_val = False
         self._confirm_event.clear()
         self.confirm_action.emit(title, detail)
@@ -1594,7 +1610,10 @@ class AgentWorker(QThread):
             t0 = time.time()
 
             # 权限引擎统一决策（allowed / needs_user / reason）
-            dec = engine.decide(name, args)
+            # v4.169.0：把"本轮是否有执行意图"传下去 —— 用户只是提问/讨论时，
+            # 模型自主发起的非只读操作要确认（P0-3 来源闸）。
+            dec = engine.decide(name, args,
+                                explicit_intent=getattr(self, "explicit_intent", True))
             if not dec.allowed:
                 # 被引擎阻止（仅讨论/规划模式、路径越界等）
                 result_str = dec.reason
@@ -1602,15 +1621,20 @@ class AgentWorker(QThread):
                 schedule = None
             elif dec.needs_user:
                 # 危险/外部操作 → 弹确认框
+                # v4.169.0：硬确认档（装/建技能、删数据）要 force —— 它必须真的问一次，
+                # 不能被"本次会话已全部信任"短路掉。
                 title, detail = self._confirm_text(name, args)
-                ok = self._maybe_confirm(title, detail)
+                ok = self._maybe_confirm(title, detail,
+                                         force=(dec.rule == "always_confirm"))
                 if not ok:
                     result_str = "用户取消了该操作"
                     deliverables = []
                     schedule = None
                 else:
-                    # 用户确认：本会话记一笔信任该工具，避免同轮反复弹
-                    engine.trust_tool(name)
+                    # 用户确认：记一笔「该工具 + 该参数」的信任，避免同轮反复弹。
+                    # v4.169.0（P0-5）：必须带上 args —— 只记工具名会让
+                    # 确认过的安全参数给后续危险参数"背书"。
+                    engine.trust_tool(name, args)
                     try:
                         result_str, deliverables, schedule = tools.exec_tool(mw.cfg, APP_DIR, name, args)
                     except Exception as _te:
@@ -1772,6 +1796,44 @@ class AgentWorker(QThread):
                         "content": "（系统提示：用户已停止任务，该工具调用未完成执行。）",
                     })
 
+    def _run_workflow_guarded(self, wf_type, task, mw, args):
+        """带权限闸的 run_workflow（v4.169.0 审查 P0-4）。
+
+        run_workflow 是「子代理并行」入口，**不走通用 exec_tool** ——
+        它是直接调 `_run_workflow` 起任务图的。原实现因此整条绕过权限引擎：
+
+          · discuss / plan 模式下也能启动（本该一个"不执行"、一个"只读"）；
+          · 模型只要自主返回 run_workflow，就能拉起搜索 / 写作等后续动作；
+          · 子节点是另起 AgentNode，继承不到主链"逐项确认"那套。
+
+        修法：进任务图之前先过一次引擎（这一道用主链的 explicit_intent，
+        所以"用户没表达执行意图而模型自主发起工作流"会被来源闸拦下）。
+
+        至于子节点内部：工作流一旦被用户放行，其内部步骤属于**本次已授权动作的
+        实施细节**，不再逐项弹确认（否则研究+写作三节点会弹一串，没人受得了）。
+        子节点自身仍有 agent_node 里的工具白名单与 perm 检查兜底。
+        """
+        engine = getattr(mw, "permission_engine", None)
+        if engine is not None:
+            try:
+                dec = engine.decide(
+                    "run_workflow", args or {},
+                    explicit_intent=getattr(self, "explicit_intent", True))
+            except Exception as e:
+                return f"（子代理工作流未执行：权限判定异常 {e}）"
+            if not dec.allowed:
+                return f"（子代理工作流未执行：{dec.reason}）"
+            if dec.needs_user:
+                title, detail = self._confirm_text("run_workflow", args or {})
+                if not self._maybe_confirm(title, detail,
+                                           force=(dec.rule == "always_confirm")):
+                    return "（你取消了子代理工作流）"
+                try:
+                    engine.trust_tool("run_workflow")
+                except Exception:
+                    pass
+        return self._run_workflow(wf_type, task)
+
     def _exec_tool_calls(self, tool_calls, mw, APP_DIR):
         """执行一批工具调用（串行/并发由权限引擎决策），供主循环与续跑共用。"""
         # v4.93：run_workflow 是「子代理并行」入口——不走通用 exec_tool，直接触发任务图，
@@ -1791,7 +1853,7 @@ class AgentWorker(QThread):
                 "index": _wf_idx, "total": 1,
             })
             _t0 = time.time()
-            _out = self._run_workflow(_wf_type, _task)
+            _out = self._run_workflow_guarded(_wf_type, _task, mw, _args)
             self.messages.append({
                 "role": "tool",
                 "tool_call_id": _wf_tc.get("id", ""),
@@ -1875,7 +1937,8 @@ class AgentWorker(QThread):
         engine = mw.permission_engine
         decs = [engine.decide(
             tc.get("function", {}).get("name", ""),
-            self._safe_args(tc)) for tc in tool_calls]
+            self._safe_args(tc),
+            explicit_intent=getattr(self, "explicit_intent", True)) for tc in tool_calls]
         # 任一被阻止 或 需用户确认 → 串行（逐条决策/确认）
         if any(not d.allowed for d in decs) or any(d.needs_user for d in decs):
             self._run_serial(tool_calls, mw, APP_DIR)

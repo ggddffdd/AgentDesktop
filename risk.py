@@ -72,6 +72,35 @@ RISK_MAP = {
     "create_automation": RiskClass.WRITE_LOCAL,  # v4.89：建自动化任务→写本地 automation_tasks.json，仅本地写、无外发
     "delete_automation": RiskClass.WRITE_LOCAL,  # v4.89：删自动化任务，仅本地写
     "run_workflow": RiskClass.WRITE_LOCAL,  # v4.92：编排入口，仅通知主线程启动、不直接执行；内部危险步骤各自过 risk（此前漏登记）
+    # ── v4.169.0 补登记：此前遗漏的工具 ──
+    # `classify()` 对未登记工具 fallback 成 EXTERNAL，而 EXTERNAL 必须出现在
+    # `external_allow` 白名单里才放行 —— 默认配置只有 3 项，于是这些工具的
+    # 实际表现是"**被当成对外操作直接拦掉**"（只读查询也一样）。
+    # 这是做批次 A 权限审查时顺带扫出来的（用 TOOL_DEFS 与实际登记表比对）。
+    # ── READ（只读查询）──
+    "director_status": RiskClass.READ,
+    "legion_board": RiskClass.READ,
+    "legion_find_asset": RiskClass.READ,
+    "legion_get_output": RiskClass.READ,
+    "legion_get_sources": RiskClass.READ,
+    "legion_list_outputs": RiskClass.READ,
+    "legion_read_log": RiskClass.READ,
+    "webhook_events": RiskClass.READ,          # 查 webhook 事件记录
+    # ── WRITE_LOCAL（本地生成 / 修改，无外发）──
+    "director_confirm": RiskClass.WRITE_LOCAL,        # 确认并推进导演台流程
+    "director_gen_clues": RiskClass.WRITE_LOCAL,
+    "director_merge": RiskClass.WRITE_LOCAL,          # 合成本地成片
+    "director_revise_character": RiskClass.WRITE_LOCAL,
+    "director_revise_clip": RiskClass.WRITE_LOCAL,
+    "director_revise_clue": RiskClass.WRITE_LOCAL,
+    "director_revise_keyframe": RiskClass.WRITE_LOCAL,
+    "director_revise_shots": RiskClass.WRITE_LOCAL,
+    "director_revise_story": RiskClass.WRITE_LOCAL,
+    "director_rollback": RiskClass.WRITE_LOCAL,       # 回滚到历史版本（本地写）
+    "legion_report_issue": RiskClass.WRITE_LOCAL,     # 写本地问题记录
+    # 刻意**不登记**的（保持 EXTERNAL = 必须白名单）：
+    #   send_email（真发邮件）、webhook_start / webhook_stop（对外暴露端口）
+
     # ── EXEC（手动 / 执行控制）──
     "run_command": RiskClass.EXEC,
     "run_python": RiskClass.EXEC,
@@ -148,6 +177,27 @@ def tier_of(name):
     if name in _TIER_OVERRIDE:
         return _TIER_OVERRIDE[name]
     return _RISK_TO_TIER[classify(name)]
+
+
+# v4.169.0（审查 P0-3）：**任何模式都必须人工确认**的硬档。
+#
+# 背景：`_TIER_OVERRIDE` 把几个工具标成 manual（意图＝"必须人工确认"），但
+# permissions.decide 的 auto 模式分支原本只看 risk 不看 tier：
+#     if self.mode == "auto":
+#         if risk == RiskClass.EXEC: 需确认
+#         return 允许                     # ← WRITE_LOCAL 全放行
+# 于是那份 override 在 auto 模式下**整套失效** —— 标了"手动"的技能安装
+# 在自动模式下直接装、直接覆盖同名 SKILL.md。
+#
+# 这组工具的共同点：**要么让可执行指令落盘（技能），要么删持久数据**，
+# 误触代价不可逆。所以单独立一档，不受 mode（含 auto）、session trust、
+# auto_allow 白名单影响 —— 用户必须亲手点。
+ALWAYS_CONFIRM = frozenset({
+    "skill_install",      # 装技能（可能覆盖同名 SKILL.md）
+    "create_skill",       # 建技能（写入会被后续加载的指令文件）
+    "delete_automation",  # 删自动化任务
+    "db_delete",          # 删数据库记录
+})
 
 
 def grouped_tools():

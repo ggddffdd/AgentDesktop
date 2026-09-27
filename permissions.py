@@ -12,12 +12,27 @@
 """
 
 import os
+import json
+import hashlib
 import logging
 from dataclasses import dataclass
 
-from risk import RiskClass, classify, tier_of
+from risk import RiskClass, classify, tier_of, ALWAYS_CONFIRM
 
 log = logging.getLogger(__name__)
+
+
+def args_fingerprint(args):
+    """参数指纹（v4.169.0 P0-5）。规范化后取 sha256 前 16 位。
+
+    用 `sort_keys=True` 保证 dict 顺序不影响结果 —— 否则同一笔操作
+    因序列化顺序不同会算出两个指纹，用户会莫名其妙地被重复问。
+    """
+    try:
+        s = json.dumps(args or {}, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        s = repr(args)
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
 
 
 # 模式中文标签（value -> 显示文本）
@@ -62,9 +77,27 @@ class PermissionEngine:
         self.session_trusted = True
         self.session_allow.add("*")
 
-    def trust_tool(self, name):
-        """信任单个工具（本次会话）。"""
-        self.session_allow.add(name)
+    def trust_tool(self, name, args=None):
+        """信任单个工具的**这一笔参数形态**（本次会话）。
+
+        v4.169.0（审查 P0-5）：授权粒度从「工具名」收紧为「工具名 + 参数指纹」。
+
+        原来是 `session_allow.add(name)` —— 只记工具名。于是用户确认
+        `run_command("echo ok")` 之后，同一会话里 `run_command("<危险命令>")`
+        也不再询问 —— **一次授权被无限放大**。同理 `write_file` 确认一个路径后，
+        写任意其它路径（只要在作用域内）也免确认。
+
+        现在按参数规范化指纹记账：**参数有任何变化都要重新确认**。
+        用户显式点「本次会话全部信任」仍然走 `set_session_trusted()`（"*"），
+        那是明确的粗粒度授权，保留其语义。
+        """
+        self.session_allow.add(f"{name}#{args_fingerprint(args)}")
+
+    def is_trusted(self, name, args=None):
+        """该工具+该参数是否已被本次会话信任（诊断/测试用）。"""
+        if self.session_trusted or "*" in self.session_allow:
+            return True
+        return f"{name}#{args_fingerprint(args)}" in self.session_allow
 
     # ---------- 路径作用域 ----------
     def in_scope(self, path):
@@ -87,7 +120,7 @@ class PermissionEngine:
         return False
 
     # ---------- 核心决策 ----------
-    def decide(self, name, args=None):
+    def decide(self, name, args=None, explicit_intent=True):
         """给定工具名与参数，返回 Decision。
 
         v4.74 边界安全增强：
@@ -96,6 +129,16 @@ class PermissionEngine:
 
         v4.167.0 顺序修正：**硬围栏（外发白名单 / 路径作用域）先于会话信任**。
         原顺序让"本次会话全部信任"绕过这两道边界；信任只该省掉弹窗，不该放开边界。
+
+        v4.169.0（审查 P0-3）加两道：
+        - **硬确认档** `ALWAYS_CONFIRM`（技能安装/创建、删自动化、删数据）：
+          任何模式都必须人工确认，不受 auto / 会话信任 / 白名单影响。
+          原来 auto 模式分支只看 risk 不看 tier，把标成"手动"的这几个直接放行了。
+        - **来源闸** `explicit_intent`：本轮用户消息**没有执行意图**（纯提问/讨论/评价）时，
+          模型自行发起的**非只读**操作一律需确认。
+          这是「没下命令却干活」的最后一道闸 —— 前面的路由若误判漏过来，
+          这一层还能兜住：生图/写记忆/建自动化都不会偷偷跑掉。
+          只读（查资料、看文件）不打扰，否则问一句"为什么"会变得寸步难行。
         """
         risk = classify(name)
         tier = tier_of(name)  # v4.42 三级语义（auto/semi/manual）
@@ -123,9 +166,35 @@ class PermissionEngine:
                 return Decision(False, False,
                                  f"路径超出允许范围（{path}），已阻止写入", "scope")
 
-        # 3) 会话信任（"*" 或具体工具名）：只免确认，已过上面的硬围栏
-        if self.session_trusted or "*" in self.session_allow or name in self.session_allow:
-            return Decision(True, False, "本次会话已信任该操作", "session")
+        # 2.5) 硬确认档（v4.169.0 P0-3）：任何模式都要人工确认 ——
+        #      先于会话信任/白名单，所以"本次会话全部信任"也免不了它。
+        if name in ALWAYS_CONFIRM:
+            return Decision(True, True,
+                            f"'{name}' 属必须人工确认的操作（安装/创建技能、删数据），"
+                            f"不受执行模式与会话信任影响",
+                            "always_confirm")
+
+        # 2.6) 来源闸（v4.169.0 P0-3）：本轮用户消息没有执行意图（纯提问/讨论/评价）时，
+        #      模型自行发起的**非只读**操作一律要确认。
+        #      只读不拦 —— 问一句"为什么"不该寸步难行；写入/执行/外发则必须问。
+        #      注意 classify() 对未登记的工具有 fail-closed 语义（落 EXTERNAL），
+        #      所以这里 `!= READ` 的写法天然把"没登记的工具"也纳入了确认范围。
+        if not explicit_intent and risk != RiskClass.READ:
+            _what = {RiskClass.WRITE_LOCAL: "写入",
+                     RiskClass.EXEC: "执行",
+                     RiskClass.EXTERNAL: "对外"}.get(risk, "副作用")
+            return Decision(True, True,
+                            f"你本轮的消息没有执行意图，'{name}' 是模型自主发起的{_what}操作，"
+                            f"需要你确认",
+                            "implicit_intent")
+
+        # 3) 会话信任（v4.169.0 P0-5：**绑参数指纹**，不再按工具名放行）
+        #    · "*" / session_trusted —— 用户显式点过「本次会话全部信任」，粗粒度放行；
+        #    · "name#指纹" —— 用户确认过**这一笔**；参数一变就得重新问。
+        if self.session_trusted or "*" in self.session_allow:
+            return Decision(True, False, "本次会话已全部信任", "session:*")
+        if f"{name}#{args_fingerprint(args)}" in self.session_allow:
+            return Decision(True, False, "本次会话已信任该操作（同工具 + 同参数）", "session")
 
         # 4) 对外动作已在白名单 + auto 模式 → 自动放行（保留 v4.74 语义）
         if risk == RiskClass.EXTERNAL and self.mode == "auto":

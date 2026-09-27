@@ -125,7 +125,7 @@ toc = sorted(za.toc)
 want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         "video_pipeline", "vision_qc", "director_panel", "director_web",
         "legion_worker", "agent_node", "agent", "ui", "tools", "core_agnes",
-        "core.agnes", "legion", "permissions", "config"]
+        "core.agnes", "legion", "permissions", "risk", "config"]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
 print(json.dumps({"toc": toc, "present": present, "info": info}, ensure_ascii=False))
@@ -207,7 +207,14 @@ def main():
                          "praise", "negation", "imperative",
                          # v4.168.3：否定判据两道闸（长度 + 位置）
                          "_neg_hits", "_neg_is_constraint",
-                         "_NEG_MAX_LEN", "_TASK_VERB_RE"],
+                         "_NEG_MAX_LEN", "_TASK_VERB_RE",
+                         # v4.169.0：讨论工具动作判据（双条件 + 引述切分）
+                         "is_discuss_tool_use", "_DISCUSS_KW",
+                         "_TOOL_ACTION_RE", "_TOOL_DOMAIN_KW"],
+        "permissions": ["explicit_intent", "args_fingerprint", "is_trusted",
+                        # 两道新闸的 rule 名（常量字符串）
+                        "implicit_intent", "always_confirm"],
+        "risk": ["ALWAYS_CONFIRM"],
         "legion_permissions": ["grant_wave", "LegionPermissionAdapter"],
         "task_graph": ["incomplete", "__incomplete__"],
         "vision_qc": ["qc_skipped_no_key", "qc_pass", "encode_image_for_qc",
@@ -232,12 +239,18 @@ def main():
                # v4.168.3：自动化会话不注入陈旧 goal + 内部标注不外泄
                "_session_carries_automation", "_prompt_section_session_goal",
                "_AUTO_TASK_PREFIX", "_META_SILENCE_RULE",
-               "本会话说明", "元认知说明"],
+               "本会话说明", "元认知说明",
+               # v4.169.0：搜索按需 + 会话清信任 + 本轮执行意图
+               "_needs_web_search", "_SEARCH_VERB_KW",
+               "_last_user_intent_is_action", "_reset_session_trust",
+               "_SEARCH_STRONG_FACT_KW"],
         "agent": ["is_non_action_message", "_internal",
                   # v4.168.1：程序化抓取否决 + 裸 URL 判据
                   "_prog_fetch_intent", "_is_bare_url", "_PROG_FETCH_KW",
                   # v4.168.2：assistant 消息带上思考过程
-                  "reasoning_content"],
+                  "reasoning_content",
+                  # v4.169.0：run_workflow 过闸 + 硬确认档 force 通道
+                  "_run_workflow_guarded", "explicit_intent", "_confirm_force"],
     }
     for mod, keys in marks.items():
         mi = info.get(mod) or {}
