@@ -210,7 +210,11 @@ def main():
                          "_NEG_MAX_LEN", "_TASK_VERB_RE",
                          # v4.169.0：讨论工具动作判据（双条件 + 引述切分）
                          "is_discuss_tool_use", "_DISCUSS_KW",
-                         "_TOOL_ACTION_RE", "_TOOL_DOMAIN_KW"],
+                         "_TOOL_ACTION_RE", "_TOOL_DOMAIN_KW",
+                         # v4.173.0：附件名不得点着判据（归一化入口统一剥离）
+                         # ⚠️ 标记用正则**变量名**而不是中文字面量 —— 源码里那段用的是
+                         # \uXXXX 转义，写字面量会查不到（假红）。
+                         "strip_attachment_refs", "_ATTACH_REF_RE"],
         "permissions": ["explicit_intent", "args_fingerprint", "is_trusted",
                         # 两道新闸的 rule 名（常量字符串）
                         "implicit_intent", "always_confirm"],
@@ -251,7 +255,9 @@ def main():
                # v4.169.0 批次B：复杂度判定接 route_judge + tool_choice 记录
                "_is_complex_v1", "route_judge", "_last_tool_choice",
                # v4.172.0：第4处判据同源 + guard 命中时的内部指令
-               "_needs_tool_intent", "本轮不要使用任何工具"],
+               "_needs_tool_intent", "本轮不要使用任何工具",
+               # v4.173.0：附件名不得点着判据 + 附件路径基准归口
+               "_strip_attachment_refs", "_director_kw_same_sentence"],
         "agent": ["is_non_action_message", "_internal",
                   # v4.168.1：程序化抓取否决 + 裸 URL 判据
                   "_prog_fetch_intent", "_is_bare_url", "_PROG_FETCH_KW",

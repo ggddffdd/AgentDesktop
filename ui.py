@@ -1676,22 +1676,55 @@ def _model_supports_vision(model):
     ))
 
 
+def _strip_attachment_refs(text):
+    """剥掉附件 / 文件引用标记（v4.173.0）。
+
+    **实现唯一来源在 `intent_guard.strip_attachment_refs`** —— 同一份剥法服务两处：
+      ① 本文件的导演台判据（`_is_director_command`）；
+      ② `intent_guard` 的全部判据（归一化入口 `_norm` 里调用）。
+    分两份写迟早漂移，而漂移的后果正是「一处的文件名能点着判据、另一处不能」。
+    这里只转发，不重复实现。
+
+    剥掉的行：`[文件: x]` / `[文件不存在: x]` / `[非图片文件: x]` / `[file: x]`
+    / `[图片已粘贴 N]`。只剥标记本身，正文一个字不动。
+    """
+    from intent_guard import strip_attachment_refs
+    return strip_attachment_refs(text)
+
+
 def _extract_file_image_parts(text, app_dir):
     """v4.102 hotfix：从文本中的 [文件: path] / [file: path] 标记提取图片，
     转为 OpenAI 兼容的 image_url content parts。
 
     返回 (clean_text, image_parts)。只处理真实存在的图片文件；不存在或非图片文件
     会在原处保留提示文本，避免模型误解。clean_text 已去掉被成功加载图片的标记。
+
+    v4.173.0 修路径基准（实测事故）：附件由发送侧复制到 **WORKSPACE_DIR**/incoming
+    （v4.164.0 运行数据归口），但本函数此前只按 `app_dir` 解析 —— 于是附件明明在
+    `~/Documents/小臭玩AI/incoming/`，这里却判「文件不存在」，模型既收不到图、
+    也拿不到可用路径。与 `tools.tool_read_file` 统一口径：**工作区优先，程序目录回退**。
     """
     import base64, mimetypes
     pattern = re.compile(r"\[(?:\u6587\u4ef6|file):\s*([^\]\n]+)\]")
     image_parts = []
 
+    def _resolve(rel):
+        """相对路径：先按工作区解析，未命中回退程序目录（兼容历史相对路径）。"""
+        if os.path.isabs(rel):
+            return os.path.normpath(rel)
+        for _base in (WORKSPACE_DIR, app_dir):
+            try:
+                cand = os.path.normpath(os.path.join(_base, rel))
+            except Exception:
+                continue
+            if os.path.isfile(cand):
+                return cand
+        # 都不存在：给工作区下的路径（提示里展示的是 rel，这里只用于判断）
+        return os.path.normpath(os.path.join(WORKSPACE_DIR, rel))
+
     def _replace(m):
         rel = m.group(1).strip()
-        # 相对路径以 app_dir 为基准解析；incoming/xxx 即可定位
-        path = os.path.join(app_dir, rel) if not os.path.isabs(rel) else rel
-        path = os.path.normpath(path)
+        path = _resolve(rel)
         if not os.path.isfile(path):
             return f"\n[文件不存在: {rel}]\n"
         ext = os.path.splitext(path)[1].lower().lstrip(".")
@@ -10524,21 +10557,54 @@ class ChatWindow(QMainWindow):
                           "生成到哪", "到哪一步", "卡在哪", "到哪了", "停在哪",
                           "还没", "没生成", "没好", "没出", "没跑")
 
+    @staticmethod
+    def _director_kw_same_sentence(t, objs, verbs):
+        """对象词与动作词必须落在**同一句**内（v4.173.0）。
+
+        只按句末标点断句（。！？；换行），**不按逗号断** ——
+        「帮我把第三镜的关键帧，改成夜晚」里的逗号是有意义的停顿，不能因此漏判。
+        这一道挡的是「跨句/跨附件各出一个词、凑成一对」的假命中。
+        """
+        for sent in re.split(r"[\u3002\uff01\uff1f\uff1b\n]+", t):
+            if not sent:
+                continue
+            if any(o in sent for o in objs) and any(v in sent for v in verbs):
+                return True
+        return False
+
     def _is_director_command(self, text):
         """v4.106：是否导演台对话指令（查进度 / 改分镜 / 重生成关键帧·三视图 / 合成）。
-        命中 → 普通模式自动进 Agent，且升舱 DeepSeek（director_* 工具意图）。"""
+        命中 → 普通模式自动进 Agent，且升舱 DeepSeek（director_* 工具意图）。
+
+        v4.173.0 修误判（实测事故：消息被整条吞掉）
+          大哥发的这条被判成导演台指令，直接渲染「这条像给导演台的指令」、不处理：
+            「这几天都在修BUG，我花了大价钱调GPT高级模型弄的，还好现在都修完了
+              [文件不存在: incoming/对话误调用工具BUG修改方案_v4.164.0_20260927.md]
+              [文件不存在: incoming/Agent军团模块改进建议_v4.164.0_20260927.md]
+              [文件不存在: incoming/导演台模块改进建议_v4.164.0_20260927.md]」
+          回放证实：**正文里 0 个对象词、0 个动作词**（去掉附件后判据返回 False），
+          但两个词分别来自两个**附件名** ——「导演台」出自「导演台模块改进建议…md」、
+          「修改」出自「…BUG修改方案…md」。旧判据只要求「全文出现对象词」且
+          「全文出现动作词」，跨附件凑对就命中。
+
+        两道修：
+          ① 判据前剥掉附件/文件引用 —— **文件名不是用户意图**（`_strip_attachment_refs`）；
+          ② 对象词与动作词必须**同句**（`_director_kw_same_sentence`）。
+        """
         if not text:
             return False
-        t = text.lower()
+        t = _strip_attachment_refs(text).lower()
+        if not t:
+            return False
         if self._message_is_statement_only(text):
             return False
         # 进度查询：「导演台进度怎么样 / 分镜跑到哪了」
-        if any(o in t for o in self._DIRECTOR_STATUS_KW) and \
-                any(q in t for q in self._DIRECTOR_STATUS_Q):
+        if self._director_kw_same_sentence(t, self._DIRECTOR_STATUS_KW,
+                                           self._DIRECTOR_STATUS_Q):
             return True
         # 修改指令：「把第3镜的关键帧改成夜晚 / 主角换成短发 / 合成成片」
-        return any(o in t for o in self._DIRECTOR_OBJ_KW) and \
-            any(v in t for v in self._DIRECTOR_VERB_KW)
+        return self._director_kw_same_sentence(t, self._DIRECTOR_OBJ_KW,
+                                               self._DIRECTOR_VERB_KW)
 
     def _message_is_topic_only(self, text):
         """v4.56：用户消息是否属于"列方向/选题/盘点"型需求，且**不**含执行意图。
