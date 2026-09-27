@@ -7595,10 +7595,19 @@ class ChatWindow(QMainWindow):
         base = self.cfg["system_prompt"]
         base += "\n\n" + self._PERMISSION_RULES
         # 本会话最初目标——注入到顶部，让模型无论多轮都记得最初要干什么
+        # v4.168.1（BUG 修）：必须**明确标注这只是背景**。
+        # 实测事故：会话首条消息是「帮我写一段人生感悟口播稿…」，之后用户发「继续」
+        # 走的是另一条自动化任务；模型却把这段陈旧的「本会话目标」当成当前任务，
+        # 又去写了一遍口播稿（用户原话：「这次你又自己加上了口播稿任务」）。
+        # 背景 ≠ 指令：本轮做什么，只看最后一条用户消息。
         try:
             sess = self.store.active() if hasattr(self, "store") else None
             if sess and getattr(sess, "goal", ""):
-                base += "\n\n【本会话目标（首条用户消息）】\n" + sess.goal
+                base += ("\n\n【本会话最初目标（**仅供参考的背景**，不是本轮指令）】\n"
+                         + sess.goal
+                         + "\n\n（注意：以上是本会话第一句用户原话，只帮你理解上下文。"
+                           "**本轮该做什么，以最后一条用户消息为准**；"
+                           "它没让你做的事，不要主动去做。）")
         except Exception:
             pass
         # 按需触发判断用的用户消息（L2）
@@ -9156,6 +9165,59 @@ class ChatWindow(QMainWindow):
         return any(k in t for k in ("颠覆认知", "真好用", "太强了", "真强", "效果真",
                                     "好厉害", "绝了", "厉害", "惊艳", "真不错", "做得好"))
 
+    # ---------- v4.168.1：强制工具的自检（防"让 A 工具填 B 参数"的荒谬注入）----------
+    @staticmethod
+    def _tool_in_list(tools, name):
+        """该工具是否真的在本轮工具表里。
+
+        宁可**不强制**，也不要强制一个不存在的工具 —— 后者会注入
+        「必须调用 X」的伪指令，模型只能编造参数或空转，而用户看到的是一条
+        理直气壮的"系统强制指令"（最难排查的那类假故障）。
+        `tools` 为空/None（普通对话模式）时一律视为"不可用"。
+        """
+        if not name:
+            return False
+        try:
+            for t in list(tools or []):
+                fn = (t or {}).get("function") or {}
+                if fn.get("name") == name:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    @staticmethod
+    def _tool_param_hint(tools, name, max_n=6):
+        """从工具**自己的 schema** 里取参数名，拼成一句人话提示。
+
+        为什么必须这样做（2026-09-27 实测事故）：原实现无论强制哪个工具，
+        都在注入文案里硬编码「如 prompt / duration / aspect / dialogue 等」——
+        那是 video_gen 的签名。于是当路由强制 browser_open（只接受 url）时，
+        注入出来的是「必须调用 browser_open（如 prompt / duration / …）」这种
+        自相矛盾的指令，模型要么编造参数、要么直接摆烂。
+        取不到就返回空串，由调用方退回"按 schema 传参"的通用话术。
+        """
+        if not name:
+            return ""
+        try:
+            for t in list(tools or []):
+                fn = (t or {}).get("function") or {}
+                if fn.get("name") != name:
+                    continue
+                params = fn.get("parameters") or {}
+                props = params.get("properties") or {}
+                req = [x for x in (params.get("required") or []) if x in props]
+                names = req + [k for k in props if k not in req]
+                if not names:
+                    return ""
+                shown = names[:max_n]
+                head = "（必填）" if req else ""
+                tail = "" if len(names) <= max_n else " 等"
+                return "、".join(shown) + tail + head
+        except Exception:
+            return ""
+        return ""
+
     def _is_reasoning_model(self, model, base_url=""):
         """v4.102 fix10：判断当前模型是否为「思考/推理模式」模型。
         DeepSeek 官方推理模型（例如 deepseek-flash）不支持 tool_choice="required"
@@ -9276,6 +9338,17 @@ class ChatWindow(QMainWindow):
                     _guard_block = ",".join(_ig.why_blocked(_last_user_text))
             except Exception:
                 _guard_block = ""
+        # v4.168.1（BUG 修）：强制工具必须先证明它**真的在这次调用的工具表里**。
+        # 否则会注入一条「必须调用 X」的伪指令而 X 根本不可用 ——
+        # 模型只能编造参数或空转，用户看到的却是一条理直气壮的"系统强制指令"。
+        # （实测事故：路由把「requests 直连 https://github.com/trending」判成浏览器
+        #   意图，于是每天注入「必须调用 browser_open」+ 视频参数示例。）
+        if force_tool and not self._tool_in_list(tools, force_tool):
+            try:
+                log.warning("路由：强制工具 %s 不在本轮工具表中，已放弃强制", force_tool)
+            except Exception:
+                pass
+            force_tool = None
         # v4.60：强制调用指定工具（如 sys_info / video_gen），优先级最高
         if _guard_block:
             body["tool_choice"] = "none"
@@ -9291,11 +9364,18 @@ class ChatWindow(QMainWindow):
                 # "required"，这里连 force_tool 也要豁免，否则视频/生图首步直接 400 → 空响应）。
                 # 改为在消息尾部注入强制指令，让思考模型自然决定调用指定工具，
                 # 不设 tool_choice（思考模式默认行为）。
+                #
+                # v4.168.1：参数示例**从该工具自己的 schema 里取**，不再硬编码
+                # （此前无论强制哪个工具都写「如 prompt / duration / aspect / dialogue」，
+                #   强制 browser_open 时就变成"让浏览器工具填视频参数"的荒谬指令）。
+                _ph = self._tool_param_hint(tools, force_tool)
+                _arg_hint = (f"该工具的参数为：{_ph}。请按它传参，不要臆造参数。"
+                             if _ph else "请严格按该工具的 schema 传参，不要臆造参数。")
                 _ft_instr = (
                     "【系统强制指令，非用户请求】"
                     f"当前任务必须通过调用工具 {force_tool} 完成。"
-                    f"请直接调用 {force_tool} 工具：把用户请求的全部必要信息整理为它的参数"
-                    f"（如 prompt / duration / aspect / dialogue 等），一次调用它并生成结果。"
+                    f"请直接调用 {force_tool} 工具：{_arg_hint}"
+                    f"把用户请求里的对应信息整理好，一次调用它并完成。"
                     f"不要调用其他无关工具，也不要只描述计划，必须真实调用 {force_tool}。"
                 )
                 body["messages"] = list(messages) + [

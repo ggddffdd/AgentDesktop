@@ -219,12 +219,22 @@ def main():
         # 实现在 video-agent 的内核里（core_agnes 只是桥接，所以标记要打在 core.agnes）
         "core.agnes": ["resume_video", "cancel_token", "AgnesCancelled",
                        "is_cancel_error", "check_cancel", "on_submit"],
-        "ui": ["blocks_tool_call", "why_blocked", "_guard_block"],
-        "agent": ["is_non_action_message", "_internal"],
+        "ui": ["blocks_tool_call", "why_blocked", "_guard_block",
+               # v4.168.1：伪强制注入修复 —— 参数提示按 schema 取 + 工具表校验
+               "_tool_param_hint", "_tool_in_list",
+               "不要臆造参数", "以最后一条用户消息为准"],
+        "agent": ["is_non_action_message", "_internal",
+                  # v4.168.1：程序化抓取否决 + 裸 URL 判据
+                  "_prog_fetch_intent", "_is_bare_url", "_PROG_FETCH_KW"],
     }
     for mod, keys in marks.items():
         mi = info.get(mod) or {}
-        hay = set(mi.get("consts") or []) | set(mi.get("names") or [])
+        # ⚠️ 必须用**子串**匹配，不能拿 set 做精确匹配 ——
+        # 标记里既有 co_names 里的标识符（`blocks_tool_call`），
+        # 也有常量里的**短语**（`不要臆造参数` 其实是
+        # `"请严格按该工具的 schema 传参，不要臆造参数。"` 的一部分）。
+        # 第一版用精确匹配，把"确实在包里"的短语判成了 FAIL（假红）。
+        hay = "\n".join(mi.get("consts") or []) + "\n" + "\n".join(mi.get("names") or [])
         for k in keys:
             check(f"{mod} 含 {k}", k in hay)
 

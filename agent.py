@@ -497,7 +497,25 @@ class AgentWorker(QThread):
         "知乎", "微博", "b站", "bilibili", "淘宝", "京东", "百度", "哔哩哔哩",
         "谷歌", "google", "github", "csdn", "掘金", "搜狐", "网易", "腾讯网",
     )
-    _BROWSER_OPEN_VERB_KW = ("打开", "访问", "浏览", "逛逛", "逛一下", "看一下", "看看", "截", "抓取")
+    # v4.103 五次：浏览器「打开」类动词。
+    # v4.168.1 收窄：**移除「抓取」** —— 它是"抓下来喂程序"的意思（系统提示里
+    # 「抓取」本来就映射 web_fetch），不是"打开这个网页"。
+    # 事故：自动化任务写「requests 直连 https://github.com/trending」，被
+    # 「抓取/URL 同现」判成浏览器意图，每天被强制调 browser_open。
+    _BROWSER_OPEN_VERB_KW = ("打开", "访问", "浏览", "逛逛", "逛一下", "看一下", "看看", "截")
+
+    # v4.168.1：**程序化抓取**信号 —— 命中即一票否决浏览器路由。
+    # 理由：这些词说明用户要的是"把数据拿到手"，通道由任务自己指定
+    # （RSS / requests / API / 浏览器渲染只是兜底手段之一），
+    # 不该由本地判据替他选浏览器，更不该注入"必须调用 browser_open"的伪指令。
+    _PROG_FETCH_KW = (
+        "抓取", "爬取", "爬虫", "拉取", "采集", "抓下来", "取回来", "爬数据",
+        "rss", "feed", "requests", "urllib", "httpx", "curl",
+        "直连", "服务端直出", "纯 http", "无需浏览器", "不用浏览器", "别上浏览器",
+        "接口", "api.", "/api/", "api.github.com",
+    )
+    # 用于"整句就是一个 URL"的判定与清洗
+    _URL_RE = re.compile(r"(?:https?://|www\.)[^\s，。；、）)】\]\"']+")
 
     # v4.66：工具结果失败标志——用于「连续工具失败」死循环护栏。
     # 仅收录强错误特征，避免普通文本里出现「失败」二字被误判。
@@ -720,6 +738,34 @@ class AgentWorker(QThread):
                     return True
         return False
 
+    # ---------- v4.168.1：浏览器路由的两个新判据 ----------
+    def _prog_fetch_intent(self, text):
+        """是否「程序化抓取」意图（RSS / requests / API / 抓数据落盘…）。
+
+        命中 → 不路由 browser_open。含义是：**把数据拿到手**是目标，
+        通道（RSS/HTTP/渲染）由任务自己决定，本地判据不该替他选浏览器 ——
+        尤其不该注入「必须调用 browser_open」这种伪指令。
+        """
+        if not text:
+            return False
+        t = text.lower()
+        return any(k in t for k in self._PROG_FETCH_KW)
+
+    def _is_bare_url(self, text):
+        """整句基本就是一个 URL —— 用户粘贴链接，默认意图是"打开看看"。
+
+        判据：把 URL 抠掉、再抹掉空白与标点后，剩下的可读内容 ≤ 4 字。
+        （「看看 https://x.com」剩「看看」也算 —— 反正"看看"本身也是打开动词。）
+        """
+        if not text or not self._URL_RE.search(text):
+            return False
+        try:
+            rest = self._URL_RE.sub(" ", text)
+            rest = re.sub(r"[\s，。；、,;:：!！?？~～—\-—()（）【】\[\]]+", "", rest)
+            return len(rest) <= 4
+        except Exception:
+            return False
+
     def _route_force_tool(self, text, prev_text=None):
         """v4.80：依据用户【当前】原话推断最该调用的工具，返回工具名或 None。
         仅用于 step1 强制指定 tool_choice：视频优先于图片（『图生视频』含『图』但属视频）；
@@ -781,9 +827,28 @@ class AgentWorker(QThread):
         #    生成意图】时兜底生效，用户在谈论/分析某事而非下达生成指令时，不强制任何工具。
         if any(k in text for k in self._DISCUSS_KW):
             return None
+        # v4.168.1（BUG 修）：**程序化抓取一票否决**必须先于浏览器路由。
+        #
+        # 事故（2026-09-27，用户第 4 次遇到）：自动化任务「每日GitHub热榜」的正文里
+        # 写着「T0 首选 requests 直连 https://github.com/trending?since=daily」——
+        # 这里的 URL 是**数据源清单**，不是"打开这个网页"的指令。
+        # 但旧判据只看"文本里含不含 URL"就 return "browser_open"，
+        # 于是每天 09:00 的日常任务都被注入一条
+        # 「【系统强制指令】当前任务必须通过调用工具 browser_open 完成」的伪用户指令
+        # （用户看到的正是这条，且连着看了一周）。
+        # 声明要抓取/走 RSS / 走 requests / 走 API / 落盘整理时，一律不路由浏览器。
+        if self._prog_fetch_intent(text):
+            return None
         # v4.103 五次：浏览器路由（先于搜索——「打开xx网页搜一下」应进浏览器而非纯搜索）
+        # v4.168.1：URL 分支不再"见 URL 就开浏览器"，必须同时是**打开意图**：
+        #   ① 文本里有打开类动词（打开/访问/浏览/看看…），或
+        #   ② 整句基本就是一个 URL（用户粘贴链接 = 默认"打开看看"）。
+        # 否则只把 URL 当资料（如任务描述里的源清单）→ 不强制任何工具。
         if any(k in t for k in self._BROWSER_URL_KW):
-            return "browser_open"
+            if (any(v in text for v in self._BROWSER_OPEN_VERB_KW)
+                    or self._is_bare_url(text)):
+                return "browser_open"
+            return None
         if (any(k in text for k in self._BROWSER_SITE_KW)
                 and any(v in text for v in self._BROWSER_OPEN_VERB_KW)):
             return "browser_open"
