@@ -222,10 +222,15 @@ def main():
         "ui": ["blocks_tool_call", "why_blocked", "_guard_block",
                # v4.168.1：伪强制注入修复 —— 参数提示按 schema 取 + 工具表校验
                "_tool_param_hint", "_tool_in_list",
-               "不要臆造参数", "以最后一条用户消息为准"],
+               "不要臆造参数", "以最后一条用户消息为准",
+               # v4.168.2：思考模式必须回传 reasoning_content + 400 要能自证
+               "_ensure_reasoning_content", "_is_thinking_channel",
+               "_api_error_text", "reasoning_content"],
         "agent": ["is_non_action_message", "_internal",
                   # v4.168.1：程序化抓取否决 + 裸 URL 判据
-                  "_prog_fetch_intent", "_is_bare_url", "_PROG_FETCH_KW"],
+                  "_prog_fetch_intent", "_is_bare_url", "_PROG_FETCH_KW",
+                  # v4.168.2：assistant 消息带上思考过程
+                  "reasoning_content"],
     }
     for mod, keys in marks.items():
         mi = info.get(mod) or {}

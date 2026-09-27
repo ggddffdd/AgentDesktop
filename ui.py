@@ -1758,8 +1758,20 @@ def _sanitize_msg_for_api(m, vision_ok=False):
         if has_img:
             c = (c + "\n[图片]") if c else "[图片]"
     if not isinstance(c, str) or not c.strip():
+        # v4.168.2：纯工具调用的 assistant（content 为空）也要放行 ——
+        # 它可能是思考模式的 tool_calls 载体，丢掉会让配对断裂（400）。
+        if role == "assistant" and m.get("tool_calls"):
+            sm = {"role": role, "content": ""}
+            if "reasoning_content" in m:
+                sm["reasoning_content"] = m.get("reasoning_content") or ""
+            return sm
         return None
-    return {"role": role, "content": c}
+    sm = {"role": role, "content": c}
+    # v4.168.2：`reasoning_content` 必须原样带回去（思考模式硬要求，缺则 400）。
+    # 空串也算"带上"（实测通过），所以这里不做 truthy 判断。
+    if "reasoning_content" in m:
+        sm["reasoning_content"] = m.get("reasoning_content") or ""
+    return sm
 
 
 def _repair_tool_pairs(msgs):
@@ -1800,6 +1812,64 @@ def _repair_tool_pairs(msgs):
 def _tool_ids_present(msgs):
     """当前消息序列里实际存在的 tool 结果 id 集合。"""
     return {m.get("tool_call_id") for m in msgs if m.get("role") == "tool"}
+
+
+def _api_error_text(exc, limit=800):
+    """从 HTTP 错误里读出 **API 的真实报错文本**（v4.168.2）。
+
+    为什么必须读：`str(HTTPError)` 只有「HTTP Error 400: Bad Request」这一句，
+    API 真正的原因全在响应体里。此前出站 400 时日志只有那句废话，
+    「为什么 400」完全无从查 —— 本次事故就是靠它才定位到 reasoning_content。
+    `HTTPError.read()` 只能读一次，读完即丢弃（我们要重试就重新发新请求）。
+    """
+    try:
+        body = exc.read()
+    except Exception:
+        return ""
+    try:
+        if isinstance(body, (bytes, bytearray)):
+            body = body.decode("utf-8", "replace")
+    except Exception:
+        pass
+    return str(body or "")[:limit]
+
+
+def _is_thinking_channel(base_url, model):
+    """该通道是否处于「思考模式」——即本轮必须回传 `reasoning_content`。
+
+    实测（2026-09-27，api.deepseek.com / deepseek-flash）：
+      只带 role/content 的 assistant 消息 → 400
+        「The `reasoning_content` in the thinking mode must be passed back to the API.」
+      带 `reasoning_content`（**空串也算**）→ 200。
+    所以只要走思考通道，出站前必须给每条 assistant 消息补上该字段。
+
+    刻意收窄到"确实要求它"的通道（DeepSeek 官方 + 名字里带 reason/think 的模型），
+    避免给不需要的通道塞未知字段。
+    """
+    b = (base_url or "").lower()
+    m = (model or "").lower()
+    if "api.deepseek.com" in b:
+        return True
+    if re.search(r"(reasoner|reasoning|thinking|think|-r1)", m):
+        return True
+    return False
+
+
+def _ensure_reasoning_content(messages, required=True):
+    """思考模式下，给每条 assistant 消息补上 `reasoning_content`（缺则补空串）。
+
+    只补不改：返回**新列表**，原对象一字不动（AgentWorker 靠 `self.messages`
+    的对象身份做 `_seq` 回写对齐，绝不能就地改）。
+    """
+    if not required:
+        return messages
+    out = []
+    for m in (messages or []):
+        if (isinstance(m, dict) and m.get("role") == "assistant"
+                and "reasoning_content" not in m):
+            m = {**m, "reasoning_content": ""}
+        out.append(m)
+    return out
 
 
 def _build_api_history(messages, vision_ok=False, max_history=None):
@@ -1848,6 +1918,13 @@ def _build_api_history(messages, vision_ok=False, max_history=None):
             sm = dict(sm)
             sm["tool_calls"] = [tc for tc in m["tool_calls"]
                                 if isinstance(tc, dict) and tc.get("id")]
+        # v4.168.2：白名单原为「role/content/tool_calls/tool_call_id」四项，
+        # 但 `reasoning_content` 是**思考模式的硬要求**（DeepSeek 官方实测：
+        # assistant 消息缺该字段 → 400「must be passed back to the API」）。
+        # 把它加进白名单：有就带着，没有就由出站门 `_ensure_reasoning_content` 补空串。
+        if role == "assistant":
+            sm = dict(sm)
+            sm.setdefault("reasoning_content", m.get("reasoning_content") or "")
         cleaned.append(sm)
     cleaned = _repair_tool_pairs(cleaned)
     if max_history and len(cleaned) > int(max_history):
@@ -9289,6 +9366,13 @@ class ChatWindow(QMainWindow):
         if any(isinstance(m, dict) and "_internal" in m for m in messages):
             messages = [{k: v for k, v in m.items() if k != "_internal"}
                         if isinstance(m, dict) else m for m in messages]
+        # v4.168.2（BUG 修）：思考通道必须回传 reasoning_content，否则**从第二轮起必然 400**
+        # （实测：assistant 消息缺该字段 → 「The `reasoning_content` in the thinking
+        #   mode must be passed back to the API.」；空串也算带上）。
+        # 放在这里而不是 `_build_api_history`：因为**运行中新增**的消息不走那里，
+        # 而 400 恰恰多发于第二轮（历史里已经出现 assistant 消息）。
+        if _is_thinking_channel(_base_url, _model):
+            messages = _ensure_reasoning_content(messages, required=True)
         body = {
             "model": _model,
             "messages": messages,
@@ -9418,6 +9502,7 @@ class ChatWindow(QMainWindow):
             _req.add_header("Authorization", f"Bearer {_api_key}")
             _req.add_header("Accept", "text/event-stream")
             _content = ""
+            _reasoning = ""
             _acc = {}
             _u = {}
             _finished = False
@@ -9453,6 +9538,16 @@ class ChatWindow(QMainWindow):
                             _content += delta["content"]
                             if on_delta:
                                 on_delta(_content)
+                        # v4.168.2（BUG 修）：**必须累积思考过程**。
+                        # DeepSeek 思考模式（deepseek-flash）要求：把该轮 assistant 消息
+                        # 回传时必须带上 `reasoning_content`，**缺字段一律 400**
+                        #   「The `reasoning_content` in the thinking mode must be
+                        #     passed back to the API.」
+                        # （空串也算带上，实测 T6 通过）。此前只收 content、
+                        # 出站白名单又把该字段筛掉 → 一旦历史里出现 assistant 消息，
+                        # 走 DeepSeek 通道的调用**从第二轮起必然 400**。
+                        if delta.get("reasoning_content"):
+                            _reasoning += delta["reasoning_content"]
                         for tc in (delta.get("tool_calls") or []):
                             idx = tc.get("index", 0)
                             acc = _acc.setdefault(idx, {"id": "", "function": {"name": "", "arguments": ""}})
@@ -9470,7 +9565,7 @@ class ChatWindow(QMainWindow):
                 _kind = "empty" if _finished else "stream_break"
                 raise _at.AgnesTextError(
                     _kind, "空响应" if _finished else "流中断（无 finish_reason）")
-            return _content, _acc, _u
+            return _content, _acc, _u, _reasoning
 
         def _attempt_model(_m, _strict, _backoff=True):
             """v4.128：用指定模型跑一次完整流程（含既有 stream_options 修复 / 5xx 退避）。
@@ -9486,18 +9581,35 @@ class ChatWindow(QMainWindow):
                 # v4.102 fix12：通道不认识 stream_options 时（多为 HTTP 400），
                 # 去掉该参数重试一次——保持 fix12 之前的行为，绝不因新参数导致调用失败。
                 _code = getattr(e, "code", None)
-                _estr = str(e)
-                if _code in (400, 404) or "stream_options" in _estr or "tool_choice" in _estr:
+                # v4.168.2：**先读 API 的真实报文**，再决定怎么修。
+                # 以前只拿 `str(e)`（=「HTTP Error 400: Bad Request」），
+                # 既判不出原因、也写不进日志 —— 真正的报错被丢掉了。
+                _estr = _api_error_text(e) or str(e)
+                if _estr:
+                    try:
+                        _logging.getLogger("dsdesktop").error(
+                            "模型接口报错（HTTP %s）：%s", _code or "?", _estr[:500])
+                    except Exception:
+                        pass
+                if _code in (400, 401, 403, 404, 422) or "stream_options" in _estr \
+                        or "tool_choice" in _estr:
                     try:
                         body.pop("stream_options", None)
                         # v4.162：思考模型（DeepSeek/Agnes 3.x）不容忍 tool_choice 时，
                         # 降级为不设（默认/auto）后重试——否则 400 直接空响应。
                         if "tool_choice" in _estr:
                             body.pop("tool_choice", None)
+                        # v4.168.2：思考模式要求回传 reasoning_content —— 报文点名它时
+                        # 现场把消息补齐再重试（出站门已兜一层，这里是最后保险）。
+                        if "reasoning_content" in _estr:
+                            body["messages"] = _ensure_reasoning_content(
+                                body.get("messages"), required=True)
                         return _stream_once(body, strict=_strict)
                     except Exception as e2:
                         # v4.108 H-04：失败必须上抛交给 agent.py 兜底弹错，不能吞掉装"成功"。
-                        _logging.getLogger("dsdesktop").error("Agent 流式调用失败: %s", e2)
+                        _logging.getLogger("dsdesktop").error(
+                            "Agent 流式调用失败: %s（接口报文：%s）",
+                            e2, (_api_error_text(e2) or "")[:300])
                         raise
                 elif _backoff and _code in (429, 500, 502, 503, 504):
                     # v4.108 H-04：限流/网关抖动 → 退避重试 2 次（2s/4s），仍失败则上抛。
@@ -9520,7 +9632,7 @@ class ChatWindow(QMainWindow):
         for _ci, _cm in enumerate(_chain):
             _is_last = _ci == len(_chain) - 1
             try:
-                full_content, tool_acc, _usage = _attempt_model(
+                full_content, tool_acc, _usage, _reasoning = _attempt_model(
                     _cm, _strict, _backoff=(not _strict or _is_last))
             except Exception as e:
                 if _at is not None and not _is_last and _at.is_fallbackable(e):
@@ -9604,6 +9716,10 @@ class ChatWindow(QMainWindow):
         return {
             "content": full_content,
             "tool_calls": tool_calls,
+            # v4.168.2：把本轮的思考过程一起回传。DeepSeek 思考模式要求下一轮
+            # 必须带回 assistant 的 `reasoning_content`（缺则 400）；
+            # 非思考通道拿到空串无副作用。
+            "reasoning_content": _reasoning,
             "usage": {"prompt_tokens": _pt, "completion_tokens": _ct,
                       "total_tokens": _pt + _ct},
             "model": _model,

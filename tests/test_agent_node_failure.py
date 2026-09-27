@@ -18,10 +18,21 @@
 """
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
+# ⚠️ v4.168.2 修：本套件会真的执行工具（含"不存在的工具"用例），
+# 而工具的审计/结构化日志默认写到**用户真实目录**（~/Documents/小臭玩AI/agent_log.db）。
+# 实测污染：用户的日志库里多出 9 条 `执行工具: not_allowed_tool`，
+# 与真实会话混在一起，事后排查时把我误导了一轮。
+# 规矩：测试必须在**导入被测模块之前**把数据/日志目录改道到临时沙箱。
+_SBX = tempfile.mkdtemp(prefix="xc_verify_sbx_agentnode_")
+os.environ["XC_USER_DATA_DIR"] = os.path.join(_SBX, "userdata")
+os.environ["XC_LOG_DIR"] = os.path.join(_SBX, "logs")
+os.environ["XC_LEGION_DIR"] = os.path.join(_SBX, "legion")
 
 import agent_node as an  # noqa: E402
 

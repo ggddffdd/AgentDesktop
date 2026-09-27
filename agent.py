@@ -1285,6 +1285,13 @@ class AgentWorker(QThread):
                 self._emit_status("⚠️ 追问过多，已自动停止")
                 break
             asst = {"role": "assistant", "content": content}
+            # v4.168.2（BUG 修）：**把思考过程带上**。DeepSeek 思考模式下，
+            # 下一轮请求里这条 assistant 消息必须含 `reasoning_content`，
+            # 否则接口直接 400「The `reasoning_content` in the thinking mode must
+            # be passed back to the API.」—— 表现就是"第一轮能跑、第二轮必挂"。
+            # （出站门 ui._ensure_reasoning_content 会兜底补空串，但真实思考内容
+            #   对模型连续性更有用，所以这里原样带上。）
+            asst["reasoning_content"] = resp.get("reasoning_content") or ""
             # v4.59 追踪：模型决策
             _tracer.trace(step, "thinking",
                           model_summary=content[:200],
@@ -1454,6 +1461,8 @@ class AgentWorker(QThread):
                         break
                     content = resp.get("content") or ""
                     asst = {"role": "assistant", "content": content}
+                    # v4.168.2：续跑路径同样带上思考过程（否则第二轮 400，同上）
+                    asst["reasoning_content"] = resp.get("reasoning_content") or ""
                     if resp.get("tool_calls"):
                         asst["tool_calls"] = resp["tool_calls"]
                     self.messages.append(asst)

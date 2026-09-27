@@ -9,6 +9,69 @@
 
 ---
 
+## v4.168.2 — 2026-09-27
+
+**修「模型调用 400」真凶：思考模式必须回传 `reasoning_content`**
+
+> 用户实测：再跑一次「每日GitHub热榜」，任务卡住不动，报
+> `⚠️ 模型调用失败：HTTP Error 400: Bad Request`。
+
+### 真凶（用真实接口逐项实测定位，不是猜的）
+
+日志里那句 `HTTP Error 400: Bad Request` **什么原因都没说** ——
+因为 `str(HTTPError)` 只有这一句，API 的真实报文（在响应体里）被丢掉了。
+
+定位路径：
+1. 会话 / 参数 / 工具 / 消息形态**逐项排除**：单变量全 200，历史清洗后也全 200；
+2. 读 `route_log.jsonl` 发现失败那次被**升舱到 DeepSeek 官方**
+   （`route | deepseek-flash | api.deepseek.com | tool_intent`），且**其后没有 usage 记录**；
+3. 在真实通道上复现，拿到 API 报文：
+
+```
+400  The `reasoning_content` in the thinking mode must be passed back to the API.
+```
+
+### 规则（`deepseek-flash` 实测）
+
+| 请求里的 assistant 消息 | 结果 |
+|---|---|
+| 只有 `role` / `content` | **400**（缺 `reasoning_content`） |
+| 只有 `role` / `content` / `tool_calls` | **400** |
+| 带 `reasoning_content="真实的思考内容"` | 200 |
+| 带 `reasoning_content=""`（**空串**） | **200** |
+
+→ **思考模式下，每条 assistant 消息都必须带 `reasoning_content`，空串也算。**
+
+### 为什么表现为「第一轮能跑、第二轮必挂」
+
+- 本项目出站消息白名单只有 `role/content/tool_calls/tool_call_id` 四项，
+  **把 `reasoning_content` 筛掉了**；`_stream_once` 也从不累积它。
+- 第一轮请求的 messages 末尾是 user（没有 assistant 要回传）→ 通过；
+  只要这一轮产生过 assistant 消息，**下一轮就必然 400**。
+- 只在**升舱到 DeepSeek 思考通道**的任务上出现（闲聊走 Agnes 不受影响）。
+
+### 修法
+
+1. `_stream_once` 累积 `delta.reasoning_content`，随响应一起回传；
+2. 出站口新增 `_ensure_reasoning_content()`：走思考通道时，
+   给**每条 assistant 消息**补齐该字段（缺则空串，只补不改、不破坏 `_seq` 回写）；
+3. 白名单（`_sanitize_msg_for_api` / `_build_api_history`）**保留**该字段；
+4. `agent.py` 两处 `asst` 构造带上真实思考内容；
+5. **400 必须自证**：新增 `_api_error_text()` 读出 API 真实报文，写进日志与错误信息 ——
+   以后任何 400 都不再是「Bad Request」这种等于没说的提示；
+6. 报文点名 `reasoning_content` 时，现场补齐消息并**自动重试一次**。
+
+### 测试
+
+- 新增 `tests/test_thinking_channel_reasoning.py`（50 条）：通道判定真值表、
+  补齐函数行为（含"不改原对象"）、白名单保留、源码契约、`_api_error_text` 行为、
+  以及**负面验证**（原样发送必然违反接口要求 → 过出站门后 0 违规）。
+- **真实接口对照证明**：同一消息形态，修复前 400、经出站门补齐后 200。
+- 顺手修测试卫生：`tests/test_agent_node_failure.py` 会把工具执行写进**用户真实日志库**
+  （实测污染 9 条 `not_allowed_tool`，还在排查时误导过一轮）→ 已改道临时沙箱。
+
+---
+
 ## v4.168.1 — 2026-09-27
 
 **修「伪强制工具注入」：路由见 URL 就开浏览器 + 注入文案写着别的工具的签名**
