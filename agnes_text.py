@@ -38,9 +38,12 @@ AGNES_THINKING_MAX_TOKENS = 65536
 
 # ---------------- 域名 ----------------
 # ⚠️ 以本机实测为准，不以官方文档为准：
-# 现有 key 在 apihub 通道实测正常，而官方国内站 api.agnes-ai.cn 属另一套账号体系，
-# 用现有 key 直接 401 无效令牌（2026-08-30 定论）。所以默认仍是 apihub，
-# api 域名只登记为**可选候选**（配置项可切），绝不默认切换。
+# **两个域名 = 两套独立账号体系，key 不通用**（2026-09-28 实测纠正旧结论）——
+#   apihub.agnes-ai.cn ←→ apihub 的 key（旧 key 只在这站有效）
+#   api.agnes-ai.cn    ←→ 国内站的 key（会员账号在此，大哥当前用这个）
+# 拿 key 打 GET /models：200=配对、401=配错站。**域名要跟着 key 走**。
+# 本常量只是"配置都没给"时的兜底默认；运行期实际走 model_profiles["Agnes"].base_url
+# 或 cfg["agnes_base_url"]/cfg["base_url"]（见下方 _creds）。
 AGNES_BASE_DEFAULT = "https://apihub.agnes-ai.cn/v1"
 AGNES_BASE_CN_DOC = "https://api.agnes-ai.cn/v1"
 AGNES_BASE_CANDIDATES = (AGNES_BASE_DEFAULT, AGNES_BASE_CN_DOC)

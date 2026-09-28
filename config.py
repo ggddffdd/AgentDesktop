@@ -1040,8 +1040,11 @@ DEFAULT_CONFIG = {
     # 开思考时 max_tokens 必须给足（思考过程占用输出额度，否则正文被截断）。
     "agnes_thinking_enabled": False,
     "agnes_thinking_max_tokens": 65536,
-    # 域名候选：apihub 是当前 key 实测唯一可用通道（默认）；
-    # api.agnes-ai.cn 为官方国内站（另一套账号体系，现有 key 会 401），仅登记为可选项。
+    # 域名：两个域名 = 两套独立账号体系，**key 不通用**（2026-09-28 实测）——
+    #   api.agnes-ai.cn（官方国内站，会员账号在此）←→ 国内站 key
+    #   apihub.agnes-ai.cn（另一套账号）            ←→ apihub 的 key
+    # 拿 key 打一次 GET /models：200=配对、401=配错站。运行期实际地址见本文件
+    # model_profiles["Agnes"]（优先生效）。本列表仅登记候选、运行期无人读取。
     "agnes_base_candidates": ["https://apihub.agnes-ai.cn/v1", "https://api.agnes-ai.cn/v1"],
     # ---- v4.129：产物落盘分层 ----
     # "dated"（默认）：产物/YYYY-MM-DD/<项目>/<类型>/ —— 按日期与项目归类，不再全平铺；
