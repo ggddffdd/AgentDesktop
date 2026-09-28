@@ -124,3 +124,34 @@ python _hunt_runtime_dir.py --seconds 120 --launch "…\小臭玩AI.exe"
 
 它每秒扫一次目标目录，一旦出现清单里的目录就打印**出现时刻 + 目录内容 + 同一时刻
 `debug.log` 新增了什么**（后者用来对上是哪段逻辑在动）。找到后把输出贴给开发侧即可。
+
+---
+
+## 六、产物清理工具（`tools/cleanup_products.py`）
+
+**用途**：把「小臭玩AI」工作区里闲置超过 30 天的**生成物**移入回收站，回收站再滞留 14 天后真删。
+
+```bash
+python tools/cleanup_products.py                # 预演（默认，只打印将做什么）
+python tools/cleanup_products.py --apply        # 真正执行
+python tools/cleanup_products.py --age-days 60 --keep-days 30   # 改阈值
+```
+
+**五条安全设计**（每一条都是为了「宁可漏不可误」）：
+1. **默认 dry-run** —— 不加 `--apply` 绝不动文件。
+2. **白名单目录**：只扫 `产物`、`incoming`、`videos`、`charts`、`legion_runs`、
+   `legion_reports`、`pages`、`avatars`。
+3. **保护名单永不触碰**：浏览器登录态（`cdp_edge_profile` / `playwright_profile`）、
+   `skills`、`rag_data`、`logs`、`backups`、`config.json`、`agent_log.db`、
+   `legion_auth.jsonl`、回收站自身。
+4. **引用守卫**（关键）：先扫 `sessions.json` / `config.json` / `legion_auth.jsonl`
+   的原文当"引用索引"，凡文件名出现过的**一律保留** —— 因为会话里存着
+   `[文件: incoming/xxx.png]` 这类附件标记和 deliverables 路径，
+   移走它们会让老会话报「文件不存在」（正是 v4.173.0 修过的那类 bug）。
+5. **两段式 + 上限**：先移进 `_trash_产物/<日期>/`（可原样取回，14 天反悔期），
+   再真删；单次上限 3000 个文件 / 3GB，超限只列清单不动手。只删空目录（`rmdir`）。
+
+**已接自动任务**：每周一 09:00 跑一次 `--apply` 并给大哥发简报（automation「产物自动清理（超30天）」）。
+
+**只报告、不自动清的项**：根目录 `tmp_*`（如 `tmp_awesome_gpt/`，是个 clone 来的仓库）、
+`backups/`、`debug.log.1` —— 这些可能还要用，列出清单交给大哥判断。
