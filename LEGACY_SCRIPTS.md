@@ -160,3 +160,27 @@ python tools/cleanup_products.py --age-days 60 --keep-days 30   # 改阈值
 > 名字曾带 `tmp_` 但**不是临时文件** —— 它是 `freestylefly/awesome-gpt-image-2` 的 clone
 > （542 张图 / 311MB），即 `gpt-image2-style-library` 技能的上游样品库。
 > 已进 `PROTECTED` 保护名单，自动清理永不碰。
+
+---
+
+## 七、运行数据目录「改名 / 搬移」的引用检查清单
+
+工作区（`~/Documents/小臭玩AI/`）里的目录改名或搬家时，**光 `mv` 不够** ——
+至少这 5 处会引用旧路径，漏一处就会留下"指向空气"的说明或误判：
+
+| # | 检查点 | 怎么查 | 漏了会怎样 |
+|---|---|---|---|
+| 1 | **清理工具的保护/白名单** | `grep 旧名 tools/cleanup_products.py` | 目录被当垃圾清理 |
+| 2 | **自动任务的 prompt** | 看 `automation_update` 里那条任务的说明 | 每周简报提到不存在的目录 |
+| 3 | **项目文档**（本文件、`BUILD_SANDBOX.md` 等） | `grep -rn 旧名 *.md tools/` | 后人照着过期说明操作 |
+| 4 | **会话/配置** | `grep 旧名 ~/Documents/小臭玩AI/{config,sessions}.json` | 会话里的附件标记失效 |
+| 5 | **技能（SKILL.md）** | `grep -rn 旧名 ~/.workbuddy/skills/` | 技能按旧路径找素材 → 找不到 |
+
+**改完必做两条校验**（否则"删了又好像没删"）：
+1. **数量对齐**：改名前记下 `文件数 / 目录数 / 体量`，改后逐项比对 —— 一致才算搬全；
+   若目录本身是 git 仓库，再 `git -C <新路径> log -1` + `status --porcelain` 确认仓库无损。
+2. **反向确认**：`run_all` 全绿 + 门禁 10/10 + 清理工具 dry-run 里**旧名不再出现**。
+
+> 本次实例：`tmp_awesome_gpt` → `sample_libs/awesome-gpt-image-2`（2026-09-28），
+> 5 处引用全部同步（提交 `b7199cd`）。旧名保留为**历史别名**写进保护名单 ——
+> 这样即使旧备份/旧脚本再引到，也不会误清。
