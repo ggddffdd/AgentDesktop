@@ -77,7 +77,7 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.176.0"
+APP_VERSION = "v4.177.0"
 APP_BUILD_DATE = "2026-09-27"
 # v4.164.0（2026-09-27）**运行数据归口：彻底治「dist 既是运行目录又是分发源」**：
 #   新增 config.WORKSPACE_DIR（默认 ~/Documents/小臭玩AI，与 USER_DATA_DIR 同值，
@@ -1006,6 +1006,15 @@ DEFAULT_CONFIG = {
         "不要把「给我列几个方向」误解成「去搜实时榜单」。\n"
     ),
     "max_history": 30,
+    # v4.177.0：历史**字符预算**（第二道闸 —— 按体量，不是按条数）。
+    #   0 = 关闭（行为与 v4.176 完全一致）。
+    #   80000 的来由：它**不是为了平时省 token**（正常纯文本会话 30 条 ≈ 十几 KB，
+    #   远够不着），而是兜住"条数不多、每条巨大"的灾难 —— 带图历史、Agent 长循环的
+    #   工具结果（实测见过单次 payload 264KB）。留这个数还给 system prompt（技能表 +
+    #   铁律，本身就不小）和模型输出留了余量。
+    #   单位用字符而不是 token：引 tokenizer 要加依赖和打包体积，不划算（见
+    #   ui._fit_history_to_budget 的说明）。
+    "history_char_budget": 80000,
     "search_enabled": True,
     "search_provider": "auto",
     "search_top_k": 5,

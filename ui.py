@@ -1984,7 +1984,46 @@ def _ensure_reasoning_content(messages, required=True):
     return out
 
 
-def _build_api_history(messages, vision_ok=False, max_history=None):
+def _fit_history_to_budget(msgs, budget_chars, min_keep=1):
+    """v4.177.0：按**字符预算**从最旧开始整条丢弃，直到总量装得下。
+
+    为什么要有它：既有的 `max_history` 是**按条数**截断的 —— 条数相同、体量可以差
+    几十倍：30 条纯文本 ≈ 几十 KB，30 条带图/带工具结果的消息能到几百 KB。
+    实测事故：一条带 3 张图的历史让单次 payload 到 **264KB**。条数闸管不住这种情况。
+
+    ⚠️ **刻意用「字符数」而不是真 token**：真 token 要引 tokenizer（新依赖 + 打包体积
+    + 版本漂移），而中英混排下字符数已经是个够用的代理（中文约 1 字符 ≈ 0.6~1 token）。
+    **宁可估得粗，也不引新依赖 —— 好维护优先。**
+
+    ⚠️ **不自己写配对逻辑**：整条丢完可能切断 assistant.tool_calls ↔ tool 的配对，
+    交给既有的 `_repair_tool_pairs` 收尾（分两份实现迟早漂移）。
+
+    规则：
+      · `budget_chars <= 0` → 关闭，原样返回（默认行为不变，可逆）
+      · 从**最旧**开始丢；永远保住最后 `min_keep` 条（默认 1 = 本轮提问，
+        它再怎么大也不能丢，否则等于答非所问）
+      · 单条体量 = 序列化后的字符数（图上 base64 占多少就算多少，与上线的量级一致）
+
+    返回 `(kept, dropped_count, kept_chars)`。纯函数，不改传入的 list。
+    """
+    msgs = list(msgs or [])
+    budget = int(budget_chars or 0)
+    if budget <= 0 or not msgs:
+        return msgs, 0, 0
+    sizes = [len(json.dumps(m, ensure_ascii=False)) for m in msgs]
+    total = sum(sizes)
+    keep_from = max(0, len(msgs) - max(1, int(min_keep)))
+    i = 0
+    while total > budget and i < keep_from:
+        total -= sizes[i]
+        i += 1
+    if i == 0:
+        return msgs, 0, total
+    return msgs[i:], i, total
+
+
+def _build_api_history(messages, vision_ok=False, max_history=None,
+                        char_budget=None):
     """v4.125 N-01：会话保真压缩——把 session 历史构造成 API 可接受的 messages。
 
     与 _sanitize_msg_for_api 的区别（为什么要有这个函数）：
@@ -2041,6 +2080,17 @@ def _build_api_history(messages, vision_ok=False, max_history=None):
     cleaned = _repair_tool_pairs(cleaned)
     if max_history and len(cleaned) > int(max_history):
         cleaned = _repair_tool_pairs(cleaned[-int(max_history):])
+    # v4.177.0：条数闸之后再过一道**字符预算**闸（兜住"条数不多但每条巨大"的灾难：
+    # 带图历史、Agent 长循环的工具结果）。同样，截断后必须重修配对。
+    if char_budget and int(char_budget) > 0:
+        cleaned, _dropped, _chars = _fit_history_to_budget(cleaned, int(char_budget))
+        if _dropped:
+            cleaned = _repair_tool_pairs(cleaned)
+            try:
+                log.info("历史按字符预算裁剪：丢最旧 %d 条，留 %d 条 / %d 字符（预算 %d）",
+                         _dropped, len(cleaned), _chars, int(char_budget))
+            except Exception:
+                pass
     return cleaned
 
 
@@ -8987,7 +9037,8 @@ class ChatWindow(QMainWindow):
         # v4.125 N-01：Agent 管线历史走保真压缩（_build_api_history）——
         # 保留 tool_calls+tool 配对，续跑/继续时模型看得见工具调用记录，不再失忆重干。
         hist = _build_api_history(session.messages, vision_ok=_vision_ok,
-                                  max_history=self.cfg["max_history"])
+                                  max_history=self.cfg["max_history"],
+                                  char_budget=self.cfg.get("history_char_budget", 0))
         messages = [sys_msg] + hist
 
         all_tools = config.get_all_tools(self.cfg)
@@ -10221,7 +10272,8 @@ class ChatWindow(QMainWindow):
         # v4.125 N-01：普通发送历史同样走保真压缩——session 里回写过的
         # tool_calls/tool 配对保留（配对修复防 400），视觉/截断在函数内处理。
         others = _build_api_history(session.messages[:-1], vision_ok=_vision_ok,
-                                    max_history=self.cfg["max_history"])
+                                    max_history=self.cfg["max_history"],
+                                    char_budget=self.cfg.get("history_char_budget", 0))
         api_messages = [sys_msg] + others
         if search_context:
             api_messages.append({"role": "system", "content": search_context})
