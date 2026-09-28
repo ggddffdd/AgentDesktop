@@ -37,11 +37,12 @@ PROTECTED = {"cdp_edge_profile", "playwright_profile", "skills", "rag_data",
              "logs", "backups", "config.json", "config.json.bak", "agent_log.db",
              "legion_auth.jsonl", "sessions.json", "memory.db", "_trash_产物",
              "_pollution_backup_20260928_013916",
-             # v4.177.0：名字带 tmp_ 但其实**不是临时文件** —— 这是
+             # 样品/素材库：**不是临时文件，必须保留** —— 这是
              # `freestylefly/awesome-gpt-image-2` 的 clone（542 张图 / 311MB），
-             # 是 `gpt-image2-style-library` 技能的**上游样品/模板库**。
-             # 名字有误导性，2026-09-28 经大哥确认**必须保留**，故显式加进保护名单。
-             "tmp_awesome_gpt"}
+             # 即 `gpt-image2-style-library` 技能的**上游样品/模板库**。
+             # 2026-09-28 已从 `tmp_awesome_gpt` 改名为 `sample_libs/awesome-gpt-image-2`
+             # （带 tmp_ 会被误当垃圾），旧名一并留着当历史别名，防旧备份/旧脚本再引。
+             "sample_libs", "awesome-gpt-image-2", "tmp_awesome_gpt"}
 
 # 只报告、不自动动的（可能需要人判断）
 REPORT_ONLY = ["backups", "debug.log.1"]

@@ -153,5 +153,10 @@ python tools/cleanup_products.py --age-days 60 --keep-days 30   # 改阈值
 
 **已接自动任务**：每周一 09:00 跑一次 `--apply` 并给大哥发简报（automation「产物自动清理（超30天）」）。
 
-**只报告、不自动清的项**：根目录 `tmp_*`（如 `tmp_awesome_gpt/`，是个 clone 来的仓库）、
-`backups/`、`debug.log.1` —— 这些可能还要用，列出清单交给大哥判断。
+**只报告、不自动清的项**：根目录 `tmp_*`、`backups/`、`debug.log.1` —— 这些可能还要用，
+列出清单交给大哥判断。
+
+> 注意 `sample_libs/awesome-gpt-image-2/`（**原名 `tmp_awesome_gpt/`，2026-09-28 改名**）：
+> 名字曾带 `tmp_` 但**不是临时文件** —— 它是 `freestylefly/awesome-gpt-image-2` 的 clone
+> （542 张图 / 311MB），即 `gpt-image2-style-library` 技能的上游样品库。
+> 已进 `PROTECTED` 保护名单，自动清理永不碰。
