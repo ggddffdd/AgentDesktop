@@ -36,10 +36,15 @@ WHITELIST = ["产物", "incoming", "videos", "charts", "legion_runs",
 PROTECTED = {"cdp_edge_profile", "playwright_profile", "skills", "rag_data",
              "logs", "backups", "config.json", "config.json.bak", "agent_log.db",
              "legion_auth.jsonl", "sessions.json", "memory.db", "_trash_产物",
-             "_pollution_backup_20260928_013916"}
+             "_pollution_backup_20260928_013916",
+             # v4.177.0：名字带 tmp_ 但其实**不是临时文件** —— 这是
+             # `freestylefly/awesome-gpt-image-2` 的 clone（542 张图 / 311MB），
+             # 是 `gpt-image2-style-library` 技能的**上游样品/模板库**。
+             # 名字有误导性，2026-09-28 经大哥确认**必须保留**，故显式加进保护名单。
+             "tmp_awesome_gpt"}
 
 # 只报告、不自动动的（可能需要人判断）
-REPORT_ONLY = ["tmp_awesome_gpt", "backups", "debug.log.1"]
+REPORT_ONLY = ["backups", "debug.log.1"]
 
 TRASH_DIR = "_trash_产物"
 MAX_FILES = 3000
