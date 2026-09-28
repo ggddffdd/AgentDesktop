@@ -13,6 +13,8 @@ MVP 范围：不含实时 ASR / LLM 对话循环 / TTS 实时驱动（桌面端�
 build_twin_panel(app): 在 app.twin_page 上构建 UI。app 为 MainWindow 实例，
 直接复用其 _file_to_datauri / store / _refresh_deliverables 等能力。
 """
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -308,7 +310,16 @@ def build_twin_panel(app):
         "首尾帧都用本人参考图，双端锁定身份，压住中段漂移。\n"
         "关闭则只用首帧（模型自由度更高，但长片段漂移风险上升）。")
 
-    for c in (app.twin_ai_mark, app.twin_qc, app.twin_dual_frame):
+    # 断点续跑开关（默认自动续跑；勾上则无视上次进度全部重生成）
+    app.twin_force_redo = QCheckBox("♻ 全部重新生成")
+    app.twin_force_redo.setChecked(False)
+    app.twin_force_redo.setToolTip(
+        "默认**不勾**：同一份口播稿若上次有段落失败/中断，本次会自动**跳过已完成\n"
+        "的段**（断点续跑）——差一段不必整条重跑，不重复消耗生成额度。\n"
+        "勾上：无视上次进度，所有段全部重新生成。")
+
+    for c in (app.twin_ai_mark, app.twin_qc, app.twin_dual_frame,
+              app.twin_force_redo):
         c.setStyleSheet(_chk_style())
         opt2.addWidget(c)
     opt2.addStretch(1)
@@ -839,11 +850,98 @@ def concat_videos(paths, out, ffmpeg=None, log=None):
             pass
 
 
+# ---------------- 断点续跑（借鉴「葱头玩AI」微课分镜，2026-09-28）----------------
+# 问题：一次生成 5 段，第 3 段失败 → 重跑要**全部重新生成**，白烧 4 段的额度与时间。
+# 做法：把「同一批输入」映射到同一个任务目录，每段成功即落盘 + 记账；
+#       重跑时已完成段直接复用，只补缺失的段。
+# 关键取舍：
+#   · 指纹只含**决定段内容**的输入（口播稿 / 参考图 / 场景 / 画幅 / 单段时长 /
+#     保持背景 / 双帧锁定），**不含 qc 与 ai_mark** —— 那两个是后处理，
+#     改了不该让历史段作废。
+#   · 段复用还要求**台词 hash 一致**，挡住「指纹没变但文本被改」这类边角。
+#   · 任务**全部成功即清理**（不残留）；**有缺段才保留**供下次续跑。
+#   · state.json 原子写（os.replace）；复用前校验文件真实存在且非空。
+
+def _twin_fingerprint(dialogue, portrait, scene, resolution, dur,
+                      keep_bg, dual_frame):
+    """同一批输入 → 同一个任务目录（断点续跑的基础）。"""
+    try:
+        st = os.stat(portrait)
+        p_img = f"{st.st_size}:{int(st.st_mtime)}"
+    except OSError:
+        p_img = "?"
+    payload = json.dumps(
+        {"d": dialogue or "", "p": p_img, "s": scene or "",
+         "r": resolution or "", "t": int(dur or 0),
+         "b": bool(keep_bg), "f": bool(dual_frame)},
+        ensure_ascii=False, sort_keys=True)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _twin_job_dir(out_dir, fp):
+    return os.path.join(out_dir, "_twin_jobs", fp)
+
+
+def _twin_text_sha1(text):
+    return hashlib.sha1((text or "").encode("utf-8")).hexdigest()
+
+
+def _load_job_state(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_job_state(path, state):
+    """原子写：先写 .tmp 再 os.replace，不留半截 JSON。"""
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _job_seg_ok(state, idx, text, seg_file):
+    """该段能否复用：state 标记 ok + 台词 hash 一致 + 文件存在且非空。"""
+    rec = (state.get("segs") or {}).get(str(idx))
+    if not rec or not rec.get("ok"):
+        return False
+    if rec.get("sha1") != _twin_text_sha1(text):
+        return False
+    try:
+        return os.path.isfile(seg_file) and os.path.getsize(seg_file) > 0
+    except OSError:
+        return False
+
+
+def _job_done_count(state, segs, tmp_dir):
+    """已完成的段数（生成前提示用户「将跳过 N 段」）。"""
+    n = 0
+    for i, (t, _s) in enumerate(segs, 1):
+        if _job_seg_ok(state, i, t, os.path.join(tmp_dir, "seg_%03d.mp4" % i)):
+            n += 1
+    return n
+
+
 class TwinGenThread(QThread):
     """数字人口播生成线程：逐段生成 -> 段间尾帧接力 -> 拼接 -> 烧 AI 标识。
 
     设计原则：**任何一步失败都不整体崩**。能出几段出几段，最后如实汇报，
     绝不静默吞掉错误让用户以为成功了。
+
+    借鉴「葱头玩AI」微课分镜的抗失败模式（2026-09-28），四处关键：
+      ① **单段失败不再中断后续段**（原实现 `break` → 从失败段起后面全丢，
+         用户看到的现象就是"差一大段它就合成了"）；
+      ② **生成失败也要重试**（原来只有"质检不过"才重试，"生成失败"立刻放弃；
+         而视频生成失败多为瞬时——限流/队列拥堵/超时，重试常能过）；
+      ③ **缺段必须显式说出来**（成片照常出，但状态栏与日志都标明缺哪几段）；
+      ④ **断点续跑**（`resume` + `job_dir`）：同一批输入的已完成段落盘记账，
+         重跑时直接复用，**只补缺失的段**，不重复烧额度（差一段不必整条重跑）。
     """
 
     log = Signal(str)
@@ -852,7 +950,8 @@ class TwinGenThread(QThread):
 
     def __init__(self, cfg, app_dir, portrait, segs, scene, keep_bg,
                  resolution, dual_frame=True, ai_mark=True, qc=True,
-                 max_qc_retry=2, parent=None):
+                 max_qc_retry=2, max_gen_retry=2, gen_retry_delay=3.0,
+                 resume=True, job_dir=None, parent=None):
         super().__init__(parent)
         self.cfg = cfg
         self.app_dir = app_dir
@@ -865,11 +964,26 @@ class TwinGenThread(QThread):
         self.ai_mark = ai_mark
         self.qc = qc
         self.max_qc_retry = max_qc_retry
+        self.max_gen_retry = max_gen_retry        # 生成失败（瞬时错误）重试次数
+        self.gen_retry_delay = gen_retry_delay    # 重试基础退避（秒，线性递增）
+        self.resume = resume                      # 断点续跑：复用同任务已完成的段
+        self.job_dir = job_dir                    # 固定任务目录（None=用时间戳临时目录）
         self._cancel = False
         self.qc_notes = []         # 每段质检诊断，供 UI 展示
+        self.failed_segs = []      # [(段号, 原因)]：成片缺段时**必须**让 UI 说出来
+        self.reused = 0            # 本轮复用的段数（供 UI 汇报"省了几段"）
 
     def cancel(self):
         self._cancel = True
+
+    def _sleep(self, sec):
+        """可取消的等待（重试退避用）。返回 True 表示等待期间被取消。"""
+        end = time.time() + max(0.0, float(sec))
+        while time.time() < end:
+            if self._cancel:
+                return True
+            time.sleep(0.2)
+        return False
 
     def run(self):
         try:
@@ -885,8 +999,12 @@ class TwinGenThread(QThread):
         out_dir = os.path.join(self.app_dir, products)
         os.makedirs(out_dir, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S")
-        tmp_dir = os.path.join(out_dir, f"_twin_seg_{stamp}")
+        # 任务目录：断点续跑时用调用方给的固定目录（按输入指纹命名），
+        # 否则退回时间戳临时目录（旧行为）。
+        tmp_dir = self.job_dir or os.path.join(out_dir, f"_twin_seg_{stamp}")
         os.makedirs(tmp_dir, exist_ok=True)
+        state_path = os.path.join(tmp_dir, "state.json")
+        state = _load_job_state(state_path) if (self.resume and self.job_dir) else {}
 
         # 参考图预处理：按目标画幅居中裁剪。
         # Agnes 在 keyframe 模式下跟随首帧比例、忽略 aspect_ratio，这一步是必需的，
@@ -907,10 +1025,28 @@ class TwinGenThread(QThread):
         prev_tail = None
         total = len(self.segs)
 
+        failed_segs = []          # [(段号, 原因)]：本轮缺了哪些段
         for i, (text, sec) in enumerate(self.segs):
             if self._cancel:
                 self.log.emit("已取消。")
                 break
+
+            seg_file = os.path.join(tmp_dir, "seg_%03d.mp4" % (i + 1))
+
+            # ---- 断点续跑：该段上次已成功 → 直接复用，不再烧额度 ----
+            if self.resume and _job_seg_ok(state, i + 1, text, seg_file):
+                self.reused += 1
+                self.log.emit(f"⏭ 第 {i+1}/{total} 段沿用上次结果（已完成，跳过生成）")
+                seg_paths.append(seg_file)
+                self.progress.emit(len(seg_paths), total)
+                if i < total - 1:
+                    tail = os.path.join(tmp_dir, f"tail_{i}.png")
+                    if extract_last_frame(seg_file, tail, ffmpeg=ff, log=self.log.emit):
+                        prev_tail = tail
+                    else:
+                        self.log.emit("  ⚠️ 抽末帧失败，下一段改用本人参考图作首帧")
+                        prev_tail = None
+                continue
 
             # 首帧：第 1 段用本人参考图；之后用上一段末帧（尾帧接力，脸不跳变）
             first_frame = portrait_uri if i == 0 else (prev_tail or portrait_uri)
@@ -926,14 +1062,32 @@ class TwinGenThread(QThread):
             self.qc_notes.append(note)
 
             if not seg_path:
-                if not seg_paths:
-                    self.done.emit("第 1 段生成失败，未产出任何片段。")
-                    return
-                self.log.emit(f"⚠️ 第 {i+1} 段失败，用已生成的 {len(seg_paths)} 段继续。")
-                break
+                # 单段失败**不再中断后续段**。原实现这里是 `break`：一旦第 N 段
+                # 失败，第 N+1 段起的台词全部消失，而成片仍照常拼接产出 ——
+                # 用户看到的现象就是「差一大段它就合成了」，还以为成功了。
+                failed_segs.append((i + 1, "多次重试后仍生成失败"))
+                self.log.emit(f"⚠️ 第 {i+1}/{total} 段失败 → 跳过，继续生成后面的段"
+                              f"（本轮已缺 {len(failed_segs)} 段）")
+                continue
+
+            # 段落盘到固定名（断点续跑要按固定名找回来；失败则退回原路径，不影响拼接）
+            try:
+                if os.path.abspath(seg_path) != os.path.abspath(seg_file):
+                    shutil.move(seg_path, seg_file)
+                seg_path = seg_file
+            except Exception as e:
+                self.log.emit(f"  ⚠️ 段文件归档失败（不影响本次拼接）：{e}")
 
             seg_paths.append(seg_path)
             self.progress.emit(len(seg_paths), total)
+
+            # 记账（原子写）：这段下次可直接复用，不必重新生成
+            if self.job_dir:
+                state.setdefault("segs", {})[str(i + 1)] = {
+                    "ok": True, "sha1": _twin_text_sha1(text),
+                    "file": os.path.basename(seg_path),
+                    "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}
+                _save_job_state(state_path, state)
 
             # 抽末帧给下一段接力
             if i < total - 1:
@@ -944,14 +1098,28 @@ class TwinGenThread(QThread):
                     self.log.emit("  ⚠️ 抽末帧失败，下一段改用本人参考图作首帧")
                     prev_tail = None
 
+        self.failed_segs = failed_segs      # 供 UI 读取（成片可能缺段）
+
         if not seg_paths:
-            self.done.emit("没有任何片段生成成功。")
+            detail = "、".join(f"第 {n} 段（{why}）" for n, why in failed_segs[:5])
+            self.done.emit("所有片段均生成失败，未产出视频。"
+                           + (f"\n失败明细：{detail}" if detail else ""))
             return
 
         # ---- 拼接 ----
         if len(seg_paths) == 1:
-            final = seg_paths[0]
-            self.log.emit("单段成片，无需拼接。")
+            # 单段：把段文件**移出任务目录**再当"成片"。
+            # ⚠️ 不能直接 `final = seg_paths[0]` —— 它位于 tmp_dir 内，
+            # 收尾清目录时会把成片一起删掉（旧实现就有这个 bug：关掉 AI 标识
+            # + 短口播（单段）→ 成片消失，界面反而把它当错误文本显示）。
+            final = os.path.join(out_dir, f"twin_single_{stamp}.mp4")
+            try:
+                shutil.move(seg_paths[0], final)
+                seg_paths[0] = final
+                self.log.emit("单段成片，无需拼接。")
+            except Exception as e:
+                final = seg_paths[0]
+                self.log.emit(f"单段成片（移入输出目录失败，保留在原处）：{e}")
         else:
             self.log.emit(f"🔗 拼接 {len(seg_paths)} 段…")
             final = os.path.join(out_dir, f"twin_merged_{stamp}.mp4")
@@ -969,54 +1137,91 @@ class TwinGenThread(QThread):
             else:
                 self.log.emit("⚠️ AI 标识烧录失败——**发布前请手动添加**，否则违规。")
 
-        # 清理分段临时文件（保留成片）
+        # ---- 缺段必须显式说出来（成片能出，但口播内容不完整）----
+        if self.reused:
+            self.log.emit(f"♻️ 本次复用了 {self.reused}/{total} 段"
+                          f"（断点续跑，未重复生成）")
+        if failed_segs:
+            miss = "、".join(f"第 {n} 段" for n, _ in failed_segs)
+            self.log.emit(f"⚠️ 成片缺少 {len(failed_segs)}/{total} 段（{miss}）"
+                          f"——**口播内容不完整**，建议重跑补齐。")
+
+        # ---- 收尾 ----
+        # · 全部成功 → 清掉分段文件与任务目录（不残留、不占空间）
+        # · 有缺段   → **保留任务目录**（段文件 + state.json），供下次断点续跑
         try:
-            for p in seg_paths:
-                if os.path.isfile(p) and os.path.abspath(p) != os.path.abspath(final):
-                    os.remove(p)
-            if os.path.isdir(tmp_dir):
-                shutil.rmtree(tmp_dir, ignore_errors=True)
+            if failed_segs:
+                self.log.emit("📌 已保留任务缓存（含已完成的段与进度）——"
+                              "下次点「生成」会自动跳过已完成的段，只补缺的")
+            else:
+                for p in seg_paths:
+                    if os.path.isfile(p) and os.path.abspath(p) != os.path.abspath(final):
+                        os.remove(p)
+                if os.path.isdir(tmp_dir) and not os.path.abspath(final).startswith(
+                        os.path.abspath(tmp_dir) + os.sep):
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
         except Exception:
             pass
 
         self.done.emit(final)
 
     def _gen_one(self, i, prompt, sec, first_frame, last_frame, tmp_dir, ff):
-        """生成单段（带 VLM 质检重试）。返回 (路径 or None, 质检诊断文本)。"""
+        """生成单段：**生成失败**与**质检不过**各自独立重试，互不占额度。
+
+        返回 (路径 or None, 质检诊断文本)。
+        - 生成失败多为瞬时（限流 / 免费队列拥堵 / 超时）→ 退避后重试
+          `max_gen_retry` 次；用尽且无兜底则返回 None（调用方跳过该段，不拖垮整条）；
+        - 质检不过 → 重生成 `max_qc_retry` 次；用尽保留最后一次并提示人工过目；
+        - 两者叠加时（质检不过 → 重生成 → 又生成失败）：**宁可留一个有瑕疵的段，
+          也不让它整段消失**，故返回最近一次生成成功的结果。
+        """
         last_note = ""
-        seg_path = None
-        for attempt in range(self.max_qc_retry + 1):
+        last_ok = None     # 最近一次生成成功的结果（质检不过也留着兜底）
+        gen_try = 0        # 生成失败已重试次数
+        qc_try = 0         # 质检不过已重生成次数
+        while True:
             if self._cancel:
-                return seg_path, last_note
+                return last_ok, last_note
             res = tools_mod.tool_video_gen(
                 self.cfg, self.app_dir, prompt, sec, None,
                 resolution=self.resolution,
                 first_frame=first_frame, last_frame=last_frame, dialogue=None)
             if isinstance(res, str):
-                self.log.emit(f"  ❌ 生成失败：{res}")
-                return seg_path, last_note
+                gen_try += 1
+                if gen_try > self.max_gen_retry:
+                    self.log.emit(f"  ❌ 生成失败（已重试 {gen_try-1} 次）：{res}")
+                    if last_ok:
+                        self.log.emit("  ↳ 保留上一次生成结果（质检未过，请人工过目）")
+                    return last_ok, last_note
+                wait = self.gen_retry_delay * gen_try        # 线性退避
+                self.log.emit(f"  ⚠️ 生成失败（{str(res)[:80]}），"
+                              f"{wait:.0f}s 后重试（{gen_try}/{self.max_gen_retry}）…")
+                if self._sleep(wait):
+                    return last_ok, last_note
+                continue
+
             rel, _kind, _name = res
-            seg_path = os.path.join(self.app_dir, rel)
+            last_ok = os.path.join(self.app_dir, rel)
 
             if not self.qc:
-                return seg_path, ""
+                return last_ok, ""
 
-            probe = os.path.join(tmp_dir, f"probe_{i}_{attempt}.png")
-            if not extract_probe_frame(seg_path, probe, ffmpeg=ff, log=self.log.emit):
+            probe = os.path.join(tmp_dir, f"probe_{i}_{gen_try}_{qc_try}.png")
+            if not extract_probe_frame(last_ok, probe, ffmpeg=ff, log=self.log.emit):
                 self.log.emit("  ⚠️ 抽质检帧失败，放行。")
-                return seg_path, ""
+                return last_ok, ""
             passed, note = vq.review_identity(
                 self.cfg, self.portrait, probe, log=self.log.emit)
             last_note = note
             if passed:
                 self.log.emit("  ✅ 质检通过（仍是本人，无畸变）")
-                return seg_path, note
-            if attempt >= self.max_qc_retry:
+                return last_ok, note
+            qc_try += 1
+            if qc_try > self.max_qc_retry:
                 self.log.emit("  ⚠️ 质检仍未通过，保留最后一次结果（请人工过目）："
                               + (note[:120] if note else ""))
-                return seg_path, note
-            self.log.emit(f"  ⚠️ 质检未通过，重生成（第 {attempt+2} 次）…")
-        return seg_path, last_note
+                return last_ok, note
+            self.log.emit(f"  ⚠️ 质检未通过，重生成（第 {qc_try+1} 次）…")
 
 
 def _twin_generate(app):
@@ -1052,16 +1257,30 @@ def _twin_generate(app):
     ai_mark = _cb("twin_ai_mark", True)
     qc = _cb("twin_qc", True)
     dual_frame = _cb("twin_dual_frame", True)
+    resume = not _cb("twin_force_redo", False)
+
+    # 断点续跑：按输入指纹定位任务目录，并查上次进度
+    fp = _twin_fingerprint(dialogue, app.twin_selected_portrait, scene, res, dur,
+                           keep_bg, dual_frame)
+    products = getattr(tools_mod, "PRODUCTS_DIR", None) or "products"
+    job_dir = _twin_job_dir(os.path.join(APP_DIR, products), fp)
+    done_n = _job_done_count(
+        _load_job_state(os.path.join(job_dir, "state.json")), segs, job_dir) \
+        if resume else 0
 
     total_sec = sum(s for _t, s in segs)
     tip = f"共 {len(segs)} 段 / 约 {total_sec} 秒"
     if len(segs) > 1:
         tip += "（段间尾帧接力，声音可能有细微差异）"
+    if done_n:
+        tip += (f"｜♻️ 检测到上次进度：已完成 {done_n} 段，本次跳过"
+                f"（只补剩 {len(segs) - done_n} 段）")
     app.twin_status.setText(f"提交任务中…{tip}（可能需数分钟，请勿关闭窗口）")
 
     app.twin_thread = TwinGenThread(
         app.cfg, APP_DIR, app.twin_selected_portrait, segs, scene, keep_bg, res,
-        dual_frame=dual_frame, ai_mark=ai_mark, qc=qc)
+        dual_frame=dual_frame, ai_mark=ai_mark, qc=qc,
+        resume=resume, job_dir=(job_dir if resume else None))
     app.twin_thread.log.connect(lambda m: app.twin_status.setText(m))
     app.twin_thread.progress.connect(
         lambda a, b: app.twin_status.setText(f"已完成 {a}/{b} 段…"))
@@ -1078,7 +1297,20 @@ def _twin_on_result(app, res):
             kind = "video"
             app.twin_paths.append(res)
             app.twin_result.addItem(name)
-            app.twin_status.setText(f"已生成：{name}")
+            # 缺段必须显式提示 —— 否则用户以为拿到的是完整口播（v4.178.0）
+            _th = getattr(app, "twin_thread", None)
+            _miss = getattr(_th, "failed_segs", None) or []
+            _reused = getattr(_th, "reused", 0) or 0
+            if _miss:
+                _names = "、".join(f"第 {n} 段" for n, _ in _miss)
+                app.twin_status.setText(
+                    f"⚠️ 已生成：{name} —— 但缺少 {len(_miss)} 段（{_names}），"
+                    f"口播内容不完整，建议重跑补齐")
+            elif _reused:
+                app.twin_status.setText(
+                    f"已生成：{name}（♻️ 复用了上次 {_reused} 段，未重复生成）")
+            else:
+                app.twin_status.setText(f"已生成：{name}")
             try:
                 app.store.active().deliverables.append(
                     {"rel": rel, "kind": kind, "name": name, "desc": rel})

@@ -125,7 +125,8 @@ toc = sorted(za.toc)
 want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         "video_pipeline", "vision_qc", "director_panel", "director_web",
         "legion_worker", "agent_node", "agent", "ui", "tools", "core_agnes",
-        "core.agnes", "legion", "permissions", "risk", "route_log", "config"]
+        "core.agnes", "legion", "permissions", "risk", "route_log", "config",
+        "digital_twin_panel"]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
 print(json.dumps({"toc": toc, "present": present, "info": info}, ensure_ascii=False))
@@ -277,6 +278,10 @@ def main():
                   "log_tool_decision",
                   # v4.175.0：400 时把接口原文一起显示给用户
                   "_api_body", "接口原文"],
+        "digital_twin_panel": [
+                  # v4.178.0：分镜抗失败（单段失败不再吞掉后续段）+ 断点续跑
+                  "_twin_fingerprint", "_job_seg_ok", "_save_job_state",
+                  "_job_done_count", "断点续跑", "failed_segs"],
     }
     for mod, keys in marks.items():
         mi = info.get(mod) or {}
