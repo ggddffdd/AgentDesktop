@@ -129,3 +129,11 @@ _minimal_*.py
 _profile_*.py
 _perf_*.py
 *.pyc.dis
+
+# ===== 归档压缩包（2026-09-29 补）=====
+# 二进制、无 diff，且与源码目录重复（如 browser_extension/ 已有源，无需再存打包 zip）。
+# 历史教训：v4.165.0 曾误提交「小臭抓网页_v1.3.zip」，事后不得不 filter-branch 全量重写
+# 历史（含 tag）才能从公开仓库剔除 —— 成本极高，这里堵住。
+*.zip
+*.7z
+*.rar
