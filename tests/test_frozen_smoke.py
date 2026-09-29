@@ -281,7 +281,9 @@ def main():
         "digital_twin_panel": [
                   # v4.178.0：分镜抗失败（单段失败不再吞掉后续段）+ 断点续跑
                   "_twin_fingerprint", "_job_seg_ok", "_save_job_state",
-                  "_job_done_count", "断点续跑", "failed_segs"],
+                  "_job_done_count", "断点续跑", "failed_segs",
+                  # v4.179.0：reference 模式（背景锁定）+ 并发出片
+                  "_gen_parallel", "_gen_serial", "ref_mode", "并发出片"],
     }
     for mod, keys in marks.items():
         mi = info.get(mod) or {}

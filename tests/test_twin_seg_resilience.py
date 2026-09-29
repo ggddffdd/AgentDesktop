@@ -60,15 +60,23 @@ _REAL_BEFORE = _real_snapshot()
 
 
 # ---- 全打桩跑一遍 _work ------------------------------------------------------
+# ---- 打桩观测点（每次 _run 重置）----
+_IMGS_LOG = []      # 每段调用生视频内核时收到的 images 参数
+_CONCAT_LOG = []    # 每次拼接传入的段路径列表（用于校验拼接顺序）
+
+
 def _run(script, n=4, qc_plan=None, job_dir=None, resume=True, texts=None,
-         app_dir=None, **kw):
+         app_dir=None, ref_mode=False, workers=1, **kw):
     """同步跑一次 TwinGenThread._work（全打桩）。
 
     script: {段序号(0基): [动作, ...]} —— 该段第 c 次被调用时取 script[idx][c]，
             越界则重复最后一个。动作 "ok" = 成功；"ERR:xxx" = 生成失败。
     job_dir: 固定任务目录（断点续跑用）；app_dir 可复用，以便跑"第二次"。
+    ref_mode/workers: v4.179.0 的 reference 模式与并发路数。
     返回 (done 载荷, logs, calls, thread, app_dir)
     """
+    _IMGS_LOG.clear()
+    _CONCAT_LOG.clear()
     app_dir = app_dir or tempfile.mkdtemp(prefix="xc_twin_seg_sbx_")
     seg_texts = list(texts) if texts else [f"P{k + 1}台词内容测试" for k in range(n)]
     n = len(seg_texts)
@@ -82,6 +90,7 @@ def _run(script, n=4, qc_plan=None, job_dir=None, resume=True, texts=None,
         idx = next((j for j, t in enumerate(seg_texts) if t in prompt), None)
         if idx is None:
             return "ERR:未识别段号"
+        _IMGS_LOG.append(k.get("images"))      # 观测 reference 模式是否生效
         seq = list(script.get(idx) or ["ok"])
         c = calls[idx]
         calls[idx] += 1
@@ -96,6 +105,7 @@ def _run(script, n=4, qc_plan=None, job_dir=None, resume=True, texts=None,
                 "video", os.path.basename(p))
 
     def fake_concat(paths, out, ffmpeg=None, log=None):
+        _CONCAT_LOG.append(list(paths))        # 观测拼接顺序
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "wb") as f:
             f.write(b"\x00" * 64)
@@ -131,7 +141,8 @@ def _run(script, n=4, qc_plan=None, job_dir=None, resume=True, texts=None,
             "768x1152", qc=kw.get("qc", False), ai_mark=kw.get("ai_mark", False),
             max_gen_retry=kw.get("max_gen_retry", 2), gen_retry_delay=0.0,
             max_qc_retry=kw.get("max_qc_retry", 2),
-            resume=resume, job_dir=job_dir)
+            resume=resume, job_dir=job_dir,
+            ref_mode=ref_mode, workers=workers)
         th.log.connect(lambda m: logs.append(str(m)))
         th.done.connect(lambda r: seen.__setitem__("done", r))
         th._work()
@@ -163,15 +174,24 @@ def _func(cls, name):
                 if isinstance(n, ast.FunctionDef) and n.name == name)
 
 
-def _fail_branch(cls):
-    """定位 _work 里 `if not seg_path:` 这个「单段失败」分支节点。"""
-    for node in ast.walk(_func(cls, "_work")):
-        if isinstance(node, ast.If):
-            t = node.test
-            if (isinstance(t, ast.UnaryOp) and isinstance(t.op, ast.Not)
-                    and isinstance(t.operand, ast.Name) and t.operand.id == "seg_path"):
-                return node
-    return None
+def _fail_branches(cls):
+    """找出所有「单段失败」分支。
+
+    v4.179.0 起生成逻辑拆进 `_gen_serial`（串行）与 `_gen_parallel`（并发）——
+    两处都必须遵守「失败不中断后续段」，所以这里全类扫，断言**每一处**都合规。
+    """
+    out = []
+    for fn in cls.body:
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        for node in ast.walk(fn):
+            if isinstance(node, ast.If):
+                t = node.test
+                if (isinstance(t, ast.UnaryOp) and isinstance(t.op, ast.Not)
+                        and isinstance(t.operand, ast.Name)
+                        and t.operand.id == "seg_path"):
+                    out.append((fn.name, node))
+    return out
 
 
 def main():
@@ -202,12 +222,14 @@ def main():
     print("C) 源码契约：失败分支不许再用 break")
     print("=" * 60)
     tree, cls = _cls_ast()
-    br = _fail_branch(cls)
-    check("C1 找到「单段失败」分支", br is not None)
-    has_break = br is not None and any(isinstance(x, ast.Break) for x in ast.walk(br))
-    has_cont = br is not None and any(isinstance(x, ast.Continue) for x in ast.walk(br))
-    check("C2 该分支里没有 break（AST 证明不会中断后续段）", br is not None and not has_break)
-    check("C3 该分支里有 continue", has_cont)
+    _brs = _fail_branches(cls)
+    check("C1 找到「单段失败」分支（串行 + 并发至少各一处）",
+          len(_brs) >= 2, str([nm for nm, _ in _brs]))
+    _brk = [nm for nm, b in _brs if any(isinstance(x, ast.Break) for x in ast.walk(b))]
+    _cnt = [nm for nm, b in _brs if any(isinstance(x, ast.Continue) for x in ast.walk(b))]
+    check("C2 没有任何一处用 break 中断后续段（否则又会「差一大段」）",
+          not _brk, str(_brk))
+    check("C3 每处失败分支都有 continue", bool(_brs) and len(_cnt) == len(_brs), str(_cnt))
     gen_src = ast.unparse(_func(cls, "_gen_one"))
     check("C4 生成失败分支会重试（引用 max_gen_retry）", "max_gen_retry" in gen_src)
     check("C5 重试前有可取消的退避等待", "gen_retry_delay" in gen_src and "_sleep" in gen_src)
@@ -363,6 +385,78 @@ def main():
           isinstance(_d5, str) and os.path.isfile(_d5), str(_d5))
     check("M2 成片落在输出目录（不在任务临时目录内）",
           os.path.dirname(_d5) == os.path.join(_ad5, "products"), _d5)
+
+    print()
+    print("=" * 60)
+    print("N) ★背景锁定：reference 模式（每段锚定同一张参考图）")
+    print("=" * 60)
+    _d6, _l6, _c6, _th6, _ = _run({}, n=3, ref_mode=True, workers=1)
+    check("N1 每段都带 images（走 reference，不再只给首尾帧）",
+          len(_IMGS_LOG) == 3 and all(x and len(x) == 1 for x in _IMGS_LOG),
+          str(_IMGS_LOG[:1]))
+    check("N2 三段用的是同一张参考图（背景/形象锚定一致）",
+          len({tuple(x) for x in _IMGS_LOG}) == 1)
+    check("N3 reference 模式不再抽末帧（段间独立）",
+          not any("抽末帧" in m for m in _l6))
+    check("N4 成片仍产出", isinstance(_d6, str) and os.path.isfile(_d6))
+
+    print()
+    print("=" * 60)
+    print("O) ★并发出片：多路同跑，且拼接顺序必须按段序")
+    print("=" * 60)
+    _d7, _l7, _c7, _th7, _ = _run({}, n=5, ref_mode=True, workers=3)
+    check("O1 五段全部生成（并发不丢段）",
+          all(_c7[k] == 1 for k in range(5)), str(_c7))
+    check("O2 日志说明并发路数", any("并发" in m for m in _l7))
+    check("O3 failed_segs 为空", _th7.failed_segs == [], str(_th7.failed_segs))
+    check("O4 成片存在", isinstance(_d7, str) and os.path.isfile(_d7))
+    _nm = [os.path.basename(x) for x in (_CONCAT_LOG[-1] if _CONCAT_LOG else [])]
+    check("O5 ★拼接严格按段序（并发完成顺序不可控，必须重排）",
+          _nm == ["seg_001.mp4", "seg_002.mp4", "seg_003.mp4",
+                  "seg_004.mp4", "seg_005.mp4"], str(_nm))
+
+    print()
+    print("=" * 60)
+    print("P) 并发下抗失败能力不丢（单段失败不拖垮其余）")
+    print("=" * 60)
+    _d8, _l8, _c8, _th8, _ = _run({2: ["ERR:限流"]}, n=5, ref_mode=True,
+                                  workers=3, max_gen_retry=0)
+    check("P1 第 3 段记入 failed_segs",
+          [n for n, _ in _th8.failed_segs] == [3], str(_th8.failed_segs))
+    check("P2 其余四段仍全部生成",
+          all(_c8[k] >= 1 for k in (0, 1, 3, 4)), str(_c8))
+    check("P3 仍产出成片（缺 1 段）", isinstance(_d8, str) and os.path.isfile(_d8))
+    check("P4 拼接只含成功的段（4 段）",
+          len(_CONCAT_LOG[-1]) == 4, str(len(_CONCAT_LOG[-1])))
+
+    print()
+    print("=" * 60)
+    print("Q) 源码契约：生成模式与并发度解耦")
+    print("=" * 60)
+    _w = ast.unparse(_func(cls, "_work")).replace(" ", "")
+    _se = ast.unparse(_func(cls, "_gen_serial"))
+    _pa = ast.unparse(_func(cls, "_gen_parallel")).replace(" ", "")
+    _g1 = ast.unparse(_func(cls, "_gen_one")).replace(" ", "")
+    check("Q1 _work 按 ref_mode 分派串行/并发",
+          "_gen_parallel" in _w and "_gen_serial" in _w and "ref_mode" in _w)
+    check("Q2 串行路径也认 ref_mode（并发=1 时不会悄悄退回 keyframe）",
+          "ref_mode" in _se and "images" in _se)
+    check("Q3 并发路径每段都带同一张参考图",
+          "images=[portrait_uri]" in _pa)
+    check("Q4 _gen_one 把 images 传给生视频内核", "images=images" in _g1)
+    check("Q5 结果按段号重排（并发顺序不可控）", "sorted(seg_map)" in _w)
+
+    print()
+    print("=" * 60)
+    print("S) 指纹含生成模式（换模式 → 旧段不该被复用）")
+    print("=" * 60)
+    _b2 = dict(dialogue="稿", portrait=os.path.join(_ad3, "nope.jpg"),
+               scene="场景", resolution="768x1152", dur=8, keep_bg=True,
+               dual_frame=True, ref_mode=True)
+    _f2 = dt._twin_fingerprint(**_b2)
+    check("S1 同输入同指纹", dt._twin_fingerprint(**_b2) == _f2)
+    check("S2 ref_mode 变化 → 指纹变",
+          dt._twin_fingerprint(**{**_b2, "ref_mode": False}) != _f2)
 
     print()
     print("=" * 60)
