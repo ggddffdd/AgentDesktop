@@ -9,6 +9,38 @@
 
 ---
 
+## v4.179.1 — 2026-09-29
+
+**修「运行数据写进分发目录」的真归口缺陷 —— `_internal/config.json` 之谜结案。**
+
+- **现象**：发布门禁连续多轮判红「`_internal` 无真实 config.json」，
+  每次手工清掉后**下次运行又冒出来**（前两轮只能判"外来/历史残留"，没定位到源头）。
+- **根因（本次完整取证）**：
+  1. 打包时 spec 把 `../video-agent/core` 装成 **`_internal/core/`** 包；
+  2. `core/config.py` 里 `APP_DIR = os.path.dirname(os.path.dirname(__file__))` ——
+     源码运行 = `video-agent/`（正常），**打包后 = `_internal/`（分发目录）**；
+  3. `load_config()` 的契约是「文件不存在就写默认配置」；
+  4. `core/agnes.py:76` 在没拿到完整参数时会调它 → **于是往分发目录写 config.json**。
+  连带 `agnes_outputs/`（产物目录，同样基于 `APP_DIR`）也会落在那儿。
+  三个实际后果：① 门禁判红；② **装到只读目录（如 Program Files）直接抛异常**；
+  ③ 重打包时整个 `_internal` 被替换，写进去的东西白丢。
+- **改法**：`core/config.py` 新增 `_app_dir()` —— **frozen 时改道**
+  `<用户数据目录>/video-agent`（认 `XC_USER_DATA_DIR`，与主程序 `USER_DATA_DIR` 同源）；
+  **源码运行分支原样保留**，`video-agent` 独立版（`main.py` / `api.py` / `core_cli.py`）
+  行为零变化。
+- **影响面已核**：小臭侧只 import `core.agnes`，**从不碰 `core.pipeline`**；
+  用到 `MOV_DIR` 的 `api.py` / `main.py` 都是 video-agent 独立版（源码运行）→ **零副作用**。
+- **验证**：新增 `tests/test_video_core_home.py`（**14 条**）：
+  源码模式落点不变 / **frozen 时不再落 `_internal`** / `CONFIG_PATH` + `MOV_DIR` 一并改道 /
+  **契约：frozen 分支不得引用 `__file__`**（防以后被改回去）/ 真实目录哨兵。
+  回归 **43 套件 / 1775 断言全绿**（上版 42/1761）。
+  另：core 是 spec 的 **datas（源码原样复制）**、不进 PYZ，故冻结冒烟读不到它 ——
+  改由**构建后直读** `_internal/core/config.py` 验证（见验收报告）。
+- ⚠️ `video-agent/` **不在任何 git 仓库**（`git -C video-agent` 无 `.git`）→
+  改前已手工备份 `core/config.py.bak_20260929_114806`。
+
+---
+
 ## v4.179.0 — 2026-09-29
 
 **数字人：背景不再「跳」+ 并发出片提速 —— 一个机制改动同时解决两件事。**
