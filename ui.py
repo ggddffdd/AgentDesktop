@@ -2527,6 +2527,10 @@ class ChatWindow(QMainWindow):
     def _init_ui(self):
         self.setWindowTitle("小臭玩AI")
         self.setWindowIcon(get_app_icon())
+        # v4.189：窗口级拖拽添加附件——窗口开接收，chat_view/input_box 关掉
+        # 各自的默认拖放（QTextEdit 默认只插 URL 文本、WebEngine 会吞事件），
+        # 统一冒泡到 ChatWindow.dragEnterEvent/dropEvent 处理。
+        self.setAcceptDrops(True)
         self._fit_window_to_screen()
         self.setMinimumSize(480, 520)  # 允许缩得更小，但避免窗口碎成不可用
         self.setWindowFlags(Qt.FramelessWindowHint)
@@ -2794,6 +2798,9 @@ class ChatWindow(QMainWindow):
             return
         # 创建真实 ChatWebView 并连接既有信号
         self.chat_view = chat_web.ChatWebView(THEME)
+        # v4.189：关 WebEngine 默认拖放（会吞事件不冒泡），让文件拖拽
+        # 统一由 ChatWindow.dropEvent 处理（拖进聊天区 = 加附件）。
+        self.chat_view.setAcceptDrops(False)
         # v4.75：对话内搜索跳转 + 单条「重新生成 / 改写问题」链接（app:// 协议拦截）
         self.chat_view.anchorActivated.connect(self._on_anchor_clicked)
         # v4.104：页面意外重载（DOM 清空）→ 全量重渲染自愈
@@ -3308,6 +3315,9 @@ class ChatWindow(QMainWindow):
         self.input_box = MultiLineInput()
         self.input_box.setPlaceholderText("输入自然语言指令…")
         self.input_box.sendRequested.connect(self.send)
+        # v4.189：关 QTextEdit 默认拖放（拖文件只会插 URL 文本），统一由
+        # ChatWindow.dropEvent 处理（拖进输入区 = 加附件；拖文本仍可插入）。
+        self.input_box.setAcceptDrops(False)
         self.input_box.setStyleSheet(
             f"QTextEdit{{background:transparent;border:none;padding:8px 4px;"
             f"font-size:{THEME['font_input']};color:{THEME['text']};line-height:1.5;}}"
@@ -5817,45 +5827,76 @@ class ChatWindow(QMainWindow):
         if not paths:
             return
         for p in paths:
-            ext = os.path.splitext(p)[1].lower()
-            if ext in (".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"):
-                self._attach_audio(p)
-            else:
-                # v4.66：把附件复制进工作区 incoming/ 目录，并把相对路径写进消息，
-                # 这样 read_file 能按相对路径直接找到它。否则只剩文件名，模型会去
-                # dist 目录瞎找 → "文件不存在"，进而用 run_command 反复搜、刷屏。
-                # v4.102 hotfix：Windows 文件名禁止 \ / : * ? " < > | 等字符，用户原
-                # 文件名（如「涉密岗用AI | 一定要死守的3道脱敏底线✅.png」含竖线）会
-                # 导致 shutil.copy2 抛非法字符异常、复制失败、图根本没进 incoming，
-                # 标记指向不存在的文件 → 视觉模型收不到图、静默无响应。复制前先清洗
-                # 非法字符，并重名去重避免覆盖；标记里用清洗后的名字，保证能对应上。
-                # v4.164.0：附件落 WORKSPACE_DIR（工作区），不再落 APP_DIR（dist）
-                inc_dir = os.path.join(WORKSPACE_DIR, "incoming")
-                try:
-                    os.makedirs(inc_dir, exist_ok=True)
-                except Exception:
-                    pass
-                raw_base = os.path.basename(p)
-                base = _sanitize_filename(raw_base) or "file"
-                dst = os.path.join(inc_dir, base)
-                # 重名去重：避免不同原文件清洗后同名互相覆盖
-                if os.path.exists(dst):
-                    stem, sufx = os.path.splitext(base)
-                    i = 1
-                    while os.path.exists(dst):
-                        dst = os.path.join(inc_dir, f"{stem}_{i}{sufx}")
-                        i += 1
-                    base = os.path.basename(dst)
-                try:
-                    import shutil
-                    shutil.copy2(p, dst)
-                except Exception as e:
-                    self.input_box.insertPlainText(
-                        f"\n[文件: {base}]（复制失败：{e}，请确认文件可访问）\n")
-                    self._on_input_changed()
-                    continue
-                self.input_box.insertPlainText(f"\n[文件: incoming/{base}]\n")
+            self._ingest_attachment(p)
+
+    def _ingest_attachment(self, p):
+        """v4.189：附件入口统一（加号选择 / 窗口拖拽共用）。
+        音频走 ASR 转写（_attach_audio），其余复制进 incoming/ 并插标记。"""
+        ext = os.path.splitext(p)[1].lower()
+        if ext in (".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"):
+            self._attach_audio(p)
+        else:
+            # v4.66：把附件复制进工作区 incoming/ 目录，并把相对路径写进消息，
+            # 这样 read_file 能按相对路径直接找到它。否则只剩文件名，模型会去
+            # dist 目录瞎找 → "文件不存在"，进而用 run_command 反复搜、刷屏。
+            # v4.102 hotfix：Windows 文件名禁止 \ / : * ? " < > | 等字符，用户原
+            # 文件名（如「涉密岗用AI | 一定要死守的3道脱敏底线✅.png」含竖线）会
+            # 导致 shutil.copy2 抛非法字符异常、复制失败、图根本没进 incoming，
+            # 标记指向不存在的文件 → 视觉模型收不到图、静默无响应。复制前先清洗
+            # 非法字符，并重名去重避免覆盖；标记里用清洗后的名字，保证能对应上。
+            # v4.164.0：附件落 WORKSPACE_DIR（工作区），不再落 APP_DIR（dist）
+            inc_dir = os.path.join(WORKSPACE_DIR, "incoming")
+            try:
+                os.makedirs(inc_dir, exist_ok=True)
+            except Exception:
+                pass
+            raw_base = os.path.basename(p)
+            base = _sanitize_filename(raw_base) or "file"
+            dst = os.path.join(inc_dir, base)
+            # 重名去重：避免不同原文件清洗后同名互相覆盖
+            if os.path.exists(dst):
+                stem, sufx = os.path.splitext(base)
+                i = 1
+                while os.path.exists(dst):
+                    dst = os.path.join(inc_dir, f"{stem}_{i}{sufx}")
+                    i += 1
+                base = os.path.basename(dst)
+            try:
+                import shutil
+                shutil.copy2(p, dst)
+            except Exception as e:
+                self.input_box.insertPlainText(
+                    f"\n[文件: {base}]（复制失败：{e}，请确认文件可访问）\n")
                 self._on_input_changed()
+                return
+            self.input_box.insertPlainText(f"\n[文件: incoming/{base}]\n")
+            self._on_input_changed()
+
+    # ---- v4.189：窗口级拖拽添加附件（此前只有加号按钮，拖拽从未实现过） ----
+    def dragEnterEvent(self, e):
+        md = e.mimeData()
+        if md.hasUrls() or md.hasText():
+            e.acceptProposedAction()
+        else:
+            e.ignore()
+
+    def dropEvent(self, e):
+        md = e.mimeData()
+        if md.hasUrls():
+            files = [u.toLocalFile() for u in md.urls()]
+            files = [f for f in files if f and os.path.isfile(f)]
+            if files:
+                e.acceptProposedAction()
+                for f in files:
+                    self._ingest_attachment(f)
+                return
+        if md.hasText():
+            # 拖入的是文本（input_box 已关 acceptDrops，由窗口统一收）→ 原样插入
+            self.input_box.insertPlainText(md.text())
+            self._on_input_changed()
+            e.acceptProposedAction()
+            return
+        e.ignore()
 
     def _attach_audio(self, path):
         """用户添加音频文件：自动 ASR 转写并填入输入框（复用 _ASRWorker）。"""
@@ -6800,6 +6841,14 @@ class ChatWindow(QMainWindow):
         # 看两遍），且把 DOM 撑到 OOM（白屏真凶）。界面只渲染 tool_log 卡片。
         if m.get("role") == "tool":
             return ""
+        # v4.189 批③：自动核验警示——专用黄卡渲染（区别于 assistant 气泡）
+        if m.get("role") == "audit_warn":
+            bubble = ('<div class="tool-wrap">'
+                      f'<div style="background:{self.AUDIT_WARN_BG};'
+                      f'border-left:3px solid {self.AUDIT_WARN_BORDER};border-radius:8px;'
+                      'padding:8px 12px;font-size:12px;">'
+                      + html_mod.escape(str(m.get("content", ""))) + "</div></div>")
+            return self._wrap_msg(bubble, idx)
         if m.get("role") == "tool_log":
             name = m.get("name", "")
             result = m.get("result", "")
@@ -8779,6 +8828,13 @@ class ChatWindow(QMainWindow):
                     f"{html_mod.escape(str(m.get('name', '')))}</div>"
                     f"<pre>{html_mod.escape(str(m.get('args', '')))}</pre>"
                     f"<div class='result'>→ {html_mod.escape(str(m.get('result', '')))}</div></div>")
+            elif m.get("role") == "audit_warn":
+                # v4.189 批③：自动核验警示（配色走 THEME 派生，不裸写 hex）
+                parts.append(
+                    f"<div class='tool' style='background:{self.AUDIT_WARN_BG};"
+                    f"border-left:3px solid {self.AUDIT_WARN_BORDER};"
+                    f"border-radius:8px;padding:8px 12px;margin:6px 0;'>"
+                    f"{html_mod.escape(str(m.get('content', '')))}</div>")
             else:
                 who = "你" if m["role"] == "user" else "助手"
                 cls = "user" if m["role"] == "user" else "asst"
@@ -8808,6 +8864,9 @@ class ChatWindow(QMainWindow):
                     f"**工具调用：{m.get('name', '')}**\n\n"
                     f"```\n{m.get('args', '')}\n```\n\n"
                     f"→ {m.get('result', '')}\n")
+            elif m.get("role") == "audit_warn":
+                # v4.189 批③：自动核验警示
+                lines.append(f"> ⚠️ {m.get('content', '')}\n")
             else:
                 who = "你" if m["role"] == "user" else "助手"
                 content = m.get("content", "")
@@ -8855,6 +8914,10 @@ class ChatWindow(QMainWindow):
                 p.add_run(f"工具调用：{m.get('name', '')}").bold = True
                 doc.add_paragraph(str(m.get('args', ''))).style = "No Spacing"
                 doc.add_paragraph(f"→ {m.get('result', '')}")
+            elif m.get("role") == "audit_warn":
+                # v4.189 批③：自动核验警示
+                p = doc.add_paragraph()
+                p.add_run("⚠️ " + str(m.get("content", ""))).italic = True
             else:
                 who = "你" if m["role"] == "user" else "助手"
                 p = doc.add_paragraph()
@@ -9459,6 +9522,12 @@ class ChatWindow(QMainWindow):
                 self.status_label.setText("Agent 完成")
         else:
             self.status_label.setText("Agent 完成")
+        # v4.189 批③：回复自动回验——版本断言逐个 grep 本轮真实读过的文件，
+        # 零命中的疑似编造，当场在会话里标 ⚠️（方法内部 try/except 包死，
+        # 校验器绝不阻断 agent 完成流程）。
+        self._audit_reply_citations()
+        # v4.189 批④：附件行为回验——声称已读但本轮没调 read_file → 标红。
+        self._audit_attachment_reads()
         self._do_save()  # v4.58：agent 结束做一次最终落盘
         self._flush_render()  # v4.60o：冲刷待渲染定时器，避免末条消息重复插入
         self.input_box.setFocus()
@@ -9467,6 +9536,256 @@ class ChatWindow(QMainWindow):
         if _pending:
             self._pending_done_notify = None
             self._notify_task_done("任务完成", f"自动化任务「{_pending}」已完成")
+
+    # ---- v4.189 批③：回复自动回验器（机器执法，防编造引用） ----
+    # 引用语境词：与版本断言同现才触发验证（防「Python 3.12」类一般知识误报）
+    _AUDIT_CITE_CTX = ("文件里", "文件中", "里面", "文中", "清单里", "记录里",
+                       "changelog", "change log", "更新日志", "版本记录",
+                       "版本节", "条目")
+    # 否定语境词：版本号邻近出现这些词 = 「如实报告某版本不存在」，豁免验证
+    _AUDIT_NEG_KW = ("没有", "不存在", "不在", "查无", "找不到", "未找到",
+                     "未收录", "无此", "并无", "不是从")
+    # read_file 失败返回的开头标记（这些文件没真读到内容，不能作真值源）
+    _READ_FAIL_PREFIX = ("未提供", "已阻止", "拒绝：", "文件不存在", "读取失败")
+
+    def _audit_reply_citations(self):
+        """v4.189 批③：回复自动回验器——把「人肉抓编造」自动化。
+
+        背景（2026-09-30 小臭 CHANGELOG 编造事件）：模型对账时引用文件里
+        不存在的版本号（v4.126 等），靠用户手里有真值才被拆穿。本方法把
+        抓包三招自动化：提取回复中的 vN.N 版本断言 → grep 本轮真实
+        read_file 读过的文件 → 所有候选文件均零命中 = 疑似编造 →
+        追加 ⚠️ audit_warn 警示（落盘 + UI 直显），不改动原回复。
+
+        防误报设计：
+        - 只验本轮（最后一条真实 user 之后）read_file **成功读取**过的文件；
+        - 回复须含引用语境词（文件里/清单里/更新日志…）才提取版本断言；
+        - 版本号邻近含否定词（「文件里没有v4.126」）→ 豁免：如实报告不存在
+          是正确行为，不能标红；
+        - 候选文件读失败/被删 → 跳过该文件（fail-open，不当场误报）；
+        - 任何异常整体吞掉（校验器绝不阻断 agent 完成流程）。
+        """
+        try:
+            msgs = self.store.active().messages
+            # 1) 本轮成功 read_file 过的文件（扫到本会话最后一条真实 user 为止）
+            files = []
+            for m in reversed(msgs):
+                r = m.get("role")
+                if r == "tool_log" and m.get("name") == "read_file":
+                    if str(m.get("result", "")).startswith(self._READ_FAIL_PREFIX):
+                        continue  # 读取失败 ≠ 读过，不能作真值源
+                    p = self._resolve_read_path(self._extract_read_path(m.get("args", "")))
+                    if p and p not in files:
+                        files.append(p)
+                elif r == "user" and not m.get("_internal"):
+                    break  # 本轮边界：最后一条真实 user
+            if not files:
+                return
+            # 2) 最后一条 assistant 回复（worker 收尾已回写 session）
+            last_asst = ""
+            for m in reversed(msgs):
+                if m.get("role") == "assistant":
+                    c = m.get("content", "")
+                    if isinstance(c, list):
+                        c = self._extract_text(m)
+                    last_asst = str(c or "")
+                    if last_asst.strip():
+                        break
+            if not last_asst.strip():
+                return
+            _low = last_asst.lower()
+            if not any(k in _low for k in self._AUDIT_CITE_CTX):
+                return  # 无引用语境 → 版本号可能是 一般知识/闲聊，不验
+            # 3) 提取版本断言，逐个回验（否定语境豁免）
+            vers = set(re.findall(r"v\d+\.\d+(?:\.\d+)?", last_asst))
+            if not vers:
+                return
+            texts = []
+            for p in files:
+                try:
+                    with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                        texts.append(f.read())
+                except Exception:
+                    continue
+            if not texts:
+                return
+            missed = sorted(v for v in vers
+                            if not self._negation_near(last_asst, v)
+                            and not any(v in t for t in texts))
+            if not missed:
+                return  # 全部命中或全部豁免：真读真引，无事发生
+            # 4) 追加警示（落盘 + UI 直显；_do_save 随后统一落盘）
+            flist = "、".join(os.path.basename(p) for p in files[:3])
+            warn = (f"⚠️ 自动核验失败：回复中引用的 {'、'.join(missed[:8])} "
+                    f"在本轮实际读取的文件（{flist}）中未找到，疑似编造。"
+                    "采信前请要求给出【路径+行号+原文摘录】三件套。")
+            self.store.active().messages.append({
+                "role": "audit_warn", "content": warn,
+            })
+            self.chat_view.append(self._audit_warn_html(warn))
+        except Exception:
+            pass  # 校验器绝不阻断 agent 完成流程
+
+    def _audit_warn_html(self, text):
+        """v4.189：audit_warn 警示卡 HTML（配色走 THEME['warn'] 派生，
+        过 UI 裸 hex 护栏 + 换肤跟随）。三处（实时直显 / 重放 / 导出）共用。"""
+        return ('<div style="background:%s;'
+                'border-left:3px solid %s;border-radius:8px;'
+                'padding:8px 12px;margin:6px 0;font-size:12px;">'
+                % (self.AUDIT_WARN_BG, self.AUDIT_WARN_BORDER)
+                + html_mod.escape(str(text)) + "</div>")
+
+    def _negation_near(self, text, ver, window=30):
+        """版本号前后 window 字内含否定词 → 「如实报告不存在」，豁免验证。"""
+        for m in re.finditer(re.escape(ver), text):
+            s, e = max(0, m.start() - window), min(len(text), m.end() + window)
+            if any(n in text[s:e] for n in self._AUDIT_NEG_KW):
+                return True
+        return False
+
+    # ---- v4.189 批④：附件行为回验（声称已读但没读 → 标红） ----
+    # 附件标记正则（与 agent._ATTACH_MARK_RE_STR 同款；发送侧最终形态，
+    # 图片标记已被换成 image_url，不在此列）
+    _ATTACH_MARK_RE = re.compile(
+        r"\[(?:非图片文件|文件|file):\s*([^\]\n]{1,200}?\.(?:[A-Za-z0-9]{1,8}))\]")
+    # 「声称已读」词表（须与提及文件名同现）
+    _READ_CLAIM_KW = ("已读", "读完", "读完了", "读过了", "看完了", "看过了",
+                      "翻完了", "通读", "我读了", "阅读了")
+    # v4.189：audit_warn 警示卡配色——从 THEME['warn'] 派生（不裸写 hex，
+    # 过 UI 裸 hex 护栏；换肤自动跟随）
+    _AW = THEME["warn"].lstrip("#")
+    AUDIT_WARN_BORDER = THEME["warn"]
+    AUDIT_WARN_BG = ("rgba(%d,%d,%d,0.12)" % (int(_AW[0:2], 16),
+                                              int(_AW[2:4], 16),
+                                              int(_AW[4:6], 16)))
+    del _AW
+
+    def _audit_attachment_reads(self):
+        """v4.189 批④：附件行为回验——你说读了，机器查你读没读。
+
+        背景（2026-09-30 实锤）：用户发 CHANGELOG.md，模型零工具调用直接
+        「读完 CHANGELOG，给您交叉核验」开编。行为链对账：
+          本轮 user 带附件标记 → 本轮是否真有 read_file/run_python 读它
+          → 若「声称已读」却零调用 → audit_warn 标红。
+
+        防误报设计：
+        - 真读判定宽进：tool_log(read_file) 或 assistant.tool_calls 里
+          read_file/run_python 的完整 arguments 含该文件名（basename 匹配，
+          run_python open() 读也算真读）；
+        - 只在「声称已读词 ∧ 提及未读文件名」同时命中才标红——
+          没声称已读的（如「我无法读取」）不触发，留给批③版本回验兜底；
+        - 任何异常整体吞掉，绝不阻断收尾。
+        """
+        try:
+            msgs = self.store.active().messages
+            # 1) 找最后一条真实 user，提取附件 basename 集合
+            att = set()
+            last_user_idx = -1
+            for i in range(len(msgs) - 1, -1, -1):
+                m = msgs[i]
+                if m.get("role") == "user" and not m.get("_internal"):
+                    c = m.get("content", "")
+                    if not isinstance(c, str):
+                        c = str(c)
+                    for mm in self._ATTACH_MARK_RE.finditer(c):
+                        att.add(os.path.basename(mm.group(1).strip().strip('"')))
+                    last_user_idx = i
+                    break
+            if not att or last_user_idx < 0:
+                return
+            # 2) 本轮（该 user 之后）真读过的文件：tool_log / tool_calls 双通道
+            read_hit = set()
+            for m in msgs[last_user_idx + 1:]:
+                if m.get("role") == "tool_log" and m.get("name") in ("read_file",
+                                                                     "run_python"):
+                    hay = str(m.get("args", ""))
+                    read_hit |= {a for a in att if a and a in hay}
+                elif m.get("role") == "assistant" and m.get("tool_calls"):
+                    for tc in m.get("tool_calls") or []:
+                        try:
+                            fn = (tc.get("function", {}) or {})
+                            if fn.get("name") in ("read_file", "run_python"):
+                                hay = str(fn.get("arguments", ""))
+                                read_hit |= {a for a in att if a and a in hay}
+                        except Exception:
+                            continue
+            unread = att - read_hit
+            if not unread:
+                return  # 全部真读过
+            # 3) 最后 assistant 回复「声称已读 ∧ 提及未读文件」→ 标红
+            last_asst = ""
+            for m in reversed(msgs):
+                if m.get("role") == "assistant":
+                    c = m.get("content", "")
+                    if isinstance(c, list):
+                        c = self._extract_text(m)
+                    last_asst = str(c or "")
+                    if last_asst.strip():
+                        break
+            if not last_asst.strip():
+                return
+            claimed = any(k in last_asst for k in self._READ_CLAIM_KW)
+            mentioned = {u for u in unread
+                         if u in last_asst
+                         or os.path.splitext(u)[0] in last_asst}
+            if not (claimed and mentioned):
+                return
+            warn = (f"⚠️ 附件核验失败：回复声称已读取 "
+                    f"{'、'.join(sorted(mentioned)[:3])}，但本轮工具记录中没有"
+                    "对应的 read_file/run_python 调用——疑似未读编造，"
+                    "请要求它先真读再答。")
+            self.store.active().messages.append({
+                "role": "audit_warn", "content": warn,
+            })
+            self.chat_view.append(self._audit_warn_html(warn))
+        except Exception:
+            pass  # 校验器绝不阻断 agent 完成流程
+
+    def _extract_read_path(self, args):
+        """从 tool_log 的 read_file args（JSON 字符串，可能被 _clip 截断）提取路径。"""
+        s = str(args or "").strip()
+        if not s:
+            return ""
+        try:
+            d = json.loads(s)
+            if isinstance(d, dict):
+                for k in ("path", "file", "file_path", "filename", "name"):
+                    v = d.get(k)
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()
+        except Exception:
+            pass
+        # 兜底：args 是裸路径，或 JSON 截断后开头残留的 "path" 值
+        m = re.search(r'[\'"]?(path|file|file_path|filename)[\'"]?\s*[:=]\s*[\'"]([^\'"]+)',
+                      s)
+        if m:
+            return m.group(2).strip()
+        m = re.match(r'^[\'"]?([A-Za-z]:[/\\][^\'"]+|[/~/][^\'"]+'
+                     r'|\w[^\'":,]{2,}\.[A-Za-z0-9]{1,5})', s)
+        return m.group(1).strip() if m else ""
+
+    def _resolve_read_path(self, path):
+        """按 tool_read_file 同款规则解析路径（v4.189 批③回验用）：
+        WORKSPACE_DIR 优先 → app_dir 回退 → 纯文件名去 incoming/ 找。
+        解析不到存在的文件返回 ""（跳过，不误报）。"""
+        if not path:
+            return ""
+        try:
+            p = os.path.abspath(os.path.join(tools_mod.WORKSPACE_DIR, path))
+            if not os.path.isfile(p):
+                _alt = os.path.abspath(os.path.join(APP_DIR, path))
+                if os.path.isfile(_alt):
+                    p = _alt
+            if not os.path.isfile(p) and "/" not in path and "\\" not in path:
+                for _r in tools_mod._tool_roots(APP_DIR):
+                    cand = os.path.abspath(
+                        os.path.join(_r, "incoming", os.path.basename(path)))
+                    if os.path.isfile(cand):
+                        p = cand
+                        break
+            return p if os.path.isfile(p) else ""
+        except Exception:
+            return ""
 
     # ---- v4.101：普通 Agent 断点续传 ----
     def _resume_agent_task(self):

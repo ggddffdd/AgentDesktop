@@ -1,5 +1,6 @@
 regression.py
 test_agent_node_failure.py
+test_anti_fabrication_189.py
 test_attachment_and_director_gates.py
 test_audio_regress.py
 test_bridge_security.py

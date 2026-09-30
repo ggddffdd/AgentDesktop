@@ -353,6 +353,44 @@ class AgentWorker(QThread):
         "交付物】——用户只是想了解/验证工具状态，用简洁文字报告即可。"
         "不要编造任何不存在的问题或路径。"
     )
+    # v4.189 批②：对账/核对意图纪律——防「没读文件凭记忆编引用」。
+    # 背景（2026-09-30 小臭 CHANGELOG 编造事件）：对账请求下模型把记忆里的真素材
+    # （其他版本的功能描述+日志日期+HTTP 4xx 错误码）拼装成「文件里的条目」
+    # 煞有介事对账，两次拆穿才承认编造。纪律四条：先真读、先列结构清单、
+    # 引用带行号原文、没有就说没有。与 _SELF_CHECK_INSTRUCTION（自检场景）互补，
+    # 本条覆盖「核对/对账用户提供的文件」场景。
+    _AUDIT_REF_INSTRUCTION = (
+        "用户要求核对/对账文件内容。铁律："
+        "①第一步必须先用 read_file 完整读取目标文件（找不到路径就先用 list_dir 定位，"
+        "禁止凭记忆回答文件内容）；"
+        "②回复开头先原样列出该文件的真实结构清单（全部版本节/配置项/条目名，"
+        "一个不许漏、不许加）；"
+        "③之后任何『文件里写了X』的引用必须带【行号+原文摘录】，缺一作废；"
+        "④文件里没有的条目就直接说没有，禁止从你的记忆补全。"
+    )
+    # 对账意图词（需与文件语境词同时命中才触发，防「核对一下这道题」误伤）
+    _AUDIT_KW = ("核对", "对账", "交叉核验", "逐条核验", "查证", "核实一下",
+                 "比对一下", "比对清单", "对得上", "对不上",
+                 "changelog", "change log", "更新日志", "版本记录")
+    # 文件语境词（小写比较；中文不受 lower 影响）
+    _AUDIT_FILE_CTX = (".md", ".json", ".txt", ".py", ".yaml", ".yml",
+                       "changelog", "change log", "更新日志", "版本记录",
+                       "文件", "清单", "日志")
+    # v4.189 批④：附件必读纪律——用户消息里带 [文件: …]/[非图片文件: …] 标记时注入。
+    # 背景（2026-09-30 CHANGELOG 编造事件实锤）：附件投递只递「信封」（一行文本标记），
+    # 内容不进上下文；模型不调 read_file 就「读完 CHANGELOG，给您交叉核验」直接开编。
+    # 图片附件走视觉通道（image_url 直接进上下文），不在此列。
+    _ATTACH_READ_INSTRUCTION = (
+        "用户本轮发来了附件（见消息中的 [非图片文件: …] / [文件: …] 标记）。铁律："
+        "在基于附件内容回答、总结、核对、引用之前，必须先用 read_file 真实读取该文件"
+        "（大文件按提示用 offset 分段读完）；在真正调用 read_file 之前，"
+        "禁止声称『已读/读完/看过了』，禁止概括或引用其内容——"
+        "标记只是一行文字，文件内容不在你的上下文里，凭记忆或猜测描述附件内容属于编造。"
+    )
+    # 附件标记正则：[非图片文件: x] / [文件: x] / [file: x]（发送侧最终形态，
+    # 图片标记已被 _extract_images_from_text 吃掉换成 image_url）
+    _ATTACH_MARK_RE_STR = (r"\[(?:非图片文件|文件|file):\s*"
+                           r"([^\]\n]{1,200}?\.(?:[A-Za-z0-9]{1,8}))\]")
 
     def _looks_like_promise(self, text):
         """判断模型返回是否像『承诺执行却不行动』——收紧版（v4.186 接线兜底用）。
@@ -383,6 +421,27 @@ class AgentWorker(QThread):
                   "复核", "抓取", "写入", "写文件", "执行", "读取", "调用工具",
                   "跑一下", "跑个")
         return any(p in t for p in promise) and any(a in t for a in action)  # ③ 承诺 ∧ 动作
+
+    def _audit_ref_needed(self, cur, prev):
+        """v4.189 批②：判定本轮是否「对账/核对文件」类请求。
+
+        双条件命中才触发（防误伤）：
+          ① 对账意图词（核对/对账/交叉核验/changelog…）；
+          ② 文件语境词（.md/.json/文件/清单/更新日志…）。
+        「核对一下这道题的答案」无文件语境 → 不触发；
+        「帮我核对这份 CHANGELOG」双条件命中 → 触发。
+        cur/prev：当前句与上一句用户原话（v4.80b 同款取样），任一命中即触发。
+        """
+        for t in (cur, prev):
+            t = (t or "").strip()
+            if not t:
+                continue
+            _low = t.lower()
+            hit_audit = (any(k in t for k in self._AUDIT_KW)
+                         or any(k in _low for k in ("changelog", "change log")))
+            if hit_audit and any(k in _low for k in self._AUDIT_FILE_CTX):
+                return True
+        return False
 
     def _looks_like_question(self, text):
         """v4.61：判断模型输出是否像「向用户追问」而非推进任务。
@@ -1284,6 +1343,41 @@ class AgentWorker(QThread):
                       if m.get("role") == "user" and isinstance(m.get("content"), str)]
         _cur_user = _user_msgs[-1] if _user_msgs else ""
         _prev_user = _user_msgs[-2] if len(_user_msgs) >= 2 else ""
+
+        # v4.189 批②：对账/核对意图 → 注入「先真读+列清单+行号引用」纪律。
+        # 只在本轮 run 开始时一次性注入（_internal 不回写 session，续跑重建
+        # 后消失，天然无重复累积；此处查重仅为同一 worker 极端重入兜底）。
+        try:
+            if (self._audit_ref_needed(_cur_user, _prev_user)
+                    and not any(m.get("_internal")
+                                and "核对/对账文件内容" in str(m.get("content", ""))
+                                for m in self.messages)):
+                self.messages.append({
+                    "role": "user", "content": self._AUDIT_REF_INSTRUCTION,
+                    "_internal": True,
+                })
+        except Exception:
+            pass  # 纪律注入失败不阻断 Agent 主流程
+
+        # v4.189 批④：本轮 user 消息带附件标记 → 注入「附件必读」纪律。
+        # 覆盖通用场景（总结/看看/核对不限）：内容不在上下文，没 read_file
+        # 之前一律不许声称已读。与批②独立触发（对账场景两条都注入，互补不冲突）。
+        try:
+            _attach_marks = []
+            for _t in (_cur_user, _prev_user):
+                _attach_marks.extend(
+                    m.group(1) for m in
+                    re.finditer(self._ATTACH_MARK_RE_STR, _t or ""))
+            if (_attach_marks
+                    and not any(m.get("_internal")
+                                and "用户本轮发来了附件" in str(m.get("content", ""))
+                                for m in self.messages)):
+                self.messages.append({
+                    "role": "user", "content": self._ATTACH_READ_INSTRUCTION,
+                    "_internal": True,
+                })
+        except Exception:
+            pass  # 纪律注入失败不阻断 Agent 主流程
 
         for step in range(1, self._max_steps + 1):
             # v4.60：超时保护——超过 3 分钟自动停止，防止慢模型无响应
