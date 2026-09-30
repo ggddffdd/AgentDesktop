@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 DeepSeek 桌面助手 v3 —— 自用微应用
 功能：系统托盘常驻 + 全局热键呼出 + 调用 DeepSeek API 聊天
@@ -243,6 +243,15 @@ THEME = {
     # ---- Prism 虹彩渐变 (保留兼容，新版未使用) ----
     "prism": "qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #FF6B9D,stop:0.2 #C44569,stop:0.4 #F8B500,stop:0.6 #00D2FF,stop:0.8 #7B68EE,stop:1 #FF69B4)",
     "prism_soft": "qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 rgba(255,107,157,0.14),stop:0.5 rgba(0,210,255,0.10),stop:1 rgba(123,104,238,0.14))",
+
+    # ---- 字号 token（v4.182.0，DESIGN.md §3.2 层级表 · theme_qss.F 同源镜像）----
+    "font_micro": "11px",      # 微标签：角标、时间戳、状态小字（10px 已归一到此）
+    "font_second": "12px",     # 次级：提示、次级说明、小按钮文字
+    "font_body": "13px",       # 正文/控件（默认值）
+    "font_input": "14px",      # 输入框/强调按钮专用（分场景归档决策）
+    "font_title": "15px",      # 标题（weight>=600）
+    "font_icon_btn": "16px",   # 纯图标按钮
+    "font_title_xl": "20px",   # 页面大标题
 }
 
 # 交付物类型 → 彩色竖条配色
@@ -1019,6 +1028,126 @@ def resource_path(rel):
     return candidates[0]
 
 
+def clamp_dialog_to_screen(dlg, want_w=None, want_h=None, margin=24,
+                           center_on_parent=True):
+    """v4.180.0：把弹窗钳制进屏幕可用区，**保证底部按钮永远可见可点**。
+
+    病根：主程序里十多个弹窗用硬编码 `resize(w, h)` 打开（如 RoleEditor
+    写死 820 高）。笔记本 + 系统缩放（125%/150%）下可用高度可能只有
+    600~880px，Qt 从屏幕顶部摆 → 底部按钮沉到屏幕外，鼠标够不着
+    （大哥实测「授权弹窗超出屏幕点不到」）。
+
+    本函数做三件事：
+      1. 钳制尺寸：宽高都不超过 `可用区 - 2*margin`，并设 maximumHeight
+         防止子控件把弹窗重新撑破；
+      2. 居中摆放：在**可用区**内居中，而不是让 Qt 从顶部摆；
+      3. 只在父窗口明显小于屏幕时，才按父窗口对齐（避免父窗口很小又把
+         弹窗挤到屏幕外）。
+
+    注意：只调尺寸与位置，不改任何弹窗自身的布局与业务。
+    """
+    from PySide6.QtWidgets import QApplication
+    scr = None
+    try:
+        scr = dlg.screen() or QApplication.primaryScreen()
+    except Exception:
+        try:
+            scr = QApplication.primaryScreen()
+        except Exception:
+            scr = None
+
+    if scr is None:
+        # 连屏幕都拿不到（极端 headless）：退化成原样，绝不因此崩。
+        if want_w and want_h:
+            dlg.resize(want_w, want_h)
+        return dlg
+
+    avail = scr.availableGeometry()
+    max_w = max(320, avail.width() - 2 * margin)
+    max_h = max(240, avail.height() - 2 * margin)
+
+    # 目标尺寸：显式传入优先，否则用当前 sizeHint（Qt 打算开多大）
+    tw = want_w if want_w else dlg.sizeHint().width()
+    th = want_h if want_h else dlg.sizeHint().height()
+    # 尊重弹窗自己声明的最小尺寸，但最小也不许超过可用区
+    tw = max(tw, min(dlg.minimumWidth(), max_w))
+    th = max(th, min(dlg.minimumHeight(), max_h))
+    tw = min(tw, max_w)
+    th = min(th, max_h)
+
+    # 关键：设上限，防子控件（长报告 QTextEdit 等）把弹窗重新撑高
+    dlg.setMaximumHeight(max_h)
+    dlg.setMaximumWidth(max_w)
+    dlg.resize(tw, th)
+
+    # 摆位：优先在可用区内居中；若指定按父窗口，则对齐父窗口中心但钳进可用区
+    x = avail.x() + (avail.width() - tw) // 2
+    y = avail.y() + (avail.height() - th) // 2
+    if center_on_parent and dlg.parent() is not None:
+        try:
+            p = dlg.parent().geometry()
+            # 父窗口足够大（占屏 60%+）时按父窗口居中，观感更贴
+            if p.height() > avail.height() * 0.6 and p.width() > avail.width() * 0.6:
+                x = p.x() + (p.width() - tw) // 2
+                y = p.y() + (p.height() - th) // 2
+        except Exception:
+            pass
+    # 最后再钳一次，确保整块都在可用区内（含标题栏预留 32px 余量）
+    x = min(max(x, avail.x()), avail.x() + avail.width() - tw)
+    y = min(max(y, avail.y()), avail.y() + avail.height() - th)
+    dlg.move(x, y)
+    return dlg
+
+
+def clamp_popup_to_screen(popup, pos, margin=16):
+    """v4.181.1：把 `Qt.Popup` 内嵌弹层钳进屏幕可用区（QDialog 版本见上方）。
+
+    与 `clamp_dialog_to_screen` 的分工：那个管 QDialog（居中摆放），这个管
+    从按钮旁弹出的 Popup —— **必须先尽量贴着触发点，放不下才让位**，
+    不能一上来就居中，否则弹层会突然跳到屏幕中间、失去「从按钮弹出」的观感。
+
+    做三件事：
+      1. 限高：高度不超过 `可用区 - 2*margin`，并设 maximum 防内容再撑破
+         （内容靠 `_popup_base` 那层 QScrollArea 滚动，不会丢）；
+      2. 水平：右边越界就整块往左推；
+      3. 垂直：优先保持锚点 y；下方放不下就整体上移，仍放不下才贴顶。
+
+    返回实际落点 QPoint。拿不到屏幕（headless）时原样返回，绝不因钳制失败而崩。
+    """
+    from PySide6.QtWidgets import QApplication
+    try:
+        scr = popup.screen() or QApplication.primaryScreen()
+    except Exception:
+        try:
+            scr = QApplication.primaryScreen()
+        except Exception:
+            scr = None
+    if scr is None:
+        popup.move(pos)
+        return pos
+
+    avail = scr.availableGeometry()
+    max_h = max(200, avail.height() - 2 * margin)
+    max_w = max(200, avail.width() - 2 * margin)
+    popup.setMaximumHeight(max_h)
+    popup.setMaximumWidth(max_w)
+    # adjustSize 只认 sizeHint，不会自动套 maximum —— 这里手动再夹一次
+    popup.adjustSize()
+    w = min(popup.width(), max_w)
+    h = min(popup.height(), max_h)
+    popup.resize(w, h)
+
+    x, y = pos.x(), pos.y()
+    if x + w > avail.x() + avail.width():
+        x = avail.x() + avail.width() - w
+    x = max(x, avail.x())
+    if y + h > avail.y() + avail.height():
+        y = avail.y() + avail.height() - h
+    y = max(y, avail.y())
+    popup.move(x, y)
+    return QPoint(x, y)
+
+
 class ThemedDialog(QDialog):
     """深色、无边框、置顶、自动居中的模态对话框基类。"""
 
@@ -1035,19 +1164,22 @@ class ThemedDialog(QDialog):
 
     def showEvent(self, e):
         super().showEvent(e)
+        # v4.180.0：先按父窗口居中，再整体钳进屏幕可用区 —— 父窗口大于屏幕
+        # 或弹窗本身偏高时，旧逻辑会把底部按钮顶到屏幕外。
         if self.parent():
             p = self.parent().geometry()
             self.move(p.x() + (p.width() - self.width()) // 2,
                       p.y() + (p.height() - self.height()) // 2)
+        try:
+            clamp_dialog_to_screen(self, center_on_parent=False)
+        except Exception:
+            pass
 
     @staticmethod
     def _btn_style(bg, fg):
-        hover = THEME["accent_hover"] if bg == THEME["accent"] else THEME["panel2"]
-        pressed = THEME["accent"] if bg == THEME["accent"] else THEME["elev"]
-        return (f"QPushButton{{background:{bg};color:{fg};border:none;border-radius:10px;"
-                f"padding:8px 20px;font-size:13px;font-weight:600;}}"
-                f"QPushButton:hover{{background:{hover};}}"
-                f"QPushButton:pressed{{background:{pressed};}}")
+        # v4.182.0 收编：真源在 theme_qss.btn_dialog()（方法内惰性导入防循环依赖）
+        from theme_qss import btn_dialog
+        return btn_dialog(bg, fg)
 
 
 class ConfirmDialog(ThemedDialog):
@@ -1111,7 +1243,7 @@ class RenameDialog(ThemedDialog):
         self._edit.setPlaceholderText("例如：小说《死亡倒计时》大纲")
         self._edit.setStyleSheet(
             f"QLineEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:8px;padding:8px 10px;font-size:13px;color:{THEME['text']};}}"
+            f"border-radius:8px;padding:8px 12px;font-size:13px;color:{THEME['text']};}}"
             f"QLineEdit:focus{{border:1px solid {THEME['accent']};}}")
         lay.addWidget(self._edit)
         row = QHBoxLayout()
@@ -1246,7 +1378,7 @@ class SessionManagerDialog(QDialog):
         self.search.setFixedHeight(34)
         self.search.setStyleSheet(
             f"QLineEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:8px;padding:0 10px;font-size:13px;color:{THEME['text']};}}"
+            f"border-radius:8px;padding:0 12px;font-size:13px;color:{THEME['text']};}}"
             f"QLineEdit:focus{{border:1px solid {THEME['accent']};}}")
         self.search.textChanged.connect(self._refresh)
         top.addWidget(self.search, 1)
@@ -1269,7 +1401,7 @@ class SessionManagerDialog(QDialog):
         self.list_widget = QWidget()
         self.list_lay = QVBoxLayout(self.list_widget)
         self.list_lay.setContentsMargins(0, 0, 0, 0)
-        self.list_lay.setSpacing(6)
+        self.list_lay.setSpacing(8)
         self.scroll.setWidget(self.list_widget)
         lay.addWidget(self.scroll, 1)
 
@@ -1285,7 +1417,7 @@ class SessionManagerDialog(QDialog):
         bulk.setFixedHeight(34)
         bulk.setStyleSheet(
             f"QPushButton{{background:{THEME['card']};color:{THEME['danger']};"
-            f"border:1px solid {THEME['border']};border-radius:8px;padding:0 14px;font-size:13px;}}"
+            f"border:1px solid {THEME['border']};border-radius:8px;padding:0 12px;font-size:13px;}}"
             f"QPushButton:hover{{border-color:{THEME['danger']};background:{THEME['danger_hover_red']};}}")
         bulk.clicked.connect(self._bulk_delete)
         bottom.addWidget(bulk)
@@ -1294,7 +1426,7 @@ class SessionManagerDialog(QDialog):
         done.setFixedHeight(34)
         done.setStyleSheet(
             f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
-            f"border-radius:8px;padding:0 18px;font-size:13px;font-weight:500;}}"
+            f"border-radius:8px;padding:0 16px;font-size:13px;font-weight:500;}}"
             f"QPushButton:hover{{background:{THEME['accent_hover']};}}")
         done.clicked.connect(self.accept)
         bottom.addWidget(done)
@@ -1345,7 +1477,7 @@ class SessionManagerDialog(QDialog):
             f"background:{THEME['card']};border:1px solid {THEME['border']};"
             f"border-radius:10px;")
         rl = QHBoxLayout(row)
-        rl.setContentsMargins(10, 8, 10, 8)
+        rl.setContentsMargins(8, 8, 8, 8)
         rl.setSpacing(8)
 
         chk = QCheckBox()
@@ -1378,7 +1510,7 @@ class SessionManagerDialog(QDialog):
         fcombo.setEditable(True)
         fcombo.setStyleSheet(
             f"QComboBox{{background:{THEME['bg']};border:1px solid {THEME['border']};"
-            f"border-radius:6px;padding:0 6px;font-size:12px;color:{THEME['text']};}}")
+            f"border-radius:6px;padding:0 8px;font-size:12px;color:{THEME['text']};}}")
         fcombo.addItem("未分组")
         for f in self.store.list_folders():
             if f != s.folder:
@@ -2114,7 +2246,7 @@ class TaskStatusStrip(QWidget):
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(6)
+        lay.setSpacing(8)
 
         self.icon = QLabel("")
         self.icon.setStyleSheet(f"color:{THEME['accent']};font-size:11px;")
@@ -2397,7 +2529,7 @@ class ChatWindow(QMainWindow):
             QToolTip {{
                 background: {THEME['card']}; color: {THEME['text']};
                 border: 1px solid {THEME['border']}; border-radius: 8px;
-                padding: 6px 10px; font-size: 12px;
+                padding:8px 12px; font-size: 12px;
             }}
             QScrollBar:vertical {{
                 background: transparent; width: 6px; margin: 0; border-radius: 3px;
@@ -2743,15 +2875,15 @@ class ChatWindow(QMainWindow):
         header.setFixedHeight(48)
         header.setStyleSheet(f"background:{THEME['bg']};border-bottom:1px solid {THEME['border']};")
         hb = QHBoxLayout(header)
-        hb.setContentsMargins(10, 0, 10, 0)
-        hb.setSpacing(6)
+        hb.setContentsMargins(8, 0, 8, 0)
+        hb.setSpacing(8)
 
         self.session_combo = _NoWheelCombo()
         self.session_combo.setFixedHeight(32)
         self.session_combo.setMinimumWidth(160)
         self.session_combo.setStyleSheet(
             f"QComboBox{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:8px;padding:0 10px;font-size:13px;color:{THEME['text']};}}"
+            f"border-radius:8px;padding:0 12px;font-size:13px;color:{THEME['text']};}}"
             f"QComboBox:hover{{border-color:{THEME['border_hover']};}}"
             f"QComboBox:focus{{border:1px solid {THEME['accent']};}}"
             f"QComboBox::drop-down{{border:none;width:20px;}}")
@@ -2890,7 +3022,7 @@ class ChatWindow(QMainWindow):
         self.dv_expand_btn.setVisible(False)
         self.dv_expand_btn.setStyleSheet(
             f"QPushButton{{background:transparent;border:1px solid {THEME['border']};"
-            f"border-radius:8px;color:{THEME['dim']};font-size:12px;padding:0 10px;}}"
+            f"border-radius:8px;color:{THEME['dim']};font-size:12px;padding:0 12px;}}"
             f"QPushButton:hover{{background:{THEME['panel2']};color:{THEME['text']};}}")
         self.dv_expand_btn.clicked.connect(self._toggle_deliverables)
         hb.addWidget(self.dv_expand_btn)
@@ -3071,7 +3203,7 @@ class ChatWindow(QMainWindow):
         input_area = QWidget()
         input_area.setStyleSheet(f"background:{THEME['bg']};")
         ia_lay = QVBoxLayout(input_area)
-        ia_lay.setContentsMargins(24, 8, 24, 20)
+        ia_lay.setContentsMargins(20, 8, 20, 20)
         ia_lay.setSpacing(8)
 
         # v4.109：状态行 = 左状态文字 + 右模型选择（Auto 智能路由 / 手动锁定档位）
@@ -3092,7 +3224,7 @@ class ChatWindow(QMainWindow):
             "其他选项 = 手动锁定，本轮起全程只用该模型，不再自动切换")
         self.chat_model_combo.setStyleSheet(
             f"QComboBox{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:6px;padding:2px 6px;font-size:11px;color:{THEME['dim']};}}"
+            f"border-radius:6px;padding:4px 8px;font-size:11px;color:{THEME['dim']};}}"
             f"QComboBox:hover{{border-color:{THEME['border_hover']};}}"
             f"QComboBox:focus{{border:1px solid {THEME['accent']};}}"
             f"QComboBox::drop-down{{border:none;width:18px;}}"
@@ -3135,13 +3267,13 @@ class ChatWindow(QMainWindow):
             f"background:{THEME['surface']};"
             f"border:1.5px solid {THEME['border']};"
             f"border-radius:16px;"
-            f"padding:4px 6px;"
+            f"padding:4px 8px;"
             f"margin:0;"
             f"}}")
         self._input_frame = input_frame  # 供焦点联动换边框色
         ifl = QHBoxLayout(input_frame)
-        ifl.setContentsMargins(6, 6, 6, 6)
-        ifl.setSpacing(6)
+        ifl.setContentsMargins(8, 8, 8, 8)
+        ifl.setSpacing(8)
 
         attach_btn = QPushButton("+")
         attach_btn.setFixedSize(34, 34)
@@ -3158,8 +3290,8 @@ class ChatWindow(QMainWindow):
         self.input_box.setPlaceholderText("输入自然语言指令…")
         self.input_box.sendRequested.connect(self.send)
         self.input_box.setStyleSheet(
-            f"QTextEdit{{background:transparent;border:none;padding:8px 2px;"
-            f"font-size:14px;color:{THEME['text']};line-height:1.5;}}"
+            f"QTextEdit{{background:transparent;border:none;padding:8px 4px;"
+            f"font-size:{THEME['font_input']};color:{THEME['text']};line-height:1.5;}}"
             f"QTextEdit:focus{{outline:none;}}")
         self.input_box.textChanged.connect(self._on_input_changed)
         # 焦点进入/离开 → 输入卡边框高亮（替代不生效的 :focus-within）
@@ -3230,11 +3362,11 @@ class ChatWindow(QMainWindow):
             if event.type() == QEvent.FocusIn:
                 self._input_frame.setStyleSheet(
                     f"QFrame#inputCard{{background:{THEME['surface']};"
-                    f"border:1.5px solid {THEME['accent']};border-radius:16px;padding:4px 6px;margin:0;}}")
+                    f"border:1.5px solid {THEME['accent']};border-radius:16px;padding:4px 8px;margin:0;}}")
             elif event.type() == QEvent.FocusOut:
                 self._input_frame.setStyleSheet(
                     f"QFrame#inputCard{{background:{THEME['surface']};"
-                    f"border:1.5px solid {THEME['border']};border-radius:16px;padding:4px 6px;margin:0;}}")
+                    f"border:1.5px solid {THEME['border']};border-radius:16px;padding:4px 8px;margin:0;}}")
         return super().eventFilter(obj, event)
 
     # ============ 实时语音（移植自数字分身）============
@@ -3491,17 +3623,16 @@ class ChatWindow(QMainWindow):
         sb_lay.addWidget(hint)
 
     # ============ 按钮样式 ============
-    def _primary_btn_style(self):
-        return (f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
-                f"border-radius:8px;padding:0 16px;font-size:13px;font-weight:600;}}"
-                f"QPushButton:hover{{background:{THEME['accent_hover']};}}"
-                f"QPushButton:disabled{{background:{THEME['accent_disabled']};color:white;}}")
+    @staticmethod
+    def _primary_btn_style():
+        # v4.182.0 收编：真源在 theme_qss.btn_primary()（方法内惰性导入防循环依赖）
+        from theme_qss import btn_primary
+        return btn_primary()
 
     def _secondary_btn_style(self):
-        return (f"QPushButton{{background:{THEME['card']};border:1px solid {THEME['border']};"
-                f"border-radius:8px;padding:0 16px;font-size:13px;font-weight:500;color:{THEME['dim']};}}"
-                f"QPushButton:hover{{background:{THEME['panel2']};color:{THEME['text']};"
-                f"border-color:{THEME['border_highlight']};}}")
+        # v4.182.0 收编：真源在 theme_qss.btn_secondary()
+        from theme_qss import btn_secondary
+        return btn_secondary()
 
     # ============ 浏览器扩展辅助 ============
     def _copy_ext_token(self):
@@ -3538,7 +3669,7 @@ class ChatWindow(QMainWindow):
         lay.setSpacing(16)
 
         head = QLabel("小说一条龙 · 编排")
-        head.setStyleSheet(f"font-size:20px;font-weight:700;color:{THEME['text']};")
+        head.setStyleSheet(f"font-size:{THEME['font_title_xl']};font-weight:700;color:{THEME['text']};")
         lay.addWidget(head)
         sub = QLabel("精简流水线（3Phase+2检查）：爆款雷达 → 选题验证 → 写手成稿 → 虚拟编辑审稿 → 终稿定稿"
                      "（节点间传递上文，结果写入下方日志）。短篇按「字数」一次性写满；长篇按章生成，"
@@ -3562,7 +3693,7 @@ class ChatWindow(QMainWindow):
         self.orch_len_type.setToolTip("短篇：一次性写完目标字数；长篇：按章生成，用「续写」出下一章")
         self.orch_len_type.setStyleSheet(
             f"QComboBox{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:8px;padding:0 10px;font-size:13px;color:{THEME['text']};}}")
+            f"border-radius:8px;padding:0 12px;font-size:13px;color:{THEME['text']};}}")
         cfg_row.addWidget(self.orch_len_type)
 
         self.orch_words = QSpinBox()
@@ -3574,7 +3705,7 @@ class ChatWindow(QMainWindow):
         self.orch_words.setToolTip("短篇=全文目标字数；长篇=每章目标字数")
         self.orch_words.setStyleSheet(
             f"QSpinBox{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:8px;padding:0 10px;font-size:13px;color:{THEME['text']};}}"
+            f"border-radius:8px;padding:0 12px;font-size:13px;color:{THEME['text']};}}"
             f"QSpinBox:focus{{border:1px solid {THEME['accent']};}}")
         cfg_row.addWidget(self.orch_words)
 
@@ -3583,7 +3714,7 @@ class ChatWindow(QMainWindow):
         self.orch_platform.setFixedHeight(34)
         self.orch_platform.setStyleSheet(
             f"QComboBox{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:8px;padding:0 10px;font-size:13px;color:{THEME['text']};}}")
+            f"border-radius:8px;padding:0 12px;font-size:13px;color:{THEME['text']};}}")
         cfg_row.addWidget(self.orch_platform)
 
         self.orch_run_btn = QPushButton("开始生成")
@@ -3621,7 +3752,7 @@ class ChatWindow(QMainWindow):
         legion_btn.setToolTip("自定义团队角色的多项目军团：自己配角色、分工、波次，不局限于文案")
         legion_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['panel2']};color:{THEME['accent']};"
-            f"border:1px solid {THEME['accent']};border-radius:6px;padding:0 10px;}}")
+            f"border:1px solid {THEME['accent']};border-radius:6px;padding:0 12px;}}")
         legion_btn.clicked.connect(self._open_legion)
         cfg_row.addWidget(legion_btn)
         lay.addLayout(cfg_row)
@@ -3632,20 +3763,20 @@ class ChatWindow(QMainWindow):
         self.orch_node_status = []
         node_grid = QGridLayout()
         node_grid.setContentsMargins(0, 0, 0, 0)
-        node_grid.setSpacing(10)
+        node_grid.setSpacing(12)
         for i, (name, color, brief) in enumerate(OrchestrateWorker.STAGES):
             card = QWidget()
             card.setStyleSheet(f"background:{THEME['card']};border:1px solid {THEME['border']};"
-                               f"border-radius:10px;padding:10px 12px;")
+                               f"border-radius:10px;padding:12px 12px;")
             cl = QHBoxLayout(card)
-            cl.setContentsMargins(10, 8, 10, 8)
-            cl.setSpacing(10)
+            cl.setContentsMargins(8, 8, 8, 8)
+            cl.setSpacing(12)
             dot = QLabel("●")
             dot.setFixedSize(14, 14)
             dot.setStyleSheet(f"color:{node_colors[color]};font-size:12px;background:transparent;")
             cl.addWidget(dot)
             tl = QLabel(name)
-            tl.setStyleSheet(f"font-size:14px;font-weight:600;color:{THEME['text']};background:transparent;")
+            tl.setStyleSheet(f"font-size:{THEME['font_title']};font-weight:600;color:{THEME['text']};background:transparent;")
             cl.addWidget(tl)
             st = QLabel("待运行")
             st.setStyleSheet(f"font-size:12px;color:{THEME['faint']};background:transparent;")
@@ -3660,13 +3791,13 @@ class ChatWindow(QMainWindow):
         self.orch_choice_box.setStyleSheet(
             f"QGroupBox{{background:{THEME['panel2']};border:1px solid {THEME['border_highlight']};"
             f"border-radius:10px;font-size:13px;font-weight:600;color:{THEME['text']};"
-            f"padding:12px 14px;margin-top:8px;}}")
+            f"padding:12px 12px;margin-top:8px;}}")
         cb_lay = QVBoxLayout(self.orch_choice_box)
         cb_lay.setSpacing(8)
         self.orch_choice_area = QWidget()
         self.orch_choice_area_lay = QVBoxLayout(self.orch_choice_area)
         self.orch_choice_area_lay.setContentsMargins(0, 0, 0, 0)
-        self.orch_choice_area_lay.setSpacing(6)
+        self.orch_choice_area_lay.setSpacing(8)
         cb_lay.addWidget(self.orch_choice_area)
         custom_row = QHBoxLayout()
         self.orch_choice_custom = QLineEdit()
@@ -3674,7 +3805,7 @@ class ChatWindow(QMainWindow):
         self.orch_choice_custom.setFixedHeight(34)
         self.orch_choice_custom.setStyleSheet(
             f"QLineEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:8px;padding:0 10px;font-size:13px;color:{THEME['text']};}}")
+            f"border-radius:8px;padding:0 12px;font-size:13px;color:{THEME['text']};}}")
         self.orch_choice_custom_btn = QPushButton("用我的输入")
         self.orch_choice_custom_btn.setFixedHeight(34)
         self.orch_choice_custom_btn.setStyleSheet(self._primary_btn_style())
@@ -3690,7 +3821,7 @@ class ChatWindow(QMainWindow):
         self.orch_pause_box.setStyleSheet(
             f"QGroupBox{{background:{THEME['panel2']};border:1px solid {THEME['warn']};"
             f"border-radius:10px;font-size:13px;font-weight:600;color:{THEME['text']};"
-            f"padding:12px 14px;margin-top:8px;}}")
+            f"padding:12px 12px;margin-top:8px;}}")
         pb_lay = QVBoxLayout(self.orch_pause_box)
         pb_lay.setSpacing(8)
         self.orch_pause_hint = QLabel("")
@@ -3702,7 +3833,7 @@ class ChatWindow(QMainWindow):
         self.orch_feedback.setFixedHeight(34)
         self.orch_feedback.setStyleSheet(
             f"QLineEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:8px;padding:0 10px;font-size:13px;color:{THEME['text']};}}")
+            f"border-radius:8px;padding:0 12px;font-size:13px;color:{THEME['text']};}}")
         self.orch_resume_btn = QPushButton("继续 ▶")
         self.orch_resume_btn.setFixedHeight(34)
         self.orch_resume_btn.setStyleSheet(self._primary_btn_style())
@@ -3928,10 +4059,10 @@ class ChatWindow(QMainWindow):
         banner.setStyleSheet(
             f"QGroupBox{{background:{THEME['panel2']};border:1px solid {THEME['accent']};"
             f"border-radius:10px;font-size:13px;font-weight:600;color:{THEME['text']};"
-            f"padding:10px 14px;margin-top:8px;}}")
+            f"padding:12px 12px;margin-top:8px;}}")
         bl = QHBoxLayout(banner)
-        bl.setContentsMargins(10, 6, 10, 6)
-        bl.setSpacing(10)
+        bl.setContentsMargins(12, 8, 12, 8)
+        bl.setSpacing(12)
         info = QLabel(f"上次进行到「{stage_name}」阶段（{updated}），是否从断点继续？"
                       f"（已完成的阶段不会重跑）")
         info.setStyleSheet(f"font-size:12px;color:{THEME['text']};background:transparent;")
@@ -4066,7 +4197,7 @@ class ChatWindow(QMainWindow):
         lay.setContentsMargins(32, 24, 32, 24)
         lay.setSpacing(16)
         head = QLabel("生图 · Agnes Image")
-        head.setStyleSheet(f"font-size:20px;font-weight:700;color:{THEME['text']};")
+        head.setStyleSheet(f"font-size:{THEME['font_title_xl']};font-weight:700;color:{THEME['text']};")
         lay.addWidget(head)
         sub = QLabel(f"模型：{self.cfg.get('image_gen_model','agnes-image-2.1-flash')}　尺寸可下方选择")
         sub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
@@ -4074,7 +4205,7 @@ class ChatWindow(QMainWindow):
 
         # ---- 参数行：尺寸下拉 ----
         opt_row = QHBoxLayout()
-        opt_row.setSpacing(10)
+        opt_row.setSpacing(12)
         size_lbl = QLabel("尺寸")
         size_lbl.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
         opt_row.addWidget(size_lbl)
@@ -4091,7 +4222,7 @@ class ChatWindow(QMainWindow):
             self.image_size_combo.setCurrentIndex(idx)
         self.image_size_combo.setStyleSheet(
             f"QComboBox{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:8px;padding:4px 10px;font-size:13px;color:{THEME['text']};}}"
+            f"border-radius:8px;padding:4px 12px;font-size:13px;color:{THEME['text']};}}"
             f"QComboBox:focus{{border:1px solid {THEME['accent']};}}"
             f"QComboBox::drop-down{{border:none;width:18px;}}"
             f"QComboBox QAbstractItemView{{background:{THEME['card']};"
@@ -4106,7 +4237,7 @@ class ChatWindow(QMainWindow):
         self.image_prompt.setPlaceholderText("描述你想生成的画面…")
         self.image_prompt.setStyleSheet(
             f"QTextEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:10px;padding:10px 12px;font-size:13px;color:{THEME['text']};}}"
+            f"border-radius:10px;padding:12px 12px;font-size:13px;color:{THEME['text']};}}"
             f"QTextEdit:focus{{border:1px solid {THEME['accent']};}}")
         lay.addWidget(self.image_prompt)
 
@@ -4193,7 +4324,7 @@ class ChatWindow(QMainWindow):
         lay.setContentsMargins(32, 24, 32, 24)
         lay.setSpacing(16)
         head = QLabel("生视频 · Agnes Video")
-        head.setStyleSheet(f"font-size:20px;font-weight:700;color:{THEME['text']};")
+        head.setStyleSheet(f"font-size:{THEME['font_title_xl']};font-weight:700;color:{THEME['text']};")
         lay.addWidget(head)
         sub = QLabel("文生视频 / 图生视频（Agnes 直连，免费）。生成可能需数分钟，请耐心等待。")
         sub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
@@ -4204,7 +4335,7 @@ class ChatWindow(QMainWindow):
         self.video_prompt.setPlaceholderText("描述视频画面与镜头…（口播台词请填下方「台词/口播」框，不要写这里）")
         self.video_prompt.setStyleSheet(
             f"QTextEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:10px;padding:10px 12px;font-size:13px;color:{THEME['text']};}}"
+            f"border-radius:10px;padding:12px 12px;font-size:13px;color:{THEME['text']};}}"
             f"QTextEdit:focus{{border:1px solid {THEME['accent']};}}")
         lay.addWidget(self.video_prompt)
 
@@ -4219,7 +4350,7 @@ class ChatWindow(QMainWindow):
         self.video_duration.setFixedHeight(34)
         self.video_duration.setStyleSheet(
             f"QSpinBox{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:8px;padding:0 10px;font-size:13px;color:{THEME['text']};}}")
+            f"border-radius:8px;padding:0 12px;font-size:13px;color:{THEME['text']};}}")
         opt.addWidget(self.video_duration)
 
         self.video_resolution = _NoWheelCombo()
@@ -4239,7 +4370,7 @@ class ChatWindow(QMainWindow):
         self.video_resolution.setFixedHeight(34)
         self.video_resolution.setStyleSheet(
             f"QComboBox{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:8px;padding:0 10px;font-size:13px;color:{THEME['text']};}}")
+            f"border-radius:8px;padding:0 12px;font-size:13px;color:{THEME['text']};}}")
         opt.addWidget(self.video_resolution)
 
         gen = QPushButton("生成视频")
@@ -4583,7 +4714,7 @@ class ChatWindow(QMainWindow):
             tip.setAlignment(Qt.AlignCenter)
             tip.setWordWrap(True)
             tip.setStyleSheet(
-                f"color:{THEME['danger']};font-size:14px;background:transparent;padding:24px;")
+                f"color:{THEME['danger']};font-size:{THEME['font_body']};background:transparent;padding:24px;")
             v.addWidget(tip)
         # v4.152：成功与占位都算「已构建」，防止 _post_show_init 与切页兜底重复调用
         self._legion_built = True
@@ -4673,7 +4804,7 @@ class ChatWindow(QMainWindow):
         lay.setContentsMargins(32, 24, 32, 24)
         lay.setSpacing(16)
         head = QLabel("工具箱")
-        head.setStyleSheet(f"font-size:20px;font-weight:700;color:{THEME['text']};")
+        head.setStyleSheet(f"font-size:{THEME['font_title_xl']};font-weight:700;color:{THEME['text']};")
         lay.addWidget(head)
         sub = QLabel("点选技能后将应用到当前对话，并自动切到对话页。")
         sub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
@@ -4699,7 +4830,7 @@ class ChatWindow(QMainWindow):
         inner = QWidget()
         grid = QGridLayout(inner)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(10)
+        grid.setSpacing(12)
         scroll.setWidget(inner)
         lay.addWidget(scroll, 1)
 
@@ -4775,7 +4906,7 @@ class ChatWindow(QMainWindow):
         lay.setContentsMargins(32, 24, 32, 24)
         lay.setSpacing(16)
         head = QLabel("设置")
-        head.setStyleSheet(f"font-size:20px;font-weight:700;color:{THEME['text']};background:transparent;")
+        head.setStyleSheet(f"font-size:{THEME['font_title_xl']};font-weight:700;color:{THEME['text']};background:transparent;")
         lay.addWidget(head)
         sub = QLabel("当前配置摘要；点击按钮打开详细设置弹层。")
         sub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};background:transparent;")
@@ -4829,7 +4960,7 @@ class ChatWindow(QMainWindow):
         at_card.setStyleSheet(f"QWidget#settingsAgnesTextCard{{background:{THEME['card']};border:1px solid {THEME['border']};"
                               f"border-radius:10px;padding:16px;}}")
         al = QVBoxLayout(at_card)
-        al.setSpacing(10)
+        al.setSpacing(12)
         at_head = QLabel("Agnes 文本模型（军团 / 导演台文本环节）")
         at_head.setStyleSheet(f"font-size:15px;font-weight:600;color:{THEME['text']};background:transparent;")
         al.addWidget(at_head)
@@ -4902,7 +5033,7 @@ class ChatWindow(QMainWindow):
         mem_card.setStyleSheet(f"QWidget#settingsMemCard{{background:{THEME['card']};border:1px solid {THEME['border']};"
                                f"border-radius:10px;padding:16px;}}")
         ml = QVBoxLayout(mem_card)
-        ml.setSpacing(10)
+        ml.setSpacing(12)
         mhead = QLabel("我的记忆（跨对话长期记忆）")
         mhead.setStyleSheet(f"font-size:15px;font-weight:600;color:{THEME['text']};background:transparent;")
         ml.addWidget(mhead)
@@ -4927,7 +5058,7 @@ class ChatWindow(QMainWindow):
         # v4.112 UI 美化：危险操作改「红描边」次级样式——警示但不抢视觉重心
         mclear.setStyleSheet(
             "QPushButton{background:transparent;color:%s;border:1px solid %s;"
-            "border-radius:8px;padding:0 14px;font-size:13px;font-weight:500;}"
+            "border-radius:8px;padding:0 12px;font-size:13px;font-weight:500;}"
             "QPushButton:hover{background:%s;border-color:%s;font-weight:600;}" % (
                 THEME['danger_red2'], THEME['danger_border2'], THEME['danger_bg'], THEME['danger_red2'])
         )
@@ -4945,7 +5076,7 @@ class ChatWindow(QMainWindow):
         ext_card.setStyleSheet(f"QWidget#settingsExtCard{{background:{THEME['card']};border:1px solid {THEME['border']};"
                                f"border-radius:10px;padding:16px;}}")
         el = QVBoxLayout(ext_card)
-        el.setSpacing(10)
+        el.setSpacing(12)
         ehead = QLabel("浏览器扩展（抓网页进对话）")
         ehead.setStyleSheet(f"font-size:15px;font-weight:600;color:{THEME['text']};background:transparent;")
         el.addWidget(ehead)
@@ -4962,7 +5093,7 @@ class ChatWindow(QMainWindow):
         self.ext_token_edit = QLineEdit(tok_val)
         self.ext_token_edit.setReadOnly(True)
         self.ext_token_edit.setStyleSheet(f"background:{THEME['bg']};border:1px solid {THEME['border']};"
-                                          f"border-radius:8px;padding:6px 8px;font-size:13px;"
+                                          f"border-radius:8px;padding:8px 8px;font-size:13px;"
                                           f"color:{THEME['text']};font-family:'Microsoft YaHei','ui-monospace','Menlo','Consolas',monospace;")
         etok_row.addWidget(self.ext_token_edit, 1)
         ecopy = QPushButton("复制")
@@ -5090,7 +5221,8 @@ class ChatWindow(QMainWindow):
             "QPushButton:hover{{background:rgba(32,33,36,0.06);color:{text};}}"
         ).format(dim=THEME["dim"], text=THEME["text"])
         close_base = (
-            f"QPushButton{{background:transparent;color:{THEME['dim']};border:none;font-size:14px;}}"
+            f"QPushButton{{background:transparent;color:{THEME['dim']};border:none;"
+            f"font-size:{THEME['font_icon_btn']};}}"
             f"QPushButton:hover{{background:{THEME['danger']};color:white;}}"
         )
         btn_w, btn_h = 44, 48
@@ -5180,14 +5312,14 @@ class ChatWindow(QMainWindow):
 
         greeting = QLabel(f"{greeting_text}")
         greeting.setStyleSheet(
-            f"font-size:14px;font-weight:600;color:{THEME['accent']};margin-bottom:4px;")
+            f"font-size:{THEME['font_title']};font-weight:600;color:{THEME['accent']};margin-bottom:4px;")
         scl.addWidget(greeting)
 
         # ---- 标题 ----
         title = QLabel("今天想做什么？")
         title.setStyleSheet(
             f"font-size:28px;font-weight:700;color:{THEME['text']};"
-            f"letter-spacing:-0.5px;margin-bottom:28px;")
+            f"letter-spacing:-0.5px;margin-bottom:24px;")
         scl.addWidget(title)
 
         # ---- 3 张功能卡片 ----
@@ -5224,7 +5356,7 @@ class ChatWindow(QMainWindow):
                 f"QPushButton{{"
                 f"background:{card_bg};"
                 f"border:1px solid {THEME['border']};"
-                f"border-radius:12px;"
+                f"border-radius:10px;"
                 f"text-align:left;"
                 f"}}"
                 f"QPushButton:hover{{"
@@ -5238,7 +5370,7 @@ class ChatWindow(QMainWindow):
             # 🔇 样式表的 padding 只管按钮自身文字，不约束内部布局——
             # margins 必须显式给足，否则图标/标题/描述全怼在左上角挤成一团。
             card_lay = QVBoxLayout(card)
-            card_lay.setContentsMargins(20, 18, 18, 16)
+            card_lay.setContentsMargins(20, 16, 16, 16)
             card_lay.setSpacing(0)
 
             # 图标底座（圆角色块，图标居中）——比裸图标更有层次
@@ -5247,7 +5379,7 @@ class ChatWindow(QMainWindow):
             chip.setAlignment(Qt.AlignCenter)
             chip.setPixmap(_nav_icon_pixmap(icon_str, card_icon_color, 18))
             chip.setStyleSheet(
-                f"background:{chip_bg};border-radius:9px;border:none;")
+                f"background:{chip_bg};border-radius:8px;border:none;")
             card_lay.addWidget(chip)
             card_lay.addSpacing(14)
 
@@ -5321,7 +5453,7 @@ class ChatWindow(QMainWindow):
             card.setStyleSheet("background:transparent;")
             cl = QVBoxLayout(card)
             cl.setContentsMargins(0, 8, 0, 8)
-            cl.setSpacing(6)
+            cl.setSpacing(8)
             cl.setAlignment(Qt.AlignHCenter)
 
             # 圆形图标徽章（v4.115：emoji 改 SVG 线性图标）
@@ -5336,7 +5468,7 @@ class ChatWindow(QMainWindow):
             main_lbl = QLabel("还没有对话")
             main_lbl.setAlignment(Qt.AlignCenter)
             main_lbl.setStyleSheet(
-                f"color:{THEME['dim']};font-size:13px;font-weight:600;padding-top:2px;")
+                f"color:{THEME['dim']};font-size:13px;font-weight:600;padding-top:4px;")
             cl.addWidget(main_lbl)
 
             sub_lbl = QLabel("点击下方开始你的第一条对话")
@@ -5378,7 +5510,7 @@ class ChatWindow(QMainWindow):
             row.setFixedHeight(40)
             rl = QHBoxLayout(row)
             rl.setContentsMargins(0, 0, 0, 0)
-            rl.setSpacing(10)
+            rl.setSpacing(12)
 
             dot = QLabel("")
             dot.setFixedSize(6, 6)
@@ -5403,7 +5535,7 @@ class ChatWindow(QMainWindow):
             del_btn.setCursor(Qt.PointingHandCursor)
             del_btn.setStyleSheet(
                 f"QPushButton{{background:transparent;color:{THEME['placeholder']};"
-                f"border:none;font-size:16px;font-weight:600;border-radius:4px;}}"
+                f"border:none;font-size:16px;font-weight:600;border-radius:6px;}}"
                 f"QPushButton:hover{{color:{THEME['danger']};background:{THEME['sidebar_hover']};}}")
             del_btn.clicked.connect(
                 lambda _, s=sid, t=title: self._request_delete_session(s, t))
@@ -5505,7 +5637,7 @@ class ChatWindow(QMainWindow):
             icon_lbl.setPixmap(_nav_icon_pixmap(icon, THEME["dim"], 18))
             text_lbl = QLabel(label)
             text_lbl.setStyleSheet(
-                f"font-size:14px;font-weight:500;color:{THEME['dim']};background:transparent;")
+                f"font-size:{THEME['font_body']};font-weight:500;color:{THEME['dim']};background:transparent;")
             il.addWidget(icon_lbl)
             il.addWidget(text_lbl, 1)
             bl = QVBoxLayout(btn)
@@ -5532,7 +5664,7 @@ class ChatWindow(QMainWindow):
         user_row.addWidget(avatar)
         uname = QLabel("User")
         uname.setStyleSheet(
-            f"font-size:14px;font-weight:500;color:{THEME['text']};background:transparent;")
+            f"font-size:{THEME['font_body']};font-weight:500;color:{THEME['text']};background:transparent;")
         user_row.addWidget(uname, 1)
         online = QLabel("● 在线")
         online.setStyleSheet(
@@ -5555,7 +5687,7 @@ class ChatWindow(QMainWindow):
                     f"QPushButton:hover{{background:{THEME['accent_hover']};color:white;}}")
                 if text_lbl:
                     text_lbl.setStyleSheet(
-                        f"font-size:14px;font-weight:600;color:white;background:transparent;")
+                        f"font-size:{THEME['font_title']};font-weight:600;color:white;background:transparent;")
                 if icon_lbl and icon_name:
                     icon_lbl.setPixmap(_nav_icon_pixmap(icon_name, THEME["white"], 18))
             else:
@@ -5565,7 +5697,7 @@ class ChatWindow(QMainWindow):
                     f"QPushButton:hover{{background:{THEME['blue_hover']};color:{THEME['text']};}}")
                 if text_lbl:
                     text_lbl.setStyleSheet(
-                        f"font-size:14px;font-weight:500;color:{THEME['dim']};background:transparent;")
+                        f"font-size:{THEME['font_body']};font-weight:500;color:{THEME['dim']};background:transparent;")
                 if icon_lbl and icon_name:
                     icon_lbl.setPixmap(_nav_icon_pixmap(icon_name, THEME["dim"], 18))
 
@@ -5972,7 +6104,7 @@ class ChatWindow(QMainWindow):
             parts[i] = re.sub(
                 qe,
                 f'<span style="background-color:{THEME["tpl_hl_bg"]};color:#000;'
-                r'border-radius:2px;padding:0 1px;">\g<0></span>',
+                r'border-radius:6px;padding:0 4px;">\g<0></span>',
                 parts[i], flags=re.IGNORECASE)
         return "".join(parts)
 
@@ -6548,7 +6680,7 @@ class ChatWindow(QMainWindow):
                 _skipped = len(msgs) - MAX_RENDERED_MSGS
                 parts = [
                     f'<div style="text-align:center;color:{THEME["faint"]};'
-                    f'font-size:12px;margin:10px 0;">'
+                    f'font-size:12px;margin:12px 0;">'
                     f'—— 更早的 {_skipped} 条消息已折叠（仅渲染最近 '
                     f'{MAX_RENDERED_MSGS} 条，保护渲染进程）——</div>'
                 ]
@@ -6688,7 +6820,7 @@ class ChatWindow(QMainWindow):
                         if url:
                             mm_parts.append(
                                 '<br><img src="' + html_mod.escape(url) + '" '
-                                'style="max-width:300px;border-radius:10px;margin:6px 0;"><br>'
+                                'style="max-width:300px;border-radius:10px;margin:8px 0;"><br>'
                             )
                 inner = "".join(mm_parts) if mm_parts else "[图片消息]"
                 if m.get("role") == "user":
@@ -6722,14 +6854,14 @@ class ChatWindow(QMainWindow):
         self.deliverables.setObjectName("dvWidget")
 
         dv = QVBoxLayout(self.deliverables)
-        dv.setContentsMargins(20, 24, 20, 12)
-        dv.setSpacing(10)
+        dv.setContentsMargins(20, 20, 20, 12)
+        dv.setSpacing(12)
 
         # 标题行
         head = QHBoxLayout()
         title = QLabel("交付物")
         title.setStyleSheet(
-            f"font-size:14px;font-weight:600;color:{THEME['text']};background:transparent;")
+            f"font-size:{THEME['font_title']};font-weight:600;color:{THEME['text']};background:transparent;")
         head.addWidget(title)
         head.addStretch(1)
         self.dv_count_label = QLabel("0")
@@ -6737,7 +6869,7 @@ class ChatWindow(QMainWindow):
         ac = THEME["accent"]
         self.dv_count_label.setStyleSheet(
             f"font-size:12px;color:{ut};background:{ac};"
-            f"border-radius:10px;padding:1px 8px;font-weight:500;")
+            f"border-radius:10px;padding:4px 8px;font-weight:500;")
         head.addWidget(self.dv_count_label)
         dv.addLayout(head)
 
@@ -6756,14 +6888,14 @@ class ChatWindow(QMainWindow):
         self.dv_list.setStyleSheet("background:transparent;")
         self.dv_list_layout = QVBoxLayout(self.dv_list)
         self.dv_list_layout.setContentsMargins(0, 0, 0, 0)
-        self.dv_list_layout.setSpacing(6)
+        self.dv_list_layout.setSpacing(8)
         self.dv_list_layout.addStretch(1)
         self.dv_scroll.setWidget(self.dv_list)
         dv.addWidget(self.dv_scroll, 1)
 
         self.dv_empty_hint = QLabel("工具生成的文件会出现在这里\n（生图 / 写文件 / 跑代码产出等）")
         self.dv_empty_hint.setStyleSheet(
-            f"color:{THEME['faint']};font-size:11px;line-height:1.5;padding:6px 4px 20px 4px;"
+            f"color:{THEME['faint']};font-size:11px;line-height:1.5;padding:8px 4px 20px 4px;"
             f"background:transparent;")
         self.dv_empty_hint.setWordWrap(True)
         dv.addWidget(self.dv_empty_hint)
@@ -6781,7 +6913,7 @@ class ChatWindow(QMainWindow):
             f"border:1.5px solid {THEME['border']};"
             f"border-radius:10px;"
             f"color:{THEME['dim']};font-size:13px;font-weight:500;"
-            f"padding:0 14px;text-align:left;"
+            f"padding:0 12px;text-align:left;"
             f"}}"
             f"QPushButton:hover{{background:{THEME['panel2']};color:{THEME['text']};"
             f"border-color:{THEME['border_highlight']};}}"
@@ -6799,7 +6931,7 @@ class ChatWindow(QMainWindow):
             f"border:1.5px solid {THEME['border']};"
             f"border-radius:10px;"
             f"color:{THEME['dim']};font-size:13px;font-weight:500;"
-            f"padding:0 14px;text-align:left;"
+            f"padding:0 12px;text-align:left;"
             f"}}"
             f"QPushButton:hover{{background:{THEME['panel2']};color:{THEME['text']};"
             f"border-color:{THEME['border_highlight']};}}"
@@ -6816,7 +6948,7 @@ class ChatWindow(QMainWindow):
             f"border:1.5px solid {THEME['border']};"
             f"border-radius:10px;"
             f"color:{THEME['dim']};font-size:13px;font-weight:500;"
-            f"padding:0 14px;text-align:left;"
+            f"padding:0 12px;text-align:left;"
             f"}}"
             f"QPushButton:hover{{background:{THEME['panel2']};color:{THEME['text']};"
             f"border-color:{THEME['border_highlight']};}}"
@@ -6834,7 +6966,7 @@ class ChatWindow(QMainWindow):
             f"border:1px solid rgba(239,68,68,0.35);"
             f"border-radius:10px;"
             f"color:{THEME['danger']};font-size:13px;font-weight:500;"
-            f"padding:0 14px;text-align:left;"
+            f"padding:0 12px;text-align:left;"
             f"}}"
             f"QPushButton:hover{{background:rgba(239,68,68,0.06);"
             f"border-color:{THEME['danger']};}}"
@@ -6847,7 +6979,7 @@ class ChatWindow(QMainWindow):
         collapse_btn.setFixedHeight(28)
         collapse_btn.setStyleSheet(
             f"QPushButton{{color:{THEME['faint']};font-size:11px;"
-            f"border:none;border-radius:4px;background:transparent;}}"
+            f"border:none;border-radius:6px;background:transparent;}}"
             f"QPushButton:hover{{background:{THEME['sidebar_hover']};color:{THEME['text']};}}")
         collapse_btn.clicked.connect(self._toggle_deliverables)
         dv.addWidget(collapse_btn)
@@ -6937,13 +7069,13 @@ class ChatWindow(QMainWindow):
             btn.setStyleSheet(
                 f"QPushButton{{text-align:left;border:none;background:transparent;"
                 f"color:{THEME['text']};font-size:12px;font-weight:700;"
-                f"padding:8px 2px 4px 2px;}}"
+                f"padding:8px 4px 4px 4px;}}"
                 f"QPushButton:hover{{color:{THEME['accent']};}}")
         else:
             btn.setStyleSheet(
                 f"QPushButton{{text-align:left;border:none;background:transparent;"
                 f"color:{THEME['dim']};font-size:11px;font-weight:600;"
-                f"padding:4px 2px 2px 12px;}}"
+                f"padding:4px 4px 4px 12px;}}"
                 f"QPushButton:hover{{color:{THEME['text']};}}")
         btn.clicked.connect(lambda _=False, k=key: self._dv_toggle_group(k))
         return btn
@@ -6981,16 +7113,16 @@ class ChatWindow(QMainWindow):
             f"QToolTip{{"
             f"background:{THEME['card']};color:{THEME['text']};"
             f"border:1px solid {THEME['border']};border-radius:8px;"
-            f"padding:6px 10px;font-size:12px;"
+            f"padding:8px 12px;font-size:12px;"
             f"}}")
         card_item.setObjectName("dvCard")
 
         ci_lay = QVBoxLayout(card_item)
-        ci_lay.setContentsMargins(14, 14, 14, 12)
+        ci_lay.setContentsMargins(12, 12, 12, 12)
         ci_lay.setSpacing(4)
 
         name_row = QHBoxLayout()
-        name_row.setSpacing(6)
+        name_row.setSpacing(8)
         dot = QLabel()
         dot.setFixedSize(8, 8)
         dot.setStyleSheet(f"background:{border_color};border-radius:4px;")
@@ -7023,8 +7155,8 @@ class ChatWindow(QMainWindow):
         tag_wrap_lay.addWidget(tag_icon_lbl)
         tag_lbl = QLabel(tag_text)
         tag_lbl.setStyleSheet(
-            f"font-size:10px;font-weight:600;color:{tag_fg};background:{tag_bg};"
-            f"border-radius:8px;padding:2px 8px;")
+            f"font-size:{THEME['font_micro']};font-weight:600;color:{tag_fg};background:{tag_bg};"
+            f"border-radius:8px;padding:4px 8px;")
         tag_lbl.setFixedHeight(18)
         tag_wrap_lay.addWidget(tag_lbl)
         # v4.129：时间小字（同组都是同一天，只显示 HH:MM 就够定位）
@@ -7032,7 +7164,7 @@ class ChatWindow(QMainWindow):
         if t:
             t_lbl = QLabel(t[:5])
             t_lbl.setStyleSheet(
-                f"font-size:10px;color:{THEME['faint']};background:transparent;")
+                f"font-size:{THEME['font_micro']};color:{THEME['faint']};background:transparent;")
             tag_wrap_lay.addWidget(t_lbl)
         tag_wrap_lay.addStretch()
         ci_lay.addWidget(tag_wrap)
@@ -7252,9 +7384,9 @@ class ChatWindow(QMainWindow):
         from PySide6.QtWidgets import QListWidgetItem
         dlg = QDialog(self)
         dlg.setWindowTitle("归档旧产物")
-        dlg.resize(720, 520)
+        clamp_dialog_to_screen(dlg, want_w=720, want_h=520)
         lay = QVBoxLayout(dlg)
-        lay.setSpacing(10)
+        lay.setSpacing(12)
         tip = QLabel(
             f"扫描到 {len(plan)} 项待归档。默认归到「历史归档」项目下，可改项目名；\n"
             f"取消勾选 = 保持原样不动。点「开始归档」后才会真正移动文件，"
@@ -7321,10 +7453,10 @@ class ChatWindow(QMainWindow):
         cancel_btn.setFixedHeight(34)
         ok_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['accent']};color:{THEME['user_text']};"
-            f"border:none;border-radius:8px;font-size:13px;font-weight:600;padding:0 18px;}}")
+            f"border:none;border-radius:8px;font-size:13px;font-weight:600;padding:0 16px;}}")
         cancel_btn.setStyleSheet(
             f"QPushButton{{background:transparent;color:{THEME['dim']};"
-            f"border:1px solid {THEME['border']};border-radius:8px;font-size:13px;padding:0 18px;}}")
+            f"border:1px solid {THEME['border']};border-radius:8px;font-size:13px;padding:0 16px;}}")
         act_row.addWidget(cancel_btn)
         act_row.addWidget(ok_btn)
         lay.addLayout(act_row)
@@ -7404,7 +7536,21 @@ class ChatWindow(QMainWindow):
             pass
 
     # ============ 弹层构建 ============
-    def _popup_base(self, width):
+    def _popup_base(self, width, scroll_fixed_h=None):
+        """v4.181.1：弹层统一包一层 QScrollArea —— 内容再长也不会把弹层撑出屏幕。
+
+        病根：v4.180.0 修的是 QDialog 类弹窗（走 `clamp_dialog_to_screen`），
+        但「设置」「技能库」这两个是 `Qt.Popup` 内嵌弹层，走的是
+        `_show_popup → move(pos) + show()` —— **既不限高也不钳位**。
+        设置弹层有 5 个分组，内容总高轻松过 700px，而笔记本 @150% 缩放
+        可用高度可能只有 472px → 大哥实测「设置弹层向下突出屏幕」。
+
+        改造点（只加一层滚动容器，不动任何业务内容与配色）：
+          1. 内容全部进 scroll 的内层 widget，外层只留 16px 边距；
+          2. `scroll_fixed_h` 给了就固定滚动区高（技能库沿用原 360），
+             不给则由外层限高后自适应；
+          3. 真正的高度上限与屏幕钳制交给 `clamp_popup_to_screen`（在 `_show_popup`）。
+        """
         popup = QWidget(self, Qt.Popup | Qt.FramelessWindowHint)
         popup.setFixedWidth(width)
         popup.setStyleSheet(
@@ -7415,38 +7561,49 @@ class ChatWindow(QMainWindow):
             f"QPushButton:hover{{background:rgba(10,10,12,0.04);}}"
             f"QScrollArea{{background:transparent;border:none;}}"
             f"QComboBox{{background:{THEME['elev']};border:none;border-radius:6px;"
-            f"padding:6px 8px;font-size:12px;color:{THEME['text']};}}"
+            f"padding:8px 8px;font-size:12px;color:{THEME['text']};}}"
             f"QComboBox QAbstractItemView{{background:{THEME['card']};border:none;"
             f"color:{THEME['text']};selection-background-color:{THEME['accent']};}}"
             f"QLineEdit{{background:{THEME['elev']};border:1px solid {THEME['border']};"
-            f"border-radius:6px;padding:6px 8px;color:{THEME['text']};font-size:12px;}}"
+            f"border-radius:6px;padding:8px 8px;color:{THEME['text']};font-size:12px;}}"
             f"QLineEdit:focus{{border-color:{THEME['accent']};}}"
             f"QCheckBox{{font-size:12px;color:{THEME['dim']};}}"
             f"QCheckBox::indicator{{width:16px;height:16px;}}")
-        layout = QVBoxLayout(popup)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        outer = QVBoxLayout(popup)
+        outer.setContentsMargins(16, 16, 16, 16)
+        outer.setSpacing(12)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 让滚轮事件能穿透到滚动区（内层 widget 默认会吞掉 wheel）
+        if scroll_fixed_h:
+            scroll.setFixedHeight(scroll_fixed_h)
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
+        popup._popup_scroll = scroll
         return popup, layout
 
     def _popup_title(self, layout, text):
         t = QLabel(text)
         t.setStyleSheet(
-            f"font-size:14px;font-weight:700;color:{THEME['text']};padding-bottom:4px;")
+            f"font-size:{THEME['font_title']};font-weight:700;color:{THEME['text']};padding-bottom:4px;")
         layout.addWidget(t)
 
     def _build_skill_popup(self):
-        popup, layout = self._popup_base(260)
+        # v4.181.1：滚动容器已由 _popup_base 统一提供（scroll_fixed_h=360 沿用原行为），
+        # 这里不再自建 QScrollArea —— 否则两层滚动区嵌套会互相抢滚轮事件。
+        popup, layout = self._popup_base(260, scroll_fixed_h=360)
         self._popup_title(layout, "技能库")
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setFixedHeight(360)
         inner = QWidget()
         inner_layout = QVBoxLayout(inner)
         inner_layout.setContentsMargins(0, 0, 0, 0)
         inner_layout.setSpacing(4)
-        scroll.setWidget(inner)
-        layout.addWidget(scroll)
+        layout.addWidget(inner)
         return popup, inner_layout
 
     def _build_settings_popup(self):
@@ -7467,7 +7624,7 @@ class ChatWindow(QMainWindow):
         group_model.setStyleSheet(group_style)
         gml = QVBoxLayout(group_model)
         gml.setContentsMargins(12, 12, 12, 12)
-        gml.setSpacing(6)
+        gml.setSpacing(8)
 
         gmt = QLabel("模型选择")
         gmt.setStyleSheet(f"font-size:12px;font-weight:600;color:{THEME['text']};")
@@ -7489,7 +7646,7 @@ class ChatWindow(QMainWindow):
             f"QFrame{{background:{THEME['elev']};border:1px solid {THEME['border']};border-radius:10px;padding:16px;}}")
         gakl = QVBoxLayout(group_apikey)
         gakl.setContentsMargins(12, 12, 12, 12)
-        gakl.setSpacing(6)
+        gakl.setSpacing(8)
 
         gakt = QLabel("API Key")
         gakt.setStyleSheet(f"font-size:12px;font-weight:600;color:{THEME['text']};")
@@ -7525,7 +7682,7 @@ class ChatWindow(QMainWindow):
             f"QFrame{{background:{THEME['elev']};border:1px solid {THEME['border']};border-radius:10px;padding:16px;}}")
         encl = QVBoxLayout(group_enc)
         encl.setContentsMargins(12, 12, 12, 12)
-        encl.setSpacing(6)
+        encl.setSpacing(8)
         enct = QLabel("记忆加密口令")
         enct.setStyleSheet(f"font-size:12px;font-weight:600;color:{THEME['text']};")
         encl.addWidget(enct)
@@ -7545,7 +7702,7 @@ class ChatWindow(QMainWindow):
         enc_save.setFixedHeight(32)
         enc_save.setStyleSheet(
             f"QPushButton{{background:{THEME['accent']};border:none;border-radius:8px;"
-            f"padding:0 14px;font-size:12px;color:#fff;}}"
+            f"padding:0 12px;font-size:12px;color:#fff;}}"
             f"QPushButton:hover{{background:{THEME['accent_hover']};}}")
         enc_save.clicked.connect(self._save_enc_passphrase)
         enc_row.addWidget(enc_save)
@@ -7568,7 +7725,7 @@ class ChatWindow(QMainWindow):
             row_w = QWidget()
             rl = QVBoxLayout(row_w)
             rl.setContentsMargins(0, 0, 0, 0)
-            rl.setSpacing(2)
+            rl.setSpacing(4)
 
             cb = QCheckBox(title)
             cb.setChecked(checked)
@@ -7579,7 +7736,7 @@ class ChatWindow(QMainWindow):
             rl.addWidget(cb)
 
             dl = QLabel(desc)
-            dl.setStyleSheet(f"font-size:10px;color:{THEME['faint']};padding-left:20px;")
+            dl.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};padding-left:20px;")
             rl.addWidget(dl)
 
             if var_name == "search":
@@ -7601,7 +7758,7 @@ class ChatWindow(QMainWindow):
 
         # ---- 执行模式（v4.50，借鉴 openworker 的权限引擎；替换旧「手动级操作免确认」开关）----
         _mode_label = QLabel("执行模式")
-        _mode_label.setStyleSheet(f"font-size:13px;color:{THEME['text']};font-weight:600;padding-top:6px;")
+        _mode_label.setStyleSheet(f"font-size:13px;color:{THEME['text']};font-weight:600;padding-top:8px;")
         gtl.addWidget(_mode_label)
         _mode_cb = _NoWheelCombo()
         _mode_cb.setStyleSheet(f"font-size:12px;color:{THEME['text']};padding:4px;")
@@ -7618,13 +7775,13 @@ class ChatWindow(QMainWindow):
         gtl.addWidget(_mode_cb)
         _mode_hint = QLabel("交互：危险操作逐个问 ｜ 规划：只做只读 ｜ 自动：全直接执行 ｜ 仅讨论：不执行 ｜ 自定义：仅白名单免确认")
         _mode_hint.setWordWrap(True)
-        _mode_hint.setStyleSheet(f"font-size:10px;color:{THEME['faint']};padding-left:4px;padding-bottom:4px;")
+        _mode_hint.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};padding-left:4px;padding-bottom:4px;")
         gtl.addWidget(_mode_hint)
         _trust_btn = QPushButton("本次会话全部信任（危险操作不再逐个问）")
         _trust_btn.setFixedHeight(34)
         _trust_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['elev']};border:none;border-radius:8px;"
-            f"padding:6px;font-size:12px;color:{THEME['text']};text-align:left;}}"
+            f"padding:8px;font-size:12px;color:{THEME['text']};text-align:left;}}"
             f"QPushButton:hover{{background:{THEME['border_highlight']};}}")
         _trust_btn.clicked.connect(self._on_trust_session)
         gtl.addWidget(_trust_btn)
@@ -7636,7 +7793,7 @@ class ChatWindow(QMainWindow):
             f"QFrame{{background:{THEME['elev']};border:1px solid {THEME['border']};border-radius:10px;padding:16px;}}")
         bkl = QVBoxLayout(group_backup)
         bkl.setContentsMargins(12, 12, 12, 12)
-        bkl.setSpacing(6)
+        bkl.setSpacing(8)
         bkt = QLabel("自动备份（系统级）")
         bkt.setStyleSheet(f"font-size:12px;font-weight:600;color:{THEME['text']};")
         bkl.addWidget(bkt)
@@ -7669,7 +7826,7 @@ class ChatWindow(QMainWindow):
         ab_apply.setFixedHeight(32)
         ab_apply.setStyleSheet(
             f"QPushButton{{background:{THEME['accent']};border:none;border-radius:8px;"
-            f"padding:0 14px;font-size:12px;color:#fff;}}"
+            f"padding:0 12px;font-size:12px;color:#fff;}}"
             f"QPushButton:hover{{background:{THEME['accent_hover']};}}")
         ab_apply.clicked.connect(self._save_autobackup_settings)
         bk_btn_row.addWidget(ab_apply)
@@ -7677,7 +7834,7 @@ class ChatWindow(QMainWindow):
         ab_now.setFixedHeight(32)
         ab_now.setStyleSheet(
             f"QPushButton{{background:{THEME['elev']};border:1px solid {THEME['border']};"
-            f"border-radius:8px;padding:0 14px;font-size:12px;color:{THEME['text']};}}"
+            f"border-radius:8px;padding:0 12px;font-size:12px;color:{THEME['text']};}}"
             f"QPushButton:hover{{background:{THEME['border_highlight']};}}")
         ab_now.clicked.connect(self._run_backup_now)
         bk_btn_row.addWidget(ab_now)
@@ -7691,7 +7848,7 @@ class ChatWindow(QMainWindow):
             f"QFrame{{background:{THEME['elev']};border:1px solid {THEME['border']};border-radius:10px;padding:16px;}}")
         vl = QVBoxLayout(group_ver)
         vl.setContentsMargins(12, 12, 12, 12)
-        vl.setSpacing(6)
+        vl.setSpacing(8)
         vt = QLabel("版本与更新")
         vt.setStyleSheet(f"font-size:12px;font-weight:600;color:{THEME['text']};")
         vl.addWidget(vt)
@@ -7704,13 +7861,13 @@ class ChatWindow(QMainWindow):
         chk_btn.setFixedHeight(32)
         chk_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['elev']};border:1px solid {THEME['border']};"
-            f"border-radius:8px;padding:0 14px;font-size:12px;color:{THEME['text']};}}"
+            f"border-radius:8px;padding:0 12px;font-size:12px;color:{THEME['text']};}}"
             f"QPushButton:hover{{background:{THEME['border_highlight']};}}")
         chk_btn.clicked.connect(self._check_update)
         vrow.addWidget(chk_btn)
         if not (self.cfg.get("update_check_url", "") or UPDATE_CHECK_URL):
             note = QLabel("（本地构建，无在线更新通道）")
-            note.setStyleSheet(f"font-size:10px;color:{THEME['faint']};")
+            note.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};")
             vrow.addWidget(note)
         vrow.addStretch(1)
         vl.addLayout(vrow)
@@ -7724,7 +7881,7 @@ class ChatWindow(QMainWindow):
                 f"QFrame{{background:{THEME['elev']};border:1px solid {THEME['border']};border-radius:10px;padding:16px;}}")
             pl = QVBoxLayout(group_perf)
             pl.setContentsMargins(12, 12, 12, 12)
-            pl.setSpacing(6)
+            pl.setSpacing(8)
             pt = QLabel("性能基线")
             pt.setStyleSheet(f"font-size:12px;font-weight:600;color:{THEME['text']};")
             pl.addWidget(pt)
@@ -7738,13 +7895,13 @@ class ChatWindow(QMainWindow):
             else:
                 sl = QLabel("尚未采集到启动耗时（启动后才会记录）")
             sl.setWordWrap(True)
-            sl.setStyleSheet(f"font-size:10px;color:{THEME['faint']};")
+            sl.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};")
             pl.addWidget(sl)
             # 按钮行：跑基线 / 设为基线
             prow = QHBoxLayout()
             btn_style = (
                 f"QPushButton{{background:{THEME['elev']};border:1px solid {THEME['border']};"
-                f"border-radius:8px;padding:0 14px;font-size:12px;color:{THEME['text']};}}"
+                f"border-radius:8px;padding:0 12px;font-size:12px;color:{THEME['text']};}}"
                 f"QPushButton:hover{{background:{THEME['border_highlight']};}}")
             run_btn = QPushButton("跑性能基线")
             run_btn.setFixedHeight(32)
@@ -7767,7 +7924,7 @@ class ChatWindow(QMainWindow):
         export_btn.setFixedHeight(32)
         export_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['elev']};border:none;border-radius:8px;"
-            f"padding:6px 8px;font-size:13px;color:{THEME['text']};text-align:left;}}"
+            f"padding:8px 8px;font-size:13px;color:{THEME['text']};text-align:left;}}"
             f"QPushButton:hover{{background:{THEME['border_highlight']};}}")
         export_btn.clicked.connect(self.export_session)
         layout.addWidget(export_btn)
@@ -7782,7 +7939,8 @@ class ChatWindow(QMainWindow):
             if p is not popup and p.isVisible():
                 p.hide()
         pos = self.sidebar.mapToGlobal(QPoint(self.sidebar.width() + 4, 12))
-        popup.move(pos)
+        # v4.181.1：钳进屏幕可用区 —— 原先只 move+show，内容一长就沉到屏幕外点不到。
+        clamp_popup_to_screen(popup, pos)
         popup.show()
 
     # ============ 技能 ============
@@ -8195,10 +8353,10 @@ class ChatWindow(QMainWindow):
     def _skill_btn_style(active):
         if active:
             return (f"QPushButton{{background:{THEME['sidebar_active']};border:none;"
-                    f"border-radius:8px;padding:6px 10px;font-size:12px;"
+                    f"border-radius:8px;padding:8px 12px;font-size:12px;"
                     f"color:{THEME['user_text']};font-weight:600;text-align:left;}}")
         return (f"QPushButton{{background:rgba(10,10,12,0.05);border:none;"
-                f"border-radius:8px;padding:6px 10px;font-size:12px;"
+                f"border-radius:8px;padding:8px 12px;font-size:12px;"
                 f"color:{THEME['dim']};text-align:left;}}"
                 f"QPushButton:hover{{background:rgba(10,10,12,0.09);color:{THEME['text']};}}")
 
@@ -8254,7 +8412,7 @@ class ChatWindow(QMainWindow):
             cat_lbl = QLabel(cat)
             cat_lbl.setStyleSheet(
                 f"font-size:11px;font-weight:600;color:{THEME['faint']};"
-                f"padding-left:4px;margin-top:2px;background:transparent;")
+                f"padding-left:4px;margin-top:4px;background:transparent;")
             layout.addWidget(cat_lbl)
             for sk in cats[cat]:
                 btn = QPushButton(f'  {sk.get("name", "")}')
@@ -8346,14 +8504,14 @@ class ChatWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         inner = QWidget()
         vlay = QVBoxLayout(inner)
-        vlay.setSpacing(10)
+        vlay.setSpacing(12)
         for sk in pending:
             box = QFrame()
             box.setStyleSheet(
                 f"QFrame{{background:{THEME['elev']};border:1px solid {THEME['border']};"
-                f"border-radius:10px;padding:10px;}}")
+                f"border-radius:10px;padding:12px;}}")
             bl = QVBoxLayout(box)
-            bl.setContentsMargins(10, 8, 10, 8)
+            bl.setContentsMargins(8, 8, 8, 8)
             title = QLabel(f"{sk.get('display_name', sk.get('name',''))}   "
                            f"[{sk.get('category','自动生成')}]   {sk.get('created','')}")
             title.setStyleSheet(f"font-size:13px;font-weight:600;color:{THEME['text']};")
@@ -8558,17 +8716,17 @@ class ChatWindow(QMainWindow):
         return (
             "body{font-family:'Microsoft YaHei','PingFang SC',sans-serif;"
             "max-width:820px;margin:24px auto;padding:0 16px;color:%(text_dark2)s;line-height:1.7;}"
-            "h1{font-size:22px;margin-bottom:4px;} .meta{color:#888;font-size:13px;margin:2px 0;}"
+            "h1{font-size:22px;margin-bottom:4px;} .meta{color:#888;font-size:13px;margin:4px 0;}"
             "hr{border:none;border-top:1px solid %(border)s;margin:16px 0;}"
-            ".msg{margin:14px 0;} .role{font-size:12px;font-weight:600;color:#888;margin-bottom:4px;}"
-            ".bubble{padding:10px 14px;border-radius:10px;white-space:pre-wrap;word-break:break-word;}"
+            ".msg{margin:12px 0;} .role{font-size:12px;font-weight:600;color:#888;margin-bottom:4px;}"
+            ".bubble{padding:12px 12px;border-radius:10px;white-space:pre-wrap;word-break:break-word;}"
             ".user .bubble{background:%(user_bg)s;} .asst .bubble{background:%(tpl_asst_bubble)s;}"
-            ".tool{border:1px solid %(border)s;border-radius:8px;padding:8px 12px;margin:10px 0;"
+            ".tool{border:1px solid %(border)s;border-radius:8px;padding:8px 12px;margin:12px 0;"
             "background:%(tpl_tool_bg)s;font-size:13px;}"
             ".tool .role{color:%(tpl_tool_role)s;} .result{color:#666;margin-top:4px;}"
-            "pre{background:%(tpl_pre_bg)s;color:%(tpl_pre_text)s;padding:10px;border-radius:6px;"
+            "pre{background:%(tpl_pre_bg)s;color:%(tpl_pre_text)s;padding:12px;border-radius:6px;"
             "overflow:auto;font-size:12px;white-space:pre-wrap;}"
-            "code{background:%(tpl_code_bg)s;padding:1px 4px;border-radius:4px;font-size:12px;}"
+            "code{background:%(tpl_code_bg)s;padding:4px 4px;border-radius:6px;font-size:12px;}"
             "b{font-weight:600;}"
         ) % THEME
 
@@ -9566,7 +9724,11 @@ class ChatWindow(QMainWindow):
         )
         last_user = ""
         for msg in reversed(messages or []):
-            if msg.get("role") == "user":
+            # v4.186.0（P1-4 修）：跳过框架注入的内部消息（nudge / 强制指令）。
+            # 原实现取最后一条 user 消息不看 `_internal`，而 nudge 文本含
+            # 「写文件/搜索」等词 → 每轮 nudge 重试都被判工具意图 →
+            # 付费模型升舱 + required，一次空转一轮付费。
+            if msg.get("role") == "user" and not msg.get("_internal"):
                 c = msg.get("content", "")
                 if isinstance(c, str):
                     last_user = c
@@ -9884,7 +10046,11 @@ class ChatWindow(QMainWindow):
                 pass
             force_tool = None
         # v4.60：强制调用指定工具（如 sys_info / video_gen），优先级最高
-        if _guard_block:
+        # v4.186.0（P1-3 修）：已验证在工具表内的 force_tool 优先级高于 guard 拦截。
+        # 原实现 `if _guard_block:` 先判，把 agent 侧明确决定的强制工具（如自检强制
+        # sys_info）反手盖成 tool_choice="none"——系统决定被闲聊启发式否决，
+        # 且该分支不记任何日志，静默失败。改为：guard 只在无强制工具时生效。
+        if _guard_block and not force_tool:
             body["tool_choice"] = "none"
             self._last_tool_choice = "none(guard)"
             try:
@@ -9954,6 +10120,17 @@ class ChatWindow(QMainWindow):
         # 少数通道不认识该参数会返回 400，下方 _stream_once 会自动去掉参数重试一次，
         # 因此新增参数永远不会让原本能跑通的调用失败。
         body["stream_options"] = {"include_usage": True}
+        # v4.186.0（P1-5 修）：发送前最终剥离 `_internal`。上方 9973 的剥离发生在
+        # guard/force 注入**之前**，后注入的内部消息（10060/10091 两处）带着
+        # `_internal` 键直接进 body["messages"] 发给 API——严格校验未知字段的
+        # 通道会 400。此处兜底覆盖所有注入点，本地判据已在注入前完成，不受影响。
+        if any(isinstance(m, dict) and "_internal" in m
+               for m in (body.get("messages") or [])):
+            body["messages"] = [
+                {k: v for k, v in m.items() if k != "_internal"}
+                if isinstance(m, dict) else m
+                for m in body["messages"]
+            ]
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
 
         full_content = ""

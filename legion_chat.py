@@ -18,6 +18,7 @@
 import os
 import re
 import json
+import logging
 from ui import THEME
 from datetime import datetime
 
@@ -27,6 +28,8 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTextEdit,
                                QPushButton)
 
 import legion  # 仅取数据层目录 LEGION_DIR；不触碰引擎，保证改 UI 不破壳
+
+log = logging.getLogger(__name__)
 
 
 # 角色 → 语义色（独立于主题 token；与 director_chat 的灰底范式一致）
@@ -118,7 +121,7 @@ class LegionChatPanel(QWidget):
         self._THEME_FAINT = THEME.get("faint", "#999")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 8, 12, 10)
-        lay.setSpacing(6)
+        lay.setSpacing(8)
 
         self.log = QTextEdit()
         self.log.setReadOnly(True)
@@ -127,7 +130,7 @@ class LegionChatPanel(QWidget):
             "授权待决时，在下面一句话写「放行 / 打回 / 终止」即可。")
         self.log.setStyleSheet(
             f"QTextEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:10px;padding:10px 12px;font-size:13px;color:{THEME['text']};}}")
+            f"border-radius:10px;padding:12px 12px;font-size:13px;color:{THEME['text']};}}")
         lay.addWidget(self.log, 1)
 
         row = QHBoxLayout()
@@ -138,7 +141,7 @@ class LegionChatPanel(QWidget):
             "说句话做决策，或给项目经理留言 · Enter 发送 / Shift+Enter 换行")
         self.input.setStyleSheet(
             f"QTextEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:10px;padding:8px 10px;font-size:13px;color:{THEME['text']};}}")
+            f"border-radius:10px;padding:8px 12px;font-size:13px;color:{THEME['text']};}}")
         self.input.installEventFilter(self)
         row.addWidget(self.input, 1)
 
@@ -164,23 +167,23 @@ class LegionChatPanel(QWidget):
             b.setCursor(Qt.PointingHandCursor)
         self.send_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
-            f"border-radius:10px;padding:0 18px;font-size:13px;font-weight:600;}}")
+            f"border-radius:10px;padding:0 16px;font-size:13px;font-weight:600;}}")
         self.clear_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['card']};color:{THEME['faint']};"
-            f"border:1px solid {THEME['border']};border-radius:10px;padding:0 14px;"
+            f"border:1px solid {THEME['border']};border-radius:10px;padding:0 12px;"
             f"font-size:13px;}}")
         self.skill_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
-            f"border:1px solid {THEME['border']};border-radius:10px;padding:0 14px;"
+            f"border:1px solid {THEME['border']};border-radius:10px;padding:0 12px;"
             f"font-size:13px;}}")
         self.auth_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
-            f"border:1px solid {THEME['border']};border-radius:10px;padding:0 14px;"
+            f"border:1px solid {THEME['border']};border-radius:10px;padding:0 12px;"
             f"font-size:13px;}}"
             f"QPushButton:disabled{{color:{THEME['faint']};}}")
         self.stop_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
-            f"border:1px solid {THEME['border']};border-radius:10px;padding:0 14px;"
+            f"border:1px solid {THEME['border']};border-radius:10px;padding:0 12px;"
             f"font-size:13px;}}"
             f"QPushButton:disabled{{color:{THEME['faint']};}}")
         self.clear_btn.clicked.connect(self._clear_chat)
@@ -570,7 +573,7 @@ class LegionChatPanel(QWidget):
         html = (
             '<div style="margin:0 0 8px 0;padding:%s;background:transparent;'
             '%s;border-radius:8px;">'
-            '<div style="margin:0 0 3px 0;font-size:11px;color:%s;">'
+            '<div style="margin:0 0 4px 0;font-size:11px;color:%s;">'
             '<span style="font-weight:700;color:%s;">%s</span>'
             % (pad, border, faint_c, color, _esc(role))
         )
@@ -610,6 +613,11 @@ class LegionChatPanel(QWidget):
         return os.path.join(base, f"{self._proj_id}.json")
 
     def _save_history(self):
+        if getattr(self, "_history_load_failed", False):
+            # P1-6（v4.186.0 审查）：历史加载失败期间禁止回写。此时
+            # self.history 只含本轮新消息、不含磁盘旧记录，写出即用半份
+            # 覆盖全量。旧文件原样保住，等下次能正常读取再恢复存档。
+            return
         path = self._chat_path()
         if not path:
             return
@@ -638,8 +646,22 @@ class LegionChatPanel(QWidget):
                 if isinstance(m, dict) and m.get("role") in _ROLE_NAMES
                 and isinstance(m.get("content"), str)
             ]
-        except Exception:
+        except json.JSONDecodeError:
+            # 真损坏（与"读不到"是两回事）：坏档改名留底，允许清空重建。
+            try:
+                os.replace(path, path + ".bad."
+                           + datetime.now().strftime("%Y%m%d%H%M%S"))
+            except Exception:
+                pass
             self.history = []
+        except Exception as e:
+            # P1-6（v4.186.0 审查）：读失败（权限/瞬时锁/IO）≠内容损坏。
+            # 原实现一律清空 history → 攒几条后 _save_history 把空历史回写，
+            # 原文件被覆盖，军团对话记录永久丢失。改为：置读失败标志 →
+            # 禁止回写（见 _save_history），磁盘旧记录原样保住。
+            self._history_load_failed = True
+            log.warning("军团对话历史读取失败，已禁止回写以防覆盖: %s: %s",
+                        path, e)
         # 回放：按存档顺序重建卡片 + 波次分隔条（沿用存档里的 ts / wave）
         self._last_wave_rendered = None
         self._cur_wave = None

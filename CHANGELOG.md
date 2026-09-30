@@ -9,6 +9,260 @@
 
 ---
 
+## v4.187.0 — 2026-09-30
+
+**本轮：全项目架构级审查（六路并行 + AST 量化）修复 P0×1 + P1×11，全部带探针实证。**
+完整审查报告见 `DISTILL_REVIEW_v4.186.0.md`（含已排除 34 项、P2×17/P3×10 未动清单）。
+
+- **P0-1 安全核心**：`run_python` 补 `_dangerous_command_check` deny 硬拦截——原全仓仅
+  `run_command` 一处调用，会话信任后模型改走 `run_python` 即可零确认执行 `format d:`；
+  探针实锤信任+auto 下 `run_command("format d:") → allowed=True 零确认`，两侧墙现已补齐。
+- **P1-1**：`PermissionEngine.decide()` 与 agent `_safe_args` 对非 dict arguments 归一化，
+  模型发 `"[1,2]"` 不再 AttributeError 静默断任务。
+- **P1-2**：intent_guard 新增后置质疑判据（`_POST_REF_RE`）——「生成视频这件事你怎么看」
+  不再漏放；只收征询意见短语（怎么看/如何评价…），「剪个视频聊聊昆明」类真指令零误伤。
+- **P1-3/4/5 ui 决策链**：guard 不再反盖已验证的强制工具（`if _guard_block and not force_tool`）；
+  `_needs_tool_intent` 取样跳过 `_internal` 消息（nudge 重试不再触发付费升舱）；
+  发送前最终剥离 `_internal` 键（覆盖 guard/force 两处后注入点，防严格通道 400）。
+- **P1-6/7 数据防丢**：legion_chat 读史失败（瞬时锁≠损坏）置禁写标志，坏档仍改名留底
+  允许重建；memory_store 读败拒绝 append（原会把空历史回写清空全部记忆）。
+- **P1-8 数字人停止**：TwinGenThread 接 CancellationToken（内核轮询/下载实时中断）+ UI
+  停止按钮（生成中点亮），已完成段保留、正在生成段几秒内停，不再烧额度干等。
+- **P1-9 视频产物体积守卫**：`_MIN_CLIP_BYTES=10KB` 三层校验（video_pipeline / tool_video_gen /
+  core agnes download got/total），0 字节/半截 mp4 不再当成品交付。
+- **P1-10**：build_safe 消费 `_sync_to_dist()` 返回值，同步失败打 `BUILD_EXIT=2`（原无条件 0）。
+- **P1-11**：QLockFile 单实例锁（双开拒绝，锁故障降级不挡启动）+ run_all 假绿两口子根治：
+  空输出套件判 EMPTY、`.suite_manifest.txt` 基线 MISSING 检测（`--refresh-manifest` 重建）。
+- **连带修复（run_all 新机制揪出的历史隐患）**：`test_audio_regress` 夹具失效（硬编码
+  2026-08-31 个人产物视频早已清理，套件静默失败数周）→ 改 ffmpeg 自生成夹具 + 失败退出码
+  非零；`test_intent_routing` 写死断言同步 P1-3 新条件；`test_director_manifest` 假片段
+  8 字节补足体积。4 个 ALL_*_OK 横幅格式套件纳入真实计数。
+- **新增测试**：test_p0p1_runcmd_fix_186 / test_dataloss_fix_186 / test_uidecision_fix_186 /
+  test_robust_fix_186 / test_postref_fix_186（本轮共 6 个新套件，90+ 断言）。
+
+- **发布工程加固（本轮构建实测带出）**：备份轮转被沙箱 safe-delete 拦截（bulk 阈值超限以
+  SystemExit 中断进程）会连带掐断 robocopy 同步——轮转已隔离为「失败仅告警」，无权中断发布。
+
+**✅ 已发布 exe**：PyInstaller 打包成功（19.1MB / 18:18）；备份轮转被 safe-delete 拦截致
+SystemExit 中断，同步未执行（`BUILD_EXIT=1` 为 P1-10 修复后的**真失败**，非假成功）——
+已手动补完同步（exe 字节级一致 + `_internal` 5167/5167 全量校验）。验证闭环：冻结冒烟
+`tests/test_frozen_smoke.py` **143/143**（exe 内版本 == 源码 v4.187.0）、门禁
+`release_check.py` **11/11**（全量回归 **55 套件 PASS=2141 FAIL=0**、密钥零命中、版本三方对齐）。
+旧 exe 备份 `小臭玩AI.exe.bak_20260930_181843`（本轮轮转被拦，暂存 4 个备份，下轮构建自动收敛）。
+
+## v4.186.0 — 2026-09-30
+
+**修 Agent「只说不做」空转：自检/诊断/巡检类请求现在会真正调用工具（防空转三防线补全）。**
+
+- **病灶（兄弟助手实录 + 真机探针实锤，非猜测）**：用户说「对自己进行一次自检，只看不改」，
+  模型只回「收到。那我按你改完的状态复核一遍」却不调用任何工具。
+- **根因**：① `_ACTION_KEYWORDS` 缺诊断/检视动词（自检/排查/诊断/巡检/盘点/核验/扫描），
+  自检请求被判 `_needs_action=False`，连带关掉 step-1 `force_required` 与 nudge 两道防线；
+  ② 独立兜底 `_looks_like_promise`（承诺却不行动）是**死代码**（定义后从未调用）。
+- **修复**：`_ACTION_KEYWORDS` 补 10 个诊断动词（**刻意不加裸「检查」**，免把「检查语病」也推去调工具）；
+  收紧 `_looks_like_promise`（短文本 + 无代码块/路径/交付物 + 承诺∧动作，剔除裸「看看/下一步/确认」防误伤）；
+  在主分支 + 续跑循环两处把它接上做第三道兜底（`_nudged` 一轮一次闸 + `_nudge_count` 上限防死循环）。
+- **验证**：新建 `tests/test_no_stall_186.py` **30/30**（诊断类 needs_action 转 True ×8、空转命中 ×7、
+  正常 0 误伤 ×7、讨论不误伤 ×4、接线校验 ×4）；全量回归 **50 套件 PASS=1953 FAIL=0**。
+- **已知限制**：推理模型（DeepSeek thinking）API 不支持硬 `tool_choice`，只能靠 nudge 反复催，
+  不能像非推理模型那样一锤定音——需在真实配置下复测「自检→真调 sys_info」。
+- **✅ 已发布 exe**：`build_safe.py` → `BUILD_EXIT=0`（robocopy rc=1/3 均属成功码，exe 真实落盘 19MB）；
+  旧 exe 备份 `小臭玩AI.exe.bak_20260930_163654`，轮转保留 3 个。冻结冒烟 **143/143**、
+  门禁 **11/11**（回归 PASS=1953 FAIL=0、密钥零命中、版本三方对齐）。
+- **同日并行完成全项目架构级只读审查**（76,647 行 / 50+ 模块六路并行 + AST except 卫生量化：
+  裸 except=0、pass_only=634、log_only=363），发现 **1×P0、11×P1、17×P2、10×P3**（均带文件:行号证据）：
+  P0 = `run_python` 缺 ③-A 系统级毁灭硬拦截（会话信任后可无确认执行 format/shutdown/rm -rf，run_command 有 deny 而它没有）；
+  P1 含 decide() 非 dict args 致 run() 裸抛、intent_guard 后置质疑句漏拦、force_tool 被 guard 静默反盖、
+  nudge 文本触发付费升舱、`_internal` 键回传 API、legion_chat 读史失败清零+回写覆盖、memory_store 读败返回空串致 append 清空全部记忆、
+  数字人无停止入口、视频产物只验存在不验大小等。修复排期待大哥逐条放行。
+
+---
+
+## v4.185.0 — 2026-09-30
+
+**本轮累积：①-A 命令风险分级 + ①-B 权限判定引擎 + ②-A 命令执行健壮性 + ②-B 软件控制可靠性。**
+
+- **① 系统控制加强（risk.py / permissions.py）**：`risk.py` 新增 `command_danger_level()` 与
+  `_HIGH_RISK_PATTERNS`（命令危险分级），与 ③-A 系统级毁灭硬拦截（deny）职责互补；
+  `permissions.PermissionEngine.decide()` 接入风险分级（RiskClass / classify / tier_of / ALWAYS_CONFIRM），
+  统一收口 agent 工具派发前的授权闸门。
+- **② 命令执行健壮性（tools.py / tool_defs.py）**：① 大输出超 4MB 先切字节再解码并附「输出过大已截断」
+  标记；② `run_command` 支持 `cwd`（真目录才生效、否则回退提示）与 `env`（与系统环境合并）；
+  ③ 长任务双线程流式读取 + progress 回显，轮询 `should_stop` / `stop_event` / 超时命中即 kill，停止/超时 <5s。
+- **③ 软件控制可靠性（software_control_tools.py / tools.py / agent.py）**：① 控件树超 400 行截断附标记；
+  ② `tools._wrap` 按 signature 仅向声明停止信号的底层 handler 透传，agent 三处 `exec_tool` 注入
+  `should_stop=lambda: self._stop_requested` 接通停止信号；③ `launch` 补可执行文件存在性校验、`kill` 重写四路终止
+  （PID / taskkill /IM / taskkill /FI / WMI），根治 `taskkill /FI` 未匹配仍 returncode 0 的误报成功；
+  无窗口标题分支 `connect(active_only=True, timeout=5)` 消除挂死。
+- **诚实边界**：① 流式输出的 UI 实时呈现（agent 无现成 tool-progress 信号槽）未接，属独立 UI 任务；
+  ② pywinauto 单次调用阻塞 C 层，「点击中途强杀」需线程化，超出本批——本批交付「入口即停 + 操作有界超时绝不挂死」。
+
+**✅ 已发布 exe（2026-09-30 构建）**：`python build_safe.py` → `BUILD_EXIT=0`；旧 exe 备份轮转
+（保留 3 个，`小臭玩AI.exe.bak_20260930_154346`）。验证闭环：冻结冒烟 `tests/test_frozen_smoke.py`
+**143/143**（exe 内版本 == 源码 v4.185.0 转绿）、门禁 `release_check.py` **11/11**
+（回归 PASS=1923 FAIL=0、密钥零命中、版本三方对齐、dist 卫生）。
+- **发布中修复的测试缺口（pre-existing，非本轮回归）**：`test_route_injection_guard.py` 的 AST 抽取列表
+  `_METHODS` 未收录 agent.py 新增方法 `_ref_existing_artifact`（v4.181~184 未提交改动遗留），
+  导致 `_Fake` 缺方法 → AttributeError、门禁 10/11。补 1 行（`_METHODS` 加该方法名）后该套件 58/0、门禁 11/11 全绿。
+
+---
+
+## v4.184.0 — 2026-09-30
+
+**自检复盘三连修（读 Only 自检发现的真实 BUG + 配置描述冲突）。**
+
+- **🔴 P0 — `run_python` 子进程 GBK 编码崩**：`tool_run_python` 起子进程未注入 `PYTHONIOENCODING`，中文 Windows 下用户代码 `print("中文")` 直接 `UnicodeEncodeError` 中断。修复＝复用项目现成范式（`browser_control_tools.py` / `release_check.py` 同款），在 `subprocess.run` 的 `env` 注入 `PYTHONIOENCODING=utf-8`；legacy 路径（`_tool_run_python_legacy`）一并修。
+- **🟠 P1 — Agent 调用失败日志缺 payload**：`agent.py` 异常处只把 `str(e)`（＝「HTTP Error 400」）写进结构化日志库（`agent_log.db`，`log_query` 查的就是它），而接口原文（`_api_body`）只发到界面气泡。现已把 `_api_body` 一并写入结构化日志 `extra`，事后可复盘根因。
+- **🟠 P1 — Obsidian Vault 描述冲突**：自检约束模板写死「Obsidian Vault 未配置」，与 `sys_info`（及 `tools.py` 动态能力报告）报「已配置」矛盾，每轮自检都注入错误前提。改为「以刚才 sys_info 的真实返回为准」，既消错误前提又保留「禁止夸大声称」护栏（agent 不持有 live config，故走模板去硬码而非读配置，零耦合风险）。
+- **未动**：两项 P2（WARNING 落盘观测、183s 超时上限）属观测量，按自检建议先量两天再定。
+
+**✅ 已发布 exe（2026-09-30 二次构建）**：`python build_safe.py` → `BUILD_EXIT=0`；旧 exe 备份轮转（保留 3 个，`小臭玩AI.exe.bak_20260930_123529`）。验证闭环：冻结冒烟 `tests/test_frozen_smoke.py` **143/143**（exe 内版本 == 源码 v4.184.0 转绿）、门禁 `release_check.py` **11/11**（回归 PASS=1834 FAIL=0）、PYZ 轻量核验 `tools` 含 `PYTHONIOENCODING` / `agent` 含 `接口原文` / `config` 版本 v4.184.0（TOC=2293）。源码改动已 `.bak` 双备份（tools/agent/config）。
+
+---
+
+## v4.183.0 — 2026-09-30
+
+**军团内部可观测（事件溯源任务板设计稿降级落地，不引入新架构）。**
+
+- **实时状态条 `LegionStatusStrip`（常驻军团所有页顶部）**：
+  订阅 `LegionWorker.board_update` 信号，从现有 `legion_board/<pid>.json` 真源
+  聚合「波次 / 成员运行态（运行中·完成·异常）/ 闸门待批↔已批」，并以状态点直观呈现每个成员。
+- **授权审计流 `LegionAuditFeed`**：读现有 `legion_auth.jsonl` + `legion_tool_audit.jsonl`
+  两账本（与宪法第二章授权同一 run_id 谱系），按 actor（user/auto/engine/timeout）过滤，
+  展示批准 / 拒绝 / 收回 / 工具判定 / 用户指令——把「每笔放行留痕可查」变成「可看」。
+- **真源复用、零新架构**：不引入单写者锁 / sig 哈希 / 独立 taskboard；
+  `board_update` 信号在既有 `LegionWorker._board()` 末尾补一路广播（跨线程安全），
+  长任务恢复仍由 v4.81 checkpoint 承担。
+- **回归**：新增 `tests/test_legion_status.py`（27 项全绿，含 board_update 接线守卫）。
+
+**✅ 已发布 exe（2026-09-30 构建）**：`python build_safe.py` → `BUILD_EXIT=0`；
+旧 exe 备份轮转（保留 3 个）。验证闭环：冻结冒烟 `tests/test_frozen_smoke.py` **143/143**
+（exe 内版本 == 源码 v4.183.0 由红转绿）、门禁 `release_check.py` **11/11**（回归 PASS=1834 FAIL=0）、
+PYZ 硬核核验确认 `legion_status_widget` 已进 exe 内嵌 PYZ（含 `LegionStatusStrip`/`LegionAuditFeed`
+/`_on_actor`/`_read_jsonl`/`collect_audit`/`set_total_waves` 等符号）。
+
+---
+
+## v4.182.0 — 2026-09-30
+
+**QSS 主题层收编 + 字号 token 化（第三档，质感统一收尾）。**
+
+- **中心样式层 `theme_qss.py`**：按钮/输入/下拉/复选/标签等 Top 形状收编为唯一真源；
+  ui.py 三个辅助函数与 director_panel / digital_twin_panel 十二个样式函数改为
+  「兼容壳」（函数名不变、函数体转调 theme_qss），**调用点零改动**完成收编。
+- **字号层级表落地**（DESIGN.md §3.2）：THEME 新增 7 个 `font_*` token
+  （micro 11 / second 12 / body 13 / input 14 / title 15 / icon_btn 16 / title_xl 20）。
+  全主目录 .py 摘除裸 `10px`（→micro）、`20px`（→title_xl）；
+  14px 分场景归档：输入框/强调按钮保留，标题类归 15px，说明文字归 13px，图标字归 16px。
+- **门禁升级**：`release_check.py` 新增「字号 token 守卫」——主目录 QSS 不得再出现
+  裸 10/14/20px 字面值（webhook_server.py HTML 模板与 theme_qss.py 豁免）。
+- **视觉零变化承诺**：btn_primary 默认参数严格复刻原版（13px/600 字重），
+  director 强调按钮 14px/500 通过显式参数传入；新增 `btn_outline()` 承接
+  director 线框钮（与 btn_secondary 语义不同，不混用）。
+
+---
+
+## v4.181.1 — 2026-09-30
+
+**修「设置弹层向下突出屏幕」+ 圆角归一（第二档）。**
+
+### ① 修设置弹层超出屏幕（大哥实测）
+
+- **现象**：点侧边栏「设置」弹出的弹层，底部沉在屏幕外够不着。
+- **根因**：v4.180.0 修的是 **QDialog 类**弹窗（走 `clamp_dialog_to_screen`），
+  但「设置」「技能库」是 **`Qt.Popup` 内嵌弹层**，走的是另一条链路
+  `_show_popup → move(pos) + show()` —— **既不限高也不钳位**。
+  设置弹层有 5 个分组，内容总高轻松过 700px，而笔记本 @150% 缩放可用高度
+  可能只有 472px → 必然向下溢出。
+- **改法（两处，都不动业务内容与配色）**：
+  1. `_popup_base` 统一包一层 `QScrollArea` —— 限高后内容靠滚动，**不会丢内容**；
+     技能库弹层沿用原 `scroll_fixed_h=360`，不再自建滚动区（避免两层滚动抢滚轮）；
+  2. 新增 `clamp_popup_to_screen(popup, pos)`：高度不超过可用区、右边越界左推、
+     下方放不下整体上移。**优先贴着触发点**，放不下才让位（不像 QDialog 那样直接居中，
+     否则弹层会突然跳到屏幕中间、失去「从按钮弹出」的观感）。
+- **回归**：新增 `tests/test_popup_clamp.py`（18 断言），钉住源码接线 +
+  四种屏幕尺寸下的钳制行为（含 1366×768@150% 可用 911×472 的真实笔记本场景）。
+
+### ② 圆角归一（第二档）
+
+- **背景**：`DESIGN.md` §7 要求「圆角只用 6/8/10px 三档」；实测全项目 206 处圆角里
+  **41 处非法值**。
+- **关键判断（逐条看过上下文后）**：41 处里**大部分是 `radius = 尺寸 ÷ 2` 的胶囊/圆形**
+  —— 17px 发送/停止/录音按钮（34px 高）、24px 圆形按钮（48px）、22px 徽章（44px）、
+  18px 搜索框（36px）、16px 输入卡（32px）、14px 步骤徽章与**聊天气泡**（28px）、
+  13px 缩略图（26px）。把它们归成 6/8/10 会把按钮压成圆角方块、头像变方 ——
+  **事故级视觉回退**。
+- **因此确立 §7.1 圆角豁免清单**（已写进 DESIGN.md）：**圆形 / 胶囊 / 滚动条不套三档**。
+  依据：`DESIGN.md` §2 已写明「圆形，圆角 = size/2」，§10 明文规定滚动条圆角 3px。
+- **实际归一**：只归矩形元素上的零碎值 —— **14 处**（12px→10、9px→8、7px→8、
+  4px→6、2px→6），涉及 `ui.py` 6 处、`automation_panel.py` 3 处、
+  `digital_twin_panel.py` 2 处、`director_panel.py`/`chat_web.py` 各 1+1 处。
+- **回归**：新增 `tests/test_radius_norm.py`（14 断言），钉住「矩形不得有三档外的值」
+  + 「豁免项必须保持在豁免值」（防后人按 §7 把胶囊"归正"）。
+
+### 验收
+
+`release_check.py` 10/10 通过；回归 **45 套件 / PASS 全绿**；冻结冒烟 143/143；
+冻结 exe offscreen 启动冒烟 PASS；进包硬核实（从内嵌 PYZ 捞常量）确认改动已进包。
+
+---
+
+## v4.181.0 — 2026-09-29
+
+**间距归一（第一档质感提升）—— 把散落在各处的零碎间距值收进 4/8/12/16/20 五档 token。**
+
+- **为什么做**：`DESIGN.md` §5 明确点名反模式「间距散落在每个 `setStyleSheet` 的 `padding` 里
+  （8px 10px / 8px 20px / 0 14px / 12px 0 等），无统一间距 token」，§7 DONT 与 §10 也要求
+  「间距只用 4/8/12/16/20px」。但此前全项目实际存在 **2/3/5/6/9/10/14/15/18 等零碎值**，
+  同一视觉层级在不同面板用了不同数字，观感「差一点点」却不统一。
+- **改法**：新增归一脚本 `_spacing_norm.py`（支持 dry-run / `--apply` 两态，可重复执行且幂等），
+  覆盖**两层**间距来源：
+  1. **Qt API 层**：`setSpacing(...)` / `setContentsMargins(...)` —— 布局间隙；
+  2. **QSS 字符串层**：`padding` / `margin`（含 `-top/-left/-right/-bottom` 方向变体）—— 控件内边距。
+- **映射规则**：就近归到最近 token（如 `6→8`、`10→12`、`14→12`、`18→20`）；`0` 保留（无间距合法）。
+- **明确保留（白名单）**：
+  - **24 / 32 / 36px** —— 面板级 / 页面级大留白，属有意为之的呼吸空间，不归；
+  - **Web 模板正文排版**的 `em` 单位（`.bubble p{margin:.35em 0}`、`padding-left:1.4em` 等）——
+    随字号缩放的流式节奏，转 px 会破坏缩放，**不动**；
+  - 非间距属性（`width` / `height` / `border-radius` / `font-size` / `line-height` 等）。
+- **改动范围**：14 个文件共 **155 处**（Qt 层 68 + QSS 层 87）。
+  大头是 `ui.py`（105 处）、`director_panel.py`（36 处）；Web 渲染模板
+  `chat_web.py`（15 处）、`director_web.py`（5 处）同批处理。
+- **验收**：`release_check.py` 10/10 通过；回归 **43 套件 / PASS=1775 FAIL=0**；
+  UI 裸 hex 护栏 0 违规；全部改动文件 `py_compile` 通过；脚本重跑**幂等**（复算 0 处）。
+- **性质**：纯视觉一致性整理 —— **只改数值，不动布局结构、不动配色、不动任何逻辑**。
+
+---
+
+## v4.180.0 — 2026-09-29
+
+**修「授权弹窗超出屏幕、底部按钮点不到」—— 弹窗尺寸全面钳制进屏幕可用区。**
+
+- **现象（大哥实测）**：「每次的授权弹窗很长，有时候超出屏幕都点不到」。
+  笔记本 + 系统缩放（125% / 150%）下最常见：弹窗内容看得见，
+  但底部的「放行 / 打回 / 终止」「确定 / 取消」整个或一半沉在屏幕外，鼠标够不着。
+- **根因（本次取证坐实）**：主程序里 **19 处弹窗用硬编码像素尺寸打开**
+  （`RoleEditor` 写死 `resize(640, 820)`、组队审批 `760x700`、装技能 `820x760`…），
+  **没有任何屏幕可用区检查**。Qt 对超屏窗口的处理是「从屏幕顶部开始摆」，
+  于是超出部分被推到屏幕下方 —— 底部按钮首当其冲。
+  实测复现：1366×768@150%（可用 911×472）与 1920×1080@150%（可用 1280×680）下，
+  上述弹窗**全部底部溢出**；大哥真机 1536×960@125%（可用 1536×912）恰好放得下 820，
+  所以现象随机器/缩放组合而变，不是「偶发」。
+- **改法**：`ui.py` 新增通用函数 `clamp_dialog_to_screen(dlg, want_w, want_h, margin=24)`
+  —— 做三件事：① 宽高都不超过 `屏幕可用区 − 2×边距`，并设 `maximumHeight/Width`
+  **防止子控件把弹窗重新撑破**；② 在**可用区内居中**摆放（而非让 Qt 从顶部摆）；
+  ③ 父窗口足够大时按父窗口居中，观感更贴。**只调尺寸与位置，不动任何弹窗布局与业务。**
+- **接入**：`legion_ui.py` / `director_panel.py` 各加薄包装 `_fit_dlg(dlg, w, h)`，
+  **19 处硬编码 resize 全部改走它**；`RoleEditor` 额外覆盖 `exec()`
+  （调用方 2 处零改动）；`ThemedDialog.showEvent` 也补了钳制。
+  内容偏多的弹窗（角色编辑器表单、授权弹窗报告正文）本身已包在滚动区 /
+  `QTextEdit` 内，钳制后内容在框内滚，**按钮永远可见可点**。
+- **验证**：数学复算 3 种屏幕组合 × 3 类弹窗全部 `底部 y ≤ 屏底`；
+  真机冒烟确认 `RoleEditor` 构造成功、`exec` 已覆盖、19 处接入无漏网；
+  发布门禁 10/10、回归 1775 断言 FAIL=0。
+
+---
+
 ## v4.179.1 — 2026-09-29
 
 **修「运行数据写进分发目录」的真归口缺陷 —— `_internal/config.json` 之谜结案。**

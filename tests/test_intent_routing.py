@@ -214,7 +214,10 @@ def part_b():
           "blocks_tool_call" in ui)
     gi = _find_one(ui_lines, lambda l: "blocks_tool_call(" in l,
                    "blocks_tool_call 调用点")
-    ft = _find_one(ui_lines, lambda l: l.strip() == "if _guard_block:",
+    # v4.186.0（P1-3 修后）：guard 分支带 not force_tool 条件——
+    # 已验证在工具表内的强制工具不再被 guard 静默反盖成 none。
+    ft = _find_one(ui_lines,
+                   lambda l: l.strip() == "if _guard_block and not force_tool:",
                    "if _guard_block 分支")
     check("保险分支在 force_tool 之前",
           gi < ft, f"blocks@{gi+1} 应在 if _guard_block@{ft+1} 之前")
@@ -223,7 +226,7 @@ def part_b():
           f"实际下一行: {ui_lines[ft+1].strip()!r}")
     order = []
     for i, l in enumerate(ui_lines):
-        if l.strip() == "if _guard_block:":
+        if l.strip() == "if _guard_block and not force_tool:":
             order.append(("guard", i))
         elif l.strip() == "elif force_tool:":
             order.append(("force_tool", i))
@@ -238,7 +241,7 @@ def part_b():
     print("\n-- B4 内部注入消息带 _internal 标记（不被判据误伤） --")
     n_nudge = len(re.findall(r"self\._AGENT_NUDGE,\s*\n\s*\"_internal\": True",
                              ag))
-    check("nudge 注入点都标了 _internal（2 处）", n_nudge == 2, f"实际 {n_nudge}")
+    check("nudge 注入点都标了 _internal（4 处：主+续跑各 2）", n_nudge == 4, f"实际 {n_nudge}")
     check("伪造工具指令标了 _internal",
           re.search(r'"content": self\._AGENT_FAKE_TOOL_INSTR,\s*\n\s*'
                     r'"_internal": True', ag) is not None)

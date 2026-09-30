@@ -120,7 +120,7 @@ def build_twin_panel(app):
     lay.setSpacing(16)
 
     head = QLabel("数字人分身 · 我自己")
-    head.setStyleSheet(f"font-size:20px;font-weight:700;color:{THEME['text']};")
+    head.setStyleSheet(f"font-size:{THEME['font_title_xl']};font-weight:700;color:{THEME['text']};")
     lay.addWidget(head)
     sub = QLabel("本人形象 + 口播台词 → 数字人口播视频（Agnes 直连，免费）。"
                  "长台词自动分段生成并拼接，段间用上一片段末帧接力（脸不跳变）；"
@@ -132,10 +132,10 @@ def build_twin_panel(app):
     avatar_box = QGroupBox("本人形象（参考图）")
     avatar_box.setStyleSheet(
         f"QGroupBox{{background:{THEME['card']};border:1px solid {THEME['border']};"
-        f"border-radius:10px;padding:12px 14px;font-size:13px;color:{THEME['text']};"
-        f"margin-top:8px;}} QGroupBox::title{{subcontrol-origin:margin;left:10px;padding:0 6px;}}")
+        f"border-radius:10px;padding:12px 12px;font-size:13px;color:{THEME['text']};"
+        f"margin-top:8px;}} QGroupBox::title{{subcontrol-origin:margin;left:10px;padding:0 8px;}}")
     ab_lay = QHBoxLayout(avatar_box)
-    ab_lay.setSpacing(14)
+    ab_lay.setSpacing(12)
 
     # 左：缩略图列表
     app.twin_portrait_list = QListWidget()
@@ -147,8 +147,8 @@ def build_twin_panel(app):
     app.twin_portrait_list.setFixedHeight(110)
     app.twin_portrait_list.setStyleSheet(
         f"QListWidget{{background:{THEME['bg']};border:1px solid {THEME['border']};"
-        f"border-radius:8px;padding:6px;}}"
-        f"QListWidget::item{{border-radius:6px;padding:2px;}}"
+        f"border-radius:8px;padding:8px;}}"
+        f"QListWidget::item{{border-radius:6px;padding:4px;}}"
         f"QListWidget::item:selected{{outline:2px solid {THEME['accent']};"
         f"background:{THEME['blue_hover']};}}")
     app.twin_portrait_list.itemClicked.connect(lambda it: _on_twin_portrait_picked(app, it))
@@ -180,7 +180,7 @@ def build_twin_panel(app):
     del_btn.setCursor(Qt.PointingHandCursor)
     del_btn.setStyleSheet(
         f"QPushButton{{background:{THEME["danger_bg2"]};color:{THEME["danger_text_dark"]};border:1px solid {THEME["danger_border"]};"
-        f"border-radius:8px;padding:0 14px;font-size:13px;}}"
+        f"border-radius:8px;padding:0 12px;font-size:13px;}}"
         f"QPushButton:hover{{background:{THEME["danger_hover_bg"]};}}")
     del_btn.clicked.connect(lambda: _twin_delete_portrait(app))
     btn_row.addWidget(del_btn)
@@ -197,7 +197,7 @@ def build_twin_panel(app):
 
     # 左：衣橱/场景描述
     ward = QVBoxLayout()
-    ward.setSpacing(6)
+    ward.setSpacing(8)
     wlab = QLabel("衣橱 / 场景描述（可选）")
     wlab.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
     ward.addWidget(wlab)
@@ -211,7 +211,7 @@ def build_twin_panel(app):
 
     # 右：口播台词
     dia = QVBoxLayout()
-    dia.setSpacing(6)
+    dia.setSpacing(8)
     dlab = QLabel("口播台词（中文，必填）")
     dlab.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
     dia.addWidget(dlab)
@@ -274,7 +274,7 @@ def build_twin_panel(app):
         "不勾选：模型会按「衣橱 / 场景描述」重新生成背景。")
     app.twin_keep_bg.setStyleSheet(
         f"QCheckBox{{color:{THEME['text']};font-size:13px;spacing:6px;}}"
-        f"QCheckBox::indicator{{width:16px;height:16px;border-radius:4px;"
+        f"QCheckBox::indicator{{width:16px;height:16px;border-radius:6px;"
         f"border:1px solid {THEME['border']};background:{THEME['card']};}}"
         f"QCheckBox::indicator:checked{{background:{THEME['accent']};"
         f"border:1px solid {THEME['accent']};}}")
@@ -286,11 +286,33 @@ def build_twin_panel(app):
     gen_btn.setStyleSheet(_btn_accent_style())
     gen_btn.clicked.connect(lambda: _twin_generate(app))
     opt.addWidget(gen_btn)
+    app.twin_gen_btn = gen_btn  # v4.186.0（P1-8）：运行期可由状态回调禁用/恢复
+
+    # v4.186.0（P1-8）：停止按钮。原实现 TwinGenThread.cancel() 是死代码（零调用），
+    # 长任务（多段×分钟级）没有停止入口，用户只能烧额度等自然结束。
+    stop_btn = QPushButton("⏹ 停止")
+    stop_btn.setFixedHeight(36)
+    stop_btn.setCursor(Qt.PointingHandCursor)
+    stop_btn.setEnabled(False)  # 仅生成中可用
+    stop_btn.setToolTip(
+        "停止本次生成：已完成的段保留（断点续跑可接着补），\n"
+        "正在生成的一段会在几秒内中断轮询（不再烧额度）。")
+    stop_btn.setStyleSheet(
+        "QPushButton{{background:{bg};color:{fg};border:1px solid {bd};"
+        "border-radius:8px;padding:0 16px;font-size:13px;}}"
+        "QPushButton:hover{{background:{hov};}}"
+        "QPushButton:disabled{{color:{dis};border:1px solid {bd2};}}".format(
+            bg=THEME["danger_bg2"], fg=THEME["danger_text_dark"],
+            bd=THEME["danger_border"], hov=THEME["danger_hover_bg"],
+            dis=THEME["faint"], bd2=THEME["border"]))
+    stop_btn.clicked.connect(lambda: _twin_stop(app))
+    opt.addWidget(stop_btn)
+    app.twin_stop_btn = stop_btn
     lay.addLayout(opt)
 
     # ---------------- 增强选项行 ----------------
     opt2 = QHBoxLayout()
-    opt2.setSpacing(14)
+    opt2.setSpacing(12)
 
     app.twin_ai_mark = QCheckBox("🏷 烧录 AI 标识")
     app.twin_ai_mark.setChecked(True)
@@ -349,33 +371,32 @@ def build_twin_panel(app):
 
 
 # ---------------- 样式小工具 ----------------
+# v4.182.0 收编：样式函数改为 theme_qss 中心层兼容壳（旧名保留，调用点零改动）。
 def _btn_style():
-    return (f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
-            f"border:1px solid {THEME['border']};border-radius:8px;padding:0 14px;font-size:13px;}}"
-            f"QPushButton:hover{{background:{THEME['blue_hover']};}}")
+    from theme_qss import btn_outline
+    return btn_outline()
 
 
 def _btn_accent_style():
-    return (f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
-            f"border-radius:8px;padding:0 18px;font-size:14px;font-weight:500;}}"
-            f"QPushButton:hover{{background:{THEME['accent_hover']};}}")
+    # 强调按钮 14px（分场景归档决策）
+    from theme_qss import btn_primary, F, W
+    return btn_primary(font_size=F["input"], weight=W["medium"])
 
 
 def _edit_style():
-    return (f"QTextEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:10px;padding:10px 12px;font-size:13px;color:{THEME['text']};}}"
-            f"QTextEdit:focus{{border:1px solid {THEME['accent']};}}")
+    from theme_qss import edit_style
+    return edit_style()
 
 
 def _combo_style():
-    return (f"QComboBox{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:8px;padding:0 10px;font-size:13px;color:{THEME['text']};}}"
-            f"QComboBox::drop-down{{border:none;}}")
+    from theme_qss import combo_style
+    return combo_style()
 
 
 def _chk_style():
+    # 数字人版复选框带圆角指示器（比 theme_qss.chk_style 视觉多态），保留本地实现
     return (f"QCheckBox{{color:{THEME['text']};font-size:13px;spacing:6px;}}"
-            f"QCheckBox::indicator{{width:16px;height:16px;border-radius:4px;"
+            f"QCheckBox::indicator{{width:16px;height:16px;border-radius:6px;"
             f"border:1px solid {THEME['border']};background:{THEME['card']};}}"
             f"QCheckBox::indicator:checked{{background:{THEME['accent']};"
             f"border:1px solid {THEME['accent']};}}")
@@ -987,12 +1008,22 @@ class TwinGenThread(QThread):
         self.ref_mode = ref_mode                  # True=reference 模式（背景锁定 + 可并发）
         self.workers = max(1, int(workers or 1))  # 并发路数（ref_mode 下才生效）
         self._cancel = False
+        # v4.186.0（P1-8）：内核级取消令牌。原实现 cancel() 只置 _cancel 标志，
+        # 只能在「段与段之间」生效——正在生成的一段（Agnes 轮询+下载，分钟级）
+        # 完全无法中断，用户只能烧着额度等超时。token 传入 tool_video_gen 后
+        # 内核轮询/下载循环会实时检查并抛 CancelledError。
+        from cancel_token import CancellationToken
+        self._ct = CancellationToken(name="twin_gen")
         self.qc_notes = []         # 每段质检诊断，供 UI 展示
         self.failed_segs = []      # [(段号, 原因)]：成片缺段时**必须**让 UI 说出来
         self.reused = 0            # 本轮复用的段数（供 UI 汇报"省了几段"）
 
     def cancel(self):
         self._cancel = True
+        try:
+            self._ct.cancel(reason="user_stop", stage="twin_gen")
+        except Exception:
+            pass
 
     def _sleep(self, sec):
         """可取消的等待（重试退避用）。返回 True 表示等待期间被取消。"""
@@ -1260,11 +1291,20 @@ class TwinGenThread(QThread):
                 return last_ok, last_note
             # images 非空 → 内核走 reference（每段锚定同一张参考图，背景/形象一致）；
             # 此时 first/last_frame 必须为 None —— 三模式互斥，内核优先 images。
-            res = tools_mod.tool_video_gen(
-                self.cfg, self.app_dir, prompt, sec, None,
-                resolution=self.resolution,
-                images=images,
-                first_frame=first_frame, last_frame=last_frame, dialogue=None)
+            # v4.186.0（P1-8）：传入取消令牌，轮询/下载循环可被实时中断。
+            try:
+                res = tools_mod.tool_video_gen(
+                    self.cfg, self.app_dir, prompt, sec, None,
+                    resolution=self.resolution,
+                    images=images,
+                    first_frame=first_frame, last_frame=last_frame, dialogue=None,
+                    cancel_token=self._ct)
+            except Exception as _e:
+                # 取消（CancelledError）→ 优雅停：已完成段保留，不报「异常」吓人
+                if self._cancel or type(_e).__name__ == "CancelledError":
+                    self.log.emit(f"  [第{i+1}段] ⏹ 已停止（用户请求），已完成段保留")
+                    return last_ok, last_note
+                raise
             if isinstance(res, str):
                 gen_try += 1
                 if gen_try > self.max_gen_retry:
@@ -1368,9 +1408,35 @@ def _twin_generate(app):
         lambda a, b: app.twin_status.setText(f"已完成 {a}/{b} 段…"))
     app.twin_thread.done.connect(lambda r: _twin_on_result(app, r))
     app.twin_thread.start()
+    # v4.186.0（P1-8）：生成中点亮停止按钮
+    _sb = getattr(app, "twin_stop_btn", None)
+    if _sb is not None:
+        _sb.setEnabled(True)
+
+
+def _twin_stop(app):
+    """v4.186.0（P1-8）：停止当前生成任务。
+
+    TwinGenThread.cancel() 此前是死代码（零调用）。现在：
+    · _cancel 标志 → 段与段之间生效；
+    · CancellationToken → 内核轮询/下载循环实时中断（正在生成的一段几秒内停）。
+    """
+    _th = getattr(app, "twin_thread", None)
+    if _th is None or not _th.isRunning():
+        return
+    _th.cancel()
+    app.twin_status.setText("⏹ 正在停止：已完成段保留（断点续跑可接着补），"
+                            "正在生成的一段将在几秒内中断…")
+    _sb = getattr(app, "twin_stop_btn", None)
+    if _sb is not None:
+        _sb.setEnabled(False)
 
 
 def _twin_on_result(app, res):
+    # v4.186.0（P1-8）：任务结束（含被停止）后复位停止按钮
+    _sb = getattr(app, "twin_stop_btn", None)
+    if _sb is not None:
+        _sb.setEnabled(False)
     if isinstance(res, str):
         # 字符串可能是成片绝对路径，也可能是错误文本
         if os.path.isfile(res):

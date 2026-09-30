@@ -17,7 +17,7 @@ import hashlib
 import logging
 from dataclasses import dataclass
 
-from risk import RiskClass, classify, tier_of, ALWAYS_CONFIRM
+from risk import RiskClass, classify, tier_of, ALWAYS_CONFIRM, command_danger_level
 
 log = logging.getLogger(__name__)
 
@@ -143,6 +143,13 @@ class PermissionEngine:
         risk = classify(name)
         tier = tier_of(name)  # v4.42 三级语义（auto/semi/manual）
 
+        # P1（v4.186.0 审查 P1-1）：args 归一化。模型可能发合法 JSON 但非对象
+        # （arguments: "[1,2]" / 字符串），json.loads 成功返回 list → 下面
+        # (args or {}).get 触发 AttributeError，无 try 保护会逃出 run() 主循环，
+        # done 不发射、任务静默中断。非 dict 一律按"无参数"走后续自然
+        # 拒绝/确认路径（fail-closed），此处绝不因参数畸形而放行或崩溃。
+        _a = args if isinstance(args, dict) else {}
+
         # 1) 模式优先
         if self.mode == "discuss":
             return Decision(False, False, "仅讨论模式：不执行任何操作", "mode:discuss")
@@ -161,7 +168,7 @@ class PermissionEngine:
             return Decision(False, False,
                             f"对外操作需白名单授权，'{name}' 未授权已阻止", "external_block")
         if name == "write_file":
-            path = (args or {}).get("path", "")
+            path = _a.get("path", "")
             if path and not self.in_scope(path):
                 return Decision(False, False,
                                  f"路径超出允许范围（{path}），已阻止写入", "scope")
@@ -173,6 +180,24 @@ class PermissionEngine:
                             f"'{name}' 属必须人工确认的操作（安装/创建技能、删数据），"
                             f"不受执行模式与会话信任影响",
                             "always_confirm")
+
+        # 2.55) 高危命令护栏（①-B）：run_command / run_python 的参数若含高危操作
+        #        （删文件 / 卸载 / Git 不可逆 / 账户权限 / 服务网络 / 注册表写 /
+        #         下载即执行 / 杀进程 …），强制人工确认，且【不被会话信任 / auto 模式绕过】——
+        #        单次「信任本会话」不该豁免一次 `rm -rf` / `git reset --hard` 的知情确认。
+        #        与 ③-A 系统级毁灭硬拦截互补：③-A 拦「不可逆系统操作」(deny)，
+        #        本层拦「高危但可逆 / 有歧义」(需确认)。置于会话信任之前，故信任无法短路它。
+        if name in ("run_command", "run_python"):
+            _arg = _a.get("command") or _a.get("code") or ""
+            if not isinstance(_arg, str):
+                # 参数值本身非字符串（如 {"command": ["a","b"]}）：转成文本过低危
+                # 匹配，绝不让 list 流进 command_danger_level 的 .lower()。
+                _arg = str(_arg)
+            _dlabel = command_danger_level(_arg)
+            if _dlabel:
+                return Decision(True, True,
+                                f"'{name}' 含高危操作（{_dlabel}），需你确认后执行",
+                                "high_risk_exec")
 
         # 2.6) 来源闸（v4.169.0 P0-3）：本轮用户消息没有执行意图（纯提问/讨论/评价）时，
         #      模型自行发起的**非只读**操作一律要确认。

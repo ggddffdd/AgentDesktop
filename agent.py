@@ -23,6 +23,7 @@ from step_tracer import StepTracer  # v4.59 步级追踪
 from task_graph import TaskGraph      # v4.60 任务图引擎
 from agent_node import AgentNode      # v4.60 多Agent节点
 from token_compressor import compress # v4.60 Token 压缩
+from risk import command_danger_level  # ①-B 高危命令护栏：确认文案标记
 
 # v4.168.0：顶层 import 统一判据（与 UI / 模型调用层同源）。
 # 显式声明而非只在函数内 import —— 这条判据漏打包会导致评价句误触生成工具。
@@ -302,11 +303,18 @@ class AgentWorker(QThread):
 
     @staticmethod
     def _safe_args(tc):
-        """从 tool_call 里稳妥解析 arguments JSON。"""
+        """从 tool_call 里稳妥解析 arguments JSON。
+
+        P1（v4.186.0 审查 P1-1）：json.loads 对合法 JSON 数组/字符串/数字
+        （如 arguments: "[1,2]"）会成功返回非 dict —— 原样返回会让下游
+        (args or {}).get 崩 AttributeError 并逃出 run() 主循环。非 dict
+        一律归一为空 dict（fail-closed：按缺参数走自然拒绝/确认路径）。
+        """
         try:
-            return json.loads(tc.get("function", {}).get("arguments", "{}") or "{}")
+            _parsed = json.loads(tc.get("function", {}).get("arguments", "{}") or "{}")
         except Exception:
             return {}
+        return _parsed if isinstance(_parsed, dict) else {}
 
     # 硬化提示：模型只描述计划却不调工具时，强制它真正执行
     _AGENT_NUDGE = (
@@ -338,8 +346,8 @@ class AgentWorker(QThread):
     _SELF_CHECK_INSTRUCTION = (
         "以上是系统的真实能力清单（sys_info 返回）或刚刚真实执行的工具结果（web_search）。"
         "请只准基于以上真实信息回复，禁止从你自己的知识添加任何新功能。"
-        "特别注意：Obsidian Vault 未配置，RAG 用的是本地 rag_data 目录，绝不可声称"
-        "『Obsidian 语义检索』；Webhook 未开启也不可声称可用。"
+        "特别注意：Obsidian 是否可用以**刚才 sys_info 的真实返回**为准，绝不可声称"
+        "『Obsidian 语义检索』等 sys_info 未确认的能力；Webhook 未开启也不可声称可用。"
         "若刚才调用了 web_search，请基于真实返回结果说明搜索功能是否正常（有无结果、是否报错），"
         "不要编造。无论何种情况，都【禁止生成任何 PPT、Word 文档、演示文稿、视频或图片等"
         "交付物】——用户只是想了解/验证工具状态，用简洁文字报告即可。"
@@ -347,19 +355,34 @@ class AgentWorker(QThread):
     )
 
     def _looks_like_promise(self, text):
-        """判断模型返回是否像『承诺执行却不行动』（有承诺词且有动作词）。
-        v4.58 扩展：补上「让我/帮你/查查/看看/检查」等常见空承诺模式。
+        """判断模型返回是否像『承诺执行却不行动』——收紧版（v4.186 接线兜底用）。
+
+        命中需三条**同时**满足，避免误伤正常最终回答（长周报/代码块/带路径交付）：
+          ① 短文本（≤400 字；真成果通常更长）；
+          ② 不含代码块 / URL / 路径 / 『已保存·已生成·已写入·已完成』等实质交付标记；
+          ③ 同时含「承诺短语」与「动作词」。
+        已刻意剔除裸『看看/查查/用/下一步/帮你/让我/确认』——它们会把正常回复
+        （如周报里『下一步建议…』或『我确认过了，没问题』）误判成空转
+        （那是 local-judge-false-positive 踩过的坑，不在防空转上重犯）。
         """
-        t = (text or "").lower()
-        promise = ("我来", "现在开始", "下一步", "马上", "即将", "准备去", "打算",
-                   "这就去", "去搜索", "去查", "去写", "去生成", "去执行", "先帮你",
-                   "让我", "帮你", "我先", "这就查", "这就看", "让我查", "让我看",
-                   "我查查", "我看看", "查查", "看看",
-                   "用Python", "用", "改用", "换成")
-        action = ("搜索", "查", "写", "做", "执行", "生成", "分析", "打开", "运行",
-                  "抓取", "下载", "创建", "整理", "发", "导出", "检查", "查看",
-                  "看看", "查查", "检索", "读取", "调用", "跑")
-        return any(p in t for p in promise) and any(a in t for a in action)
+        t = (text or "").strip()
+        if not t or len(t) > 400:                       # ① 空头承诺通常很短
+            return False
+        _low = t.lower()
+        if any(m in _low for m in ("```", "http://", "https://", "~/", ":\\",
+                                   "已保存", "已生成", "已写入", "已落盘", "已导出",
+                                   "已完成", "已执行", "已修复")):
+            return False                                 # ② 已给实质交付物 → 不是空转
+        promise = ("我来", "我先", "我这就", "我马上", "现在开始", "马上开始",
+                   "这就去", "去搜索", "去查", "去写", "去执行", "去生成", "去排查",
+                   "开始自检", "开始检查", "开始排查", "开始诊断", "开始扫描",
+                   "继续自检", "继续检查", "继续排查", "继续诊断", "继续扫描",
+                   "先检查", "先排查", "先诊断", "先自检", "先扫一遍", "先查一下",
+                   "我检查", "我排查", "我诊断", "我扫描", "我核验", "我复核")
+        action = ("搜索", "排查", "检查", "诊断", "巡检", "自检", "核验", "扫描",
+                  "复核", "抓取", "写入", "写文件", "执行", "读取", "调用工具",
+                  "跑一下", "跑个")
+        return any(p in t for p in promise) and any(a in t for a in action)  # ③ 承诺 ∧ 动作
 
     def _looks_like_question(self, text):
         """v4.61：判断模型输出是否像「向用户追问」而非推进任务。
@@ -462,6 +485,11 @@ class AgentWorker(QThread):
         # v4.60：催促类——用户催着动但没指定具体动作
         "继续", "动起来", "动", "干活", "动手", "开始", "快点", "麻利", "赶紧",
         "行动", "快", "加速",
+        # v4.186：诊断/检视类动词——自检/排查/巡检/盘点等系统检查请求。
+        # 缺这些会让 needs_action=False，连带关掉 step-1 force_required 与 nudge
+        # 两道防线（模型"只说不做"空转）。刻意不含裸"检查/看看"（太泛，会把
+        # 「检查这句话有没有语病」也推去调工具）。
+        "自检", "自查", "排查", "排错", "诊断", "巡检", "体检", "盘点", "核验", "扫描",
     )
 
     # v4.80：意图→工具路由——能明确推断要调哪个工具时直接指定 tool_choice。
@@ -754,6 +782,36 @@ class AgentWorker(QThread):
                     return True
         return False
 
+    def _ref_existing_artifact(self, text):
+        """引用/投诉【已生成产物】：『你生成的视频』『我刚做的图』『刚才生成好的海报』
+        这类『生成动词 + 的（attributive）』紧贴媒体宾语，是【带『的』的相对从句】，
+        指向【已存在的产物】而非下达新生成指令。
+
+        必须前置一票否决：否则 _gen_intent 会把『你生成』里的『生成』动词 + 『视频』
+        宾语（30 字窗内共现）判成新指令 → 路由 video_gen/image_gen → 向思考模型注入
+        『必须生成视频』伪指令，而用户其实只是来投诉/质疑的（危害远大于漏报）。
+
+        判定信号：【生成动词紧随『的』】（生+的 / 做+的 / 画+的 / 生成好+的 …），
+        真实祈使指令（生成个/做个/画张）动词后接量词或宾语、不含『的』，不会命中，
+        故不误伤真指令（已对 『生成个视频』『做个短视频』『画一张海报』『代码有bug帮我
+        生成个视频』等全量回归用例验证）。极少数『帮我重新生成你之前生成的视频』这类
+        含复述引用的真实指令会被安全侧漏判（模型仍可自行决定生成），按项目铁律
+        『安全侧漏报可接受』处理。
+        """
+        if not text:
+            return False
+        objs = self._VIDEO_OBJ + self._IMAGE_OBJ
+        for obj in objs:
+            idx = text.find(obj)
+            while idx != -1:
+                pre = text[max(0, idx - 15):idx]
+                # attributive 标记：生成动词（可选 completive 好/完/出来）直接接『的』，
+                # 且『的』后紧跟媒体宾语 → 引用已生成产物，非指令。
+                if re.search(r"(生成|做|画|拍|剪|整|弄|搞|来|产出|制作|设计)(出来|好|完)?的", pre):
+                    return True
+                idx = text.find(obj, idx + len(obj))
+        return False
+
     # ---------- v4.168.1：浏览器路由的两个新判据 ----------
     def _prog_fetch_intent(self, text):
         """是否「程序化抓取」意图（RSS / requests / API / 抓数据落盘…）。
@@ -831,6 +889,11 @@ class AgentWorker(QThread):
         # 1.5) 位置判据的引用/分析语境（v4.159.3 / P2）：元话语动词辖制生成短语（如『分析下
         #      生成视频』）→ 生成短语是被分析的对象而非指令，前置拦截，避免强制生成。
         if self._ref_by_position(text):
+            return None
+        # 1.6) 引用/投诉已生成产物一票否决（①-A 修复）：『你生成的视频有bug』『我做的图太丑』
+        #      这类『生成动词+的』attributive 紧贴媒体宾语，指向已存在产物而非新指令，
+        #      前置拦截避免被 _gen_intent 误路由到生成工具。详见 _ref_existing_artifact。
+        if self._ref_existing_artifact(text):
             return None
         # 2) 当前消息已含生成意图（v4.159 组合式判据） → 优先路由，不容「分析/解释」等
         #    讨论豁免词压制真指令（v4.159.1 修复）。「聊聊…做视频的行为」类句式因『视频的』
@@ -1236,19 +1299,21 @@ class AgentWorker(QThread):
                 )
             except Exception as e:
                 log.error("Agent 调用失败: %s", e)
+                # v4.184.0：把 API 真实报文（若存在）一并写进结构化日志，
+                # 否则 log_query 只能看到「HTTP Error 400」、复现不了根因。
+                _api_b = getattr(e, "_api_body", "") or ""
                 # v4.162：把调用失败写入结构化日志库（agent_log.db），否则 log_query 查不到、
                 # 出事后无法复盘（此前只走了 Python logging，不落 agent_log.db）。
                 try:
                     from structured_logger import get_logger
                     get_logger().error(f"Agent 调用失败: {e}", module="agent",
-                                       extra={"error": str(e)})
+                                       extra={"error": str(e),
+                                              "api_body": _api_b[:400]})
                 except Exception:
                     pass
                 self.tool_log.emit({"name": "错误", "args": "", "result": str(e)})
                 # v4.108 H-04：失败要让用户在气泡里看得见，不再静默结束装"完成"。
-                # v4.175.0：把 API 真实报文一并显示 —— 只说「HTTP Error 400」
-                # 等于没说（实测那张坏图的事故，真正原因只在 debug.log 里）。
-                _api_b = getattr(e, "_api_body", "") or ""
+                # v4.175.0：把 API 真实报文一并显示到气泡（与结构化日志同源）。
                 _notice = f"\n\n⚠️ 模型调用失败：{e}"
                 if _api_b:
                     _notice += f"\n\n接口原文：{_api_b[:400]}"
@@ -1428,6 +1493,21 @@ class AgentWorker(QThread):
                         self.messages.append({"role": "user", "content": self._AGENT_NUDGE,
                                               "_internal": True})
                     continue
+                # v4.186：承诺兜底——接上此前是死代码的 _looks_like_promise。
+                # 即使意图判定为「无需执行」（_needs_action=False，典型是自检/诊断类请求
+                # 动词漏词关掉了上面两个门），只要模型只回「我来/继续检查…」这类承诺却
+                # 不调工具，也兜底强推一次。_nudged 一轮一次闸 + _nudge_count 上限防死循环。
+                if (content and not self._nudged and not self._any_tool_executed
+                        and self._nudge_count < MAX_FORCE_RETRIES
+                        and self._looks_like_promise(content)):
+                    self._nudged = True
+                    self._nudge_count += 1
+                    self._force_next = True
+                    self._emit_status("⚠ 检测到空头承诺未动手，强制真正执行…")
+                    _tracer.trace(step, "nudge", reason="承诺未行动(兜底)", idle_steps=self._idle_steps)
+                    self.messages.append({"role": "user", "content": self._AGENT_NUDGE,
+                                          "_internal": True})
+                    continue
                 if self._nudge_count >= MAX_FORCE_RETRIES:
                     self.stream_commit.emit("⚠️ 已多次尝试但 Agent 始终未调用工具。请明确指示具体操作（如：搜索XX、读取文件XX、运行Python代码XX）。")
                 break
@@ -1515,6 +1595,18 @@ class AgentWorker(QThread):
                                 self.messages.append({"role": "user", "content": self._AGENT_NUDGE,
                                               "_internal": True})
                             continue
+                        # v4.186：续跑镜像——承诺兜底（同主分支）。接上 _looks_like_promise，
+                        # 即使 needs_action=False 也把「承诺却没行动」兜底强推一次。
+                        if (content and not self._nudged and not self._any_tool_executed
+                                and self._nudge_count < MAX_FORCE_RETRIES
+                                and self._looks_like_promise(content)):
+                            self._nudged = True
+                            self._nudge_count += 1
+                            self._force_next = True
+                            self._emit_status("⚠ 续跑中检测到空头承诺未动手，强制真正执行…")
+                            self.messages.append({"role": "user", "content": self._AGENT_NUDGE,
+                                                  "_internal": True})
+                            continue
                         break
                 else:
                     # 续跑轮也耗尽：递归再续一轮（受 _resume_budget 限制）
@@ -1590,6 +1682,11 @@ class AgentWorker(QThread):
                 args = json.loads(fn.get("arguments", "{}") or "{}")
             except Exception:
                 args = {}
+            if not isinstance(args, dict):
+                # P1（v4.186.0 审查 P1-1）：合法 JSON 非对象（"[1,2]"）解析成功
+                # 但类型是 list/str，原样直通 decide() 会 AttributeError 逃出
+                # run()（done 不发射、任务静默断）。归一为空 dict 走 fail-closed。
+                args = {}
             _sig = (name, json.dumps(args, sort_keys=True, ensure_ascii=False))
             if _sig in _seen_sigs:
                 log.info("批内重复调用已去重: %s", name)
@@ -1645,7 +1742,7 @@ class AgentWorker(QThread):
                 # 不能被"本次会话已全部信任"短路掉。
                 title, detail = self._confirm_text(name, args)
                 ok = self._maybe_confirm(title, detail,
-                                         force=(dec.rule == "always_confirm"))
+                                         force=(dec.rule in ("always_confirm", "high_risk_exec")))
                 if not ok:
                     result_str = "用户取消了该操作"
                     deliverables = []
@@ -1656,14 +1753,18 @@ class AgentWorker(QThread):
                     # 确认过的安全参数给后续危险参数"背书"。
                     engine.trust_tool(name, args)
                     try:
-                        result_str, deliverables, schedule = tools.exec_tool(mw.cfg, APP_DIR, name, args)
+                        result_str, deliverables, schedule = tools.exec_tool(
+                            mw.cfg, APP_DIR, name, args,
+                            should_stop=lambda: self._stop_requested)
                     except Exception as _te:
                         result_str = f"工具执行崩溃：{_te}"
                         deliverables, schedule = [], None
             else:
                 # 允许且无需确认（只读 / 半自主 / 自动模式 / 白名单 / 会话信任）
                 try:
-                    result_str, deliverables, schedule = tools.exec_tool(mw.cfg, APP_DIR, name, args)
+                    result_str, deliverables, schedule = tools.exec_tool(
+                        mw.cfg, APP_DIR, name, args,
+                        should_stop=lambda: self._stop_requested)
                 except Exception as _te:
                     result_str = f"工具执行崩溃：{_te}"
                     deliverables, schedule = [], None
@@ -1692,7 +1793,12 @@ class AgentWorker(QThread):
                 f"路径：{args.get('path', '')}\n"
                 f"内容长度：{len(args.get('content', ''))} 字符")
         if name == "run_python":
-            return "确认执行 Python 代码", args.get("code", "")[:500]
+            code = args.get("code", "")
+            if command_danger_level(code):
+                return "⚠️ 高危操作：确认执行 Python 代码", (
+                    "检测到高危操作（删除/卸载/账户权限/网络/注册表/下载即执行/杀进程等），"
+                    "请确认代码来源可信后再执行：\n\n" + code[:500])
+            return "确认执行 Python 代码", code[:500]
         if name in ("browser_open", "browser_click", "browser_fill", "browser_read"):
             bdetail = f"动作：{name}\n网址：{args.get('url', '')}\n"
             if args.get("selector"):
@@ -1720,7 +1826,12 @@ class AgentWorker(QThread):
             return "确认数据库操作", (
                 f"动作：{name}\n{json.dumps(args, ensure_ascii=False)[:300]}")
         if name in ("run_command",):
-            return "确认执行命令", args.get("command", "")
+            cmd = args.get("command", "")
+            if command_danger_level(cmd):
+                return "⚠️ 高危操作：确认执行命令", (
+                    "检测到高危操作（删除/卸载/Git不可逆/账户权限/服务网络/注册表写/"
+                    "下载即执行/杀进程等），请确认命令来源可信后再执行：\n\n" + cmd)
+            return "确认执行命令", cmd
         if (name.startswith("mouse_") or name.startswith("keyboard_")
                 or name.startswith("app_")
                 or name in ("window_focus", "process_kill", "process_start")):
@@ -1766,9 +1877,11 @@ class AgentWorker(QThread):
                 # 审计修复 E1：线程池工作线程是全新线程，不继承 thread-local——
                 # 在任务函数内先注入默认 sid，并发执行的 context 工具同样命中当前会话。
                 _ctx_sid = self._ctx_sid
-                def _exec_with_ctx(_name=name, _args=args, _sid=_ctx_sid):
+                def _exec_with_ctx(_name=name, _args=args, _sid=_ctx_sid,
+                                  _stop=lambda: self._stop_requested):
                     context_manager.set_default_sid(_sid)
-                    return tools.exec_tool(mw.cfg, APP_DIR, _name, _args)
+                    return tools.exec_tool(mw.cfg, APP_DIR, _name, _args,
+                                           should_stop=_stop)
                 futures[pool.submit(_exec_with_ctx)] = (tc, t0, idx)
 
             for future in as_completed(futures):
@@ -1846,7 +1959,7 @@ class AgentWorker(QThread):
             if dec.needs_user:
                 title, detail = self._confirm_text("run_workflow", args or {})
                 if not self._maybe_confirm(title, detail,
-                                           force=(dec.rule == "always_confirm")):
+                                           force=(dec.rule in ("always_confirm", "high_risk_exec"))):
                     return "（你取消了子代理工作流）"
                 try:
                     engine.trust_tool("run_workflow")

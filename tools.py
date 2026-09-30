@@ -175,8 +175,19 @@ def _register_extension_tools():
             for _name, _handler in _table.items():
                 _danger = _name.startswith("browser_") or _name == "skill_install"
                 def _wrap(h=_handler):
-                    def _w(cfg, app_dir, args, progress=None):
-                        return h(cfg, app_dir, args)
+                    import inspect as _inspect
+                    _hparams = _inspect.signature(h).parameters
+                    def _w(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+                        # ②-B.2：把进度/停止信号透传给声明了对应参数的底层 handler
+                        # （仅 software_control 的 tool_app_* 需要；其余扩展 handler 不接收，避免 TypeError）
+                        _kw = {"cfg": cfg, "app_dir": app_dir, "args": args}
+                        if "progress" in _hparams:
+                            _kw["progress"] = progress
+                        if "stop_event" in _hparams:
+                            _kw["stop_event"] = stop_event
+                        if "should_stop" in _hparams:
+                            _kw["should_stop"] = should_stop
+                        return h(**_kw)
                     return _w
                 TOOL_REGISTRY[_name] = {"handler": _wrap(), "dangerous": _danger}
     except Exception as _e:
@@ -471,12 +482,16 @@ def _h_write_file(cfg, app_dir, args, progress=None):
     return (r, [], None)
 
 @register_tool("run_command", dangerous=True)
-def _h_run_command(cfg, app_dir, args, progress=None):
-    return (tool_run_command(app_dir, args.get("command", "")), [], None)
+def _h_run_command(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    return (tool_run_command(app_dir, args.get("command", ""),
+                             cwd=args.get("cwd"), env=args.get("env"),
+                             progress=progress, stop_event=stop_event,
+                             should_stop=should_stop), [], None)
 
 @register_tool("run_python", dangerous=True)
-def _h_run_python(cfg, app_dir, args, progress=None):
-    r, d = tool_run_python(app_dir, args.get("code", ""), cfg=cfg)
+def _h_run_python(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    r, d = tool_run_python(app_dir, args.get("code", ""), cfg=cfg,
+                           progress=progress, stop_event=stop_event, should_stop=should_stop)
     return (r, d, None)
 
 def _asset_register_deliverable(res, prompt, kind):
@@ -797,7 +812,8 @@ def _trace_fetch(name, args, result, ok=None):
         log.warning("抓取留痕失败: %s", e)
 
 
-def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None):
+def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
+              stop_event=None, should_stop=None):
     """统一工具路由，返回 (result_str, deliverables, schedule)。
 
     result_str: 工具执行结果文本
@@ -827,7 +843,15 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None):
     if _entry:
         try:
             get_logger().info(f"执行工具: {name}", module="tools", extra={"tool": name})
-            _r = _entry["handler"](cfg, app_dir, args, progress)
+            # ②-A.3：仅向声明了 stop_event/should_stop 的 handler 透传（run_command/run_python），
+            # 其余 handler 签名不含这两个参数，避免 TypeError。
+            _hk = {"progress": progress}
+            _sig = inspect.signature(_entry["handler"])
+            if "stop_event" in _sig.parameters:
+                _hk["stop_event"] = stop_event
+            if "should_stop" in _sig.parameters:
+                _hk["should_stop"] = should_stop
+            _r = _entry["handler"](cfg, app_dir, args, **_hk)
             if isinstance(_r, tuple) and len(_r) == 3:
                 _trace_fetch(name, args, _r[0])
                 return _r
@@ -1507,6 +1531,68 @@ def tool_write_file(app_dir, path, content):
         return f"写入失败：{e}"
 
 
+# 危险命令预检（纵深防御）。
+# 与 agent.py 的 `_confirm_text` 确认闸门互补：确认层负责「用户知情」，
+# 本层负责「系统级毁灭性操作硬拦截」——即便确认被绕过或模型自作主张，
+# 格式化磁盘 / 删系统盘 / 关机 / 动引导 等仍被底层闸住（授权铁律「默认最保守」）。
+# 仅针对系统级毁灭性模式，不拦工作区内的正常删改（精准匹配系统盘 / 根 / 磁盘格式化）。
+_DANGEROUS_CMD_PATTERNS = (
+    (r"\bformat\s+[a-z]:", "格式化磁盘 (format X:)"),
+    (r"\bshutdown\b", "关机/重启 (shutdown)"),
+    (r"stop-computer|restart-computer", "关机/重启 (PowerShell)"),
+    (r"\brm\s+-rf\s+(/|[a-z]:\\|/[a-z])", "递归删除根/系统盘 (rm -rf / 或 X:\\)"),
+    (r"\bdel\s+(/[fsq]+\s+)*[a-z]:\\", "删除系统盘文件 (del X:\\)"),
+    # 顺序无关：drive 与 -recurse 哪个在前都能命中（lookahead 双向校验）。
+    (r"remove-item\s+(?=.*[a-z]:\\).*-recurse", "递归删除磁盘 (PowerShell Remove-Item -Recurse X:)"),
+    (r"\brm\s+[a-z]:\\?\s.*-recurse", "递归删除磁盘 (PowerShell rm 别名 -Recurse X:)"),
+    (r"\bdiskpart\b", "磁盘分区操作 (diskpart)"),
+    (r"\breg\s+delete\s+(hklm|hkcr)", "删除注册表键 (reg delete HKLM/HKCR)"),
+    (r"\btakeown\s+/f\s+[a-z]:\\windows", "夺取系统目录所有权 (takeown)"),
+    (r"\bicacls\s+[a-z]:\\.*/grant", "篡改系统目录权限 (icacls /grant)"),
+    (r"\bbcdedit\b|\bbootrec\b", "修改引导记录 (bcdedit/bootrec)"),
+    (r"\bmkfs\b", "创建文件系统 (mkfs)"),
+)
+
+
+def _dangerous_command_check(command):
+    """返回 None 表示安全；返回拒绝字符串表示命中系统级危险模式。
+
+    仅拦截明确毁灭性的系统操作，正常开发命令（删工作区文件、重启服务、
+    跑脚本）不会被误伤。命中后由调用方直接 return，绝不执行。
+    """
+    c = (command or "").lower()
+    for pat, label in _DANGEROUS_CMD_PATTERNS:
+        if re.search(pat, c):
+            return (
+                "⛔ 命令已被底层安全闸拦截：检测到系统级危险操作「" + label + "」。\n"
+                "命中片段：" + command.strip()[:200] + "\n"
+                "该操作可能破坏系统或致数据不可恢复。如需执行，请改用更精准的"
+                "路径与参数，或在确认对话框中明确授权后重试。"
+            )
+    return None
+
+
+# ③-B：PowerShell 在重定向输出时会把进度/错误等流序列化成 CLIXML
+# （以 `#< CLIXML` 开头的 <Objs>...</Objs> 块）。progress 类是噪声直接丢弃；
+# error 类则提取 <S>/<AV>/<T>/<ToString> 内可读文本，避免把原始 XML 丢给 LLM。
+# 注意 CLIXML 元素带序列化属性（如 <S S="Error">），正则须允许属性；
+# 文本里的 _x000D_/_x000A_ 是 XML 转义的 \r/\n，需还原。
+_CLIXML_BLOCK = re.compile(r"#<\s*CLIXML\s*<Objs[\s\S]*?</Objs>")
+_CLIXML_TEXT = re.compile(r"<(?:S|AV|T|ToString)(?:\s[^>]*)?>(.*?)</(?:S|AV|T|ToString)>", re.S)
+
+
+def _strip_clixml(text):
+    def _repl(m):
+        block = m.group(0)
+        if 'S="progress"' in block:
+            return ""  # 进度流噪声直接丢弃
+        parts = _CLIXML_TEXT.findall(block)
+        txt = " ".join(p.strip() for p in parts if p.strip())
+        txt = txt.replace("_x000D_", "\r").replace("_x000A_", "\n")
+        return txt
+    return _CLIXML_BLOCK.sub(_repl, text)
+
+
 def _kill_proc_tree(proc):
     """审计修复 E9：超时后杀掉整棵进程树。subprocess.run 的 timeout 只 kill
     直接子进程（powershell/sh），它拉起的 python/ffmpeg 等孙进程成孤儿，
@@ -1526,9 +1612,92 @@ def _kill_proc_tree(proc):
             pass
 
 
-def tool_run_command(app_dir, command):
+# ②-A.1 / ②-A.3：输出防御性截断上限 + 流式读取与停止支持
+_RAW_OUTPUT_HARD_LIMIT = 4 * 1024 * 1024  # 4MB 原始字节硬上限：防超大输出撑爆内存/整段塞进 LLM
+
+
+def _hard_truncate_decode(raw):
+    """对 stdout+stderr 合并原始字节做防御性截断解码。
+
+    返回 (text, truncated, approx_bytes)：
+    - 超过 _RAW_OUTPUT_HARD_LIMIT 时先按上限切字节再 decode（ignore 容错切到多字节中间），
+      truncated=True 并附原始字节数，避免一次性构造巨串；
+    - 否则按原逻辑 utf-8 → gbk 兜底 → ignore。
+    """
+    if not raw:
+        return "", False, 0
+    n = len(raw)
+    if n > _RAW_OUTPUT_HARD_LIMIT:
+        head = raw[:_RAW_OUTPUT_HARD_LIMIT]
+        try:
+            text = head.decode("utf-8")
+        except UnicodeDecodeError:
+            text = head.decode("utf-8", "ignore")
+        return text, True, n
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            text = raw.decode("gbk")
+        except Exception:
+            text = raw.decode("utf-8", "ignore")
+    return text, False, n
+
+
+def _stream_collect(proc, timeout, progress=None, should_stop=None, stop_event=None):
+    """流式读取子进程 stdout/stderr（实时经 progress 回显），支持停止信号。
+
+    返回 (stdout_bytes, stderr_bytes, outcome)，outcome ∈ {'done','timeout','stopped'}。
+    v4.186.0（②-A.3）：替代一次性 communicate，长任务可即时看到中间输出、且能被用户停止。
+    """
+    import threading
+    _so, _se = [], []
+
+    def _reader(src, sink):
+        try:
+            for line in iter(src.readline, b""):
+                sink.append(line)
+                if progress and callable(progress):
+                    try:
+                        progress(line.decode("utf-8", "ignore"))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    t_out = threading.Thread(target=_reader, args=(proc.stdout, _so), daemon=True)
+    t_err = threading.Thread(target=_reader, args=(proc.stderr, _se), daemon=True)
+    t_out.start()
+    t_err.start()
+    t0 = time.time()
+    try:
+        while True:
+            if proc.poll() is not None:
+                break
+            if should_stop and callable(should_stop) and should_stop():
+                _kill_proc_tree(proc)
+                return b"".join(_so), b"".join(_se), "stopped"
+            if stop_event and stop_event.is_set():
+                _kill_proc_tree(proc)
+                return b"".join(_so), b"".join(_se), "stopped"
+            if (time.time() - t0) > timeout:
+                _kill_proc_tree(proc)
+                return b"".join(_so), b"".join(_se), "timeout"
+            time.sleep(0.05)
+    finally:
+        t_out.join(timeout=5)
+        t_err.join(timeout=5)
+    return b"".join(_so), b"".join(_se), "done"
+
+
+def tool_run_command(app_dir, command, cwd=None, env=None, progress=None,
+                     stop_event=None, should_stop=None):
     if not command or not command.strip():
         return "未提供命令"
+    # 危险命令预检（纵深防御，与 agent 层确认闸门互补）
+    _deny = _dangerous_command_check(command)
+    if _deny:
+        return _deny
     # v4.164.0：命令的工作目录由 app_dir（= exe 目录 = dist = 分发源）改为 WORKSPACE_DIR
     # ——Agent 用相对路径写出的文件（output/notes/pages/multi_platform…）此前全堆进
     # dist，会被连带打包分发。资源类查找仍走 app_dir，不受影响。
@@ -1537,47 +1706,94 @@ def tool_run_command(app_dir, command):
         os.makedirs(_ws, exist_ok=True)
     except Exception:
         _ws = app_dir
+    # ②-A.2：自定义工作目录（要求真实存在的目录；否则回退默认工作区并给提示）
+    _run_cwd = _ws
+    _cwd_warn = ""
+    if cwd:
+        try:
+            if os.path.isdir(cwd):
+                _run_cwd = cwd
+            else:
+                _cwd_warn = f"（指定的 cwd 不存在，已回退到默认工作区 {_ws}）"
+        except Exception:
+            _cwd_warn = f"（指定的 cwd 无效，已回退到默认工作区 {_ws}）"
+    # ②-A.2：环境变量与当前进程环境合并（不全量替换，避免丢 PATH 等系统变量）
+    _run_env = dict(os.environ)
+    if env and isinstance(env, dict):
+        _run_env.update({str(k): str(v) for k, v in env.items()})
     try:
-        import platform
+        import platform, base64
         # v4.60：Windows 上强制走 PowerShell，避免 cmd.exe 不认识 Get-ChildItem 等命令
         if platform.system() == "Windows":
+            # ③-B 健壮性（v4.185.0）：
+            # 1) -EncodedCommand（UTF-16LE base64）取代 -Command，整条命令按字节传入，
+            #    彻底规避引号/管道/特殊字符在 PowerShell 解析器里被二次转义导致的命令变形；
+            # 2) 前缀强制 [Console]::OutputEncoding 为 UTF-8，使捕获到的字节恒为 UTF-8，
+            #    消除「中文 GBK 字节恰好是合法 UTF-8」造成的静默乱码歧义；
+            # 3) -NoProfile -NonInteractive 提速并避免配置/交互侧意外阻塞。
+            _ps_setup = (
+                "$ProgressPreference='SilentlyContinue';"
+                "$OutputEncoding=[System.Text.Encoding]::UTF8;"
+                "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+            )
+            _enc = base64.b64encode((_ps_setup + command).encode("utf-16-le")).decode("ascii")
             proc = subprocess.Popen(
-                ["powershell", "-Command", command],
-                cwd=_ws, stdout=subprocess.PIPE,
+                ["powershell", "-NoProfile", "-NonInteractive",
+                 "-ExecutionPolicy", "Bypass", "-EncodedCommand", _enc],
+                cwd=_run_cwd, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, creationflags=_NO_WINDOW,
+                env=_run_env,
             )
         else:
             # POSIX 维持 shell 既定语义（C1 只收敛 Windows 注入面）；
             # start_new_session 使子进程独立成组，超时可 killpg 杀全树。
             proc = subprocess.Popen(
-                command, shell=True, cwd=_ws,
+                command, shell=True, cwd=_run_cwd,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                start_new_session=True,
+                start_new_session=True, env=_run_env,
             )
     except Exception as e:
         return f"命令执行失败：{e}"
+    # ②-A.3：流式读取（实时回显 + 可中断），替代一次性 communicate
     try:
-        stdout, stderr = proc.communicate(timeout=60)
-    except subprocess.TimeoutExpired:
-        _kill_proc_tree(proc)
-        try:
-            stdout, stderr = proc.communicate(timeout=10)
-        except Exception:
-            stdout = stderr = b""
-        return "命令执行超时（>60s），已连同其子进程一并终止"
+        stdout, stderr, _outcome = _stream_collect(
+            proc, 60, progress=progress,
+            should_stop=should_stop, stop_event=stop_event)
     except Exception as e:
         return f"命令执行失败：{e}"
-    raw = (stdout or b"") + (stderr or b"")
-    try:
-        out = raw.decode("utf-8")
-    except UnicodeDecodeError:
+    if _outcome == "timeout":
+        _kill_proc_tree(proc)
+        return "命令执行超时（>60s），已连同其子进程一并终止"
+    if _outcome == "stopped":
+        _kill_proc_tree(proc)
         try:
-            out = raw.decode("gbk")
+            proc.communicate(timeout=5)
         except Exception:
-            out = raw.decode("utf-8", "ignore")
+            pass
+        return "⏹ 已停止（用户请求）"
+    raw = (stdout or b"") + (stderr or b"")
+    # ①②-A.1：先按硬上限做防御性截断解码，避免构造巨串
+    out, _trunc, _approx = _hard_truncate_decode(raw)
+    # ③-B：剔除 PowerShell 进度流序列化噪声、并把错误 CLIXML 还原为可读文本
+    # （progress 类丢弃、error 类提取 <S>/<AV>/<T> 内文），详见 _strip_clixml。
+    out = _strip_clixml(out)
     if not out.strip():
         out = f"（命令已执行，退出码 {proc.returncode}，无输出）"
-    return out[:TOOL_RESULT_LIMIT]
+        if proc.returncode != 0:
+            out += "，可能执行失败"
+    elif proc.returncode != 0:
+        # ③-B：非零退出码显式标注，让 LLM/agent 连续失败护栏能正确识别失败
+        out = out + f"\n[命令退出码 {proc.returncode}，可能执行失败]"
+    if _trunc:
+        # ②-A.1：原始字节超硬上限，标记已截断（先裁剪到 LIMIT 再追加标记，确保可见）
+        out = out[:TOOL_RESULT_LIMIT]
+        out += (f"\n…[输出过大已截断：原始约 {_approx:,} 字节，"
+                f"仅回传前 {TOOL_RESULT_LIMIT} 字符]")
+    else:
+        out = out[:TOOL_RESULT_LIMIT]
+    if _cwd_warn:
+        out += "\n" + _cwd_warn
+    return out
 
 
 
@@ -1733,7 +1949,8 @@ def python_runtime_status(cfg=None, refresh=False):
     return dict(st)
 
 
-def tool_run_python(app_dir, code, cfg=None):
+def tool_run_python(app_dir, code, cfg=None, progress=None,
+                    stop_event=None, should_stop=None):
     """代码解释器：用真实 Python 解释器在独立工作区执行代码，可 import 任意已装库。
 
     历史：v4.50.1 前用 RestrictedPython 沙箱，刻意剔除 __import__ 且模块白名单极小，
@@ -1746,6 +1963,16 @@ def tool_run_python(app_dir, code, cfg=None):
     """
     if not code or not code.strip():
         return "未提供代码", []
+
+    # P0（v4.186.0 审查 P0-1）：③-A 系统级毁灭硬拦截补齐到 run_python。
+    # 原 `_dangerous_command_check` 只在 run_command 调用——会话信任后模型
+    # 改走 run_python 就能零确认执行 format/shutdown/rm -rf（run_python 能力
+    # superset 于 run_command，墙却只在 shell 路径）。Python 源码里的命令
+    # 字符串（os.system("format d:") / subprocess...rm -rf /）同样过模式表。
+    # 设计意图不变：本闸为 deny（确认也绕不过），正常开发命令不误伤。
+    _deny = _dangerous_command_check(code)
+    if _deny:
+        return _deny, []
 
     exe = _resolve_python_exe(cfg)
     if not exe:
@@ -1773,11 +2000,42 @@ def tool_run_python(app_dir, code, cfg=None):
 
     before = snapshot_workspace(ws)
     try:
-        proc = subprocess.run([exe, fpath], cwd=ws,
-                               capture_output=True, timeout=120,
-                               creationflags=_NO_WINDOW)
-    except subprocess.TimeoutExpired:
-        return "代码执行超时（>120s），已终止。可把任务拆小或分步执行。", []
+        # v4.184.0：注入 PYTHONIOENCODING=utf-8，避免子进程在 GBK 控制台下
+        # print 中文抛 UnicodeEncodeError（与 browser_control_tools/release_check 同款范式）。
+        _py_env = dict(os.environ)
+        _py_env["PYTHONIOENCODING"] = "utf-8"
+        # ③-B：改用 Popen + communicate（与 run_command 同机制），超时可直接拿到 pid
+        # 杀整棵进程树，避免用户代码拉起的 ffmpeg / 子 python 成孤儿（run_command 的 E9 修复，
+        # 此前 run_python 漏了，导致超时后后台进程残留）。
+        proc = subprocess.Popen([exe, fpath], cwd=ws,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                creationflags=_NO_WINDOW, env=_py_env)
+    except Exception as e:
+        return f"执行失败：{e}", []
+
+    try:
+        stdout, stderr, _outcome = _stream_collect(
+            proc, 120, progress=progress,
+            should_stop=should_stop, stop_event=stop_event)
+        if _outcome == "timeout":
+            _kill_proc_tree(proc)
+            return "代码执行超时（>120s），已连同其子进程一并终止。可把任务拆小或分步执行。", []
+        if _outcome == "stopped":
+            _kill_proc_tree(proc)
+            try:
+                proc.communicate(timeout=5)
+            except Exception:
+                pass
+            return "⏹ 已停止（用户请求）", []
+        raw = (stdout or b"") + (stderr or b"")
+        # ②-A.1：先按硬上限做防御性截断解码
+        out, _trunc, _approx = _hard_truncate_decode(raw)
+        if not out.strip():
+            out = f"（已执行，退出码 {proc.returncode}，无输出）"
+        out = out[:TOOL_RESULT_LIMIT]
+        if _trunc:
+            out += (f"\n…[输出过大已截断：原始约 {_approx:,} 字节，"
+                    f"仅回传前 {TOOL_RESULT_LIMIT} 字符]")
     except Exception as e:
         return f"执行失败：{e}", []
     finally:
@@ -1786,21 +2044,13 @@ def tool_run_python(app_dir, code, cfg=None):
         except Exception:
             pass
 
-    raw = (proc.stdout or b"") + (proc.stderr or b"")
-    try:
-        out = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        out = raw.decode("gbk", "ignore")
-    if not out.strip():
-        out = f"（已执行，退出码 {proc.returncode}，无输出）"
-
     after = snapshot_workspace(ws)
     deliverables = []
     for nf in sorted(after - before):
         full = os.path.join(ws, nf)
         deliverables.append((full, classify_kind(nf), os.path.basename(nf)))
 
-    return out[:TOOL_RESULT_LIMIT], deliverables
+    return out, deliverables
 
 
 # 保留旧函数供内部兼容
@@ -1832,9 +2082,12 @@ def _tool_run_python_legacy(app_dir, code):
             os.makedirs(_ws2, exist_ok=True)
         except Exception:
             _ws2 = app_dir
+        # v4.184.0：同主路径，注入 PYTHONIOENCODING=utf-8 根治中文 GBK 崩。
+        _py_env = dict(os.environ)
+        _py_env["PYTHONIOENCODING"] = "utf-8"
         proc = subprocess.run([exe, fpath], cwd=_ws2,
                                capture_output=True, timeout=60,
-                               creationflags=_NO_WINDOW)
+                               creationflags=_NO_WINDOW, env=_py_env)
     except subprocess.TimeoutExpired:
         return "代码执行超时（>60s），已终止", []
     except Exception as e:
@@ -2529,6 +2782,17 @@ def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=
         return f"视频生成失败（统一内核）：{e}"
     if not path or not os.path.isfile(path):
         return "视频生成未返回本地文件"
+    # P1-9（v4.186.0 审查）：只验存在不验大小 → CDN 静默截断/磁盘写满/
+    # ffmpeg 残留产生的 0 字节或半截 mp4 会通过 isfile 校验，被打上 done
+    # 并进 merge 当成品交付。正常 720P ≥4s 的 mp4 至少数百 KB，10KB 以下
+    # 视为残片拒绝（阈值取保守下限，不影响任何合法产物）。
+    try:
+        _vsz = os.path.getsize(path)
+    except OSError:
+        _vsz = -1
+    if 0 <= _vsz < 10 * 1024:
+        return (f"视频产物异常：文件仅 {_vsz} 字节（疑似下载残片或空文件），"
+                f"已拒绝交付")
     rel = _safe_relpath(path, app_dir)
     # 记录素材来源：智谱兜底 = 天生无声，供合成自检区分「设计无声」与「哑弹 BUG」
     try:

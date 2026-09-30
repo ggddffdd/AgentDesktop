@@ -308,6 +308,34 @@ def main():
     _install_crash_logger()
     perf_baseline.mark("crash_logger")
 
+    # v4.186.0（P1-11 修）：单实例锁。原实现无锁——双开会抢端口、共写 config、
+    # 并发踩踏记忆文件。QLockFile 自带陈旧锁检测（进程崩溃留下的锁文件会被识别并
+    # 自动接管），只在「另一个活实例持有锁」时才拒绝。
+    _single_lock = None
+    try:
+        import tempfile
+        from PySide6.QtCore import QLockFile
+        _lock_path = os.path.join(tempfile.gettempdir(), "xiaochou_ai_single.lock")
+        _single_lock = QLockFile(_lock_path)
+        if not _single_lock.tryLock(0):
+            _msg = ("小臭玩AI 已在运行中。\n\n"
+                    "为避免配置互相覆盖与端口冲突，本应用不支持双开。\n"
+                    "如确认没有实例在运行（上次异常退出），删除以下文件后重试：\n"
+                    + _lock_path)
+            log.warning("检测到另一实例正在运行，退出（lock=%s）", _lock_path)
+            try:
+                ctypes.windll.user32.MessageBoxW(
+                    0, _msg, "小臭玩AI", 0x00000040)  # MB_ICONINFORMATION
+            except Exception:
+                print(_msg)
+            sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception as e:
+        # 锁机制本身故障不应挡启动（降级为提示），保留 _single_lock=None 即不加锁
+        log.warning("单实例锁初始化失败（降级为不加锁启动）: %s", e)
+        _single_lock = None
+
     # 确保产物目录存在（统一产物落点：~/Documents/小臭玩AI/产物）
     try:
         os.makedirs(config.PRODUCTS_DIR, exist_ok=True)
@@ -367,11 +395,14 @@ def main():
         pass
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    # v4.186.0（P1-11）：单实例锁保活——挂到 app 上防 GC 析构导致提前解锁
+    if _single_lock is not None:
+        app._single_instance_lock = _single_lock
     # v4.117：tooltip 是独立顶层窗口，不继承主窗口 QSS，全局规则必须挂在 QApplication 上
     # （否则交付物卡片/顶栏按钮 tooltip 走系统默认黑底，浅色主题下看不清）
     app.setStyleSheet(
         "QToolTip { background: %s; color: %s; border: 1px solid %s;"
-        " border-radius: 8px; padding: 6px 10px; font-size: 12px; }"
+        " border-radius: 8px; padding:8px 12px; font-size: 12px; }"
         % (THEME["white"], THEME["tooltip_text"], THEME["tooltip_border"]))
     perf_baseline.mark("qapp")
 
