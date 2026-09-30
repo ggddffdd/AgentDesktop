@@ -1464,11 +1464,47 @@ def _within_roots(p, roots):
     return None
 
 
+# ==================== v4.191.0 批⑥：引用纪律下放 tool result ====================
+# 行业结论（grounding 工程）：写在 system prompt 里的「不知道就说不知道」只是推荐、
+# **非确定性约束**；模型回答前最后看到的是工具结果，指令必须放在工具结果里才真正生效。
+# 本项目实证（2026-09-30 小臭 CHANGELOG 编造事件）：纪律原挂在 AGENT_SYS_APPEND 与
+# agent.py 的 _internal 注入（都在消息层），会被后续 tool result 冲淡。
+#
+# 版面选择：agent.py 回传时用 compress() 裁到 TOOL_RESULT_LIMIT（6000），compress 是
+# 「保留前 65% + 后 35%」的双端保留策略，但极端情况会二次硬截断丢尾部，故**首尾各钉
+# 一行**——任一端被裁，另一端仍在。
+_READ_GROUNDING_HEAD = (
+    "[读取纪律] 下面是 {name} 第 {a}~{b} 字符的原文（该文件共 {n} 字符）。"
+    "凡未出现在下面原文中的内容，禁止凭你的记忆或参数知识补全——没有就说没有。\n\n"
+)
+_READ_TAIL_MORE = (
+    "\n\n[文件共 {n} 字符，本次已读 {a}~{b} 段（{pct}%），还剩 {rest} 字符未读；"
+    "用 offset={b} 继续读。未读完全文前禁止声称已读完整个文件。]"
+)
+_READ_TAIL_END = "\n\n[已读到文件末尾（共 {n} 字符，本次覆盖 {a}~{b}），全文已读全。]"
+_READ_TAIL_ONESHOT = "\n\n[文件共 {n} 字符，本次已全部读入（一次读全）。]"
+# 空结果/失败结果显式化（行业三大反例之首：返回空串或泛化错误，模型当成读到了然后脑补）
+_READ_NOT_FOUND = (
+    "\n\n[RESULT NOT FOUND] 本次读取没有取得任何文件内容。"
+    "禁止用你的记忆或参数知识回答与该文件相关的问题——如实回答『没有读到』，"
+    "或换一个确实可用的路径重新 read_file。凭记忆描述文件内容属于编造。"
+)
+
+
+def _read_fail(msg):
+    """失败/空结果统一包装：原错误信息 + 显式 NOT FOUND 指令。
+
+    **前缀保持不变**——ui.py 批③的 _READ_FAIL_PREFIX 靠前缀判定
+    「读失败不作真值源」，追加在尾部不影响该判定。
+    """
+    return msg + _READ_NOT_FOUND
+
+
 def tool_read_file(app_dir, path, offset=0, limit=None):
     if not path:
-        return "未提供路径"
+        return _read_fail("未提供路径")
     if _is_sensitive_file(path):
-        return "已阻止：目标文件是敏感配置（可能含 API key），禁止读取。"
+        return _read_fail("已阻止：目标文件是敏感配置（可能含 API key），禁止读取。")
     roots = _tool_roots(app_dir)
     # v4.164.0：相对路径优先按 WORKSPACE_DIR 解析（与 Agent cwd 一致），
     # 未命中再回退 app_dir（兼容历史相对路径）。
@@ -1486,9 +1522,9 @@ def tool_read_file(app_dir, path, offset=0, limit=None):
                 p = cand
                 break
     if _within_roots(p, roots) is None:
-        return f"拒绝：只能读取工作区目录内文件（{WORKSPACE_DIR}）"
+        return _read_fail(f"拒绝：只能读取工作区目录内文件（{WORKSPACE_DIR}）")
     if not os.path.isfile(p):
-        return f"文件不存在：{p}"
+        return _read_fail(f"文件不存在：{p}")
     ext = os.path.splitext(p)[1].lower()
     # v4.66：Office / PDF 抽出真实文本，否则按二进制读会是一堆乱码 zip
     text = None
@@ -1501,7 +1537,7 @@ def tool_read_file(app_dir, path, offset=0, limit=None):
             with open(p, encoding="utf-8", errors="ignore") as f:
                 text = f.read()
         except Exception as e:
-            return f"读取失败：{e}"
+            return _read_fail(f"读取失败：{e}")
 
     # v4.93 分段读取：大文件不再一次性截断丢尾部，支持 offset/limit 续读
     try:
@@ -1517,13 +1553,21 @@ def tool_read_file(app_dir, path, offset=0, limit=None):
 
     total = len(text)
     if offset >= total:
-        return f"offset={offset} 已超出文件长度（文件共 {total} 字符）。"
+        return _read_fail(f"offset={offset} 已超出文件长度（文件共 {total} 字符）。")
     seg = text[offset:offset + limit]
-    if offset + limit < total:
-        seg += f"\n\n[文件共 {total} 字符，已读 {offset}~{offset + limit} 段；如需后续内容，用 offset={offset + limit} 再读]"
+    end = min(offset + limit, total)
+    _nm = os.path.basename(p) or p
+    head = _READ_GROUNDING_HEAD.format(name=_nm, a=offset, b=end, n=total)
+    if end < total:
+        _pct = int(end * 100 / total) if total else 100
+        tail = _READ_TAIL_MORE.format(n=total, a=offset, b=end,
+                                      pct=_pct, rest=total - end)
     elif offset > 0:
-        seg += f"\n\n[已读到文件末尾（共 {total} 字符）]"
-    return seg
+        tail = _READ_TAIL_END.format(n=total, a=offset, b=end)
+    else:
+        # offset=0 一次读全的小文件：原先无任何标记，模型分不清「读全」与「被截断」
+        tail = _READ_TAIL_ONESHOT.format(n=total)
+    return head + seg + tail
 
 
 def tool_write_file(app_dir, path, content):

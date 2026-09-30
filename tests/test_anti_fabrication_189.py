@@ -12,6 +12,7 @@
   [E] 渲染分支——audit_warn 四处专用渲染（主重放/导出 HTML/MD/DOCX）
   [G] 批④ 附件必读——agent 注入接线 + 行为回验（声称已读但没调 read_file 标红）
   [H] 拖拽添加附件——窗口级 dragEnter/drop + _ingest_attachment 统一入口
+  [J] 批⑥ 引用纪律下放 tool result——read_file 首尾钉纪律 + 空/失败结果显式化
   [F] 三文件语法编译
 """
 import inspect
@@ -516,6 +517,66 @@ def main():
               "_audit_partial_reads()" in _ui_src)
     except Exception as e:
         check("I 组批⑤探针", False, str(e)[:120])
+
+    print("=== [J] 批⑥ 引用纪律下放 tool result（v4.191） ===")
+    try:
+        import tools as TS
+        _orig_ws = TS.WORKSPACE_DIR
+        try:
+            TS.WORKSPACE_DIR = tmp
+            jf = os.path.join(tmp, "J_LOG.md")
+            body = "".join("行%05d：内容填充。\n" % i for i in range(2000))
+            with open(jf, "w", encoding="utf-8") as f:
+                f.write(body)
+            _n = len(body)
+
+            # J1~J4 分段读（未读完）：首尾各钉一行纪律，尾部带未读百分比
+            r1 = TS.tool_read_file(C.APP_DIR, jf, offset=0, limit=8000)
+            check("J1 分段读：开头钉【读取纪律】", r1.startswith("[读取纪律]"), r1[:40])
+            check("J2 分段读：原文未失真（紧跟纪律之后）",
+                  (body[:200] in r1) and (r1.index(body[:200]) < 400))
+            check("J3 分段读：尾部标未读百分比 + 续读 offset + 禁声称读全",
+                  ("还剩" in r1) and ("offset=8000" in r1)
+                  and ("禁止声称已读完整个文件" in r1))
+            check("J4 分段读：真读到 → 不含 NOT FOUND", "RESULT NOT FOUND" not in r1)
+
+            # J5 续读到末尾
+            r2 = TS.tool_read_file(C.APP_DIR, jf, offset=_n - 1000, limit=8000)
+            check("J5 续读到末尾：标「已读到文件末尾」+「全文已读全」",
+                  ("已读到文件末尾" in r2) and ("全文已读全" in r2))
+
+            # J6 小文件一次读全（原先无任何标记，v4.191 补上）
+            small = os.path.join(tmp, "J_SMALL.md")
+            with open(small, "w", encoding="utf-8") as f:
+                f.write("短文件。")
+            r3 = TS.tool_read_file(C.APP_DIR, small)
+            check("J6 小文件一次读全：补标「本次已全部读入」",
+                  ("本次已全部读入" in r3) and ("短文件。" in r3))
+
+            # J7~J8 文件不存在 → NOT FOUND，但前缀不变（ui.py 批③判据不破）
+            r4 = TS.tool_read_file(C.APP_DIR, os.path.join(tmp, "NOPE_不存在.md"))
+            check("J7 文件不存在：带 RESULT NOT FOUND", "RESULT NOT FOUND" in r4, r4[-60:])
+            check("J8 失败前缀不变（_READ_FAIL_PREFIX 判据仍成立）",
+                  r4.startswith("文件不存在"), r4[:20])
+
+            # J9 offset 超出 → 不再只是泛化错误
+            r5 = TS.tool_read_file(C.APP_DIR, small, offset=99999)
+            check("J9 offset 超出：带 RESULT NOT FOUND 且前缀不变",
+                  ("RESULT NOT FOUND" in r5) and r5.startswith("offset="))
+
+            # J10 越界路径
+            r6 = TS.tool_read_file(C.APP_DIR,
+                                   os.path.join(tempfile.gettempdir(), "evil_j.txt"))
+            check("J10 越界拒绝：带 RESULT NOT FOUND 且前缀不变",
+                  ("RESULT NOT FOUND" in r6) and r6.startswith("拒绝："), r6[:20])
+
+            # J11 未提供路径
+            check("J11 未提供路径：带 RESULT NOT FOUND",
+                  "RESULT NOT FOUND" in TS.tool_read_file(C.APP_DIR, ""))
+        finally:
+            TS.WORKSPACE_DIR = _orig_ws
+    except Exception as e:
+        check("J 组批⑥探针", False, str(e)[:120])
 
     print("=== [F] 三文件语法编译 ===")
     import py_compile
