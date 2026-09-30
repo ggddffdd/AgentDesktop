@@ -47,6 +47,9 @@ except Exception:                          # pragma: no cover
 # 参考图硬上限：Agnes reference 模式实测 6 张报 400，固定 5。
 # （原为 tools 导出，视频统一内核后归 video_pipeline 自管，避免悬空依赖 tools）
 AGNES_MAX_REF_IMAGES = 5
+# P1-9（v4.186.0 审查）：视频产物最小体积阈值。正常 720P ≥4s 的 mp4 至少
+# 数百 KB，低于 10KB 视为下载残片/空文件，拒绝登记为成品。
+_MIN_CLIP_BYTES = 10 * 1024
 
 
 def _vp_products_dir(cfg=None, kind="video"):
@@ -3297,7 +3300,16 @@ class VideoPipeline:
             if isinstance(res, tuple):
                 rel, kind, name = res
                 clip = os.path.join(self.app_dir, rel)
+                # P1-9（v4.186.0 审查）：只验存在不验大小 → 0 字节/半截文件
+                # 会被登记 done 并进 merge 当成品。加最小体积阈值，过小按
+                # 「保存路径不存在」同路失败（可重试）。
+                _clip_ok = False
                 if os.path.isfile(clip):
+                    try:
+                        _clip_ok = os.path.getsize(clip) >= _MIN_CLIP_BYTES
+                    except OSError:
+                        _clip_ok = False
+                if _clip_ok:
                     # 天生无声的素材（智谱兜底等）登记下来：合成自检据此区分
                     # 「设计无声（空镜）」与「哑弹 BUG（有声素材被合成没声）」。
                     try:
@@ -3315,7 +3327,7 @@ class VideoPipeline:
                     except Exception:
                         pass
                     return clip
-                res = f"保存路径不存在：{clip}"
+                res = f"保存路径不存在或产物体积异常（疑似残片）：{clip}"
             last_err = f"{res}"
             # 失败重试：仅对可恢复错误（429/5xx/超时/网络）重试；
             # 4xx(非429)是请求本身问题，重试同一请求无用，直接判失败并回显原因

@@ -261,7 +261,15 @@ def _sync_to_dist():
         except OSError as e:
             print('[build_safe] ⚠️ 旧 exe 备份失败（继续）: %s' % e)
     # v4.152：备份完立刻轮转，避免备份无限堆积（见 _rotate_exe_backups 说明）
-    _rotate_exe_backups(live_dist)
+    # v4.187.0：轮转只是清理性操作——被沙箱 safe-delete 拦截（bulk 阈值超限会以
+    # SystemExit 中断进程）或任何失败，都不该中断同步。18:18 实测：删最旧备份
+    # 被拦 → SystemExit(1) → robocopy 未执行 → BUILD_EXIT=1（打包白跑）。
+    try:
+        _rotate_exe_backups(live_dist)
+    except SystemExit as _se:
+        print('[build_safe] ⚠️ 备份轮转被拦截（safe-delete 确认要求，本轮跳过轮转）code=%s' % (_se.code,))
+    except Exception as _e:
+        print('[build_safe] ⚠️ 备份轮转失败（继续同步）: %r' % (_e,))
 
     ok = True
     # exe：单文件覆盖
@@ -356,10 +364,18 @@ try:
     except Exception as e:
         print('[build_safe] ⚠️ 运行目录清扫失败（继续）: %r' % (e,))
     try:
-        _sync_to_dist()
+        # v4.186.0（P1-10 修）：_sync_to_dist() 的返回值必须消费。
+        # 原实现无条件 print('BUILD_EXIT=0')——exe 被 Defender/资源管理器占用时
+        # robocopy rc>=8 同步失败，dist 里还是旧 exe，门禁却看到成功码。
+        _synced = _sync_to_dist()
     except Exception as e:  # 同步失败不影响「包已打好」的事实，但要显式喊出来
+        _synced = False
         print('[build_safe] ⛔ 同步回 dist 失败: %r' % (e,))
-    print('BUILD_EXIT=0')
+    if _synced:
+        print('BUILD_EXIT=0')
+    else:
+        # 打包成功但同步失败：exe 未落 dist，发布必须视为失败（退出码 2 区分于 PyInstaller 崩溃）
+        print('BUILD_EXIT=2')
 except SystemExit as e:
     print(f'BUILD_EXIT={e.code}')
 finally:

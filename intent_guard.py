@@ -134,6 +134,15 @@ _GEN_PHRASE_RE = re.compile(
     r"[^，。；？！,;?]{0,6}?"
     r"(视频|短片|短视频|片子|动画|图片|照片|插画|海报|封面|头像|数字人|口播|成片|成品|mv)"
 )
+# v4.186.0（P1-2 修）：后置质疑短语 ——「生成视频这件事你怎么看」。
+# 只收「征询意见」类短语（怎么看/如何评价…），**不含**聊聊/说说/谈谈——
+# 因为「剪个视频聊聊昆明」是真指令（视频内容就是"聊昆明"），
+# 而没人把「你怎么看」写进视频内容需求里。
+_POST_REF_RE = re.compile(
+    r"(这件事|这个|这一点|这方面|这功能|这做法|这种行为)?"
+    r"[^，。；？！,;?]{0,4}?"
+    r"(你怎么看|怎么看|如何看待|怎么看待|如何评价|怎么评价|怎么理解)"
+)
 
 # --------------------------------------------------------------------------
 # 四点五、讨论工具动作（v4.169.0 新增）
@@ -375,7 +384,16 @@ def is_ref_context(text):
     prefix = text[:m.start()]
     if any(sep in prefix for sep in _CLAUSE_SEP):
         return False           # 「生成个视频，顺便分析下」→ 生成是独立指令
-    return any(mv in prefix for mv in _META_VERBS)
+    if any(mv in prefix for mv in _META_VERBS):
+        return True
+    # v4.186.0（P1-2 修）：后置质疑句 ——「生成视频这件事你怎么看」。
+    # 元话语动词在生成短语**之后**且同一分句内（到匹配点为止无分隔符/连接词）。
+    # 「生成视频，你怎么看」带分隔符的仍放行（歧义：可能是"做完了再问意见"）。
+    suffix = text[m.end():]
+    pm = _POST_REF_RE.search(suffix)
+    if pm and not any(sep in suffix[:pm.start()] for sep in _CLAUSE_SEP):
+        return True
+    return False
 
 
 def is_discuss_tool_use(text):

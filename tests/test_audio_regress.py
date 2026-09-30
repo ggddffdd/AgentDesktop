@@ -16,20 +16,29 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
   4) 完整 _merge 跑真实分镜 → 成片必须有声（max_volume > -60 dB）。
   5) 兜底路径：片段无音轨时能降级出片而不崩。
 """
-import os, re, shutil, subprocess, tempfile, types
+import os, re, shutil, subprocess, sys, tempfile, types
 
 FF = shutil.which("ffmpeg")
 import video_pipeline as vp
 
-SHOTS = [
-    r"C:\Users\xyb\Documents\小臭玩AI\产物\视频\video_20260831124042.mp4",
-    r"C:\Users\xyb\Documents\小臭玩AI\产物\视频\video_20260831124205.mp4",
-    r"C:\Users\xyb\Documents\小臭玩AI\产物\视频\video_20260831124326.mp4",
-    r"C:\Users\xyb\Documents\小臭玩AI\产物\视频\video_20260831124446.mp4",
-    r"C:\Users\xyb\Documents\小臭玩AI\产物\视频\video_20260831124718.mp4",
-    r"C:\Users\xyb\Documents\小臭玩AI\产物\视频\video_20260831124907.mp4",
-]
-SHOT = SHOTS[0]
+# v4.186.0（P1-11 连带修）：自生成夹具。原实现硬编码本机个人产物目录里
+# 2026-08-31 的 6 个视频——文件早已被清理，套件从那时起一直静默失败
+# （rc=0 + REGRESS_FAIL 无人看见，被 run_all 计成 [OK] PASS=0 假绿）。
+# 改为 ffmpeg lavfi 现造：testsrc 画面 + sine 音轨，与真实分镜同构。
+_FIXDIR = tempfile.mkdtemp(prefix="audio_reg_fix_")
+SHOTS = []
+for _i in range(6):
+    _fp = os.path.join(_FIXDIR, f"shot_{_i + 1}.mp4")
+    subprocess.run(
+        [FF, "-y", "-hide_banner",
+         "-f", "lavfi", "-i", "testsrc=duration=3:size=704x1280:rate=24",
+         "-f", "lavfi", "-i", f"sine=frequency={440 + _i * 80}:duration=3",
+         "-pix_fmt", "yuv420p", "-c:v", "libx264", "-crf", "28",
+         "-c:a", "aac", "-b:a", "64k", "-shortest", _fp],
+        capture_output=True, timeout=180)
+    if os.path.isfile(_fp) and os.path.getsize(_fp) > 1024:
+        SHOTS.append(_fp)
+SHOT = SHOTS[0] if SHOTS else ""
 FADE = "-hide_banner"
 fails = []
 
@@ -119,5 +128,8 @@ out2 = os.path.join(tmp2, "final2.mp4")
 ok2, detail2 = p2._merge([silent], shots2, out2, burn_subtitles=False)
 check("无音轨片段也能成功出片（降级为静音轨）", ok2, detail2)
 shutil.rmtree(tmp2, ignore_errors=True)
+shutil.rmtree(_FIXDIR, ignore_errors=True)
 
 print("\n" + ("REGRESS_OK 全部通过" if not fails else f"REGRESS_FAIL: {fails}"))
+# v4.186.0：失败必须以非零退出码收场——此前 rc=0 让失败在 run_all 里隐身。
+sys.exit(1 if fails else 0)

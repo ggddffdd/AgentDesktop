@@ -211,7 +211,9 @@ def part_d():
             on_submit("tid_real_123")
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         with open(dest_path, "wb") as f:
-            f.write(b"fake-mp4")
+            # v4.186.0：假片段必须 ≥ 体积守卫阈值（真实 mp4 至少几十 KB），
+            # 否则被 video_pipeline 的 _MIN_CLIP_BYTES 完整性校验判成残片。
+            f.write(b"fake-mp4" + b"\x00" * (vp._MIN_CLIP_BYTES + 1))
         return (os.path.relpath(dest_path, app_dir), "video", os.path.basename(dest_path))
 
     try:

@@ -148,6 +148,26 @@ def _read_text_file(path):
     return ""
 
 
+def _read_text_file_ex(path):
+    """三态读（P1-7，v4.186.0 审查）：None=文件不存在（合法空状态）；
+    False=读失败（权限/IO/解密错误，异常态）；str=正常内容。
+
+    「不存在」与"读不到"必须分开：append 系列是「读-改-写」，若把读失败
+    当空串处理，会把「空历史 + 1 条新记忆」整体回写，静默清空用户全部
+    记忆。读失败时调用方必须拒绝写入，而不是用空历史覆盖。
+    """
+    phys = _physical(path)
+    if not os.path.exists(phys):
+        return None
+    try:
+        if _cipher is not None:
+            return _cipher.decrypt(open(phys, "rb").read()).decode("utf-8")
+        return open(phys, "r", encoding="utf-8").read()
+    except Exception as e:
+        log.warning("读取文件失败(%s): %s", phys, e)
+        return False
+
+
 def _write_text_file(path, text):
     """原子写文本文件；加密模式写 .enc 并清除明文残留。"""
     if _cipher is not None:
@@ -592,8 +612,14 @@ def append_pinned(fact, type=None, tags=None):
     if tags:
         header += " " + " ".join("#" + t.lstrip("#") for t in tags)
     block = f"\n{header}\n{fact}\n"
+    # P1-7（v4.186.0 审查）：读失败（False）时拒绝写入——否则会把
+    # 「空历史 + 新条目」整体回写，一次性清空用户全部长期记忆。
+    _prev = _read_text_file_ex(PINNED_PATH)
+    if _prev is False:
+        return ("拒绝钉住：现有核心画像读取失败（权限/IO/解密错误），"
+                "为避免覆盖清空已有内容，本次未写入。请检查文件状态后重试。")
     try:
-        _write_text_file(PINNED_PATH, _read_text_file(PINNED_PATH) + block)
+        _write_text_file(PINNED_PATH, (_prev or "") + block)
     except Exception as e:
         log.warning("写入核心画像失败: %s", e)
         return f"写入核心画像失败：{e}"
@@ -789,8 +815,14 @@ def append_memory(fact, type=None, topic=None, tags=None, pinned=False):
     if tags:
         header += " " + " ".join("#" + t.lstrip("#") for t in tags)
     block = f"\n{header}\n{fact}\n"
+    # P1-7（v4.186.0 审查）：同 pinned——读失败即拒绝追加，绝不用空历史回写。
+    _prev = _read_text_file_ex(MEMORY_PATH)
+    if _prev is False:
+        return ("拒绝追加：现有长期记忆读取失败（权限/IO/解密错误），为避免"
+                "把失败误当空历史、一次性清空你的全部记忆，本次未写入。"
+                "请检查文件状态（是否被占用/加密密钥变更）后重试。")
     try:
-        _write_text_file(MEMORY_PATH, _read_text_file(MEMORY_PATH) + block)
+        _write_text_file(MEMORY_PATH, (_prev or "") + block)
         _db_append(fact, ts)
     except Exception as e:
         log.warning("写入记忆失败: %s", e)
