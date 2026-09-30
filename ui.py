@@ -9542,9 +9542,13 @@ class ChatWindow(QMainWindow):
     _AUDIT_CITE_CTX = ("文件里", "文件中", "里面", "文中", "清单里", "记录里",
                        "changelog", "change log", "更新日志", "版本记录",
                        "版本节", "条目")
-    # 否定语境词：版本号邻近出现这些词 = 「如实报告某版本不存在」，豁免验证
-    _AUDIT_NEG_KW = ("没有", "不存在", "不在", "查无", "找不到", "未找到",
-                     "未收录", "无此", "并无", "不是从")
+    # 否定语境词：版本号邻近出现这些词 = 「如实报告某版本不存在」，豁免验证。
+    # v4.189 实战补词：模型承认编造时说的是「这些版本号我全都没在这个文件里见到」
+    # ——「没在」「没见到」等口语否定式原词表没覆盖，导致如实报告被标红（误报）。
+    _AUDIT_NEG_KW = ("没有", "不存在", "不在", "没在", "查无", "找不到", "未找到",
+                     "未收录", "无此", "并无", "不是从", "没见到", "没看到",
+                     "没读到", "未见", "全都没", "都没", "没这", "超出",
+                     "不在这个文件", "不在本文件", "文件里没有")
     # read_file 失败返回的开头标记（这些文件没真读到内容，不能作真值源）
     _READ_FAIL_PREFIX = ("未提供", "已阻止", "拒绝：", "文件不存在", "读取失败")
 
@@ -9614,7 +9618,9 @@ class ChatWindow(QMainWindow):
                             and not any(v in t for t in texts))
             if not missed:
                 return  # 全部命中或全部豁免：真读真引，无事发生
-            # 4) 追加警示（落盘 + UI 直显；_do_save 随后统一落盘）
+            # 4) 追加警示（只落 store；UI 由 _on_agent_done 末尾的 _flush_render
+            #    统一增量渲染，此处绝不手动 chat_view.append——否则渲染计数不推进，
+            #    flush 会再渲染同一条 → 同一张警示卡出现两遍（v4.189 实测））
             flist = "、".join(os.path.basename(p) for p in files[:3])
             warn = (f"⚠️ 自动核验失败：回复中引用的 {'、'.join(missed[:8])} "
                     f"在本轮实际读取的文件（{flist}）中未找到，疑似编造。"
@@ -9622,7 +9628,6 @@ class ChatWindow(QMainWindow):
             self.store.active().messages.append({
                 "role": "audit_warn", "content": warn,
             })
-            self.chat_view.append(self._audit_warn_html(warn))
         except Exception:
             pass  # 校验器绝不阻断 agent 完成流程
 
@@ -9635,12 +9640,38 @@ class ChatWindow(QMainWindow):
                 % (self.AUDIT_WARN_BG, self.AUDIT_WARN_BORDER)
                 + html_mod.escape(str(text)) + "</div>")
 
+    # 句分隔符（中英文句号/问号/叹号/分号/换行）
+    _AUDIT_SENT_SPLIT_RE = re.compile(r"[。！？!?；;\n]")
+
     def _negation_near(self, text, ver, window=30):
-        """版本号前后 window 字内含否定词 → 「如实报告不存在」，豁免验证。"""
+        """版本号所在**句子**内含否定词 → 「如实报告不存在」，豁免验证。
+
+        v4.189 实战修正：原实现按「版本号前后 window=30 字」取窗口，遇到枚举式
+        承认（「v4.126、v4.113、v4.104、v4.128-130 这些版本号，我全都没在这个
+        文件里见到」）会漏豁免——句首的版本号离句尾的「没在」远超 30 字，逐个
+        判否 → 如实报告被误标红。改为**整句判定**：句子里任一处出现否定词，该句
+        所有版本断言一并豁免（语义正确：整句在说「这些都不存在」）。
+        """
         for m in re.finditer(re.escape(ver), text):
-            s, e = max(0, m.start() - window), min(len(text), m.end() + window)
-            if any(n in text[s:e] for n in self._AUDIT_NEG_KW):
+            # 该版本号所在句子的边界：向前找最近的句分隔符，向后同理
+            start = 0
+            for sm in self._AUDIT_SENT_SPLIT_RE.finditer(text):
+                if sm.start() < m.start():
+                    start = sm.end()
+                else:
+                    break
+            end = len(text)
+            for sm in self._AUDIT_SENT_SPLIT_RE.finditer(text, m.end()):
+                end = sm.start()
+                break
+            sent = text[start:end]
+            if any(n in sent for n in self._AUDIT_NEG_KW):
                 return True
+            # 兜底：句子过长（如无标点的长段）时仍保留原窗口判定
+            if len(sent) > 200:
+                s, e = max(0, m.start() - window), min(len(text), m.end() + window)
+                if any(n in text[s:e] for n in self._AUDIT_NEG_KW):
+                    return True
         return False
 
     # ---- v4.189 批④：附件行为回验（声称已读但没读 → 标红） ----
@@ -9737,7 +9768,7 @@ class ChatWindow(QMainWindow):
             self.store.active().messages.append({
                 "role": "audit_warn", "content": warn,
             })
-            self.chat_view.append(self._audit_warn_html(warn))
+            # 同上：只落 store，UI 交给 _flush_render 统一渲染（防重复卡）
         except Exception:
             pass  # 校验器绝不阻断 agent 完成流程
 

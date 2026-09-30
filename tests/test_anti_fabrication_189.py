@@ -14,6 +14,7 @@
   [H] 拖拽添加附件——窗口级 dragEnter/drop + _ingest_attachment 统一入口
   [F] 三文件语法编译
 """
+import inspect
 import json
 import os
 import re
@@ -136,8 +137,35 @@ def main():
     _warns1 = [m for m in w1.store.active().messages if m.get("role") == "audit_warn"]
     check("D1 编造版本号被标红", len(_warns1) == 1 and "v4.126" in _warns1[0]["content"],
           _warns1[0]["content"][:60] if _warns1 else "无警示")
-    check("D1b 警示同步进 UI（chat_view）",
-          any("v4.126" in str(x) for x in w1.chat_view.items))
+    # D1b（v4.189 实战回归）：警示**只落 store**，不手动插 DOM——
+    # 手动 chat_view.append 不推进 _rendered_msg_count，紧接着的 _flush_render
+    # 会再渲染同一条 → 同一张警示卡出现两遍（用户实测截图两条一模一样的警示）。
+    check("D1b 警示只落 store 不直插 DOM（防重复卡）",
+          w1.chat_view.items == [],
+          str(w1.chat_view.items)[:60])
+    _od = inspect.getsource(UI.ChatWindow._on_agent_done)
+    check("D1c _on_agent_done 末尾有 _flush_render 统一渲染",
+          "_flush_render()" in _od
+          and _od.index("_audit_reply_citations()") < _od.index("_flush_render()"))
+    _acomb = (inspect.getsource(UI.ChatWindow._audit_reply_citations)
+              + inspect.getsource(UI.ChatWindow._audit_attachment_reads))
+    check("D1d 两个校验器内均无 chat_view.append（重复卡根因）",
+          "self.chat_view.append(" not in _acomb)
+
+    # D3b（v4.189 实战误报回归）：承认编造时说的是
+    # 「v4.126、v4.113、v4.104、v4.128-130 我全都没在这个文件里见到」——
+    # 口语否定式「没在…见到」原词表没覆盖 → 如实报告被标红。
+    w3b = _mkmw([
+        {"role": "user", "content": "核对这份更新日志"},
+        _tl_read(truth),
+        {"role": "assistant",
+         "content": "v4.126、v4.113、v4.104、v4.128-130 这些版本号，"
+                    "我全都没在这个文件里见到，是我凭记忆编造的。"},
+    ])
+    w3b._audit_reply_citations()
+    check("D3b 「全都没在这个文件里见到」如实承认不误报",
+          not any(m.get("role") == "audit_warn"
+                  for m in w3b.store.active().messages))
 
     # D2 真引用零误伤
     w2 = _mkmw([
