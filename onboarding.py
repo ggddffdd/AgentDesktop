@@ -65,18 +65,18 @@ class OnboardingWizard(QDialog):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 24, 24, 20)
-        root.setSpacing(14)
+        root.setSpacing(12)
 
         # 标题
         self.title_lbl = QLabel()
-        self.title_lbl.setStyleSheet(f"font-size:20px;font-weight:600;color:{text};")
+        self.title_lbl.setStyleSheet(f"font-size:{self._c('font_title_xl', '20px')};font-weight:600;color:{text};")
         self.title_lbl.setWordWrap(True)
         root.addWidget(self.title_lbl)
 
         # 正文
         self.body_lbl = QLabel()
         self.body_lbl.setStyleSheet(
-            f"font-size:14px;color:{dim};line-height:1.6;")
+            f"font-size:{self._c('font_body', '13px')};color:{dim};line-height:1.6;")
         self.body_lbl.setWordWrap(True)
         root.addWidget(self.body_lbl)
 
@@ -90,18 +90,18 @@ class OnboardingWizard(QDialog):
 
         # 步骤指示点
         self.dots = QHBoxLayout()
-        self.dots.setSpacing(6)
+        self.dots.setSpacing(8)
         self.dot_widgets = []
         for _ in STEPS:
             d = QLabel("●")
-            d.setStyleSheet(f"color:{border};font-size:10px;")
+            d.setStyleSheet(f"color:{border};font-size:{self._c('font_micro', '11px')};")
             self.dots.addWidget(d)
             self.dot_widgets.append(d)
         root.addLayout(self.dots)
 
         # 底部按钮
         nav = QHBoxLayout()
-        nav.setSpacing(10)
+        nav.setSpacing(12)
         self.skip_btn = QPushButton("跳过")
         self.skip_btn.setFixedHeight(36)
         self.skip_btn.setStyleSheet(
@@ -143,7 +143,7 @@ class OnboardingWizard(QDialog):
         for k, d in enumerate(self.dot_widgets):
             d.setStyleSheet(
                 f"color:{'%s' % (self.theme['accent'] if k == self.idx else self.theme['border'])};"
-                f"font-size:10px;")
+                f"font-size:{self._c('font_micro', '11px')};")
         # 按钮态
         self.back_btn.setVisible(self.idx > 0)
         self.no_more.setVisible(self.idx == len(STEPS) - 1)

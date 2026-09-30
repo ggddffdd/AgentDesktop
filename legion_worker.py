@@ -127,6 +127,10 @@ class LegionWorker(QThread):
     # v4.124.8：联系项目经理 —— PM 判定「需重走流程」时 emit PM 回复，
     # 主线程弹窗让用户拍板：继续 / 停下重编，结果经 set_replan_result 回传
     replan_request = Signal(str)
+    # v4.183.0：任务板状态广播 —— (pid, node_key, role, wave, status)。
+    # 真源是 legion.board_update 已落地的 legion_board/<pid>.json；
+    # 这里再补一路信号给 UI 实时刷新（不引入独立事件溯源架构）。
+    board_update = Signal(str, str, str, str, str)
 
     def __init__(self, mw, project, task="", legion_data=None, parent=None,
                  resume_from=None, ckpt_run_id=None):
@@ -460,6 +464,15 @@ class LegionWorker(QThread):
         try:
             legion.board_update(self.pid, key,
                                 project_name=self.project.get("name", ""), **fields)
+        except Exception:
+            pass
+        # v4.183.0：同步广播给 UI（信号自动跨线程排队到主线程）。
+        try:
+            self.board_update.emit(
+                self.pid or "", key,
+                str(fields.get("role", "")),
+                str(fields.get("wave", "")),
+                str(fields.get("status", "")))
         except Exception:
             pass
 

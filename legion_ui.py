@@ -58,9 +58,27 @@ from PySide6.QtGui import QBrush, QColor
 import legion
 from legion_worker import LegionWorker
 from legion_chat import LegionChatPanel
+from legion_status_widget import LegionStatusStrip, LegionAuditFeed
 from ui import THEME
+from ui import clamp_dialog_to_screen as _clamp_dlg
 
 log = logging.getLogger("legion")
+
+
+def _fit_dlg(dlg, w, h):
+    """v4.180.0：按屏幕可用区钳制弹窗尺寸 + 居中，保证底部按钮可见可点。
+
+    替代裸 dlg.resize(w, h)/self.resize(w, h)：硬编码尺寸在笔记本缩放屏
+    （可用高度可能只剩 600~880px）下会把底部按钮顶出屏幕，鼠标够不着。
+    """
+    try:
+        _clamp_dlg(dlg, want_w=w, want_h=h)
+    except Exception:
+        try:
+            dlg.resize(w, h)
+        except Exception:
+            pass
+    return dlg
 
 
 # ---- 审计修复 A6 残余：UI 保存统一走三方合并 ----
@@ -127,7 +145,10 @@ class RoleEditor(QDialog):
     def __init__(self, role=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("团队成员 · 角色定义")
-        self.resize(640, 820)
+        # v4.180.0：不再硬编码 820 高（笔记本缩放屏下底部「确定/取消」会
+        # 沉到屏幕外点不到）。改为记下期望值，由 clamp_dialog_to_screen
+        # 在 exec 前钳进屏幕可用区；表单已包 QScrollArea，内容超出可滚动。
+        self._want_size = (640, 820)
         r = role or legion.new_role()
 
         self.e_emoji = QLineEdit(r.get("emoji", ""))
@@ -291,6 +312,16 @@ class RoleEditor(QDialog):
             return
         self.accept()
 
+    def exec(self):
+        """v4.180.0：打开前把弹窗钳进屏幕可用区 —— 保证底部按钮可见可点。"""
+        try:
+            from ui import clamp_dialog_to_screen
+            w, h = getattr(self, "_want_size", (640, 820))
+            clamp_dialog_to_screen(self, want_w=w, want_h=h)
+        except Exception:
+            pass
+        return super().exec()
+
     def get_role(self):
         role = legion.new_role(
             name=self.e_name.text().strip(),
@@ -338,7 +369,7 @@ class RolePicker(QDialog):
     def __init__(self, library, parent=None):
         super().__init__(parent)
         self.setWindowTitle("添加团队成员")
-        self.resize(460, 420)
+        _fit_dlg(self, 460, 420)
         self._picked = None
 
         lay = QVBoxLayout(self)
@@ -442,7 +473,7 @@ class TeamBuildDialog(QDialog):
         self.worker = None
         self.advice = ""          # 打回意见，重来时会一起喂给 PM
         self.setWindowTitle("🧙 组队方案审批（第一道闸）")
-        self.resize(760, 700)
+        _fit_dlg(self, 760, 700)
 
         lay = QVBoxLayout(self)
         lay.addWidget(QLabel("用一句话说清你要干什么（越具体，组队越准）："))
@@ -820,7 +851,7 @@ class SkillInstallDialog(QDialog):
         super().__init__(parent)
         self.mw = mw
         self.setWindowTitle("🛡 从 GitHub 装技能（先审查后装）")
-        self.resize(820, 760)
+        _fit_dlg(self, 820, 760)
         self.worker = None
         self.audit_worker = None
         self.repo = None          # 当前选中的 owner/repo
@@ -1156,7 +1187,7 @@ class SkillGapCandidateDialog(QDialog):
         self.data = data
         self.gaps = [g for g in (gaps or []) if isinstance(g, dict) and g.get("name")]
         self.setWindowTitle("🛡 技能缺口候选（自动找好，你批了才装）")
-        self.resize(760, 580)
+        _fit_dlg(self, 760, 580)
         self.gap_lists = {}
         self.gap_status = {}
         self.gap_meta = {}
@@ -1378,7 +1409,7 @@ class ProjectEditor(QDialog):
     def __init__(self, project=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("项目信息")
-        self.resize(520, 340)
+        _fit_dlg(self, 520, 340)
         p = project or legion.new_project()
 
         self.e_emoji = QLineEdit(p.get("emoji", ""))
@@ -1474,7 +1505,7 @@ class RecipeLaunchDialog(QDialog):
     def __init__(self, project, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"启动配方 · {project.get('name', '')}")
-        self.resize(460, 200)
+        _fit_dlg(self, 460, 200)
         self._project = project
         form = QFormLayout()
         self._edits = {}
@@ -1546,7 +1577,7 @@ class LegionWindow(QWidget):
             # 且没有自己的标题栏/关闭按钮。Qt.Window 让它带标题栏 + 关闭 X。
             # （内嵌模式反过来——绝不能设 Qt.Window，否则在页面里又弹独立窗。）
             self.setWindowFlags(self.windowFlags() | Qt.Window)
-            self.resize(1040, 720)
+            _fit_dlg(self, 1040, 720)
         self._build_ui()
         self._refresh_projects()
         if not self.embedded:
@@ -1707,6 +1738,10 @@ class LegionWindow(QWidget):
         rb.addWidget(self.pm_box)
         rv.addWidget(run_box)
 
+        # v4.183.0：授权审计流（复用 legion_auth.jsonl + legion_tool_audit.jsonl）
+        self.audit_feed = LegionAuditFeed()
+        rv.addWidget(self.audit_feed, 1)
+
         # v4.148.1（UI 化繁为简，大哥定调）：页面重排为「💬 聊天（默认）/ 👥 角色库 /
         # 🧩 团队库 / ⚙️ 编排（高级，默认隐藏）」。编排页整段代码保留不删 —— 续跑/
         # 波次微调/补录数据等高级操作仍挂在它上面，点 ⚙️ 随时可展开；日常只面对聊天页。
@@ -1723,11 +1758,15 @@ class LegionWindow(QWidget):
         right_container = QWidget()
         rcv = QVBoxLayout(right_container)
         rcv.setContentsMargins(0, 0, 0, 0)
-        rcv.setSpacing(6)
+        rcv.setSpacing(8)
+
+        # v4.183.0：军团实时状态条（常驻所有页顶部，跨页可见）
+        self.status_strip = LegionStatusStrip()
+        rcv.addWidget(self.status_strip)
 
         # 顶部 tab 切换条（聊天 / 角色库 / 团队库 / ⚙️编排）
         tab_row = QHBoxLayout()
-        tab_row.setSpacing(6)
+        tab_row.setSpacing(8)
         self._tab_chat = QPushButton("💬 聊天")
         self._tab_roles = QPushButton("👥 角色库")
         self._tab_teams = QPushButton("🧩 团队库")
@@ -1797,9 +1836,9 @@ class LegionWindow(QWidget):
         """按选中态给 tab 上色（active=accent / inactive=card）。"""
         from ui import THEME
         active = (f"QPushButton{{background:{THEME['accent']};color:#fff;border:none;"
-                  f"border-radius:8px;padding:0 18px;font-size:13px;font-weight:600;}}")
+                  f"border-radius:8px;padding:0 16px;font-size:13px;font-weight:600;}}")
         inactive = (f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
-                    f"border:1px solid {THEME['border']};border-radius:8px;padding:0 18px;"
+                    f"border:1px solid {THEME['border']};border-radius:8px;padding:0 16px;"
                     f"font-size:13px;}}"
                     f"QPushButton:disabled{{color:{THEME['faint']};}}")
         for _tb in (self._tab_chat, self._tab_roles, self._tab_teams, self._tab_orch):
@@ -1831,7 +1870,7 @@ class LegionWindow(QWidget):
         self.role_detail = QTextBrowser()
         self.role_detail.setStyleSheet(
             f"QTextBrowser{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:10px;padding:10px 12px;font-size:13px;color:{THEME['text']};}}")
+            f"border-radius:10px;padding:12px 12px;font-size:13px;color:{THEME['text']};}}")
         rv.addWidget(self.role_detail, 1)
         rb = QHBoxLayout()
         self.role_edit_btn = QPushButton("✏️ 编辑此角色")
@@ -2283,6 +2322,11 @@ class LegionWindow(QWidget):
                 self.chat_panel.reload_for_project(self.cur_project_id)
             except Exception:
                 pass
+        # v4.183.0：换项目加载该项目的授权审计流
+        try:
+            self.audit_feed.load(self.cur_project_id)
+        except Exception:
+            pass
 
     def _refresh_head(self):
         p = self._cur_project()
@@ -2351,7 +2395,7 @@ class LegionWindow(QWidget):
 
         dlg = QDialog(self)
         dlg.setWindowTitle("📎 手工补录数据 · 归属管理")
-        dlg.resize(620, 380)
+        _fit_dlg(dlg, 620, 380)
         v = QVBoxLayout(dlg)
         v.addWidget(QLabel(
             "只有**挂载到本项目**的补录文件才会注入 PM 提示词。\n"
@@ -2843,7 +2887,7 @@ class LegionWindow(QWidget):
                 f"   依据：{r.get('reason') or '-'}（指纹 {r.get('fingerprint')}）")
         dlg = QDialog(self)
         dlg.setWindowTitle("授权审计记录（最近 %d 条）" % len(recs))
-        dlg.resize(720, 480)
+        _fit_dlg(dlg, 720, 480)
         lay = QVBoxLayout(dlg)
         tv = QTextEdit()
         tv.setReadOnly(True)
@@ -3224,7 +3268,7 @@ class LegionWindow(QWidget):
         """
         dlg = QDialog(self)
         dlg.setWindowTitle("任务模板")
-        dlg.resize(420, 380)
+        _fit_dlg(dlg, 420, 380)
         lay = QVBoxLayout(dlg)
         lay.addWidget(QLabel("已存模板（套用 = 把任务提示填进输入框）："))
         lst = QListWidget()
@@ -3375,6 +3419,14 @@ class LegionWindow(QWidget):
         # v4.124.8：PM 判定「需重走流程」时的拍板弹窗
         self.worker.replan_request.connect(self._on_replan_request)
         self.worker.replan_request.connect(self.chat_panel.on_replan)  # v4.135.0 对话页同步
+        # v4.183.0：任务板状态广播 → 状态条实时刷新
+        self.worker.board_update.connect(self.status_strip.on_board)
+        self.status_strip.reset()
+        try:
+            _waves = legion.wave_members(p)
+            self.status_strip.set_total_waves(len(_waves))
+        except Exception:
+            pass
         self.worker.start()
         # v4.124.8：启用「联系项目经理」（仅验收开启、有 PM 时才有意义）
         gate_mode = (p.get("gate_mode") or "").strip()
@@ -3527,6 +3579,10 @@ class LegionWindow(QWidget):
         b_pass.clicked.connect(lambda: _finish("pass"))
         b_reject.clicked.connect(lambda: _finish("reject"))
         b_abort.clicked.connect(lambda: _finish("abort"))
+        # v4.180.0：钳进屏幕可用区 —— 报告正文长时弹窗会撑高，底部三个决策
+        # 按钮（放行/打回/终止）会沉到屏幕外点不到。正文框可滚动，钳制后
+        # 内容在框内滚，按钮永远可见。这是「授权弹窗超出屏幕点不到」的直接修复。
+        _fit_dlg(dlg, 660, 0)
         dlg.exec()
 
         val = result["val"]
@@ -3642,6 +3698,11 @@ class LegionWindow(QWidget):
                 dlg.exec()
         except Exception as e:
             log.warning("技能缺口候选面板打开失败: %s", e)
+        # v4.183.0：跑完刷新授权审计流（此时两账本已落盘）
+        try:
+            self.audit_feed.load(self._worker_pid)
+        except Exception as e:
+            log.warning("审计流刷新失败: %s", e)
 
     # ---- v4.124.15：报告落盘 + 交付 ----
     def _save_and_deliver_report(self, text):

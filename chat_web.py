@@ -90,20 +90,20 @@ def _build_html(theme: dict) -> str:
 * {{ box-sizing: border-box; }}
 html, body {{ margin:0; padding:0; background: {t.get("bg", "#F7F8FC")};
   font-family: "Microsoft YaHei", "Segoe UI", sans-serif; }}
-#container {{ padding: 10px 14px 24px 14px; }}
+#container {{ padding: 12px 12px 24px 12px; }}
 .msg-row {{ display:flex; margin: 12px 0; animation: bubbleIn .18s ease-out; }}
 .msg-row.user {{ justify-content: flex-end; }}
 @keyframes bubbleIn {{ from {{ opacity:0; transform: translateY(6px); }}
                        to   {{ opacity:1; transform: none; }} }}
 .avatar {{ width:30px; height:30px; border-radius:50%; flex:0 0 30px;
-  object-fit: cover; margin-top: 2px; }}
-.msg-row.ai .avatar {{ margin-right: 10px; }}
-.msg-row.user .avatar {{ margin-left: 10px; }}
+  object-fit: cover; margin-top: 4px; }}
+.msg-row.ai .avatar {{ margin-right: 12px; }}
+.msg-row.user .avatar {{ margin-left: 12px; }}
 .col {{ max-width: 78%; display:flex; flex-direction: column; }}
 .msg-row.user .col {{ align-items: flex-end; }}
 .who {{ font-size: 12px; font-weight: 500; color: {t.get("dim", "#5F6368")};
-  margin: 0 0 4px 2px; }}
-.bubble {{ font-size: 13.5px; line-height: 1.7; padding: 9px 14px;
+  margin: 0 0 4px 4px; }}
+.bubble {{ font-size: 13.5px; line-height: 1.7; padding: 8px 12px;
   text-align: left; word-break: break-word; overflow-wrap: anywhere; }}
 .msg-row.ai .bubble {{ background: {t.get("asst_bg", "#FFFFFF")};
   color: {t.get("asst_text", "#202124")}; border: 1px solid {t.get("border", "#E5E7EB")};
@@ -113,11 +113,11 @@ html, body {{ margin:0; padding:0; background: {t.get("bg", "#F7F8FC")};
   border-radius: 14px; }}
 .bubble a {{ color: {t.get("link", "#1A73E8")}; text-decoration: none; }}
 .bubble a:hover {{ text-decoration: underline; }}
-.actions {{ margin: 3px 0 0 4px; font-size: 11px; }}
+.actions {{ margin: 4px 0 0 4px; font-size: 11px; }}
 .actions a {{ color: {t.get("link", "#1A73E8")}; text-decoration: none; margin-right: 12px;
   opacity: .85; }}
 .actions a:hover {{ opacity: 1; text-decoration: underline; }}
-.actions .sep {{ color: {t.get("faint", "#9AA0A6")}; margin-right: 10px; }}
+.actions .sep {{ color: {t.get("faint", "#9AA0A6")}; margin-right: 12px; }}
 /* ---- markdown ---- */
 .bubble h1,.bubble h2,.bubble h3 {{ margin: .5em 0 .3em; line-height: 1.35; }}
 .bubble h1 {{ font-size: 1.25em; }} .bubble h2 {{ font-size: 1.15em; }} .bubble h3 {{ font-size: 1.05em; }}
@@ -125,26 +125,26 @@ html, body {{ margin:0; padding:0; background: {t.get("bg", "#F7F8FC")};
 .bubble ul,.bubble ol {{ margin: .35em 0; padding-left: 1.4em; }}
 .bubble li {{ margin: .15em 0; }}
 .bubble code {{ font-family: Consolas, "Courier New", monospace; font-size: .92em;
-  background: {t.get("panel2", "#F1F3F4")}; border-radius: 4px; padding: 1px 5px; }}
+  background: {t.get("panel2", "#F1F3F4")}; border-radius: 6px; padding: 4px 8px; }}
 .bubble pre {{ background: #1E1F22; color: #DADDE1; border-radius: 8px;
-  padding: 10px 12px; overflow-x: auto; margin: .5em 0; }}
+  padding: 12px 12px; overflow-x: auto; margin: .5em 0; }}
 .bubble pre code {{ background: none; color: inherit; padding: 0; font-size: 12.5px;
   line-height: 1.55; }}
-.bubble blockquote {{ margin: .4em 0; padding: 2px 12px; border-left: 3px solid
+.bubble blockquote {{ margin: .4em 0; padding: 4px 12px; border-left: 3px solid
   {t.get("accent", "#1A73E8")}; color: {t.get("dim", "#5F6368")};
   background: {t.get("panel2", "#F1F3F4")}; border-radius: 0 6px 6px 0; }}
 .bubble table {{ border-collapse: collapse; margin: .5em 0; font-size: 12.5px; }}
 .bubble th,.bubble td {{ border: 1px solid {t.get("border", "#E5E7EB")};
-  padding: 4px 10px; }}
+  padding: 4px 12px; }}
 .bubble th {{ background: {t.get("panel2", "#F1F3F4")}; }}
 .bubble img {{ max-width: 100%; border-radius: 8px; }}
 .bubble hr {{ border: none; border-top: 1px solid {t.get("border", "#E5E7EB")}; margin: .8em 0; }}
 /* ---- 工具卡 ---- */
 .tool-card {{ background: {t.get("elev", "#FFFFFF")}; border: 1px solid {t.get("border", "#E5E7EB")};
-  border-radius: 8px; padding: 6px 12px; margin: 4px 0; font-size: 12px;
+  border-radius: 8px; padding: 8px 12px; margin: 4px 0; font-size: 12px;
   display: inline-block; }}
 .tool-dot {{ display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-  margin-right: 6px; }}
+  margin-right: 8px; }}
 .tool-dot.running {{ background: {t.get("tool_running", "#FBBC04")};
   animation: pulse 1.2s infinite; }}
 .tool-dot.done {{ background: {t.get("tool_done", "#34A853")}; }}
@@ -155,7 +155,7 @@ html, body {{ margin:0; padding:0; background: {t.get("bg", "#F7F8FC")};
 .tool-wrap {{ margin: 8px 0 8px 40px; }}
 .tool-wrap .tool-card {{ border-left: 3px solid {t.get("tool_done", "#34A853")}; }}
 /* ---- 搜索高亮 ---- */
-mark {{ background: #ffd54f; color: #000; border-radius: 2px; padding: 0 1px; }}
+mark {{ background: #ffd54f; color: #000; border-radius: 6px; padding: 0 4px; }}
 /* ---- 流式光标 ---- */
 #stream-bubble .bubble::after {{ content: "▍"; color: {t.get("accent", "#1A73E8")};
   animation: pulse 1s infinite; }}

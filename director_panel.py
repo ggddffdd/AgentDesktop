@@ -39,6 +39,7 @@ from PySide6.QtGui import QPixmap, QIcon, QDesktopServices, QColor
 from PySide6.QtCore import Qt, QSize, QThread, Signal, QUrl, QObject
 
 from ui import THEME
+from ui import clamp_dialog_to_screen as _clamp_dlg
 from config import APP_DIR, WORKSPACE_DIR
 from director_web import (
     DirectorWebView, register_localres_scheme,
@@ -46,6 +47,22 @@ from director_web import (
     clue_card_html,
     project_token, set_project_token,
 )
+
+
+def _fit_dlg(dlg, w, h):
+    """v4.180.0：按屏幕可用区钳制弹窗尺寸 + 居中，保证底部按钮可见可点。
+
+    替代裸 dlg.resize(w, h)：硬编码尺寸在笔记本缩放屏（可用高度可能只有
+    600~880px）下会把底部按钮顶到屏幕外。
+    """
+    try:
+        _clamp_dlg(dlg, want_w=w, want_h=h)
+    except Exception:
+        try:
+            dlg.resize(w, h)
+        except Exception:
+            pass
+    return dlg
 
 
 # ---------- 异常兜底装饰器 ----------
@@ -160,49 +177,43 @@ STEP_LABELS = ["主题", "剧本", "人物", "分镜", "关键帧", "生成", "�
 
 
 # ---------- 样式 ----------
+# v4.182.0 收编：以下七函数改为 theme_qss 中心层兼容壳（真源已迁 theme_qss.py，
+# 旧函数名保留 → 调用点零改动；惰性导入防循环依赖）。
 def _btn_style():
-    return (f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
-            f"border:1px solid {THEME['border']};border-radius:8px;padding:0 14px;font-size:13px;}}"
-            f"QPushButton:hover{{background:{THEME['blue_hover']};}}"
-            f"QPushButton:disabled{{color:{THEME['dim']};}}")
+    from theme_qss import btn_outline
+    return btn_outline()
 
 
 def _btn_accent_style():
-    return (f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
-            f"border-radius:8px;padding:0 18px;font-size:14px;font-weight:500;}}"
-            f"QPushButton:hover{{background:{THEME['accent_hover']};}}"
-            f"QPushButton:disabled{{background:{THEME['dim']};}}")
+    # 强调按钮 14px（分场景归档决策：主输入框/强调按钮专用值）
+    from theme_qss import btn_primary, F, W
+    return btn_primary(font_size=F["input"], weight=W["medium"],
+                       disabled_color=THEME["dim"])
 
 
 def _btn_danger_style():
-    return (f"QPushButton{{background:{THEME['card']};color:{THEME["danger_text"]};"
-            f"border:1px solid {THEME['border']};border-radius:8px;padding:0 12px;font-size:12px;}}"
-            f"QPushButton:hover{{background:{THEME['danger_hover_dark']};}}")
+    from theme_qss import btn_danger
+    return btn_danger()
 
 
 def _btn_small_style():
-    return (f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
-            f"border:1px solid {THEME['border']};border-radius:6px;padding:0 10px;font-size:12px;}}"
-            f"QPushButton:hover{{background:{THEME['blue_hover']};}}"
-            f"QPushButton:disabled{{color:{THEME['dim']};}}")
+    from theme_qss import btn_small
+    return btn_small()
 
 
 def _edit_style():
-    return (f"QTextEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:10px;padding:10px 12px;font-size:13px;color:{THEME['text']};}}"
-            f"QTextEdit:focus{{border:1px solid {THEME['accent']};}}")
+    from theme_qss import edit_style
+    return edit_style()
 
 
 def _combo_style():
-    return (f"QComboBox{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:8px;padding:0 10px;font-size:13px;color:{THEME['text']};}}"
-            f"QComboBox::drop-down{{border:none;}}"
-            f"QComboBox:disabled{{color:{THEME['dim']};}}")
+    from theme_qss import combo_style
+    return combo_style()
 
 
 def _chk_style():
-    return (f"QCheckBox{{color:{THEME['text']};font-size:13px;spacing:6px;}}"
-            f"QCheckBox::indicator{{width:16px;height:16px;}}")
+    from theme_qss import chk_style
+    return chk_style()
 
 
 def _chip_style():
@@ -210,7 +221,7 @@ def _chip_style():
     仅改视觉，isChecked() 语义零变化。"""
     return (
         f"QCheckBox{{background:{THEME['card']};color:{THEME['dim']};"
-        f"border:1px solid {THEME['border']};border-radius:12px;"
+        f"border:1px solid {THEME['border']};border-radius:10px;"
         f"padding:4px 12px;font-size:12px;}}"
         f"QCheckBox:hover{{border-color:{THEME['border_highlight']};color:{THEME['text']};}}"
         f"QCheckBox:checked{{background:{THEME['accent']};color:white;"
@@ -225,11 +236,11 @@ def _segment_style(checked=False):
     side_l = "border-top-left-radius:8px;border-bottom-left-radius:8px;" if checked else ""
     if checked:
         return (f"QRadioButton{{background:{THEME['accent']};color:white;border:1px solid {THEME['accent']};"
-                f"{side_l}padding:5px 14px;font-size:12px;font-weight:600;}}"
+                f"{side_l}padding:8px 12px;font-size:12px;font-weight:600;}}"
                 f"QRadioButton::indicator{{width:0;height:0;}}")
     return (f"QRadioButton{{background:{THEME['card']};color:{THEME['dim']};"
             f"border:1px solid {THEME['border']};border-left:none;"
-            f"{side_r}padding:5px 14px;font-size:12px;}}"
+            f"{side_r}padding:8px 12px;font-size:12px;}}"
             f"QRadioButton:hover{{color:{THEME['text']};border-color:{THEME['border_highlight']};}}"
             f"QRadioButton::indicator{{width:0;height:0;}}")
 
@@ -556,10 +567,10 @@ def build_director_panel(app):
     body = QWidget()
     lay = QVBoxLayout(body)
     lay.setContentsMargins(24, 16, 24, 20)
-    lay.setSpacing(10)
+    lay.setSpacing(12)
 
     head = QLabel("导演台 · video-agent")
-    head.setStyleSheet(f"font-size:20px;font-weight:700;color:{THEME['text']};")
+    head.setStyleSheet(f"font-size:{THEME['font_title_xl']};font-weight:700;color:{THEME['text']};")
     lay.addWidget(head)
     sub = QLabel("主题 → ①剧本（可改）→ ②人物三视图（角色锁定）→ ③分镜（逐镜可改）→ "
                  "④关键帧+场景图 → ⑤逐镜生成（每镜可预览/单镜改）→ ⑥合成成片。"
@@ -583,7 +594,7 @@ def build_director_panel(app):
         if i < len(STEP_LABELS) - 1:
             ar = QLabel("›")
             ar.setAlignment(Qt.AlignCenter)
-            ar.setStyleSheet(f"color:{THEME['dim']};font-size:14px;")
+            ar.setStyleSheet(f"color:{THEME['dim']};font-size:{THEME['font_body']};")
             step_lay.addWidget(ar)
     lay.addWidget(step_box)
 
@@ -591,9 +602,9 @@ def build_director_panel(app):
     app.director_inputs = []
     params = QGroupBox("创作参数")
     params.setStyleSheet(f"QGroupBox{{background:transparent;border:1px solid {THEME['border']};"
-                         f"border-radius:10px;padding:16px 18px 14px;font-size:13px;color:{THEME['text']};}}")
+                         f"border-radius:10px;padding:16px 16px 12px;font-size:13px;color:{THEME['text']};}}")
     pl = QVBoxLayout(params)
-    pl.setSpacing(14)
+    pl.setSpacing(12)
 
     # --- 主题 ---
     tlab = QLabel("视频主题 / 口播原稿（中文，越具体越好）")
@@ -753,7 +764,7 @@ def build_director_panel(app):
     # --- 2.5 行：模式/内容开关灰字说明 ---
     app.director_mode_hint = QLabel(
         "剧情短片：AI 编故事分镜，走完整流水线 · 本人形象口播：锁照片说话，台词默认直通（台词芯片仅在短片模式下生效）")
-    app.director_mode_hint.setStyleSheet(f"font-size:11px;color:{THEME['faint']};padding-left:2px;")
+    app.director_mode_hint.setStyleSheet(f"font-size:11px;color:{THEME['faint']};padding-left:4px;")
     pl.addWidget(app.director_mode_hint)
 
     # --- 第三行：参考图 ---
@@ -837,7 +848,7 @@ def build_director_panel(app):
     story_page = QWidget()
     sl = QVBoxLayout(story_page)
     sl.setContentsMargins(0, 0, 0, 0)
-    sl.setSpacing(10)
+    sl.setSpacing(12)
     shint = QLabel("① 剧本已生成。可直接编辑下面文字，或点「✎ 重写剧本」→ 在下方「导演对话」里补一句意见。"
                    "满意后点「采用剧本」，也可以在对话框里直接说「采用」。")
     shint.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
@@ -867,7 +878,7 @@ def build_director_panel(app):
     characters_page = QWidget()
     cl0 = QVBoxLayout(characters_page)
     cl0.setContentsMargins(0, 0, 0, 0)
-    cl0.setSpacing(10)
+    cl0.setSpacing(12)
     chint = QLabel("② 人物三视图已生成。每个角色含正面/侧面/背面三视图，可据此判断人物是否会崩；"
                    "满意后点「采用人物 → 去分镜」。不满意可「✎ 重新生成人物」→ 在下方「导演对话」"
                    "里说清改谁、怎么改（如「角色1换成红衣服」），也可以点角色卡上的「✎ 说一句怎么改」。")
@@ -919,7 +930,7 @@ def build_director_panel(app):
     shots_page = QWidget()
     shl = QVBoxLayout(shots_page)
     shl.setContentsMargins(0, 0, 0, 0)
-    shl.setSpacing(10)
+    shl.setSpacing(12)
     shhint = QLabel("② 分镜已生成。可逐镜修改「中文/英文提示词/运镜/台词/场景」，也可删镜或加镜；"
                     "满意后点「采用分镜 → 生成」。要让分镜整体重排，点「✎ 重排分镜」→ 在下方"
                     "「导演对话」里说怎么改（如「开头太慢，第一镜给个特写」）。")
@@ -960,7 +971,7 @@ def build_director_panel(app):
     keyframes_page = QWidget()
     kl = QVBoxLayout(keyframes_page)
     kl.setContentsMargins(0, 0, 0, 0)
-    kl.setSpacing(10)
+    kl.setSpacing(12)
     khint = QLabel("④ 分镜关键帧+场景图已生成。每镜一张首帧参照图，逐镜生成时会自动作为首帧注入，"
                    "人物与场景更不易崩坏；满意后点「采用关键帧 → 去生成」。"
                    "只想改某一镜 → 点那张卡上的「✎ 说一句怎么改」（如「改成雨夜，灯笼亮起来」），"
@@ -996,7 +1007,7 @@ def build_director_panel(app):
     clips_page = QWidget()
     cl = QVBoxLayout(clips_page)
     cl.setContentsMargins(0, 0, 0, 0)
-    cl.setSpacing(10)
+    cl.setSpacing(12)
     app.director_clips_progress = QLabel("⑤ 准备逐镜生成…")
     app.director_clips_progress.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
     cl.addWidget(app.director_clips_progress)
@@ -1028,7 +1039,7 @@ def build_director_panel(app):
     merge_page = QWidget()
     ml = QVBoxLayout(merge_page)
     ml.setContentsMargins(0, 0, 0, 0)
-    ml.setSpacing(10)
+    ml.setSpacing(12)
     mhint = QLabel("⑥ 全部片段已生成。可回「生成」步骤单镜修改，或直接点「合成成片」。")
     mhint.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
     ml.addWidget(mhint)
@@ -1077,7 +1088,7 @@ def build_director_panel(app):
     app.director_log.setFixedHeight(80)
     app.director_log.setStyleSheet(
         f"QTextEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
-        f"border-radius:10px;padding:8px 10px;font-size:12px;color:{THEME['text']};}}")
+        f"border-radius:10px;padding:8px 12px;font-size:12px;color:{THEME['text']};}}")
     lay.addWidget(app.director_log)
 
     # 把所有内容装入滚动区，挂到页面
@@ -1127,12 +1138,12 @@ def build_director_panel(app):
 def _step_style(active, done=False):
     if active:
         return (f"QLabel{{background:{THEME['accent']};color:white;border-radius:14px;"
-                f"font-size:13px;font-weight:600;padding:0 10px;}}")
+                f"font-size:13px;font-weight:600;padding:0 12px;}}")
     if done:
         return (f"QLabel{{background:{THEME['card']};color:{THEME["live_green"]};border:1px solid {THEME['border']};"
-                f"border-radius:14px;font-size:13px;padding:0 10px;}}")
+                f"border-radius:14px;font-size:13px;padding:0 12px;}}")
     return (f"QLabel{{background:transparent;color:{THEME['dim']};border:1px solid {THEME['border']};"
-            f"border-radius:14px;font-size:13px;padding:0 10px;}}")
+            f"border-radius:14px;font-size:13px;padding:0 12px;}}")
 
 
 def _set_step(app, step):
@@ -1910,14 +1921,14 @@ def _show_understand_card(app, topic_raw, info, on_ok):
     dlg.setMinimumWidth(660)
     dlg.setStyleSheet(f"QDialog{{background:{THEME['bg']};}}")
     v = QVBoxLayout(dlg)
-    v.setSpacing(10)
+    v.setSpacing(12)
     v.setContentsMargins(18, 18, 18, 18)
 
     head = QLabel(f"你的主题：{topic_raw}")
     head.setWordWrap(True)
     head.setStyleSheet(
         f"color:{THEME['text']};font-size:13px;font-weight:600;background:{THEME['card']};"
-        f"border:1px solid {THEME['border']};border-radius:8px;padding:10px 12px;")
+        f"border:1px solid {THEME['border']};border-radius:8px;padding:12px 12px;")
     v.addWidget(head)
 
     tip = QLabel("下面是它对你这句主题的理解。**不对就直接改**，改完点「确认并开写」——"
@@ -2901,13 +2912,13 @@ def _view_prompt(app, idx):
     dlg.setMinimumWidth(540)
     dlg.setStyleSheet(f"QDialog{{background:{THEME['bg']};}}")
     v = QVBoxLayout(dlg)
-    v.setSpacing(10)
+    v.setSpacing(12)
     v.setContentsMargins(16, 16, 16, 16)
     if err:
         el = QLabel(f"⚠️ 上次失败原因：\n{err}")
         el.setWordWrap(True)
         el.setStyleSheet(f"color:{THEME["danger_text"]};font-size:12px;background:{THEME['card']};"
-                         f"border:1px solid {THEME["danger_text"]};border-radius:6px;padding:8px 10px;")
+                         f"border:1px solid {THEME["danger_text"]};border-radius:6px;padding:8px 12px;")
         v.addWidget(el)
     tl = QLabel("本次发给模型（Agnes）的实际提示词：")
     tl.setStyleSheet(f"color:{THEME['text']};font-size:12px;font-weight:600;")
@@ -2942,13 +2953,13 @@ def _modify_clip(app, idx):
     dlg.setMinimumWidth(560)
     dlg.setStyleSheet(f"QDialog{{background:{THEME['bg']};}}")
     v = QVBoxLayout(dlg)
-    v.setSpacing(10)
+    v.setSpacing(12)
     v.setContentsMargins(16, 16, 16, 16)
     if err:
         el = QLabel(f"⚠️ 上次失败原因：\n{err}")
         el.setWordWrap(True)
         el.setStyleSheet(f"color:{THEME["danger_text"]};font-size:12px;background:{THEME['card']};"
-                         f"border:1px solid {THEME["danger_text"]};border-radius:6px;padding:8px 10px;")
+                         f"border:1px solid {THEME["danger_text"]};border-radius:6px;padding:8px 12px;")
         v.addWidget(el)
     tl = QLabel("本次已发给模型的提示词（可照抄其中想保留的设定）：")
     tl.setStyleSheet(f"color:{THEME['text']};font-size:12px;font-weight:600;")
@@ -2958,7 +2969,7 @@ def _modify_clip(app, idx):
     prev.setPlainText(prompt or "（暂无，可能这镜还没生成过）")
     prev.setMaximumHeight(130)
     prev.setStyleSheet(f"QTextEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
-                       f"border-radius:6px;padding:6px 8px;font-size:11px;color:{THEME['dim']};}}")
+                       f"border-radius:6px;padding:8px 8px;font-size:11px;color:{THEME['dim']};}}")
     v.addWidget(prev)
     il = QLabel("你的修改意见（告诉它这一镜怎么改；留空=直接重生成）：")
     il.setStyleSheet(f"color:{THEME['text']};font-size:12px;font-weight:600;")
@@ -2979,7 +2990,7 @@ def _modify_clip(app, idx):
                            "原提示词含触发词必须整段换掉。")
     v.addWidget(replace_chk)
     btns = QHBoxLayout()
-    btns.setSpacing(10)
+    btns.setSpacing(12)
     cancel = QPushButton("取消")
     cancel.setStyleSheet(_btn_style())
     cancel.clicked.connect(dlg.reject)
@@ -3737,7 +3748,7 @@ def _open_project_spec(app):
     spec = dict(getattr(app, "director_spec", {}) or {})
     dlg = QDialog(app)
     dlg.setWindowTitle("项目设定 · 制作规格")
-    dlg.resize(680, 640)
+    _fit_dlg(dlg, 680, 640)
     lay = QVBoxLayout(dlg)
     lay.setContentsMargins(20, 18, 20, 16)
     lay.setSpacing(8)
@@ -3863,10 +3874,10 @@ def _open_media_library(app):
 
     dlg = QDialog(app)
     dlg.setWindowTitle("媒体库 · 本片素材")
-    dlg.resize(920, 600)
+    _fit_dlg(dlg, 920, 600)
     root = QHBoxLayout(dlg)
     root.setContentsMargins(18, 16, 18, 16)
-    root.setSpacing(14)
+    root.setSpacing(12)
 
     left = QVBoxLayout()
     tip = QLabel("「关联」= 这件素材用在哪一镜；标「未关联」的说明它还没参与任何一镜的生成。")
@@ -3883,7 +3894,7 @@ def _open_media_library(app):
         f"QTableWidget{{background:{THEME['card']};border:1px solid {THEME['border']};"
         f"border-radius:10px;color:{THEME['text']};font-size:12px;gridline-color:{THEME['border']};}}"
         f"QHeaderView::section{{background:{THEME['bg']};color:{THEME['dim']};"
-        f"border:none;padding:6px;font-size:12px;}}")
+        f"border:none;padding:8px;font-size:12px;}}")
     tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
     tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
     tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
@@ -3900,7 +3911,7 @@ def _open_media_library(app):
     left.addWidget(tbl, 1)
 
     right = QVBoxLayout()
-    right.setSpacing(10)
+    right.setSpacing(12)
     prev = QLabel("预览")
     prev.setFixedSize(260, 260)
     prev.setAlignment(Qt.AlignCenter)
@@ -3999,10 +4010,10 @@ def _prompt_preview_dialog(app, title, tip, drafts):
     """列出每镜 prompt 草稿供编辑。返回 {镜号: 文本}；点取消返回 None。"""
     dlg = QDialog(app)
     dlg.setWindowTitle(title)
-    dlg.resize(780, 640)
+    _fit_dlg(dlg, 780, 640)
     lay = QVBoxLayout(dlg)
     lay.setContentsMargins(18, 16, 18, 14)
-    lay.setSpacing(10)
+    lay.setSpacing(12)
 
     hint = QLabel(tip)
     hint.setWordWrap(True)
@@ -4102,7 +4113,7 @@ def _open_export_dialog(app):
 
     dlg = QDialog(app)
     dlg.setWindowTitle("导出")
-    dlg.resize(560, 300)
+    _fit_dlg(dlg, 560, 300)
     lay = QVBoxLayout(dlg)
     lay.setContentsMargins(22, 20, 22, 18)
     lay.setSpacing(12)
@@ -4219,10 +4230,10 @@ def _open_timeline(app):
 
     dlg = QDialog(app)
     dlg.setWindowTitle("时间线编排 · 音频与字幕")
-    dlg.resize(900, 590)
+    _fit_dlg(dlg, 900, 590)
     root = QVBoxLayout(dlg)
     root.setContentsMargins(18, 16, 18, 14)
-    root.setSpacing(10)
+    root.setSpacing(12)
     tabs = QTabWidget()
     root.addWidget(tabs, 1)
 
@@ -4231,8 +4242,8 @@ def _open_timeline(app):
     sub0 = tl.get("sub") if isinstance(tl.get("sub"), dict) else {}
     tab2 = QWidget()
     l2 = QVBoxLayout(tab2)
-    l2.setContentsMargins(14, 14, 14, 12)
-    l2.setSpacing(10)
+    l2.setContentsMargins(12, 12, 12, 12)
+    l2.setSpacing(12)
 
     g1 = QGroupBox("背景音乐")
     f1 = QVBoxLayout(g1)
@@ -4584,7 +4595,7 @@ def _open_timeline(app):
 
     # ---------------- 底部 ----------------
     brow2 = QHBoxLayout()
-    brow2.setSpacing(10)
+    brow2.setSpacing(12)
 
     def _apply():
         p.set_timeline(_collect())
@@ -4647,10 +4658,10 @@ def _open_versions(app, kind, idx):
 
     dlg = QDialog(app)
     dlg.setWindowTitle(f"版本对比 · {kname}{idx + 1}（共 {len(items)} 版）")
-    dlg.resize(800, 480)
+    _fit_dlg(dlg, 800, 480)
     lay = QHBoxLayout(dlg)
     lay.setContentsMargins(16, 14, 16, 12)
-    lay.setSpacing(14)
+    lay.setSpacing(12)
 
     lst = QListWidget()
     lst.setFixedWidth(280)
@@ -4661,7 +4672,7 @@ def _open_versions(app, kind, idx):
     lay.addWidget(lst)
 
     right = QVBoxLayout()
-    right.setSpacing(10)
+    right.setSpacing(12)
     prev = QLabel("—")
     prev.setFixedSize(380, 300)
     prev.setAlignment(Qt.AlignCenter)

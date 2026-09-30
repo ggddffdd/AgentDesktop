@@ -186,7 +186,7 @@ class ToolManagerWindow(QMainWindow):
 
         self.status_bar = QLabel("就绪")
         self.status_bar.setStyleSheet(
-            "color: gray; font-size: 11px; border-top: 1px solid #eee; padding: 5px;")
+            "color: gray; font-size: 11px; border-top: 1px solid #eee; padding:8px;")
         main.addWidget(self.status_bar)
 
     # ---------- 加载 ----------

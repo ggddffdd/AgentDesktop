@@ -277,7 +277,7 @@ def build_automation_panel(app):
     lay.setSpacing(16)
 
     head = QLabel("⏰ 自动化任务")
-    head.setStyleSheet(f"font-size:20px;font-weight:700;color:{THEME['text']};")
+    head.setStyleSheet(f"font-size:{THEME['font_title_xl']};font-weight:700;color:{THEME['text']};")
     lay.addWidget(head)
 
     sub = QLabel("定时提醒 / 定时执行任务。到点后：提醒会弹窗，执行任务会自动交给 Agent 在后台跑（需 App 保持运行）。")
@@ -375,10 +375,10 @@ def _refresh_list(app):
 def _make_card(app, task):
     card = QFrame()
     card.setStyleSheet(
-        f"QFrame{{background:{THEME['card']};border:1px solid {THEME['border']};border-radius:12px;}}")
+        f"QFrame{{background:{THEME['card']};border:1px solid {THEME['border']};border-radius:10px;}}")
     v = QVBoxLayout(card)
     v.setContentsMargins(16, 12, 16, 12)
-    v.setSpacing(6)
+    v.setSpacing(8)
 
     # 第一行：启用 + 名称 + 徽章 + 编辑/删除
     row1 = QHBoxLayout()
@@ -389,14 +389,14 @@ def _make_card(app, task):
     row1.addWidget(chk)
 
     name = QLabel(task.get("name", "未命名"))
-    name.setStyleSheet(f"font-size:14px;font-weight:600;color:{THEME['text']};")
+    name.setStyleSheet(f"font-size:{THEME['font_title']};font-weight:600;color:{THEME['text']};")
     row1.addWidget(name)
 
     action = task.get("action", auto.ACT_REMIND)
     badge = QLabel(auto.ACTION_LABELS.get(action, action))
     badge.setStyleSheet(
         f"background:{_badge_bg(action)};color:white;border-radius:9px;"
-        f"padding:2px 10px;font-size:11px;font-weight:600;")
+        f"padding:4px 12px;font-size:11px;font-weight:600;")
     row1.addWidget(badge)
     row1.addStretch(1)
 
@@ -462,7 +462,7 @@ def _delete(app, task_id):
 _INPUT_QSS = (
     f"QLineEdit,QComboBox,QDateEdit,QTimeEdit,QSpinBox,QTextEdit{{"
     f"background:{THEME['panel2']};border:1px solid {THEME['border']};border-radius:8px;"
-    f"color:{THEME['text']};padding:4px 10px;font-size:13px;}}"
+    f"color:{THEME['text']};padding:4px 12px;font-size:13px;}}"
     f"QLineEdit:focus,QComboBox:focus,QDateEdit:focus,QTimeEdit:focus,QSpinBox:focus,"
     f"QTextEdit:focus{{border-color:{THEME['accent']};}}"
 )
@@ -475,18 +475,18 @@ _BTN_QSS = (
 
 _PRIMARY_QSS = (
     f"QPushButton{{background:{THEME['accent']};color:white;border:none;border-radius:8px;"
-    f"padding:0 18px;font-size:13px;font-weight:500;}}"
+    f"padding:0 16px;font-size:13px;font-weight:500;}}"
     f"QPushButton:hover{{background:{THEME['accent_hover']};}}"
 )
 
 _SMALL_BTN_QSS = (
     f"QPushButton{{background:transparent;color:{THEME['dim']};border:1px solid {THEME['border']};"
-    f"border-radius:7px;font-size:12px;}}"
+    f"border-radius:8px;font-size:12px;}}"
     f"QPushButton:hover{{background:{THEME['panel2']};color:{THEME['text']};}}"
 )
 
 _DANGER_QSS = (
     f"QPushButton{{background:transparent;color:{THEME['danger']};border:1px solid {THEME['border']};"
-    f"border-radius:7px;font-size:12px;}}"
+    f"border-radius:8px;font-size:12px;}}"
     f"QPushButton:hover{{background:{THEME['danger']};color:white;}}"
 )

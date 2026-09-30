@@ -283,7 +283,32 @@ def check_version(scan_dist=True):
     check("exe 内版本与 config 一致", v == appv, f"exe={v} config={appv}")
 
 
-# ---------- ⑤ 打包卫生 ----------
+# ---------- ⑤ 字号 token 守卫（v4.182.0，DESIGN.md §3.2）----------
+# 三个被归档的字面值：10px→font_micro(11)、14px→font_input/title/body/icon_btn、
+# 20px→font_title_xl。主目录 .py 的 QSS 里不得再出现裸字面值，
+# 必须经 THEME["font_*"] 引用。webhook_server.py 是 HTML 模板（Web 区）豁免。
+FONT_GUARD_BANNED = re.compile(r"font-size:\s*(10|14|20)px")
+FONT_GUARD_EXEMPT_FILES = {"webhook_server.py", "theme_qss.py"}
+
+
+def check_font_tokens():
+    bad = []
+    for p in sorted(ROOT.glob("*.py")):
+        if p.name in FONT_GUARD_EXEMPT_FILES:
+            continue
+        try:
+            txt = p.read_text(encoding="utf-8-sig", errors="replace")
+        except Exception:
+            continue
+        for i, line in enumerate(txt.splitlines(), 1):
+            if FONT_GUARD_BANNED.search(line):
+                bad.append(f"{p.name}:{i}")
+    check("字号 token 守卫（无裸 10/14/20px）", not bad,
+          "、".join(bad[:6]) + ("…" if len(bad) > 6 else "") if bad
+          else f"扫描 {len(list(ROOT.glob('*.py')))} 个 .py")
+
+
+# ---------- ⑥ 打包卫生 ----------
 DIST_RUNTIME_DIRS = ["cdp_edge_profile", "incoming", "output", "outputs", "notes", "pages",
                      "temp", "log", "multi_platform", "orchestrate", "rag_data",
                      "director_session.json", "webhook_events.jsonl", "debug.log",
@@ -337,6 +362,7 @@ def main():
         warn("回归测试", "--skip-tests")
     else:
         check_tests()
+    check_font_tokens()
     check_secrets(scan_dist=not args.no_dist)
     check_version(scan_dist=not args.no_dist)
     if args.no_dist:

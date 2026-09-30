@@ -170,12 +170,14 @@ class SkillManagerWindow(QMainWindow):
         right_layout.addWidget(self.detail_name)
 
         self.detail_desc = QLabel("")
-        self.detail_desc.setStyleSheet("font-size: 11px; color: #333;")
+        self.detail_desc.setStyleSheet(
+            f"font-size:{THEME['font_second']};color:{THEME['text']};")
         self.detail_desc.setWordWrap(True)
         right_layout.addWidget(self.detail_desc)
 
         self.detail_meta = QLabel("")
-        self.detail_meta.setStyleSheet("font-size: 10px; color: #888;")
+        self.detail_meta.setStyleSheet(
+            f"font-size:{THEME['font_micro']};color:{THEME['dim']};")
         self.detail_meta.setWordWrap(True)
         right_layout.addWidget(self.detail_meta)
 
@@ -199,7 +201,7 @@ class SkillManagerWindow(QMainWindow):
 
         # 状态栏
         self.status_bar = QLabel("就绪")
-        self.status_bar.setStyleSheet("color: gray; font-size: 11px; border-top: 1px solid #eee; padding: 5px;")
+        self.status_bar.setStyleSheet("color: gray; font-size: 11px; border-top: 1px solid #eee; padding:8px;")
         main_layout.addWidget(self.status_bar)
 
     # ---------- 加载 ----------

@@ -168,13 +168,13 @@ class SkillMarketWindow(QMainWindow):
         self.cards_inner = QWidget()
         self.cards_lay = QVBoxLayout(self.cards_inner)
         self.cards_lay.setContentsMargins(14, 14, 14, 14)
-        self.cards_lay.setSpacing(10)
+        self.cards_lay.setSpacing(12)
         self.scroll.setWidget(self.cards_inner)
         root.addWidget(self.scroll, 1)
 
         # 状态栏
         self.status_bar = QLabel("就绪")
-        self.status_bar.setStyleSheet("color:gray;font-size:11px;border-top:1px solid #eee;padding:5px 2px;")
+        self.status_bar.setStyleSheet("color:gray;font-size:11px;border-top:1px solid #eee;padding:8px 4px;")
         root.addWidget(self.status_bar)
 
     # ---------- 数据加载 ----------
@@ -323,7 +323,7 @@ class SkillMarketWindow(QMainWindow):
 
         badge = QLabel(e.get("category", "未分类"))
         badge.setStyleSheet(
-            "QLabel{background:%s;color:%s;border-radius:10px;padding:2px 10px;font-size:11px;}" % (THEME["accent_violet_bg2"], THEME["accent_violet"])
+            "QLabel{background:%s;color:%s;border-radius:10px;padding:4px 12px;font-size:11px;}" % (THEME["accent_violet_bg2"], THEME["accent_violet"])
         )
         top.addWidget(badge)
 

@@ -133,7 +133,7 @@ class DirectorChatBar(QWidget):
         self._theme = THEME
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 4, 12, 10)
-        lay.setSpacing(6)
+        lay.setSpacing(8)
 
         # v4.150 状态行：常驻显示「第 N/7 步 · 名称 · ⏸ 待你确认」，
         # 让「现在停在哪、是不是在等我点头」一眼可见（原先只能从日志猜）。
@@ -150,7 +150,7 @@ class DirectorChatBar(QWidget):
         self.expand_btn.setToolTip("展开/收起对话区（看懂长回复时用；不影响任何操作）")
         self.expand_btn.setStyleSheet(
             f"QPushButton{{background:transparent;color:{THEME['faint']};border:none;"
-            f"font-size:12px;padding:0 6px;}}"
+            f"font-size:12px;padding:0 8px;}}"
             f"QPushButton:hover{{color:{THEME['text']};}}")
         self.expand_btn.clicked.connect(self._toggle_expand)
         stat_row.addWidget(self.expand_btn)
@@ -163,7 +163,7 @@ class DirectorChatBar(QWidget):
             "在这里指挥导演台：例如「第3镜的关键帧改成夜晚」「主角换成短发」「合成成片」")
         self.log.setStyleSheet(
             f"QTextEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:10px;padding:8px 10px;font-size:12px;color:{THEME['text']};}}")
+            f"border-radius:10px;padding:8px 12px;font-size:12px;color:{THEME['text']};}}")
         lay.addWidget(self.log)
 
         row = QHBoxLayout()
@@ -173,7 +173,7 @@ class DirectorChatBar(QWidget):
         self.input.setPlaceholderText("用大白话下指令，Enter 发送 / Shift+Enter 换行")
         self.input.setStyleSheet(
             f"QTextEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:10px;padding:8px 10px;font-size:13px;color:{THEME['text']};}}")
+            f"border-radius:10px;padding:8px 12px;font-size:13px;color:{THEME['text']};}}")
         self.input.installEventFilter(self)
         row.addWidget(self.input, 1)
 
@@ -186,16 +186,16 @@ class DirectorChatBar(QWidget):
             b.setCursor(Qt.PointingHandCursor)
         self.send_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
-            f"border-radius:10px;padding:0 18px;font-size:13px;font-weight:600;}}"
+            f"border-radius:10px;padding:0 16px;font-size:13px;font-weight:600;}}"
             f"QPushButton:hover{{background:{THEME['accent_hover']};}}"
             f"QPushButton:disabled{{background:{THEME['border']};color:{THEME['faint']};}}")
         self.stop_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
-            f"border:1px solid {THEME['border']};border-radius:10px;padding:0 18px;"
+            f"border:1px solid {THEME['border']};border-radius:10px;padding:0 16px;"
             f"font-size:13px;}}")
         self.clear_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['card']};color:{THEME['faint']};"
-            f"border:1px solid {THEME['border']};border-radius:10px;padding:0 14px;"
+            f"border:1px solid {THEME['border']};border-radius:10px;padding:0 12px;"
             f"font-size:13px;}}"
             f"QPushButton:hover{{color:{THEME['text']};}}")
         self.clear_btn.setToolTip("清空当前项目的对话历史（不动已生成的剧本/三视图/分镜/成片）")
