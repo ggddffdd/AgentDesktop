@@ -56,7 +56,7 @@ def check(name, cond, detail=""):
 _AGENT_SRC = (ROOT / "agent.py").read_text(encoding="utf-8-sig")
 _UI_SRC = (ROOT / "ui.py").read_text(encoding="utf-8-sig")
 
-_METHODS = ("_route_force_tool", "_gen_intent", "_gen_intent_span", "_ref_by_position",
+_METHODS = ("_route_force_tool", "_ref_existing_artifact", "_gen_intent", "_gen_intent_span", "_ref_by_position",
             "_is_question", "_verb_near", "_phrase_hit", "_neg_hit",
             "_is_praise", "_prog_fetch_intent", "_is_bare_url")
 

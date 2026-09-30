@@ -16,6 +16,40 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# ②-B.1：控件树硬上限，防极长控件树撑爆 LLM 上下文（与命令大输出同隐患）
+MAX_CONTROL_TREE_LINES = 400
+
+
+def _aborted(should_stop=None, stop_event=None):
+    """用户请求停止（agent 的 should_stop 回调或 stop_event）。用于软件控制工具可中断判定。"""
+    try:
+        if should_stop and callable(should_stop) and should_stop():
+            return True
+        if stop_event and stop_event.is_set():
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _cap_lines(lines, max_lines=MAX_CONTROL_TREE_LINES):
+    """控件树/文本列表硬上限截断：超过则截断并附提示。返回 (capped_lines, truncated, total)。"""
+    if not lines or len(lines) <= max_lines:
+        return lines, False, len(lines)
+    capped = lines[:max_lines]
+    capped.append(
+        f"…[控件树过大已截断：共 {len(lines)} 行，仅显示前 {max_lines} 行]")
+    return capped, True, len(lines)
+
+
+def _taskkill_ok(result):
+    """taskkill 的 /IM、/FI 在『未匹配到进程』时仍可能返回 returncode 0（尤其 /FI 打印
+    "INFO: No tasks running…"），必须以输出含 'SUCCESS' 判定真实成功，否则会误报已终止。"""
+    if result is None:
+        return False
+    out = ((result.stdout or "") + (result.stderr or "")).upper()
+    return "SUCCESS" in out
+
 # ============================================================
 # 1. Schema 注册
 # ============================================================
@@ -57,7 +91,7 @@ SOFTWARE_CONTROL_TOOL_DEFS = [
                 "properties": {
                     "target": {
                         "type": "string",
-                        "description": "进程名（如 notepad.exe）或窗口标题（如 无标题 - 记事本）。优先按进程名匹配。",
+                        "description": "进程名（如 notepad.exe）、窗口标题（如 无标题 - 记事本）或数字 PID。数字按 PID 精确终止；进程名/标题依次尝试 taskkill /IM、窗口标题模糊匹配、WMI 兜底。",
                     },
                 },
                 "required": ["target"],
@@ -404,6 +438,38 @@ def _find_control(window, target, control_type=None):
     raise RuntimeError(f"未找到控件: target='{target}', control_type='{control_type}'")
 
 
+def _connect_window(title, timeout=5):
+    """连接到已运行的窗口；失败抛出**可诊断**的 RuntimeError（而非裸 pywinauto 内部错）。
+
+    ④-A：原各 tool 直接 `Application().connect(title=...)`，失败时把 pywinauto 的
+    底层异常原样丢回，agent 分不清是「应用没开」「标题写错」还是「窗口未就绪」，
+    等于静默失败。这里收口成统一 helper，并给出可操作的下一步提示。
+    """
+    from pywinauto import Application
+    try:
+        app = Application(backend="uia").connect(title=title, timeout=timeout)
+        return app.window(title=title)
+    except Exception as e:
+        reason = str(e) or type(e).__name__
+        raise RuntimeError(
+            f"无法连接到窗口『{title}』——应用可能未运行、窗口标题不匹配，"
+            f"或窗口尚未就绪。可先用 app_launch 启动该应用，或核对窗口标题。"
+            f"（底层原因：{reason}）"
+        )
+
+
+def _escape_type_keys(s):
+    """pywinauto 的 type_keys 把 + ^ % ~ ( ) {{ }} [ ] 当修饰键元字符，
+    直接传入会发送错误按键。这里逐个转义为 {{x}} 字面量形式。"""
+    out = []
+    for ch in (s or ""):
+        if ch in "+^%~(){}[]":
+            out.append("{" + ch + "}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def _ctrl_type_to_str(ctrl):
     """pywinauto 控件类型转可读字符串。"""
     try:
@@ -454,7 +520,9 @@ def _print_control_tree(ctrl, depth=0, max_depth=4):
 
 # ---------- 应用生命周期 ----------
 
-def tool_app_launch(cfg, app_dir, args):
+def tool_app_launch(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     target = args["target"]
     shell_args = args.get("args", "")
     wait_ready = args.get("wait_ready", True)
@@ -474,12 +542,18 @@ def tool_app_launch(cfg, app_dir, args):
             except Exception:
                 return (f"已启动 {target}（窗口未就绪）", [], None)
         else:
+            # ②-B.3：先校验目标存在（绝对路径文件 or PATH 可执行），避免静默失败；返回 PID 便于后续管理。
             # 审计修复 C1：原 shell=True 拼接命令行经 cmd.exe 解析，target/args 里的
             # `&`、`|` 等元字符即任意命令注入 → shell=False + 参数列表。
             # （上面 wait_ready 分支的 pywinauto .start() 走 CreateProcess，不经
             #   cmd.exe，元字符只作字面量参数，非注入面，保持原样。）
-            subprocess.Popen([target] + _split_app_args(shell_args))
-            return (f"已发起启动 {target}", [], None)
+            import shutil as _shutil
+            _resolved = (os.path.isabs(target) and os.path.isfile(target)) or _shutil.which(target)
+            if not _resolved and not os.path.isfile(target):
+                return (f"启动失败：找不到可执行文件『{target}』（请检查路径或 PATH）", [], None)
+            proc = subprocess.Popen([target] + _split_app_args(shell_args),
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return (f"已发起启动 {target}（PID={proc.pid}）", [], None)
 
     except ImportError:
         return ("缺少依赖：pywinauto。请安装：pip install pywinauto", [], None)
@@ -487,34 +561,67 @@ def tool_app_launch(cfg, app_dir, args):
         return (f"启动失败：{e}", [], None)
 
 
-def tool_app_kill(cfg, app_dir, args):
+def tool_app_kill(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     target = args["target"]
     try:
-        # 先尝试 taskkill /IM
-        cmd = ["taskkill", "/IM", target, "/F"]
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="gbk", errors="replace")
-        if result.returncode == 0:
-            return (f"已强制终止 {target}", [], None)
+        # 1) 数字 PID 直杀（最精确）
+        if target.isdigit():
+            r = subprocess.run(["taskkill", "/PID", target, "/F"],
+                               capture_output=True, text=True, encoding="gbk", errors="replace")
+            if r.returncode == 0:
+                return (f"已强制终止 PID={target}", [], None)
+            return (f"未找到 PID={target} 的进程（或无权终止）", [], None)
 
-        # 尝试 taskkill /F /FI（按窗口标题模糊匹配）
-        cmd2 = ["taskkill", "/F", "/FI", f"WINDOWTITLE eq {target}"]
-        result2 = subprocess.run(cmd2, capture_output=True, text=True, encoding="gbk", errors="replace")
-        if result2.returncode == 0:
-            return (f"已强制终止匹配窗口 '{target}' 的进程", [], None)
+        # 2) 按镜像名（taskkill /IM，自动补 .exe）
+        name = target if target.lower().endswith(".exe") else target + ".exe"
+        r1 = subprocess.run(["taskkill", "/IM", name, "/F"],
+                            capture_output=True, text=True, encoding="gbk", errors="replace")
+        if _taskkill_ok(r1):
+            return (f"已强制终止 {name}", [], None)
 
-        return ("未找到匹配的进程", [], None)
+        # 3) 按窗口标题模糊匹配（注意：/FI 未匹配时仍返回 returncode 0，必须看 SUCCESS 标记）
+        r2 = subprocess.run(["taskkill", "/F", "/FI", f"WINDOWTITLE eq {target}"],
+                            capture_output=True, text=True, encoding="gbk", errors="replace")
+        if _taskkill_ok(r2):
+            return (f"已强制终止匹配窗口『{target}』的进程", [], None)
+
+        # 4) WMI 兜底（镜像名精确/模糊，覆盖 taskkill /IM 漏掉的变体）
+        try:
+            ps = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 f"Get-CimInstance Win32_Process -Filter \"Name='{name}'\" | "
+                 f"Select-Object -ExpandProperty ProcessId"],
+                capture_output=True, text=True, encoding="gbk", errors="replace", timeout=15)
+            pids = [p.strip() for p in (ps.stdout or "").splitlines() if p.strip().isdigit()]
+            if pids:
+                killed = []
+                for pid in pids:
+                    kr = subprocess.run(["taskkill", "/PID", pid, "/F"],
+                                       capture_output=True, text=True,
+                                       encoding="gbk", errors="replace")
+                    if kr.returncode == 0:
+                        killed.append(pid)
+                if killed:
+                    return (f"已通过 WMI 兜底强制终止 {name}（PID={'/'.join(killed)}）", [], None)
+        except Exception:
+            pass
+
+        return (f"未找到匹配的进程：『{target}』（请确认进程名/窗口标题，或用 PID 精确终止）", [], None)
     except Exception as e:
         return (f"终止失败：{e}", [], None)
 
 
 # ---------- 窗口状态 ----------
 
-def tool_app_focus(cfg, app_dir, args):
+def tool_app_focus(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     title = args["title"]
     try:
         from pywinauto import Application
-        app = Application(backend="uia").connect(title=title, timeout=5)
-        w = app.window(title=title)
+        w = _connect_window(title)
         w.set_focus()
         return (f"窗口 '{w.window_text()}' 已获得焦点", [], None)
     except ImportError:
@@ -535,13 +642,14 @@ def tool_app_focus(cfg, app_dir, args):
         return (f"切换失败：{e}", [], None)
 
 
-def tool_app_window_state(cfg, app_dir, args):
+def tool_app_window_state(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     title = args["title"]
     action = args["action"]
     try:
         from pywinauto import Application
-        app = Application(backend="uia").connect(title=title, timeout=5)
-        w = app.window(title=title)
+        w = _connect_window(title)
 
         actions = {
             "maximize": lambda: w.maximize(),
@@ -579,20 +687,24 @@ def tool_app_window_state(cfg, app_dir, args):
 
 # ---------- 控件定位 ----------
 
-def tool_app_list_controls(cfg, app_dir, args):
+def tool_app_list_controls(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     title = args["title"]
     filter_type = args.get("filter_type")
     max_depth = args.get("max_depth", 4)
 
     try:
         from pywinauto import Application
-        app = Application(backend="uia").connect(title=title, timeout=5)
-        w = app.window(title=title)
+        w = _connect_window(title)
 
         lines = _print_control_tree(w, max_depth=max_depth)
 
         if filter_type:
             lines = [l for l in lines if f"[{filter_type}]" in l]
+
+        # ②-B.1：控件树硬上限截断，防极长控件树撑爆 LLM 上下文
+        lines, _trunc, _total = _cap_lines(lines)
 
         if not lines:
             return (f"窗口 '{w.window_text()}' 中未找到匹配控件", [], None)
@@ -610,7 +722,9 @@ def tool_app_list_controls(cfg, app_dir, args):
 
 # ---------- 控件交互 ----------
 
-def tool_app_click(cfg, app_dir, args):
+def tool_app_click(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     title = args.get("title")
     target = args["target"]
     control_type = args.get("control_type")
@@ -620,14 +734,16 @@ def tool_app_click(cfg, app_dir, args):
         from pywinauto import Application
 
         if title:
-            app = Application(backend="uia").connect(title=title, timeout=5)
-            w = app.window(title=title)
+            w = _connect_window(title)
         else:
-            # 无 title：取前台窗口
-            app = Application(backend="uia").connect(active_only=True)
+            # 无 title：取前台窗口（②-B.2 补 timeout，防无活动窗口时 connect 挂死）
+            app = Application(backend="uia").connect(active_only=True, timeout=5)
             w = app.top_window()
 
-        ctrl = _find_control(w, target, control_type)
+        try:
+            ctrl = _find_control(w, target, control_type)
+        except RuntimeError as _re:
+            return (f"点击失败：{_re}", [], None)
 
         if button == "right":
             ctrl.click_input(button="right")
@@ -642,32 +758,54 @@ def tool_app_click(cfg, app_dir, args):
         return (f"点击失败：{e}", [], None)
 
 
-def tool_app_type(cfg, app_dir, args):
+def tool_app_type(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     title = args["title"]
     text = args["text"]
     target = args.get("target")
     append = args.get("append", False)
 
     try:
-        from pywinauto import Application
-        app = Application(backend="uia").connect(title=title, timeout=5)
-        w = app.window(title=title)
+        w = _connect_window(title)
 
         # 定位输入框
         if target:
             try:
                 ctrl = _find_control(w, target, control_type="Edit")
+            except RuntimeError as _re:
+                return (f"输入失败：{_re}", [], None)
             except Exception:
                 # 如果 target 不是 Edit 本身，尝试找它旁边的 label
-                ctrl = w.child_window(title=target)
-                ctrl = ctrl.parent().child_window(control_type="Edit")
+                try:
+                    ctrl = w.child_window(title=target)
+                    ctrl = ctrl.parent().child_window(control_type="Edit")
+                except Exception as _e2:
+                    return (f"输入失败：未定位到输入框——{_e2}", [], None)
         else:
-            ctrl = w.child_window(control_type="Edit")
+            try:
+                ctrl = w.child_window(control_type="Edit")
+            except Exception as _e3:
+                return (f"输入失败：窗口中未找到输入框（可能不是可编辑界面）——{_e3}", [], None)
 
         ctrl.set_focus()
-        if not append:
-            ctrl.set_edit_text("")
-        ctrl.type_keys(text, with_spaces=True)
+        if append:
+            # 追加：读现有内容拼接后整体写入。set_edit_text 按字面量处理，
+            # + ^ % {} 等字符均安全；失败再退回（已转义的）type_keys 保底。
+            try:
+                current = ctrl.window_text() or ""
+                ctrl.set_edit_text(current + text)
+            except Exception:
+                ctrl.type_keys("{END}")
+                ctrl.type_keys(_escape_type_keys(text), with_spaces=True)
+        else:
+            # 替换：set_edit_text 直接字面量写入，彻底规避 type_keys 把 + ^ % ~ ( ) { }
+            # 当修饰键的转义坑（旧实现输 "C++" 会变成 "CB"）。
+            try:
+                ctrl.set_edit_text(text)
+            except Exception:
+                ctrl.type_keys(_escape_type_keys(text), with_spaces=True)
+
         return (f"已输入 {len(text)} 个字符到 '{w.window_text()}'", [], None)
 
     except ImportError:
@@ -676,14 +814,15 @@ def tool_app_type(cfg, app_dir, args):
         return (f"输入失败：{e}", [], None)
 
 
-def tool_app_get_text(cfg, app_dir, args):
+def tool_app_get_text(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     title = args["title"]
     target = args.get("target")
 
     try:
         from pywinauto import Application
-        app = Application(backend="uia").connect(title=title, timeout=5)
-        w = app.window(title=title)
+        w = _connect_window(title)
 
         if target:
             ctrl = _find_control(w, target)
@@ -717,7 +856,9 @@ def tool_app_get_text(cfg, app_dir, args):
 
 # ---------- 控件等待 ----------
 
-def tool_app_wait_for(cfg, app_dir, args):
+def tool_app_wait_for(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     title = args["title"]
     target = args["target"]
     exists = args.get("exists", True)
@@ -725,8 +866,7 @@ def tool_app_wait_for(cfg, app_dir, args):
 
     try:
         from pywinauto import Application
-        app = Application(backend="uia").connect(title=title, timeout=5)
-        w = app.window(title=title)
+        w = _connect_window(title)
 
         try:
             ctrl = w.child_window(title=target)
@@ -750,7 +890,9 @@ def tool_app_wait_for(cfg, app_dir, args):
 
 # ---------- 截图 ----------
 
-def tool_app_screenshot(cfg, app_dir, args):
+def tool_app_screenshot(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     title = args["title"]
     save_path = args.get("save_path")
     if not save_path:
@@ -770,8 +912,7 @@ def tool_app_screenshot(cfg, app_dir, args):
     try:
         # 先取 pywinauto 窗口坐标
         from pywinauto import Application
-        app = Application(backend="uia").connect(title=title, timeout=5)
-        w = app.window(title=title)
+        w = _connect_window(title)
         rect = w.rectangle()
 
         # 用 QScreen 截图

@@ -231,9 +231,9 @@ def part_f_force_confirm_channel():
     seg = src[src.index("def _maybe_confirm("):]
     seg = seg[:seg.index("\n    def ", 10)]
     check("F2 force=True 时跳过信任短路", "if not force:" in seg)
-    check("F3 调用点按 rule 传 force",
-          'force=(dec.rule == "always_confirm")' in src,
-          f"命中 {src.count('always_confirm')} 次")
+    check("F3 调用点按 rule 传 force（含 ①-B high_risk_exec）",
+          'force=(dec.rule in ("always_confirm", "high_risk_exec"))' in src,
+          f"命中 always_confirm {src.count('always_confirm')} 次")
     ui = open(_UI_PATH, encoding="utf-8-sig").read()
     check("F4 UI 侧确认弹窗识别 _confirm_force",
           "_confirm_force" in ui and "session_trusted" in ui)

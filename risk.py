@@ -17,6 +17,7 @@ v4.171.0 合并：原先「风险类」与「显示档位」分在两张表
 """
 
 import logging
+import re
 from enum import Enum
 
 log = logging.getLogger(__name__)
@@ -210,6 +211,72 @@ def tier_of(name):
     if tier:
         return tier
     return _RISK_TO_TIER[classify(name)]
+
+
+# ---------------------------------------------------------------------------
+# ①-B 高危操作护栏：命令/代码【参数级】风险探测器。
+#
+# 与 ③-A (`tools._dangerous_command_check`) 职责互补、互不重复：
+#   · ③-A 只硬拦「不可逆系统级操作」(format / shutdown / rm -rf 根盘 / del 系统盘 /
+#     diskpart / reg delete 系统键 …) 并直接 deny —— 即便确认被绕过也拦得住；
+#   · ①-B 覆盖「高危但通常可逆 / 有歧义」的操作（删文件 / 卸载 / Git 不可逆 /
+#     账户权限 / 服务网络 / 注册表写 / 下载即执行 / 杀进程 …），走「强制确认」而非
+#     「硬拦」——用户知情后可自行决定，但每次都要显式点一次。
+# 两者都只做各自一层，不越界：③-A 是底层死墙，①-B 是知情闸。
+_HIGH_RISK_PATTERNS = (
+    # 文件 / 目录删除（非系统盘也危险：误删工作区/项目）
+    (r"\brm\s+-rf\b", "递归强制删除 (rm -rf)"),
+    (r"\brm\s+-r\b", "递归删除 (rm -r)"),
+    (r"\bdel\s+/[fsq]", "强制删除 (del /F)"),
+    (r"\bremove-item\b", "删除条目 (Remove-Item)"),
+    (r"\brd\b|\brmdir\b", "删除目录 (rd/rmdir)"),
+    (r"\bshutil\.rmtree\b", "Python 递归删目录 (shutil.rmtree)"),
+    (r"\bos\.remove\b|\bos\.unlink\b", "Python 删文件 (os.remove)"),
+    # 版本控制不可逆
+    (r"git\s+reset\s+--hard", "Git 硬重置 (git reset --hard)"),
+    (r"git\s+clean\s+-[a-z]*f", "Git 清理未跟踪 (git clean -f)"),
+    (r"git\s+checkout\s+\.", "Git 丢弃改动 (git checkout .)"),
+    (r"git\s+push\s+--force|\bgit\s+push\s+-f\b", "Git 强制推送 (git push -f)"),
+    # 卸载 / 移除
+    (r"npm\s+uninstall", "卸载包 (npm uninstall)"),
+    (r"pip\s+uninstall", "卸载包 (pip uninstall)"),
+    (r"\bapt\s+(remove|purge)", "卸载软件 (apt remove/purge)"),
+    # 账户 / 权限
+    (r"net\s+user\b", "账户操作 (net user)"),
+    (r"\buseradd\b|\buserdel\b|\busermod\b", "账户变更 (useradd/del/mod)"),
+    (r"\bpasswd\b", "改密码 (passwd)"),
+    (r"\brunas\b", "提权运行 (runas)"),
+    (r"\bsudo\b", "提权 (sudo)"),
+    (r"\bsu\b", "切换用户 (su)"),
+    # 服务 / 网络
+    (r"net\s+stop\b|\bsc\s+stop\b|systemctl\s+stop", "停止服务 (net/sc/systemctl stop)"),
+    (r"netsh\b", "网络配置 (netsh)"),
+    (r"\biptables\b|\bufw\b", "防火墙 (iptables/ufw)"),
+    # 注册表写入
+    (r"reg\s+add\b|reg\s+import\b|set-itemproperty", "注册表写入 (reg add/import)"),
+    # 下载即执行（远程代码注入风险）
+    (r"curl\b[^\n|]*\|\s*(sh|bash|powershell)", "下载即执行 (curl | sh)"),
+    (r"wget\b[^\n|]*\|\s*(sh|bash)", "下载即执行 (wget | sh)"),
+    (r"\biwr\b[^\n|]*\|\s*(iex|invoke-expression)", "下载即执行 (iwr | iex)"),
+    # 结束进程
+    (r"\btaskkill\b|\bpkill\b|\bkill\b", "结束进程 (taskkill/pkill/kill)"),
+)
+
+
+def command_danger_level(text):
+    """命令 / Python 代码的【参数级】高危探测。
+
+    返回命中的高危标签串（非空 = 高危），未命中返回空串（安全）。
+    仅覆盖「高危但通常可逆 / 有歧义」的操作，与 ③-A 系统级毁灭硬拦截互补——
+    不做 deny，只供权限引擎升级为「强制确认」。
+    """
+    if not text:
+        return ""
+    t = text.lower()
+    for pat, label in _HIGH_RISK_PATTERNS:
+        if re.search(pat, t):
+            return label
+    return ""
 
 
 # v4.169.0（审查 P0-3）：**任何模式都必须人工确认**的硬档。

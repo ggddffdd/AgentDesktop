@@ -76,6 +76,8 @@ TOOL_DEFS = [
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "要执行的 PowerShell 命令，如 Get-ChildItem -Recurse | Select-String '关键词'"},
+                    "cwd": {"type": "string", "description": "可选。命令执行的工作目录（绝对路径），默认项目工作区。用于需要在特定目录下运行的命令（如 cd 无法生效的持久化场景）。"},
+                    "env": {"type": "object", "description": "可选。要注入的环境变量（键值均为字符串），会与当前进程环境合并（不替换原有 PATH 等）。例如 {\"MY_VAR\": \"hello\"}。"}
                 },
                 "required": ["command"],
             },
