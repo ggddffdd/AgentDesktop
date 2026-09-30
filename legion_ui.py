@@ -3591,13 +3591,26 @@ class LegionWindow(QWidget):
             if self.worker is not None:
                 # v4.131-E：先送改稿要求（worker 端打回时才用），再送记忆与结果
                 if _rev and val == "reject":
-                    self.worker.set_auth_revision(_rev)
+                    try:
+                        self.worker.set_auth_revision(_rev)
+                    except Exception:
+                        pass
                     self.log_view.append(f"\n✍️ 你的改稿要求：{_rev}\n")
                 elif _rev:
                     self.log_view.append(
                         f"\n✍️ 你写了改稿要求但选了放行 —— 只在打回时生效：{_rev}\n")
                 # v4.124.13：先送记忆再送结果（worker 端在 set_auth_result 里解阻塞）
-                self.worker.set_auth_note(note_edit.text(), cb_remember.isChecked())
+                try:
+                    self.worker.set_auth_note(note_edit.text(), cb_remember.isChecked())
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # P2-11 修：结果投递独立兜底——原版整段 try/except pass，改稿/记忆任何一步
+        # 抛异常会连 set_auth_result 一起吞掉，用户点了决定却没送到，worker 白等
+        # 600s 超时。结果必须无条件尝试投递（worker 已死时 set 自身失败无害）。
+        try:
+            if self.worker is not None:
                 self.worker.set_auth_result(val)
         except Exception:
             pass

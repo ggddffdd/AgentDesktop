@@ -202,15 +202,24 @@ class LegionStatusStrip(QWidget):
             f"成员 运行中{running} 完成{done} 异常{err}")
         gate = "—"
         gcolor = t["dim"]
+        # P3 修：原版后遍历的 gate 节点覆盖先遍历的（字典序最后一个说了算）——
+        # gate_w1 待批、gate_w2 已批时会错显「已批」。改为优先级汇总：
+        # 任一 gate 待批 → 待批；否则任一已批 → 已批。
+        _gate_pending = False
+        _gate_done = False
         for k, n in self._nodes.items():
             if k.startswith("gate_w"):
                 s = n.get("status")
                 if s == "running":
-                    gate = "待批"
-                    gcolor = t["warn"]
+                    _gate_pending = True
                 elif s in ("done", "approved", "timeout"):
-                    gate = "已批"
-                    gcolor = t["ok"]
+                    _gate_done = True
+        if _gate_pending:
+            gate = "待批"
+            gcolor = t["warn"]
+        elif _gate_done:
+            gate = "已批"
+            gcolor = t["ok"]
         self._lbl_gate.setText(f"闸门 {gate}")
         self._lbl_gate.setStyleSheet(
             f"font-size:{t['font_second']};color:{gcolor};")

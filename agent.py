@@ -587,16 +587,33 @@ class AgentWorker(QThread):
     # 解决「豁免挪过头」+「否定侧空白」副作用：用户在【谈论/质疑/引用】某个生成动作
     # 而非下达指令时（如「分析下生成视频这件事」「你刚才说的生成个视频，是BUG」
     # 「我什么时候让你生成视频了」），强制路由会误触 video_gen → 向思考模型注入伪用户
-    # 指令，用户喊停反而被强制生成（危害远大于漏报）。该词表为临时过渡，长期（P2）改为
-    # 位置判据，逐步退役。
+    # 指令，用户喊停反而被强制生成（危害远大于漏报）。
+    #
+    # v4.188 P3（词表漂移归一）：与 intent_guard._STRONG_REF_KW 语义相同但各存一份，
+    # intent_guard 侧补词 agent 永远跟不上（ui._looks_like_learning_question 在
+    # v4.172.0 踩过同款坑）。写法约定：**先字面量直赋（冻结副本），再 try 块里并集
+    # 增强为「intent_guard 权威表 + 本地宽词」**（行为只增不减，与 v4.168 收归
+    # is_praise 的先例同一原则）——字面量直赋是给两条路的：① intent_guard 不可用时
+    # 的 fallback；② tests/test_route_injection_guard.py 的 AST 提取器只认类体
+    # 直接 Tuple 赋值（try 内赋值不收），它拿冻结版即可测出路由行为不回归。
     _REF_KW = (
         "这件事", "你说的", "你刚才说的", "什么时候", "让你", "是BUG",
         "讨论", "评价",
     )
+    try:
+        import intent_guard as _ig_ref
+        _REF_KW = tuple(_ig_ref._STRONG_REF_KW) + _REF_KW
+    except Exception:
+        pass
     # v4.158→v4.159.1：讨论/复盘/质疑类弱豁免（分析/解释/聊聊等），仅在【未命中生成意图】
     # 时兜底生效；v4.159.2 将 讨论/评价 上提为 _REF_KW 引用标记（前置一票否决），
     # 此处仅留弱讨论词，降低误伤真指令概率。
-    _DISCUSS_KW = (
+    #
+    # ⚠️ v4.188 P3 改名 _DISCUSS_KW → _WEAK_DISCUSS_KW：intent_guard._DISCUSS_KW
+    # 是**另一张表**（「讨论工具动作」判定，为什么会/是不是/是否危险…），与本表
+    # （媒体语境弱豁免）同名不同义——同名漂移比内容漂移更危险（将来谁「对齐」
+    # 它们就出事），改名消歧并在此声明两者无关。
+    _WEAK_DISCUSS_KW = (
         "聊聊", "聊", "谈", "谈一下", "说说", "说说看",
         "分析", "分析下", "分析一下", "诊断", "复盘", "怎么看", "怎么理解",
         "为什么", "怎么回事", "咋回事", "什么原因", "原因在哪", "是不是",
@@ -608,6 +625,9 @@ class AgentWorker(QThread):
     # 注意：刻意【不收】裸「分析」「聊」「谈」单字——会误中『大数据分析』『刚才聊的』『话题』
     #       等复合词；标准口语形式用 分析下/分析一下/聊聊/谈一下/谈谈 覆盖即可。
     #       「讨论/评价」已在 _REF_KW（位置判定同样认得），此处不再重复。
+    # v4.188 P3：与 intent_guard._META_VERBS / _CLAUSE_SEP 是同一份语义——
+    # 字面量直赋（冻结副本，AST 提取器/fallback 用）后再 try 块引用权威表，
+    # 将来单边补词自动同步。
     _META_VERBS = (
         "分析下", "分析一下",
         "聊聊", "聊一下", "聊一聊", "谈一下", "谈谈",
@@ -620,6 +640,12 @@ class AgentWorker(QThread):
     # 例：『生成个视频，顺便分析下这个题材』中的「，」使分析句不回头压制生成指令（O4 仍返 video_gen）。
     _CLAUSE_SEP = ("，", "。", "；", "？", "?", "然后", "顺便", "并且", "而且",
                    "再", "之后", "完后", "以及", "并", "、")
+    try:
+        from intent_guard import _META_VERBS as _ig_meta
+        from intent_guard import _CLAUSE_SEP as _ig_sep
+        _META_VERBS, _CLAUSE_SEP = tuple(_ig_meta), tuple(_ig_sep)
+    except Exception:
+        pass
 
     # ---------- v4.159 组合式生成意图判据 ----------
     def _is_question(self, text):
@@ -745,8 +771,8 @@ class AgentWorker(QThread):
         """位置判据的引用/分析语境（v4.159.3 / P2）：元话语动词出现在生成短语【之前】且同一
         分句内 → 生成短语是被分析/讨论的对象，而非用户下达的指令，不该强制生成工具。
         解决裸「分析下生成视频」类残留风险（v4.159.2 仅靠前置词表 _REF_KW，覆盖不到无标记的
-        分析句）。逐步退役 _DISCUSS_KW 词表——强语境（元话语动词辖制生成短语）改由位置判据
-        接管，_DISCUSS_KW 仅保留给「无生成短语的纯讨论」兜底。
+        分析句）。逐步退役 _WEAK_DISCUSS_KW 词表——强语境（元话语动词辖制生成短语）改由位置判据
+        接管，_WEAK_DISCUSS_KW 仅保留给「无生成短语的纯讨论」兜底。
           例：『分析下生成视频』→ 分析下 在 生成视频 之前、同分句 → 引用语境 → None；
               『生成个视频，顺便分析下这个题材』(O4) → 生成短语在前、其后才出现分析，且含「，」
               → 不触发（用户确要视频）；
@@ -904,7 +930,7 @@ class AgentWorker(QThread):
             return "image_gen"
         # 3) 弱讨论/复盘/质疑豁免（v4.159.2：讨论/评价 已上提为 _REF_KW）：仅在【未命中
         #    生成意图】时兜底生效，用户在谈论/分析某事而非下达生成指令时，不强制任何工具。
-        if any(k in text for k in self._DISCUSS_KW):
+        if any(k in text for k in self._WEAK_DISCUSS_KW):
             return None
         # v4.168.1（BUG 修）：**程序化抓取一票否决**必须先于浏览器路由。
         #

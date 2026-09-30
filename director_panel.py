@@ -40,6 +40,7 @@ from PySide6.QtCore import Qt, QSize, QThread, Signal, QUrl, QObject
 
 from ui import THEME
 from ui import clamp_dialog_to_screen as _clamp_dlg
+from ui import RES_PRESETS   # v4.188 P2-7：分辨率预设唯一来源（原本地一份已删，防三处漂移）
 from config import APP_DIR, WORKSPACE_DIR
 from director_web import (
     DirectorWebView, register_localres_scheme,
@@ -143,18 +144,6 @@ def _emergency_recover(app, where=""):
         _set_status(app, f"⚠ 步骤异常已中止（{where}）—— 已解锁，可直接重试", err=True)
     except Exception:
         pass
-
-# 分辨率预设（与生视频 / 数字人面板保持一致）
-RES_PRESETS = [
-    ("竖屏 1080×1920 (9:16)", "1080x1920"),
-    ("竖屏 720×1280 (9:16)", "720x1280"),
-    ("竖屏 768×1152 (3:4)", "768x1152"),
-    ("横屏 1920×1080 (16:9)", "1920x1080"),
-    ("横屏 1280×720 (16:9)", "1280x720"),
-    ("横屏 1152×768 (4:3)", "1152x768"),
-    ("横屏 1088×832 (4:3)", "1088x832"),
-    ("方形 1024×1024 (1:1)", "1024x1024"),
-]
 
 def _style_items():
     """风格下拉项 [(显示名, key), ...]。
@@ -336,7 +325,23 @@ class DirectorThread(QThread):
             elif self.task == "merge":
                 out, err = p.merge()
                 if out:
-                    self.merge_ready.emit(True, f"成片完成：{os.path.basename(out)}", out)
+                    # v4.188 P2-6：成片消息明示缺镜——不用翻卡片才知道少了几镜
+                    #（对照数字人面板 failed_segs 的既有明示做法）。
+                    try:
+                        _miss = sum(1 for x in (p.clip_paths or []) if not x)
+                        _total = len(p.shots or [])
+                    except Exception:
+                        _miss = _total = 0
+                    _note = (f"（{_total - _miss}/{_total} 镜，缺 {_miss} 镜"
+                             f"——可回「生成」单镜补齐后重新合成）"
+                             if (_miss and _total) else "")
+                    # v4.188 P2-8：无声警告（若有）显式拼进成片消息，
+                    # 用户不必翻日志才知道成片可能哑了
+                    _warn = getattr(p, "last_audio_warn", None)
+                    if _warn:
+                        _note += f"；{_warn}"
+                    self.merge_ready.emit(
+                        True, f"成片完成：{os.path.basename(out)}{_note}", out)
                 else:
                     self.merge_ready.emit(False, err or "合成失败", "")
         except Exception as e:

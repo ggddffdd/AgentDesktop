@@ -301,12 +301,15 @@ class LegionWorker(QThread):
         if decision == "reject":
             if legion.kill_direction(self.pid, note):
                 dd = self.project.get("dead_directions")
-                if not isinstance(dd, list):
-                    dd = self.project["dead_directions"] = []
+                base = list(dd) if isinstance(dd, list) else []
                 for n in [x.strip() for x in note.replace("；", ";").replace("，", ";")
                           .replace("、", ";").split(";") if x.strip()]:
-                    if n not in dd:
-                        dd.append(n)
+                    if n not in base:
+                        base.append(n)
+                # P2-10 修：copy-on-write 单次赋值——project 是 worker/UI 共享 dict，
+                # 原地 append 会让 UI 线程迭代中撞 RuntimeError（list changed size
+                # during iteration）；整表换新后，赋值本身原子，UI 侧无需加锁。
+                self.project["dead_directions"] = base
             if getattr(self, "_auth_remember", False):
                 tags = [str(r.get("name", "")).strip() for r in (members or [])
                         if str(r.get("name", "")).strip()]
@@ -1727,6 +1730,14 @@ class LegionWorker(QThread):
             # 产出对应关系全错位，静默续跑会产出张冠李戴的结果且极难察觉。
             cur_fp = legion._waves_fingerprint(waves)
             fp_mismatch = cur_fp != ckpt_data.get("waves_fingerprint")
+            if fp_mismatch:
+                # P2-12：新版指纹含 prompt 摘要——旧存档按旧口径（三字段）再比一次：
+                # 旧口径一致 → 放行但提示「未校验 prompt」（老档升级兼容）；
+                # 旧口径也不一致 → 真阵容改动，照旧 fail-closed 拒绝。
+                if legion._waves_fingerprint(waves, legacy=True) == ckpt_data.get("waves_fingerprint"):
+                    self._log("ℹ️ 旧版存档指纹未含角色 prompt —— 已按旧口径放行；"
+                              "若你改过成员提示词，建议从头重跑")
+                    fp_mismatch = False
             task_mismatch = (ckpt_data.get("task") or "").strip() != task.strip()
             if fp_mismatch or task_mismatch:
                 reasons = []

@@ -13,6 +13,7 @@ pywinauto → Windows UI 自动化主力
 每项遵循 OpenAI function calling schema。
 """
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -21,14 +22,18 @@ MAX_CONTROL_TREE_LINES = 400
 
 
 def _aborted(should_stop=None, stop_event=None):
-    """用户请求停止（agent 的 should_stop 回调或 stop_event）。用于软件控制工具可中断判定。"""
+    """用户请求停止（agent 的 should_stop 回调或 stop_event）。用于软件控制工具可中断判定。
+    P2-3 修：回调本身抛异常时按 fail-closed 处理——视为『已请求停止』并留痕，
+    与主链（tools.py _stream_collect）的异常即停哲学对齐；原 except pass 会带着
+    不可读的停止信号继续操作（fail-open）。"""
     try:
         if should_stop and callable(should_stop) and should_stop():
             return True
         if stop_event and stop_event.is_set():
             return True
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning("停止信号读取异常，按已停止处理（fail-closed）: %r", _e)
+        return True
     return False
 
 
@@ -44,11 +49,14 @@ def _cap_lines(lines, max_lines=MAX_CONTROL_TREE_LINES):
 
 def _taskkill_ok(result):
     """taskkill 的 /IM、/FI 在『未匹配到进程』时仍可能返回 returncode 0（尤其 /FI 打印
-    "INFO: No tasks running…"），必须以输出含 'SUCCESS' 判定真实成功，否则会误报已终止。"""
+    "INFO: No tasks running…"），必须以输出含成功标记判定真实成功，否则会误报已终止。
+    P2-1 修：中文 Windows 成功输出为「成功: 已终止进程…」不含 SUCCESS——
+    两个语言的成功标记都要认，否则中文系统上杀掉了进程却回报『未找到』。"""
     if result is None:
         return False
-    out = ((result.stdout or "") + (result.stderr or "")).upper()
-    return "SUCCESS" in out
+    out = (result.stdout or "") + (result.stderr or "")
+    up = out.upper()
+    return ("SUCCESS" in up) or ("成功" in out) or ("已终止" in out)
 
 # ============================================================
 # 1. Schema 注册
@@ -588,6 +596,11 @@ def tool_app_kill(cfg, app_dir, args, progress=None, stop_event=None, should_sto
             return (f"已强制终止匹配窗口『{target}』的进程", [], None)
 
         # 4) WMI 兜底（镜像名精确/模糊，覆盖 taskkill /IM 漏掉的变体）
+        # P2-4 修：name 会被拼进 PowerShell 的 WQL 字符串字面量（Name='{name}'），
+        # 引号/反引号/分号/$ 可注入。Windows 镜像名本身不可能含这些字符——
+        # 直接拒绝并引导用 PID，比转义更稳（转义漏一种就是新洞）。
+        if any(ch in name for ch in ("'", '"', "`", ";", "$", "\n", "\r")):
+            return (f"进程名『{name}』含引号/分号等非法字符，已拒绝 WMI 查询（防注入）；请改用 PID 精确终止", [], None)
         try:
             ps = subprocess.run(
                 ["powershell", "-NoProfile", "-Command",
@@ -868,14 +881,34 @@ def tool_app_wait_for(cfg, app_dir, args, progress=None, stop_event=None, should
         from pywinauto import Application
         w = _connect_window(title)
 
+        # P2-3 修：原实现 ctrl.wait() 是单次阻塞调用（C 层），中途无法响应停止。
+        # 改为 0.2s 粒度轮询循环——停止信号在 0.5s 内可见，语义与原版一致。
         try:
             ctrl = w.child_window(title=target)
+            deadline = time.time() + max(1, int(timeout))
             if exists:
-                ctrl.wait("exists", timeout=timeout)
-                return (f"控件 '{target}' 已出现（{timeout}s 内）", [], None)
+                while time.time() < deadline:
+                    if _aborted(should_stop, stop_event):
+                        return ("⏹ 已停止（用户请求）", [], None)
+                    try:
+                        if ctrl.exists(timeout=0.2, retry_interval=0.2):
+                            return (f"控件 '{target}' 已出现（{timeout}s 内）", [], None)
+                    except Exception:
+                        pass
+                    time.sleep(0.2)
+                return (f"控件 '{target}' 在 {timeout}s 内未出现", [], None)
             else:
-                ctrl.wait_not("exists", timeout=timeout)
-                return (f"控件 '{target}' 已消失（{timeout}s 内）", [], None)
+                while time.time() < deadline:
+                    if _aborted(should_stop, stop_event):
+                        return ("⏹ 已停止（用户请求）", [], None)
+                    try:
+                        if not ctrl.exists(timeout=0.2, retry_interval=0.2):
+                            return (f"控件 '{target}' 已消失（{timeout}s 内）", [], None)
+                    except Exception:
+                        pass
+                    time.sleep(0.2)
+                return (f"控件 '{target}' 在 {timeout}s 内未消失", [], None)
+
         except Exception:
             if exists:
                 return (f"控件 '{target}' 在 {timeout}s 内未出现", [], None)

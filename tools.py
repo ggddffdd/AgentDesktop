@@ -164,34 +164,48 @@ def register_tool(name, dangerous=False, risk=None):
     return deco
 
 def _register_extension_tools():
-    """把 4 个扩展模块的 *_TOOL_TABLE 注册进 registry（它们已是字典表，handler 签名统一）。"""
-    try:
-        from system_control_tools import SYSTEM_CONTROL_TOOL_TABLE
-        from software_control_tools import SOFTWARE_CONTROL_TOOL_TABLE
-        from browser_control_tools import BROWSER_CONTROL_TOOL_TABLE
-        from skill_installer_tools import SKILL_INSTALLER_TOOL_TABLE
-        for _table in (SYSTEM_CONTROL_TOOL_TABLE, SOFTWARE_CONTROL_TOOL_TABLE,
-                       BROWSER_CONTROL_TOOL_TABLE, SKILL_INSTALLER_TOOL_TABLE):
-            for _name, _handler in _table.items():
-                _danger = _name.startswith("browser_") or _name == "skill_install"
-                def _wrap(h=_handler):
-                    import inspect as _inspect
+    """把 4 个扩展模块的 *_TOOL_TABLE 注册进 registry（它们已是字典表，handler 签名统一）。
+    P2-5 修：原实现一个 try 包全部——任一模块 import 失败或任一 handler 签名不可探测
+    （inspect 对 C 函数/partial 抛 TypeError），四张表**全部**注册失败（软件控制/
+    浏览器/系统/技能安装集体消失，只剩一条 warning）。现按三层隔离：坏一个模块
+    只丢一张表、坏一个 handler 只跳一项、签名不可探测按『不透传扩展参数』兜底。"""
+    _tables = [
+        ("system_control_tools", "SYSTEM_CONTROL_TOOL_TABLE"),
+        ("software_control_tools", "SOFTWARE_CONTROL_TOOL_TABLE"),
+        ("browser_control_tools", "BROWSER_CONTROL_TOOL_TABLE"),
+        ("skill_installer_tools", "SKILL_INSTALLER_TOOL_TABLE"),
+    ]
+    for _mod_name, _table_name in _tables:
+        try:
+            _table = getattr(__import__(_mod_name), _table_name)
+        except Exception as _e:
+            log.warning("扩展模块 %s 加载失败（跳过该表，不影响其余表）: %s", _mod_name, _e)
+            continue
+        for _name, _handler in _table.items():
+            _danger = _name.startswith("browser_") or _name == "skill_install"
+            def _wrap(h=_handler):
+                import inspect as _inspect
+                try:
                     _hparams = _inspect.signature(h).parameters
-                    def _w(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
-                        # ②-B.2：把进度/停止信号透传给声明了对应参数的底层 handler
-                        # （仅 software_control 的 tool_app_* 需要；其余扩展 handler 不接收，避免 TypeError）
-                        _kw = {"cfg": cfg, "app_dir": app_dir, "args": args}
+                except (TypeError, ValueError):
+                    _hparams = None  # 签名不可探测：按不接收扩展参数处理（调用时兜底）
+                def _w(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+                    # ②-B.2：把进度/停止信号透传给声明了对应参数的底层 handler
+                    # （仅 software_control 的 tool_app_* 需要；其余扩展 handler 不接收，避免 TypeError）
+                    _kw = {"cfg": cfg, "app_dir": app_dir, "args": args}
+                    if _hparams is not None:
                         if "progress" in _hparams:
                             _kw["progress"] = progress
                         if "stop_event" in _hparams:
                             _kw["stop_event"] = stop_event
                         if "should_stop" in _hparams:
                             _kw["should_stop"] = should_stop
-                        return h(**_kw)
-                    return _w
+                    return h(**_kw)
+                return _w
+            try:
                 TOOL_REGISTRY[_name] = {"handler": _wrap(), "dangerous": _danger}
-    except Exception as _e:
-        log.warning("扩展工具注册失败: %s", _e)
+            except Exception as _e:
+                log.warning("扩展工具 %s 注册失败（跳过该项）: %s", _name, _e)
 
 _register_extension_tools()
 
@@ -1644,6 +1658,24 @@ def _hard_truncate_decode(raw):
     return text, False, n
 
 
+def _clip_output(out, hard_trunc, approx_bytes, limit=None):
+    """P2-2 修：统一的回传裁剪——**超限必附标记**。
+    原版只给 >4MB 硬截断附标记；6000 字符 < len ≤ 4MB 的中等输出被静默切到
+    TOOL_RESULT_LIMIT，模型拿半截当全量继续推理。现在两档都标：
+    - 硬截断档（>4MB）：标『原始约 N 字节』
+    - 超长档（>6000 字符）：标『完整 N 字符』
+    标记追加在裁剪之后，保证可见。"""
+    if limit is None:
+        limit = TOOL_RESULT_LIMIT
+    if len(out) <= limit:
+        return out
+    clipped = out[:limit]
+    if hard_trunc:
+        return clipped + (f"\n…[输出过大已截断：原始约 {approx_bytes:,} 字节，"
+                          f"仅回传前 {limit} 字符]")
+    return clipped + f"\n…[输出超长已截断：完整 {len(out):,} 字符，仅回传前 {limit} 字符]"
+
+
 def _stream_collect(proc, timeout, progress=None, should_stop=None, stop_event=None):
     """流式读取子进程 stdout/stderr（实时经 progress 回显），支持停止信号。
 
@@ -1786,11 +1818,10 @@ def tool_run_command(app_dir, command, cwd=None, env=None, progress=None,
         out = out + f"\n[命令退出码 {proc.returncode}，可能执行失败]"
     if _trunc:
         # ②-A.1：原始字节超硬上限，标记已截断（先裁剪到 LIMIT 再追加标记，确保可见）
-        out = out[:TOOL_RESULT_LIMIT]
-        out += (f"\n…[输出过大已截断：原始约 {_approx:,} 字节，"
-                f"仅回传前 {TOOL_RESULT_LIMIT} 字符]")
+        out = _clip_output(out, True, _approx)
     else:
-        out = out[:TOOL_RESULT_LIMIT]
+        # P2-2：4MB 以下但超回传上限的中等输出同样要标记（原版静默切 6000）
+        out = _clip_output(out, False, 0)
     if _cwd_warn:
         out += "\n" + _cwd_warn
     return out
@@ -2032,10 +2063,8 @@ def tool_run_python(app_dir, code, cfg=None, progress=None,
         out, _trunc, _approx = _hard_truncate_decode(raw)
         if not out.strip():
             out = f"（已执行，退出码 {proc.returncode}，无输出）"
-        out = out[:TOOL_RESULT_LIMIT]
-        if _trunc:
-            out += (f"\n…[输出过大已截断：原始约 {_approx:,} 字节，"
-                    f"仅回传前 {TOOL_RESULT_LIMIT} 字符]")
+        # P2-2：统一裁剪（>6000 字符必附标记；硬截断档标原始字节数）
+        out = _clip_output(out, _trunc, _approx)
     except Exception as e:
         return f"执行失败：{e}", []
     finally:

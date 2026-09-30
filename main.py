@@ -45,6 +45,34 @@ os.environ.setdefault(
 # setdefault：用户若已显式设置则尊重其值。
 os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 
+# v4.188 P2-14：**早期**崩溃兜底——赶在 import PySide6 / ui 之前装上。
+# 原实现的 crash logger 在 main():_install_crash_logger() 才装，而顶层
+# `from PySide6...` / `from ui import ...` 若本身崩（DLL 损坏 / 杀软删文件 /
+# Qt 插件缺失 / 版本冲突），窗口版（pythonw 无控制台）stderr 不可见 →
+# 双击 exe「毫无反应」且零日志，用户和我们都无从排查。
+# 这里只用标准库（os/sys/datetime/traceback，上面已 import），把 import 阶段
+# 的崩溃也写进 logs/app.log；main() 里的完整版 hook（走滚动入口）稍后覆盖。
+# 注：裸 open 追加只发生在「进程即将死掉」的场景，每崩溃一条 traceback，
+# 不会像常驻日志那样无限增长，无滚动也安全。
+try:
+    _EARLY_LOG_DIR = os.path.join(
+        os.path.expanduser("~/Documents/小臭玩AI"), "logs")
+
+    def _early_dump(et, ev, tb):
+        try:
+            os.makedirs(_EARLY_LOG_DIR, exist_ok=True)
+            with open(os.path.join(_EARLY_LOG_DIR, "app.log"), "a",
+                      encoding="utf-8") as _f:
+                _f.write("\n=== 启动早期未捕获异常 %s ===\n%s\n"
+                         % (datetime.now().isoformat(),
+                            "".join(traceback.format_exception(et, ev, tb))))
+        except Exception:
+            pass
+
+    sys.excepthook = _early_dump
+except Exception:
+    pass
+
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QThread, Signal, QObject, QAbstractNativeEventFilter, Qt
 from ui import ChatWindow, TrayApp, THEME
@@ -252,9 +280,13 @@ def _launch_gateway_on_startup(cfg, app):
         return
     except Exception:
         pass
-    py = shutil.which("python") or shutil.which("python3")
+    # v4.188 P3：加 py launcher 兜底——打包版用户机常没有 "python" 在 PATH
+    # （只装了官方安装器默认勾选的 py launcher），原实现直接静默放弃。
+    # `py -m uvicorn ...` 与 `python -m uvicorn ...` 命令形态相同，下游零改动。
+    py = shutil.which("python") or shutil.which("python3") or shutil.which("py")
     if not py:
-        log.warning("未找到 python，无法自启识图后端")
+        log.warning("未找到 python/python3/py，无法自启识图后端"
+                    "（可把 Python 加入 PATH 修复）")
         return
 
     def _run():
@@ -743,10 +775,25 @@ def main():
             webhook_stop()
         except Exception:
             pass
+        # v4.188 P2-16：Obsidian 后台线程有界收尾——不 join 会在进程退出时
+        # 触发「QThread: Destroyed while thread is still running」（随机崩）；
+        # 但也不能无限 join（init_obsidian 内部 timeout 15s，退出最多挂 15s）。
+        # 折中：wait(2000)——绝大多数场景（索引已跑完）立即过；正在跑的给 2s
+        # 缓冲，超时放行（进程退出时线程自然终止，不会丢数据：init 是只读索引）。
+        try:
+            _ow = obsidian_worker
+            if _ow is not None and _ow.isRunning():
+                _ow.wait(2000)
+        except Exception:
+            pass
         try:
             gp = getattr(app, "_gateway_proc", None)
             if gp is not None and gp.poll() is None:
                 gp.terminate()
+                # v4.188 P2-16：terminate 是异步请求——不 wait 收尸，主进程退出时
+                # uvicorn 孙进程可能来不及终止 → 孤儿进程占着 8000 端口，
+                # 下次自启探测「端口已占用」误判为已在运行，识图静默失效。
+                gp.wait(timeout=3)
         except Exception:
             pass
         # 导演台任务存盘（关程序后可在下次继续，不必从头来）

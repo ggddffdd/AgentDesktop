@@ -99,7 +99,8 @@ def main():
     check("cancel() 双通道（标志+令牌）",
           "self._ct.cancel(reason=\"user_stop\"" in dsrc)
     check("_gen_one 传 cancel_token 给 tool_video_gen",
-          "cancel_token=self._ct)" in dsrc)
+          "cancel_token=self._ct" in dsrc)  # v4.188 批D：on_submit 追加为后续参数，
+                                            # 断言放宽为「参数在传」而非「末参数」
     check("取消异常优雅兜底（不报异常吓人）",
           "已停止（用户请求），已完成段保留" in dsrc)
     check("停止按钮存在并接 _twin_stop",

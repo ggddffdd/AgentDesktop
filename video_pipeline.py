@@ -3086,13 +3086,19 @@ class VideoPipeline:
                           "口语化、自然流畅、有信息量。"
                           "绝不写故事情节、场景描写、镜头语言、动作说明，绝不出现其他角色。")
             if getattr(self, "smart", True):
+                # v4.188 P3：字数建议按语速动态算——旧文案写死「20~35 字」，
+                # 而分镜 dur 可到 12s（中文口播约 4~5 字/秒，12s 需 50~60 字），
+                # 写死会把长镜文案系统性压短，念完大段留白。
                 voice_len_note = ("请写一段中文口播文案（第一人称「我」对镜头说话），"
-                                  "自然分段，每段口播 20~35 字，按各镜时长自然分配，"
-                                  "总时长由分段数与每段长度自然决定。\n")
+                                  "自然分段；中文口播语速约每秒 4~5 字，"
+                                  "每段字数按所配镜头时长估算（如 6 秒约 25~30 字、"
+                                  "10 秒约 45~50 字），按各镜时长自然分配。\n")
             else:
+                _lo = max(10, int(self.duration) * 4)
+                _hi = max(15, int(self.duration) * 5)
                 voice_len_note = (f"请写一段总时长约 {n * self.duration} 秒的中文口播文案"
                                   f"（第一人称「我」对镜头说话），自然分成约 {n} 个小段落，"
-                                  f"每段约 {self.duration} 秒口语量（20~35字）。\n")
+                                  f"每段约 {self.duration} 秒口语量（约 {_lo}~{_hi} 字）。\n")
             user_prompt = (
                 f"主题：{topic}\n"
                 + voice_len_note
@@ -3556,7 +3562,9 @@ class VideoPipeline:
                 "-t", str(T), "-pix_fmt", "yuv420p",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
                 "-c:a", "aac", "-b:a", "128k", out]
-        self._run_ff(args, timeout=60)
+        # v4.188 P3：转场渲染也可被「停止」中断（x264 编码最长可挂到 60s 超时）
+        self._run_ff(args, timeout=60,
+                     cancel_check=lambda: self._is_cancelled())
         if not os.path.exists(out):
             return None
         # v4.133.1：只有全局转场（dur=None）才登记 trans_clip_path。
@@ -3936,39 +3944,55 @@ class VideoPipeline:
         天生无音轨、合成时铺 anullsrc（约 -91dB），全空镜成片会被 100% 误报成
         「哑弹 BUG」。现改为预期驱动：整片素材本来就没有声音 → 无声是设计，跳过；
         只要有一镜预期有声 → 照旧做峰值检测，漏报的代价远大于误报。
+
+        v4.188 P2-8：返回值升级——None=正常 / 按设计跳过 / 检测失败（fail-open）；
+        str=无声警告文本。调用方（_merge）把它存到 self.last_audio_warn，
+        UI 在成功消息里显式标注，用户不必翻日志才知道成片可能哑了。
+        v4.188 P3：volumedetect 传 cancel_check——合成后立刻点「停止」，
+        自检不再钉满 300s（取消时直接跳过，不误报）。
         """
         if expect_silent:
             self.log(f"  🔇 成片自检：{n_silent}/{n_clip} 个素材为静音素材"
                      f"（空镜/智谱兜底，无音轨）→ 成片按设计无声，跳过静音告警")
-            return
+            return None
+        if self._is_cancelled():
+            return None  # 已取消：自检无意义，直接跳过（不误报）
         try:
             _rc, _o, err = self._run_ff(
                 [self.ffmpeg, "-i", path, "-af", "volumedetect", "-f", "null", "-"],
-                timeout=300)
+                timeout=300, cancel_check=lambda: self._is_cancelled())
+            if self._is_cancelled():
+                return None  # 检测中途被取消：结果不可信也不重要
             mt = re.search(r"max_volume:\s*([-\d.]+)\s*dB", err)
             if not mt:
                 # 拿不到峰值通常意味着成片压根没有音轨——比「静音」更严重。
                 # 旧版在这里静默 return，等于漏报；预期有声时必须报出来。
                 try:
                     if not self._probe_has_audio(path):
-                        self.log("  ⚠️ 成片自检：成片没有音轨！"
-                                 "（预期有声，请查 _merge_exec 是否误铺 anullsrc）")
+                        warn = ("成片没有音轨（预期有声，疑似合成 BUG——"
+                                "请查 _merge_exec 是否误铺 anullsrc）")
+                        self.log(f"  ⚠️ 成片自检：{warn}")
+                        return f"⚠️ {warn}"
                 except Exception:
                     pass
-                return
+                return None
             mx = float(mt.group(1))
             if mx < -60.0:
                 extra = (f"（另有 {n_silent}/{n_clip} 镜为静音素材已排除）"
                          if n_silent else "")
                 self.log(f"  ⚠️ 成片自检：音轨峰值 {mx} dB，疑似静音！{extra}"
                          f"（预期有声却无声时请查 _probe_has_audio）")
-            else:
-                extra = (f"，其中 {n_silent}/{n_clip} 镜为静音素材" if n_silent else "")
-                self.log(f"  🔊 成片自检：音轨峰值 {mx} dB（正常{extra}）")
+                return f"⚠️ 成片疑似无声（音轨峰值 {mx} dB{extra}）"
+            extra = (f"，其中 {n_silent}/{n_clip} 镜为静音素材" if n_silent else "")
+            self.log(f"  🔊 成片自检：音轨峰值 {mx} dB（正常{extra}）")
+            return None
         except Exception:
-            pass
+            return None  # 检测失败不算警告（fail-open：宁可漏报也不误报吓人）
 
     def _merge(self, clip_paths, shots, out_path, burn_subtitles=True):
+        # v4.188 P2-8：本轮合成的音频自检结论（None=正常）。每次 merge 重置，
+        # 避免上一轮的警告串台；成功路径写入，UI 读它拼进成片消息。
+        self.last_audio_warn = None
         # v4.133：时间线里的字幕开关覆盖全局设置（没开时间线则完全不碰）
         if isinstance(getattr(self, "timeline", None), dict):
             burn_subtitles = bool((self.timeline.get("sub") or {})
@@ -3981,8 +4005,8 @@ class VideoPipeline:
                                       use_clip_audio=True)
         if ok:
             exp_silent, n_sil, n_clip = self._expect_silent(segs)
-            self._check_audio_level(out_path, expect_silent=exp_silent,
-                                    n_silent=n_sil, n_clip=n_clip)
+            self.last_audio_warn = self._check_audio_level(
+                out_path, expect_silent=exp_silent, n_silent=n_sil, n_clip=n_clip)
             return True, ""
         # v4.108 M-06：被「停止」中断（cancel_check 命中 kill）不算失败，
         # 直接返回取消文案，不再触发静音轨降级重试（避免取消后白跑一次合并）。
@@ -3998,8 +4022,8 @@ class VideoPipeline:
             if ok_d:
                 self.log("  ✅ 已按普通混音合成（BGM 不再自动闪避）")
                 exp_silent, n_sil, n_clip = self._expect_silent(segs)
-                self._check_audio_level(out_path, expect_silent=exp_silent,
-                                        n_silent=n_sil, n_clip=n_clip)
+                self.last_audio_warn = self._check_audio_level(
+                    out_path, expect_silent=exp_silent, n_silent=n_sil, n_clip=n_clip)
                 return True, ""
             detail = detail_d
         # 2) 若失败源于「片段音轨不可用」→ 降级为静音轨重试，保证至少能出片
@@ -4010,6 +4034,10 @@ class VideoPipeline:
             if ok2:
                 self.log("  ⚠️ 已按静音轨降级合成：成片无声"
                          "（素材本身无可用音轨，非合成 BUG；空镜/智谱兜底属预期）")
+                # v4.188 P2-8：静音轨兜底是「已知无声」，直接置警告文本
+                #（素材问题非合成 BUG，但用户必须看见，不能只留在日志里）
+                self.last_audio_warn = \
+                    "⚠️ 成片按静音轨合成（素材无可用音轨，成片无声）"
                 return True, ""
             return False, detail2
         return False, detail

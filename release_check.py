@@ -136,9 +136,18 @@ SECRET_PATTERNS = [
     (re.compile(rb"\bBSA[A-Za-z0-9]{20}\b"), "Brave Search 密钥"),
     (re.compile(rb"AKIA[0-9A-Z]{16}"), "AWS Access Key"),
     (re.compile(rb"ghp_[A-Za-z0-9]{20,}"), "GitHub Token"),
-    # 通用兜底：给 key/token/secret 赋上较长随机串（能抓无固定前缀的，如 Serper）
+    # 通用兜底：给 key/token/secret 赋上较长随机串（能抓无固定前缀的，如 Serper）。
+    # v4.188 P2-15：阈值 20→16（此前 23 字符 Brave key 那类「短 key」漏网教训的
+    # 延伸——16~19 位的现代密钥同样不能放过）。
     (re.compile(rb"(?i)(api_?key|apikey|secret|access_?token)[\"']?\s*[:=]\s*[\"']"
-                rb"[A-Za-z0-9_\-]{20,}[\"']"), "疑似硬编码凭据赋值"),
+                rb"[A-Za-z0-9_\-]{16,}[\"']"), "疑似硬编码凭据赋值（带引号）"),
+    # v4.188 P2-15：无引号 shell/env 风格（api_key=xxxx、API_KEY: xxxx）——
+    # .env/.yml/.cfg 常见形态，原正则只认引号字面量全漏。
+    # 防误伤：要求值里至少含一个数字（真实密钥几乎必含数字；
+    # 纯字母大写变量名如 MY_TOKEN_STRING 不会命中）。
+    (re.compile(rb"(?i)(api_?key|apikey|secret|access_?token)[\"']?\s*[:=]\s*"
+                rb"(?=[A-Za-z_\-]*\d)[A-Za-z0-9_\-]{16,}\b"),
+     "疑似硬编码凭据赋值（无引号）"),
 ]
 # tests/ 会**故意**构造「形似密钥」的字符串来验证脱敏逻辑，且不参与发布产物，
 # 因此整体跳过。取舍说明：假报警会让人直接忽略这个卡口，那比放宽更危险。
@@ -149,8 +158,11 @@ SKIP_DIR_PARTS = {".git", "__pycache__", "node_modules", "_archive", "cdp_edge_p
 SKIP_NAME_PREFIX = ("backup_", "_trash_", "_old_")
 # 不扫 .dll/.pyd/.so：那是上游发行物，不是我们的代码，扫了只会假红。
 # 保留 .exe —— 它含 PYZ（我们的代码），是真正要核的地方。
+# v4.188 P2-15：补 .log/.db/.sqlite —— debug.log 里会回显工具输出/错误报文
+# （密钥可能跟着异常栈打进去），.db/.sqlite 是记忆/会话库，同样有回显风险。
 SCAN_SUFFIX = (".py", ".pyc", ".json", ".jsonl", ".spec", ".md", ".txt", ".bat", ".ps1",
-               ".js", ".html", ".yml", ".yaml", ".ini", ".cfg", ".env", ".exe")
+               ".js", ".html", ".yml", ".yaml", ".ini", ".cfg", ".env", ".exe",
+               ".log", ".db", ".sqlite")
 
 
 def _iter_files(root):
@@ -210,10 +222,31 @@ def _read_app_version():
         return None
 
 
+def _read_build_date():
+    try:
+        txt = (ROOT / "config.py").read_text(encoding="utf-8")
+        m = re.search(r'APP_BUILD_DATE\s*=\s*"([^"]+)"', txt)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+def _vkey(s):
+    """版本号 → 数值元组（v4.186 → (4,186)，v4.187.0 → (4,187,0)）。
+    v4.188 P2-17：字典序比较的坑——"v4.99.0" > "v4.187.0"（'9'>'1'），
+    exe 版本取 max 时会取错；必须按数值比较。"""
+    try:
+        return tuple(int(x) for x in str(s)[1:].split("."))
+    except Exception:
+        return ()
+
+
 def _read_readme_version():
     try:
         txt = (ROOT / "README.md").read_text(encoding="utf-8")
-        m = re.search(r"v4\.\d+\.\d+", txt)
+        # v4.188 P2-17：兼容两段号（v4.186）与三段号（v4.186.0）——
+        # 原正则只认三段，README 写两段号时匹配不到 → 漏检。
+        m = re.search(r"v4\.\d+(?:\.\d+)?", txt)
         return m.group(0) if m else None
     except Exception:
         return None
@@ -251,7 +284,9 @@ def _read_exe_version(exe: Path):
                     elif isinstance(c, types.CodeType):
                         walk(c)
             walk(code)
-            return (sorted(set(found))[-1] if found else None), ""
+            # v4.188 P2-17：数值元组取最大（原 sorted()[-1] 字典序：
+            # "v4.99.0" > "v4.187.0"，会取错旧版本）
+            return (max(set(found), key=_vkey) if found else None), ""
 
         finally:
             try:
@@ -266,11 +301,32 @@ def check_version(scan_dist=True):
     appv = _read_app_version()
     check("config.APP_VERSION 可读", bool(appv), appv or "读取失败")
 
+    # v4.188 P3：APP_BUILD_DATE 新鲜度——写死的日期忘了更新就会带着过期日期
+    # 发布（用户报障时对不上真实构建日）。发布门禁当天跑，>2 天即 fail。
+    bd = _read_build_date()
+    if bd:
+        import datetime as _dt
+        try:
+            age = (_dt.date.today() - _dt.date.fromisoformat(bd)).days
+            check("APP_BUILD_DATE 新鲜（≤2 天）", 0 <= age <= 2,
+                  f"{bd}（{age} 天前）")
+        except ValueError:
+            check("APP_BUILD_DATE 格式", False, f"{bd} 非 ISO 日期")
+    else:
+        check("APP_BUILD_DATE 可读", False, "config.py 未找到")
+
     rdv = _read_readme_version()
     if rdv:
-        check("README 版本与 config 一致", rdv == appv, f"README={rdv} config={appv}")
+        # v4.188 P2-17：归一化比较——两段号 v4.186 ≡ 三段号 v4.186.0
+        #（补 .0 后再比，README 两种写法都算一致）。
+        _rd_n = _vkey(rdv) + ((0,) if len(_vkey(rdv)) == 2 else ())
+        _ap_n = _vkey(appv) + ((0,) if len(_vkey(appv)) == 2 else ())
+        check("README 版本与 config 一致", _rd_n == _ap_n,
+              f"README={rdv} config={appv}")
     else:
-        warn("README 版本", "README 中未找到 vX.Y.Z")
+        # v4.188 P2-17：README 找不到版本号由 warn 升为 fail——
+        # 发布门禁的意义就是挡住「README 忘了更新版本」，warn 等于没挡。
+        check("README 版本可读", False, "README 中未找到 vX.Y / vX.Y.Z")
 
     exe = ROOT / "dist" / "小臭玩AI" / "小臭玩AI.exe"
     if not scan_dist or not exe.is_file():

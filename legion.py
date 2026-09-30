@@ -336,20 +336,28 @@ def _checkpoint_path(project_id):
     return os.path.join(CHECKPOINT_DIR, f"{project_id or 'unknown'}.json")
 
 
-def _waves_fingerprint(waves):
-    """对成员阵容取指纹：成员名 + 工具白名单 + 模型的元组列表（顺序敏感）。
+def _waves_fingerprint(waves, legacy=False):
+    """对成员阵容取指纹：成员名 + 工具白名单 + 模型（+ prompt 摘要）的元组列表（顺序敏感）。
 
-    用于续跑时比对阵容是否一致。模型/工具轻微调整 → 仍可续跑但 UI 提示。
+    用于续跑时比对阵容是否一致。
+    P2-12 修：新增 prompt 摘要（sha1 前 12 位）——原指纹只看 name/tools/model，
+    改角色提示词后续跑仍被放行，成员行为已变却不拦。legacy=True 返回旧版三字段
+    指纹，专用于旧存档（其 waves_fingerprint 未含 prompt）的兼容比对。
     """
     fp = []
     for w in waves or []:
         wave_fp = []
         for r in w:
-            wave_fp.append((
+            item = (
                 r.get("name", ""),
                 tuple(sorted(r.get("tools") or [])),
                 r.get("model", ""),
-            ))
+            )
+            if not legacy:
+                _p = r.get("prompt") or ""
+                item = item + (hashlib.sha1(
+                    _p.encode("utf-8", "ignore")).hexdigest()[:12],)
+            wave_fp.append(item)
         fp.append(tuple(wave_fp))
     return fp
 
@@ -369,6 +377,10 @@ def save_checkpoint(project_id, run_id, task, plan_text, parts_by_wave,
     """
     if not project_id:
         return False
+    # P2-13 修：_CKPT_LOCK 从定义即启用——僵尸 worker（abort 后收尾落盘）与
+    # 新 worker 并发 save 时，「组 payload→算校验→写盘」整体交错会丢更新
+    # （旧进度覆盖新进度）。整段持锁串行化（finally 保证释放）。
+    _CKPT_LOCK.acquire()
     try:
         os.makedirs(CHECKPOINT_DIR, exist_ok=True)
         # v4.140 P2-3：成员级底稿转 JSON 友好结构（tuple→list）
@@ -412,6 +424,8 @@ def save_checkpoint(project_id, run_id, task, plan_text, parts_by_wave,
         # best-effort：落盘失败不应阻断运行，但 UI 可日志提示
         log.warning("save_checkpoint(%s) 失败：%s", project_id, e)
         return False
+    finally:
+        _CKPT_LOCK.release()
 
 
 def load_checkpoint(project_id):
@@ -7236,6 +7250,14 @@ def parse_verdict(text, has_output=True):
     """
     _no_out = not has_output
     text = text or ""
+    # P2-9 修：PM 输出为空（_run_pm 节点异常的 except 分支返回 ""）——没有验收
+    # 内容却默认放行 = fail-open。worker 的补投追问只在 verdict_text 非空时触发，
+    # 空串会直落兜底 PASS（advisory 模式下即直接放行）。与 v4.124.11「空产出必须
+    # 打回」同级处理：PM 空报告按打回，重跑后由 PM 重新验收。
+    if not text.strip():
+        return _verdict_result(
+            False, "项目经理未产出任何验收内容（节点异常或空输出）——按打回处理。",
+            False, _no_out)
     ms = _VERDICT_RE.findall(text)
     if ms:
         return _verdict_result(ms[-1].upper() == "PASS", _extract_advice(text),

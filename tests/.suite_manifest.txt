@@ -6,6 +6,7 @@ test_bridge_security.py
 test_cancel_token.py
 test_cdp_profile_path.py
 test_cmd_robustness_2a.py
+test_core_fix_188.py
 test_dataloss_fix_186.py
 test_director_cancel_retry.py
 test_director_manifest.py
@@ -50,6 +51,7 @@ test_v4102_1021_twin_bg.py
 test_v4102_image_compress.py
 test_v4102_twin_v2.py
 test_video_core_home.py
+test_video_director_fix_188.py
 test_vision_channel.py
 test_vision_qc.py
 test_workspace_routing.py

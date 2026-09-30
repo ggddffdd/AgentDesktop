@@ -2226,6 +2226,25 @@ def _build_api_history(messages, vision_ok=False, max_history=None,
     return cleaned
 
 
+# 分辨率预设（v4.188 P2-7 归一：生视频页 / 数字人面板 / 导演台面板共用此唯一来源。
+# 此前同一张表在 ui.py 内联 + digital_twin_panel.py + director_panel.py 各存一份，
+# 三处漂移就会出现「这页有的选项那页没有」的静默不一致——风格表 v4.151 踩过同款坑）。
+# ⚠️ 有效性边界（2026-08-17 实测 + tools.tool_video_gen 现状）：
+#   · Agnes 视频内核（2.5-flash）固定 size="720P"，**生成分辨率不随此选择变**；
+#   · 此选择实际生效的位置：数字人面板的参考图居中裁剪画幅（fit_image_to_aspect）、
+#     导演台的合成画布（ffmpeg 层 width/height）。
+RES_PRESETS = [
+    ("竖屏 1080×1920 (9:16)", "1080x1920"),
+    ("竖屏 720×1280 (9:16)", "720x1280"),
+    ("竖屏 768×1152 (3:4)", "768x1152"),
+    ("横屏 1920×1080 (16:9)", "1920x1080"),
+    ("横屏 1280×720 (16:9)", "1280x720"),
+    ("横屏 1152×768 (4:3)", "1152x768"),
+    ("横屏 1088×832 (4:3)", "1088x832"),
+    ("方形 1024×1024 (1:1)", "1024x1024"),
+]
+
+
 class TaskStatusStrip(QWidget):
     """状态栏内的任务状态条（可观测性）。
 
@@ -4354,17 +4373,10 @@ class ChatWindow(QMainWindow):
         opt.addWidget(self.video_duration)
 
         self.video_resolution = _NoWheelCombo()
-        # 预设均经 2026-08-17 实测：Agnes 视频接受任意 WxH（无白名单），至少支持到 4K。
-        for label, val in [
-            ("竖屏 1080×1920 (9:16)", "1080x1920"),
-            ("竖屏 720×1280 (9:16)", "720x1280"),
-            ("竖屏 768×1152 (3:4)", "768x1152"),
-            ("横屏 1920×1080 (16:9)", "1920x1080"),
-            ("横屏 1280×720 (16:9)", "1280x720"),
-            ("横屏 1152×768 (4:3)", "1152x768"),
-            ("横屏 1088×832 (4:3)", "1088x832"),
-            ("方形 1024×1024 (1:1)", "1024x1024"),
-        ]:
+        # v4.188 P2-7：预设表改为模块级 RES_PRESETS 唯一来源（与数字人/导演台共用）。
+        # 预设均经 2026-08-17 实测：Agnes 视频接受任意 WxH（无白名单），至少支持到 4K；
+        # 但当前内核 2.5-flash 固定 720P 输出，此选择影响的是后续合成画幅基准。
+        for label, val in RES_PRESETS:
             self.video_resolution.addItem(label, val)
         self.video_resolution.setCurrentIndex(2)  # 默认竖屏 768×1152（保持原默认）
         self.video_resolution.setFixedHeight(34)
@@ -9783,8 +9795,11 @@ class ChatWindow(QMainWindow):
         工具自发调用打断。
         判断依据：扫描全部消息，取最后一次『拒绝调工具』与最后一次『明确工具动作』
         的位置——若拒绝在动作之后（或从未有动作），视为当前仍应尊重『不调工具』。"""
+        # v4.188 P3：_internal 消息是程序注入的（强制工具指令/首步提示，见 10081/
+        # 10112 构造点），不是用户说的——若不过滤，注入文本里的「生成/执行」等
+        # 动作词会顶掉用户的『不调工具』约束（9743 行 last_user 提取已有同款过滤）。
         REFUSE_KW = (
-            "不要调用工具", "不要使用工具", "别调用工具", "别用工具", "不用工具",
+            "不要调用工具", "不要使用工具", "不要用工具", "别调用工具", "别用工具", "不用工具",
             "不要调工具", "别调工具", "纯聊天", "只是聊", "只是聊天", "光聊天",
             "不要动工具", "先别用工具", "不要开工具", "不用开工具", "别开工具",
         )
@@ -9797,13 +9812,20 @@ class ChatWindow(QMainWindow):
         last_refuse = -1
         last_action = -1
         for i, m in enumerate(messages or []):
-            if m.get("role") != "user":
+            if m.get("role") != "user" or m.get("_internal"):
                 continue
             c = m.get("content", "")
             if not isinstance(c, str):
                 continue
             if any(k in c for k in REFUSE_KW):
                 last_refuse = i
+                # v4.188 P3+（探针暴露的既有 bug）：拒绝句里的「用工具/调用工具」
+                # 是**被否定的动作**，不得同时记成工具指令——否则「不要用工具」
+                # 这句最自然的拒绝会因同句命中 ACTION_KW 而自我抵消
+                #（last_refuse == last_action → 拒绝永远不生效）。
+                # 做法：抹掉拒绝短语后再查动作词；「不要用工具，帮我生成个视频」
+                # 这类**同句带新动作**的仍会让动作胜出（语义正确）。
+                c = re.sub("|".join(re.escape(k) for k in REFUSE_KW), "■", c)
             if any(k in c for k in ACTION_KW):
                 last_action = i
         return last_refuse >= 0 and last_refuse > last_action

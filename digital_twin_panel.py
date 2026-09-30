@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -29,23 +30,11 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QPixmap, QIcon, QAction
 from PySide6.QtCore import Qt, QSize, QThread, Signal
 
-from ui import THEME, _GenThread
+from ui import THEME, _GenThread, RES_PRESETS
 from config import APP_DIR
 import tools as tools_mod
 import vision_qc as vq
 
-
-# 分辨率预设（与「生视频」页保持一致）
-RES_PRESETS = [
-    ("竖屏 1080×1920 (9:16)", "1080x1920"),
-    ("竖屏 720×1280 (9:16)", "720x1280"),
-    ("竖屏 768×1152 (3:4)", "768x1152"),
-    ("横屏 1920×1080 (16:9)", "1920x1080"),
-    ("横屏 1280×720 (16:9)", "1280x720"),
-    ("横屏 1152×768 (4:3)", "1152x768"),
-    ("横屏 1088×832 (4:3)", "1088x832"),
-    ("方形 1024×1024 (1:1)", "1024x1024"),
-]
 
 AVATAR_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 
@@ -1017,6 +1006,9 @@ class TwinGenThread(QThread):
         self.qc_notes = []         # 每段质检诊断，供 UI 展示
         self.failed_segs = []      # [(段号, 原因)]：成片缺段时**必须**让 UI 说出来
         self.reused = 0            # 本轮复用的段数（供 UI 汇报"省了几段"）
+        # v4.188 P3：task_id 记账锁——并发模式下 on_submit 在 worker 线程触发，
+        # 与主线程 _record_seg 的记账/落盘串行化（state 是共享 dict）
+        self._task_lock = threading.Lock()
 
     def cancel(self):
         self._cancel = True
@@ -1186,6 +1178,28 @@ class TwinGenThread(QThread):
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}
         _save_job_state(state_path, state)
 
+    def _record_task(self, state, state_path, idx, task_id):
+        """登记远端 task_id（v4.188 P3）。
+
+        tool_video_gen 的 on_submit 在「提交成功」即刻回调（v4.168.0 加的能力，
+        导演台已用上，twin 一直没接）。落盘进 state["tasks"] 后，关软件/断网
+        都能凭它对账——这段远端到底提交过没有，不重复提交、不重复扣费。
+        并发模式下回调发生在 worker 线程，加 _task_lock 与主线程记账串行化；
+        _gen_one 重试会多次提交，同一 idx 覆盖为最后一次（对账以最新为准）。
+        """
+        if not self.job_dir or not task_id:
+            return
+        try:
+            with self._task_lock:
+                state.setdefault("tasks", {})[str(idx)] = {
+                    "task_id": str(task_id),
+                    "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}
+                _save_job_state(state_path, state)
+            self.log.emit(f"  [第{idx}段] 远端任务已提交并登记"
+                          f"（task_id={str(task_id)[:24]}）")
+        except Exception:
+            pass
+
     def _gen_serial(self, todo, tmp_dir, ff, state, state_path, seg_map,
                     portrait_uri, total):
         """串行逐段 + 尾帧接力（keyframe 模式；reference 模式也可用，只是慢）。"""
@@ -1206,8 +1220,12 @@ class TwinGenThread(QThread):
                 + "\n\n" + VOICE_LOCK
 
             self.log.emit(f"▶ 第 {i+1}/{total} 段（{len(text)}字 / {sec}秒）生成中…")
+            # v4.188 P3：提交即登记远端 task_id（对账防重复提交/扣费）
+            _on_sub = (lambda tid, _i=i: self._record_task(
+                state, state_path, _i + 1, tid)) if self.job_dir else None
             seg_path, note = self._gen_one(
-                i, prompt, sec, first_frame, last_frame, tmp_dir, ff, images=images)
+                i, prompt, sec, first_frame, last_frame, tmp_dir, ff, images=images,
+                on_submit=_on_sub)
             self.qc_notes.append(note)
 
             if not seg_path:
@@ -1246,8 +1264,13 @@ class TwinGenThread(QThread):
             i, text, sec, seg_file = item
             prompt = _build_twin_prompt(self.scene, text, self.keep_bg) \
                 + "\n\n" + VOICE_LOCK
+            # v4.188 P3：并发模式同样登记 task_id（_record_task 内部加锁，
+            # 与主线程 as_completed 循环里的 _record_seg 串行化）
+            _on_sub = (lambda tid, _i=i: self._record_task(
+                state, state_path, _i + 1, tid)) if self.job_dir else None
             seg_path, note = self._gen_one(
-                i, prompt, sec, None, None, tmp_dir, ff, images=[portrait_uri])
+                i, prompt, sec, None, None, tmp_dir, ff, images=[portrait_uri],
+                on_submit=_on_sub)
             return i, text, seg_file, seg_path, note
 
         with ThreadPoolExecutor(max_workers=n) as ex:
@@ -1272,7 +1295,7 @@ class TwinGenThread(QThread):
                 self._record_seg(state, state_path, i + 1, text, seg_path)
 
     def _gen_one(self, i, prompt, sec, first_frame, last_frame, tmp_dir, ff,
-                 images=None):
+                 images=None, on_submit=None):
         """生成单段：**生成失败**与**质检不过**各自独立重试，互不占额度。
 
         返回 (路径 or None, 质检诊断文本)。
@@ -1281,6 +1304,7 @@ class TwinGenThread(QThread):
         - 质检不过 → 重生成 `max_qc_retry` 次；用尽保留最后一次并提示人工过目；
         - 两者叠加时（质检不过 → 重生成 → 又生成失败）：**宁可留一个有瑕疵的段，
           也不让它整段消失**，故返回最近一次生成成功的结果。
+        on_submit: v4.188 P3 —— 提交成功即回调远端 task_id（登记进 state 对账）。
         """
         last_note = ""
         last_ok = None     # 最近一次生成成功的结果（质检不过也留着兜底）
@@ -1298,7 +1322,8 @@ class TwinGenThread(QThread):
                     resolution=self.resolution,
                     images=images,
                     first_frame=first_frame, last_frame=last_frame, dialogue=None,
-                    cancel_token=self._ct)
+                    cancel_token=self._ct,
+                    on_submit=on_submit)
             except Exception as _e:
                 # 取消（CancelledError）→ 优雅停：已完成段保留，不报「异常」吓人
                 if self._cancel or type(_e).__name__ == "CancelledError":
