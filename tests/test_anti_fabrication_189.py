@@ -402,6 +402,121 @@ def main():
     except Exception as e:
         check("H4-H7 拖拽行为级", False, str(e)[:80])
 
+    # ================= [I] 批⑤：部分读取回验 =================
+    print("=== [I] 批⑤ 部分读取回验（读了 X% 却声称读全） ===")
+    try:
+        # 构造真实文件：49050 字符（复刻实战规模）
+        big = os.path.join(tmp, "BIGLOG.md")
+        with open(big, "w", encoding="utf-8") as f:
+            f.write("头部说明\n" + ("版本条目行内容\n" * 6132))
+        _total_len = len(open(big, encoding="utf-8").read())
+        check("I0 构造大文件成功（>40000 字符）", _total_len > 40000,
+              str(_total_len))
+
+        def _tl_read_off(path, offset):
+            return {"role": "tool_log", "name": "read_file",
+                    "args": json.dumps({"path": path, "offset": offset}),
+                    "result": "…内容…"}
+
+        # I1 原景重现：只读 0~8000（+ 续读到 20000）却说「整份读完」
+        wI1 = _mkmw([
+            {"role": "user", "content": "读完再跟我说"},
+            _tl_read_off(big, 0),
+            _tl_read_off(big, 8000),
+            _tl_read_off(big, 16000),
+            {"role": "assistant",
+             "content": f"读完了，整份读完 {os.path.basename(big)}，"
+                        "给您只基于真实内容的对账。"},
+        ])
+        wI1._audit_partial_reads()
+        _wI1 = [m for m in wI1.store.active().messages
+                if m.get("role") == "audit_warn"]
+        check("I1 只读 41% 却声称整份读完 → 标红", len(_wI1) == 1,
+              _wI1[0]["content"][:70] if _wI1 else "无警示")
+        check("I1b 警示带覆盖率百分比",
+              bool(_wI1) and "%）" in _wI1[0]["content"],
+              _wI1[0]["content"][-40:] if _wI1 else "")
+
+        # I2 真的读全了（续读覆盖到末尾）→ 不误伤
+        wI2 = _mkmw([
+            {"role": "user", "content": "读完再跟我说"},
+            _tl_read_off(big, 0),
+            _tl_read_off(big, 8000),
+            _tl_read_off(big, _total_len - 1000),
+            {"role": "assistant", "content": "已整份读完 BIGLOG.md，清单如下。"},
+        ])
+        wI2._audit_partial_reads()
+        check("I2 续读覆盖到末尾 → 不误伤",
+              not any(m.get("role") == "audit_warn"
+                      for m in wI2.store.active().messages))
+
+        # I3 如实声明只读了一部分 → 豁免
+        wI3 = _mkmw([
+            {"role": "user", "content": "先看一部分"},
+            _tl_read_off(big, 0),
+            {"role": "assistant",
+             "content": "我只读了前 8000 字符，还没读全 BIGLOG.md，"
+                        "先给您部分结论。"},
+        ])
+        wI3._audit_partial_reads()
+        check("I3 「只读了前 8000 字符，还没读全」如实声明 → 豁免",
+              not any(m.get("role") == "audit_warn"
+                      for m in wI3.store.active().messages))
+
+        # I4 没声称读全（只说「看了一眼」）→ 不触发
+        wI4 = _mkmw([
+            {"role": "user", "content": "看一眼"},
+            _tl_read_off(big, 0),
+            {"role": "assistant", "content": "BIGLOG.md 开头是头部说明。"},
+        ])
+        wI4._audit_partial_reads()
+        check("I4 未声称读全 → 不触发",
+              not any(m.get("role") == "audit_warn"
+                      for m in wI4.store.active().messages))
+
+        # I5 小文件一次读完（无 offset）→ 不误伤
+        small = os.path.join(tmp, "SMALL.md")
+        with open(small, "w", encoding="utf-8") as f:
+            f.write("短文件。")
+        wI5 = _mkmw([
+            {"role": "user", "content": "读它"},
+            {"role": "tool_log", "name": "read_file",
+             "args": json.dumps({"path": small}), "result": "短文件。"},
+            {"role": "assistant", "content": "已整份读完 SMALL.md。"},
+        ])
+        wI5._audit_partial_reads()
+        check("I5 小文件一次读完 → 不误伤",
+              not any(m.get("role") == "audit_warn"
+                      for m in wI5.store.active().messages))
+
+        # I6 文件已被删除 → fail-open 不误报
+        wI6 = _mkmw([
+            {"role": "user", "content": "读它"},
+            _tl_read_off(os.path.join(tmp, "GONE_不存在.md"), 0),
+            {"role": "assistant", "content": "已整份读完 GONE_不存在.md。"},
+        ])
+        wI6._audit_partial_reads()
+        check("I6 文件不存在 → fail-open 不误报",
+              not any(m.get("role") == "audit_warn"
+                      for m in wI6.store.active().messages))
+
+        # I7 本轮只一个文件、用「这份文件」指代（不出现文件名）→ 仍标红
+        wI7 = _mkmw([
+            {"role": "user", "content": "读完再答"},
+            _tl_read_off(big, 0),
+            {"role": "assistant", "content": "这份文件我已整份读完，结论如下。"},
+        ])
+        wI7._audit_partial_reads()
+        check("I7 「这份文件」指代（唯一文件）→ 仍标红",
+              any(m.get("role") == "audit_warn"
+                  for m in wI7.store.active().messages))
+
+        _ui_src = inspect.getsource(UI.ChatWindow._on_agent_done)
+        check("I8 _on_agent_done 已挂 _audit_partial_reads",
+              "_audit_partial_reads()" in _ui_src)
+    except Exception as e:
+        check("I 组批⑤探针", False, str(e)[:120])
+
     print("=== [F] 三文件语法编译 ===")
     import py_compile
     for f in ("config.py", "agent.py", "ui.py"):

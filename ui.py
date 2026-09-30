@@ -9528,6 +9528,9 @@ class ChatWindow(QMainWindow):
         self._audit_reply_citations()
         # v4.189 批④：附件行为回验——声称已读但本轮没调 read_file → 标红。
         self._audit_attachment_reads()
+        # v4.190 批⑤：部分读取回验——调了 read_file 但只读了一部分，却声称
+        # 「整份读完」→ 标红（批④只查读没读，查不出读没读全）。
+        self._audit_partial_reads()
         self._do_save()  # v4.58：agent 结束做一次最终落盘
         self._flush_render()  # v4.60o：冲刷待渲染定时器，避免末条消息重复插入
         self.input_box.setFocus()
@@ -9765,6 +9768,121 @@ class ChatWindow(QMainWindow):
                     f"{'、'.join(sorted(mentioned)[:3])}，但本轮工具记录中没有"
                     "对应的 read_file/run_python 调用——疑似未读编造，"
                     "请要求它先真读再答。")
+            self.store.active().messages.append({
+                "role": "audit_warn", "content": warn,
+            })
+            # 同上：只落 store，UI 交给 _flush_render 统一渲染（防重复卡）
+        except Exception:
+            pass  # 校验器绝不阻断 agent 完成流程
+
+    # ---- v4.190 批⑤：部分读取回验（读了 41% 却声称「整份读完」→ 标红） ----
+    # 判据不看 read_file 的 result——tool_log 的 result 被 _clip 裁到 500 字符，
+    # 而分段读取的截断提示在 8000 字段的**末尾**，必然被裁掉（实测永远看不到）。
+    # 改为按 args 里的 offset + 实际文件长度自算覆盖率，顺带能在警示里报百分比。
+    _READ_OFFSET_RE = re.compile(r'"offset"\s*:\s*(\d+)')
+    _READ_LIMIT_RE = re.compile(r'"limit"\s*:\s*(\d+)')
+    # 「读全」声称词（区别于「只读了一部分」）
+    _READ_FULL_CLAIM_KW = ("整份读完", "整份已读", "全部读完", "全文读完",
+                           "读完全文", "读完了整份", "已全部读完", "完整读完",
+                           "读完整个文件", "通读完", "全部读完了", "已整份读完",
+                           "整份读完了", "通读全文", "读全了")
+    # 自我限定词：同句出现 = 明确声明只读了部分，如实报告 → 豁免
+    _READ_PARTIAL_HINT_KW = ("只读", "仅读", "没读全", "未读全", "没读完",
+                             "未读完", "还剩", "剩余", "部分读", "读到第",
+                             "没读到最后", "分 8 段", "分段读", "还没读")
+
+    def _audit_partial_reads(self):
+        """v4.190 批⑤：你说读全了，机器算你读了多少。
+
+        背景（2026-10-01 实锤）：模型第一次只读到 20000/49050 字符就声称
+        「整份读完」并据此列清单、下结论，被用户指出后才补读。批④只查「有没有
+        调 read_file」（它确实调了），查不出「读了 41% 却说 100%」。
+
+        算法：本轮 read_file 的 args 提取 offset/limit → 该文件本轮最大覆盖
+        字符位 = max(offset + limit)；与文件实际字符数比 → 覆盖不足即未读全。
+        触发：最后 assistant 同一句里「提及该文件（或本轮只读了这一个文件）∧
+        出现读全声称词 ∧ 无自我限定词」→ audit_warn 标红，带百分比。
+
+        防误报：文件读不到/超大（>2MB）fail-open；结果被裁导致 offset 缺失时
+        按 0 计（覆盖率只会偏低 → 可能漏报，不会误报）。
+        """
+        try:
+            msgs = self.store.active().messages
+            last_user_idx = -1
+            for i in range(len(msgs) - 1, -1, -1):
+                m = msgs[i]
+                if m.get("role") == "user" and not m.get("_internal"):
+                    last_user_idx = i
+                    break
+            if last_user_idx < 0:
+                return
+            # 1) 本轮每个文件的最大覆盖字符位
+            covered = {}
+            for m in msgs[last_user_idx + 1:]:
+                if m.get("role") != "tool_log" or m.get("name") != "read_file":
+                    continue
+                p = self._extract_read_path(m.get("args", ""))
+                if not p:
+                    continue
+                s = str(m.get("args", ""))
+                _o = self._READ_OFFSET_RE.search(s)
+                off = int(_o.group(1)) if _o else 0
+                _l = self._READ_LIMIT_RE.search(s)
+                lim = int(_l.group(1)) if _l else getattr(
+                    tools_mod, "TOOL_READ_LIMIT", 8000)
+                covered[p] = max(covered.get(p, 0), off + lim)
+            if not covered:
+                return
+            # 2) 与文件实际长度比 → 未读全集合
+            unfin = {}
+            for p, cov in covered.items():
+                try:
+                    if os.path.getsize(p) > 2 * 1024 * 1024:
+                        continue  # 超大文件不读，fail-open
+                    with open(p, "r", encoding="utf-8", errors="replace") as f:
+                        total = len(f.read())
+                except Exception:
+                    continue  # 读不到/已删除：无法判定，跳过
+                if total and cov < total:
+                    unfin[p] = (cov, total)
+            if not unfin:
+                return
+            # 3) 最后 assistant 回复：同句「读全声称 ∧ 提及该文件」→ 标红
+            last_asst = ""
+            for m in reversed(msgs):
+                if m.get("role") == "assistant":
+                    c = m.get("content", "")
+                    if isinstance(c, list):
+                        c = self._extract_text(m)
+                    last_asst = str(c or "")
+                    if last_asst.strip():
+                        break
+            if not last_asst.strip():
+                return
+            hits = []
+            for p, (cov, total) in unfin.items():
+                base = os.path.basename(p)
+                stem = os.path.splitext(base)[0]
+                # 本轮只这一个文件时，允许「这份文件」式指代（不要求出现文件名）
+                named = (base in last_asst) or (stem in last_asst)
+                for sent in self._AUDIT_SENT_SPLIT_RE.split(last_asst):
+                    if not named and not (len(unfin) == 1 and sent.strip()):
+                        continue
+                    if not any(k in sent for k in self._READ_FULL_CLAIM_KW):
+                        continue
+                    if any(k in sent for k in self._READ_PARTIAL_HINT_KW):
+                        continue  # 自己声明只读了一部分 → 如实报告，豁免
+                    hits.append((base, cov, total))
+                    break
+            if not hits:
+                return
+            _d = []
+            for base, cov, total in hits[:3]:
+                _d.append(f"{base} 读到 {cov}/{total} 字符"
+                          f"（{cov * 100 // total}%）")
+            warn = (f"⚠️ 读取核验失败：回复声称整份读完，但本轮实际"
+                    f"：{'；'.join(_d)}——疑似未读全就下结论。"
+                    "请要求它续读到文件末尾（read_file offset=…）后重新回答。")
             self.store.active().messages.append({
                 "role": "audit_warn", "content": warn,
             })
