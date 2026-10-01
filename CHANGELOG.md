@@ -52,9 +52,22 @@
 ### 验证
 
 - 新探针 `tests/test_guardrail_conflicts.py` **18/18**（含 [G] 组 6 条修复验证；
-  G5 确认泛动词仍不触发、G6 确认否定豁免未破坏）。
+  G5 确认泛动词仍不触发、G6 确认否定豁免未破坏）。已进 `.suite_manifest.txt`。
 - 防编造探针 `test_anti_fabrication_189.py` **90/90**（批③词表扩充无回归）。
-- 全量回归：仅剩 frozen_smoke 版本一致性（打包后消除）。
+
+### 已发布 exe
+
+- `BUILD_EXIT=0`（7m41s）；UI 裸 hex 护栏新增违规 **0**（12 处存量 SOFT，`legion_status_widget.py`）；
+  旧 exe 已备份轮转（保留 3 个）。
+- 冻结冒烟 **143/143**（含「exe 内版本 == 源码版本」v4.193.0）。
+- 发布门禁 `release_check.py` **12/12**，门禁内全量回归 **PASS=2312 FAIL=0**
+  （59 套件全绿，较 v4.192.0 的 2294 多 18 = 新探针 18 条）。
+- 产物 `dist/小臭玩AI/小臭玩AI.exe`（19.1MB）。
+
+### 附：本轮新增实验脚本（不随包分发）
+
+- `tests/exp_read_discipline.py` —— 读取纪律机制实测（部分读/读全/扑空三场景）。
+- `tests/exp_changelog_eval.py` —— 真机回复四分打分器（[自检]/[诚实]/[编造]/[版本]）。
 
 ---
 
