@@ -9309,12 +9309,26 @@ class ChatWindow(QMainWindow):
         def _clip(s, n=500):
             s = str(s or "")
             return s if len(s) <= n else s[:n] + "…(截断)"
-        self.store.active().messages.append({
+        rec = {
             "role": "tool_log",
             "name": entry.get("name", ""),
             "args": _clip(entry.get("args", ""), 300),
             "result": _clip(entry.get("result", ""), 500),
-        })
+        }
+        # v4.195 批⑨：把证据编号一并落库。
+        #
+        # 这一步是根治的关键接口：result 被裁到 500 后，**任何依赖它的回验都只能
+        # 看到冰山一角**（批⑤/⑦ 之所以要绕道去读 args 的 offset/limit 才能判
+        # 「读完没有」，根因就在这里）。现在补上 evidence_id —>
+        # 后续回验改走 Evidence Registry 取完整原文，不再受 500 字符限制。
+        #
+        # 保守起见 result 字段**保持原样**：既有的批③/④/⑤/⑦/⑧ 都读它，
+        # 一动就会全量回归红。新增字段不动旧字段 = 零回归。
+        _eid = entry.get("evidence_id")
+        if _eid:
+            rec["evidence_id"] = int(_eid)
+            rec["evidence_ok"] = bool(entry.get("evidence_ok", True))
+        self.store.active().messages.append(rec)
         self._save_throttled()  # v4.58：批量保存，避免每个工具一次磁盘 IO
         self._render_throttled()  # v4.58：节流渲染，避免信号洪水
 

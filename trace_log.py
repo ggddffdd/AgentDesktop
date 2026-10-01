@@ -250,7 +250,25 @@ def append_task_trajectory(cfg, task, outcome="success", pattern=None, pitfall=N
 
     入参：
       task       : 任务目标（goal 摘要）
-      outcome    : success | token_budget | stopped | timeout | max_steps | error
+      outcome    : 结局（v4.195 批⑪ 起为九态，见下）
+                   success               目标完成 + 工具成功 + 无异常，三者齐备
+                   partial               只完成一部分（缺工具执行或中途收敛）
+                   tool_failed           工具连续失败而中止
+                   validation_failed     产出未通过校验
+                   hallucination_blocked 触发反幻觉护栏（伪造调用 / 原地复读）
+                   aborted               非任务原因终止
+                   timeout               超时
+                   model_error           API 调用异常
+                   token_budget          token 预算熔断
+                   max_steps             步数耗尽
+                   stopped               用户停止
+                   
+                   历史坑：本函数早前由调用方做「四态之外一律 success」的推断，
+                   导致工具失败/API 异常/复读被记成成功；而外层只有
+                   `outcome == "success"` 的轨迹会被召回去做 few-shot 正面示范
+                   （见 build_fewshot_for / auto_refine_harness），
+                   错路径因此被当成范例反复教回模型。现由调用方改用九态推断，
+                   本函数只负责如实落库 —— 不再做取值猜测，也没有白名单校验。
       pattern    : 成功模式（值得复用的做法）
       pitfall    : 踩坑（下次规避）
       tools      : 本轮实际调用过的工具名列表

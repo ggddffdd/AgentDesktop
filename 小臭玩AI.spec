@@ -22,7 +22,12 @@ hiddenimports = ['PySide6', 'PySide6.QtPrintSupport', 'PySide6.QtWebEngineWidget
                'agnes_text',
                # v4.129 产物分层落盘：tools._products_dir / ui 归档 / video_pipeline
                # 全是函数内延迟导入，不登记则打包后新产物退回旧平铺路径（静默降级，最难查）。
-               'product_layout']
+               'product_layout',
+               # v4.195 批⑨ 证据登记处：agent._handle_tool_result 内为延迟导入
+               # （与本清单里 tool_manager_ui / legion / agnes_text 同一个坑：
+               # 函数内 import 静态分析扫不到）。漏登记的表现是打包后工具调用
+               # 照常执行但**没有任何证据入账**，回验全线静默降级 —— 难查且无声。
+               'evidence']
 
 
 a = Analysis(

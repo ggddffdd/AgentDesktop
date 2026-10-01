@@ -15,6 +15,7 @@ test_director_manifest.py
 test_director_project_isolation.py
 test_director_recover.py
 test_dist_hygiene.py
+test_evidence_registry_195.py
 test_frozen_smoke.py
 test_guardrail_conflicts.py
 test_high_risk_guard.py
@@ -31,6 +32,7 @@ test_legion_permissions.py
 test_legion_resume_fill.py
 test_legion_status.py
 test_no_stall_186.py
+test_outcome_honesty_195.py
 test_p0p1_runcmd_fix_186.py
 test_permission_gates.py
 test_popup_clamp.py

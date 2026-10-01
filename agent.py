@@ -1120,7 +1120,13 @@ class AgentWorker(QThread):
     def _collect_step_tools(self, resp):
         """累计本步调用过的工具名（去重），供任务轨迹写回使用。"""
         try:
-            for _tc in (resp or {}).get("tool_calls") or []:
+            _tcs = (resp or {}).get("tool_calls") or []
+            # v4.195 批⑪：记录本轮工具调用总数。
+            # success 必须建立在「确实干了活」之上 —— 一轮下来一次工具都没调，
+            # 只回了几句文字，哪怕没有任何报错也不能算「跑通」。
+            if _tcs:
+                self._note_exit("tool_calls", len(_tcs))
+            for _tc in _tcs:
                 _n = (_tc.get("function") or {}).get("name", "")
                 if _n and _n not in self._tools_used:
                     self._tools_used.append(_n)
@@ -1181,25 +1187,19 @@ class AgentWorker(QThread):
             if not (getattr(self, "_tools_used", None) or steps > 2):
                 return
             import trace_log
-            # 结局推断：熔断 > 用户停止 > 超时 > 步数耗尽 > 成功
-            if self._token_budget_hit:
-                outcome = "token_budget"
-            elif self._stop_requested:
-                outcome = "stopped"
-            elif duration_s and duration_s > 180:
-                outcome = "timeout"
-            elif steps and steps >= getattr(self, "_max_steps", MAX_AGENT_STEPS):
-                outcome = "max_steps"
-            else:
-                outcome = "success"
-            pitfall = None
-            if outcome == "token_budget":
-                pitfall = ("任务 token 超预算被熔断；下次先拆分任务或限制工具轮次，"
-                           "避免大量升舱 DeepSeek 付费通道")
-            elif outcome == "max_steps":
-                pitfall = "步数耗尽仍未收敛，可能卡在工具循环；下次先明确产出物再开工"
-            elif outcome == "stopped":
-                pitfall = "被用户中途停止，可能方向不符；下次先确认目标再执行"
+            # v4.195 批⑪ 结局推断：九态。
+            #
+            # 旧逻辑是四种之外一律 success —— 工具连续失败、模型原地复读、
+            # 伪造工具调用、API 异常这四类全被记成成功；而 trace_log 又只召回
+            # success 轨迹去当 few-shot 正面示范，于是错路径被反复教回去。
+            # 现改为「目标完成 + 工具成功 + 校验通过三者齐备才算 success」。
+            outcome = self._infer_outcome(
+                steps=steps, duration_s=duration_s,
+                max_steps=getattr(self, "_max_steps", MAX_AGENT_STEPS))
+            # 每个非 success 结局都要留一句「下次怎么避开」，
+            # 否则轨迹只记了失败、没沉淀教训，下次照样踩同一个坑。
+            pitfall = self._PITFALL_HINT.get(
+                outcome, "本轮以「%s」结束，复盘后再动手会更省。" % outcome)
             trace_log.append_task_trajectory(
                 getattr(mw, "cfg", None) or {},
                 task=self._goal_hint()[:200],
@@ -1246,6 +1246,25 @@ class AgentWorker(QThread):
         MAX_FAKE_RETRIES = 3   # v4.98：伪造工具调用最多容忍次数，超出诚实提示并停止
         self._last_step_sig = None  # v4.102 fix8：上一步 (content, tool_calls) 签名
         self._repeat_steps = 0      # v4.102 fix8：连续重复步计数（防弱模型复读打转）
+        # v4.195 批⑪ 结局诚实层：退出原因旗标。
+        #
+        # 这些信号**本来就有**（上面每个护栏一直在计数），但 _persist_task_memory
+        # 推断 outcome 时一个都没读，只认 token/stop/timeout/max_steps 四种，
+        # 其余一律兜底 success —— 于是「工具连续失败」「模型原地复读」
+        # 「伪造工具调用」「API 调用异常」全被记成了成功。
+        #
+        # 而它们还会被**放大**：trace_log 只召回 outcome=="success" 的轨迹去当
+        # few-shot 正面示范（标题写死「历史成功轨迹参考（同类任务已跑通）」），
+        # 于是错路径被当成范例教回模型 → 下次更容易重犯。
+        # 这是全项目唯一一条「越用越差」的回路，必须从这里掐断。
+        self._exit_flags = {
+            "api_error": 0,             # API 调用异常次数
+            "tool_fail": 0,             # 工具返回失败的次数
+            "repeat_converged": False,  # 复读 / 原地打转被强制收敛
+            "question_stopped": False,  # 连续追问被早停
+            "fake_tool_stopped": False, # 文字伪造工具调用达上限而停
+            "tool_calls": 0,            # 本轮工具调用总数
+        }
         self._needs_action = self._detect_action_intent(self.messages)
         # v4.102 fix12：token 预算熔断状态。budget=0 即完全禁用（行为回退到 fix12 前）。
         (self._token_budget, self._token_warn_ratio,
@@ -1431,6 +1450,7 @@ class AgentWorker(QThread):
                                               "api_body": _api_b[:400]})
                 except Exception:
                     pass
+                self._note_exit("api_error")  # v4.195 批⑪：勿再兜底成 success
                 self.tool_log.emit({"name": "错误", "args": "", "result": str(e)})
                 # v4.108 H-04：失败要让用户在气泡里看得见，不再静默结束装"完成"。
                 # v4.175.0：把 API 真实报文一并显示到气泡（与结构化日志同源）。
@@ -1468,6 +1488,7 @@ class AgentWorker(QThread):
                 self._repeat_steps = 0
             self._last_step_sig = _sig
             if self._repeat_steps >= 2:
+                self._note_exit("repeat_converged")  # v4.195 批⑪
                 _emit_status = self._emit_status
                 _emit_status("⚠️ 检测到重复输出（模型原地打转），已强制收敛…")
                 self.stream_commit.emit(
@@ -1483,6 +1504,7 @@ class AgentWorker(QThread):
             else:
                 self._question_steps = 0
             if self._question_steps >= MAX_QUESTION_STEPS:
+                self._note_exit("question_stopped")  # v4.195 批⑪
                 if content:
                     self.stream_commit.emit(content)
                 self.stream_commit.emit(
@@ -1536,6 +1558,7 @@ class AgentWorker(QThread):
                 else:
                     self._fail_steps = 0
                 if self._fail_steps >= MAX_FAIL_STEPS:
+                    self._note_exit("tool_fail")  # v4.195 批⑪
                     self._emit_status("⏹ 工具连续失败，已自动停止。请检查路径/命令。")
                     self.stream_commit.emit(
                         "\n\n⏹ 检测到工具连续多次执行失败（如文件找不到或命令报错），"
@@ -1576,6 +1599,7 @@ class AgentWorker(QThread):
                         "正在强制真正执行…")
                     self._force_next = True
                     if self._fake_steps >= MAX_FAKE_RETRIES:
+                        self._note_exit("fake_tool_stopped")  # v4.195 批⑪
                         self.stream_commit.emit(
                             "\n\n⚠️ Agent 多次用文字伪造工具调用（声称『已保存/已运行』"
                             "实际却未执行任何工具），已停止。这类任务建议切到 DeepSeek 模型——"
@@ -2353,6 +2377,140 @@ class AgentWorker(QThread):
         except Exception:
             pass
 
+    # v4.195 批⑪：每种非成功结局对应的「下次怎么避开」。
+    # 没有这句，轨迹就只是记录了一次失败，而不是沉淀了一条教训。
+    _PITFALL_HINT = {
+        "token_budget":
+            ("任务 token 超预算被熔断；下次先拆分任务或限制工具轮次，"
+             "避免大量升舱 DeepSeek 付费通道"),
+        "max_steps":
+            "步数耗尽仍未收敛，可能卡在工具循环；下次先明确产出物再开工",
+        "stopped":
+            "被用户中途停止，可能方向不符；下次先确认目标再执行",
+        "aborted":
+            "非任务原因被中断（环境/进程层面）；下次先确认运行环境再开工",
+        "timeout":
+            "单次超时（>180s）；下次拆成多个子任务分批执行",
+        "model_error":
+            ("API 调用异常，任务未真正执行完；下次先确认网络/额度/入参合法性，"
+             "不要在没有工具结果的情况下继续给结论"),
+        "tool_failed":
+            ("工具连续失败导致中止；下次先确认路径/权限/命令是否合法，"
+             "失败即如实报告，禁止凭记忆补全结果"),
+        "hallucination_blocked":
+            ("触发反幻觉护栏（伪造工具调用或原地复读）被停止；"
+             "下次必须先拿到真实工具结果再下结论"),
+        "validation_failed":
+            "产出未通过校验；下次先看清产物要求再动手",
+        "partial":
+            ("未真正完成（缺工具执行或中途收敛）；"
+             "下次先明确交付物是什么，做完再收尾"),
+    }
+
+    # v4.195 批⑨：工具结果的**失败标记**——用于把证据登记成 ok=False。
+    # 失败证据不可作为任何结论的支撑（审查问题 8：工具失败禁止继续补全事实）。
+    # 宁可判松（漏判为成功）也不判严（正常内容被误标失败会干扰模型），
+    # 故只认工具**自己明确返回的**失败句式，不做语义猜测。
+    _TOOL_FAIL_MARKS = (
+        "[RESULT NOT FOUND]",
+        "文件不存在：",
+        "抓取失败",
+        "请求失败",
+        "读取失败",
+        "写入失败",
+        "timeout",
+        "timed out",
+        "Traceback (most recent call last)",
+    )
+
+    def _note_exit(self, key, n=1):
+        """v4.195 批⑪：记录一条退出原因旗标。任何情况都不抛错。"""
+        try:
+            f = getattr(self, "_exit_flags", None)
+            if not isinstance(f, dict):
+                return
+            if isinstance(f.get(key), bool):
+                f[key] = True
+            else:
+                f[key] = int(f.get(key) or 0) + int(n)
+        except Exception:
+            pass
+
+    def _infer_outcome(self, steps=0, duration_s=0, max_steps=0):
+        """v4.195 批⑪：**九态**结局推断 —— 取代原先「四种之外一律 success」。
+
+        审查的问题 1 原文：「只有满足『目标完成 + 工具成功 + 校验通过』
+        时才能写入 success」。这条原则本批照做——注意是**且**，三者缺一都不是成功。
+
+        九态取值（trace_log.append_task_trajectory 的 docstring 早就预留了 error，
+        其余是本次新增）：
+            success          真成功：无异常 + 工具未失败 + 有实质执行
+            partial          完成了一部分（产出不足 / 目标未达成）
+            tool_failed      工具连续失败而停
+            validation_failed 校验/闸门判定不通过
+            hallucination_blocked 检测到伪造工具调用或复读而停
+            aborted          不需要承担的终止（用户停止）
+            timeout          超时
+            model_error      API 调用异常
+            token_budget     token 预算熔断
+            max_steps        步数耗尽
+            stopped          用户停止
+        """
+        f = getattr(self, "_exit_flags", None) or {}
+        _api_err = int(f.get("api_error") or 0)
+        _tool_fail = int(f.get("tool_fail") or 0)
+        _repeat = bool(f.get("repeat_converged"))
+        _question = bool(f.get("question_stopped"))
+        _fake = bool(f.get("fake_tool_stopped"))
+        _tool_calls = int(f.get("tool_calls") or 0)
+
+        # ① 最高优先：不可归责于模型的硬中断（原本就有，顺序保持不变）
+        if getattr(self, "_token_budget_hit", False):
+            return "token_budget"
+        if getattr(self, "_stop_requested", False):
+            return "stopped"
+        # ② API 异常：模型/通道侧出错，绝不能算完成
+        if _api_err:
+            return "model_error"
+        # ③ 步数 / 时间耗尽
+        if max_steps and steps and steps >= max_steps:
+            return "max_steps"
+        if duration_s and duration_s > 180:
+            return "timeout"
+        # ④ 【本批新增】真·非成功结局——这些都是原先被兜底成 success 的
+        if _fake:
+            return "hallucination_blocked"
+        if _repeat:
+            return "hallucination_blocked"
+        if _tool_fail:
+            return "tool_failed"
+        if _question:
+            return "partial"
+        # ⑤ 严格 success：目标达成 + 工具成功 + 无异常，三者缺一不算
+        #    —— `tool_calls == 0` 说明本轮没真正干活（可能只回复了文字），
+        #      此时即便没有任何异常也不能算「跑通」，否则轨迹库会被灌满空成功。
+        if _tool_calls == 0:
+            return "partial"
+        return "success"
+
+    @classmethod
+    def _tool_result_looks_failed(cls, name, result_str):
+        """本批⑨：判断工具调用是否实质失败。
+
+        返回 True = 失败。三种信号：① 工具名本身就是「错误」；
+        ② 返回体头部带明确的失败标记；③ 返回体是 Python 异常回溯。
+        """
+        try:
+            if str(name or "").strip() in ("错误", "error", "Error"):
+                return True
+            s = str(result_str or "")
+            if not s:
+                return False
+            head = s[:400]
+            return any(m in head for m in cls._TOOL_FAIL_MARKS)
+        except Exception:
+            return False
+
     def _handle_tool_result(self, tc, name, fn, result_str, deliverables, schedule):
         """统一处理工具执行结果：发射信号、追加 tool message。
 
@@ -2388,19 +2546,62 @@ class AgentWorker(QThread):
             repeat_secs = schedule[2] if len(schedule) > 2 else 0
             self.schedule_reminder.emit(int(delay_secs * 1000), msg, repeat_secs)
 
-        # 持久化工具记录
+        # v4.195 批⑨：持久化工具记录 + **证据登记**。
+        #
+        # 现状（外部审查问题 7 的真身）：result 一共被存了三处，全是压过的——
+        #   ① 模型上下文 compress(…, TOOL_RESULT_LIMIT=6000)
+        #   ② UI tool_log → ui._on_tool_log 里 _clip(result, 500)
+        #   ③ 会话 store（同 ②）
+        # 等于**没有任何一处保留完整原文** → 事后无法回验「这个结论到底从哪来的」。
+        # 本批把完整原文登记进独立的 Evidence Registry（SQLite，
+        # 位于 USER_DATA_DIR/evidence/），后续 claim-evidence 回验只认这里的原文。
+        _eid = None
+        _ok = True
+        _err = None
+        try:
+            if self._tool_result_looks_failed(name, result_str):
+                _ok = False
+                _err = (str(result_str) or "")[:300]
+            import evidence
+            _eid = evidence.register(
+                str(name or ""), fn.get("arguments", ""), result_str,
+                ok=_ok, err=_err)
+        except Exception as e:
+            log.warning("证据登记异常（已忽略，不影响主流程）: %s", e)
+
         self.tool_log.emit({
             "name": name,
             "args": fn.get("arguments", ""),
             "result": result_str,
+            # v4.195 批⑨：把证据编号带回 UI —— UI 侧不再只依赖被裁到 500 的 result
+            "evidence_id": _eid,
+            "evidence_ok": bool(_ok),
         })
         self.render.emit()
+
+        # v4.195 批⑨：给模型看的内容加 [EV#n] **首尾双钉**。
+        # 沿用批⑥（tool result 首尾双钉 + [RESULT NOT FOUND]）已被 v4.191.0
+        # 真机对照实验验证有效的同一手法：标记放在模型要读的文本里，
+        # 而不是指望它从 system prompt 里记住。
+        _content = compress(str(result_str), TOOL_RESULT_LIMIT)
+        if _eid:
+            try:
+                _n_lines = str(result_str).count("\n") + 1
+                _head = evidence.model_header(
+                    _eid, tool=str(name or ""),
+                    n_chars=len(str(result_str)), n_lines=_n_lines,
+                    ok=_ok, err=_err,
+                    args_head=str(fn.get("arguments", ""))[:90])
+                _content = _head + _content + evidence.model_footer(_eid)
+            except Exception as e:
+                log.warning("证据抬头拼装失败（降级为无标记）: %s", e)
         self.messages.append({
             "role": "tool",
             "tool_call_id": tc.get("id", ""),
             "name": name,
             # v4.60：先 Token 压缩（去HTML/去重/智能截断），再取上限
-            "content": compress(str(result_str), TOOL_RESULT_LIMIT),
+            # v4.195 批⑨：压缩后套证据编号首尾钉
+            "content": _content,
         })
 
     def _auto_remember(self, mw):
