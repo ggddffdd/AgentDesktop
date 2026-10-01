@@ -63,13 +63,19 @@ def main():
             f.write(body)
 
         n = CW._count_units(body, "节")
-        # 文件含 1 个 `# 标题`（一级，不算节）+ 2 个「第一节/第二节」+ 第003~第479
-        # → 二级标题共 2 + 477 = 479。真值口径 = 二级及以下标题数。
-        check("A1 真值计数（## 节）== 479（一级标题不计）",
-              n == 479, "实数 = %s" % n)
-        # 交叉核对：独立口径数二级标题（不走 _count_units，防自证）
+        # 口径：文件里有编号式节（第N节）→ 真值取编号节数 = 477（第003~第479）。
+        # 「第一节/第二节」是中文数字，不匹配「第\d+节」，故不计入编号节；
+        # 也不含一级 `# 标题`（那是大标题不是节）。交叉核对见 A2。
+        check("A1 真值计数（编号节口径）== 477",
+              n == 477, "实数 = %s" % n)
+        # 交叉核对：独立口径数二级标题（含中文数字的「第一节/第二节」）
         n2 = len([ln for ln in body.split("\n") if ln.startswith("## ")])
-        check("A2 交叉核对（独立口径数 ## 标题）== 479", n2 == 479, "=%s" % n2)
+        check("A2 交叉核对（独立口径数 ## 标题）== 479（编号 477 + 2 个中文数字节）",
+              n2 == 479, "=%s" % n2)
+        # A4：宽容口径（alt_null）应同时给出两个口径，供"两种答法都算对"
+        alt = CW._count_units(body, "节", alt_null=True)
+        check("A4 alt_null 返回（编号口径, 全标题口径）",
+              isinstance(alt, tuple) and alt[0] == 477 and alt[1] == 479, str(alt))
         # 行数
         nline = CW._count_units(body, "行")
         expect_line = body[:-1].count("\n") + 1 if body.endswith("\n") else body.count("\n") + 1
@@ -148,26 +154,70 @@ def main():
         w = _mk(msgs)
         w._audit_count_claims()
         warns = [m for m in msgs if m.get("role") == "audit_warn"]
-        check("C1 数错（80 vs 479）→ 产生 audit_warn",
+        check("C1 数错（80 vs 477）→ 产生 audit_warn",
               len(warns) == 1, "共 %d 张：%s" % (
                   len(warns), warns[0]["content"][:90] if warns else "无"))
         if warns:
-            check("C1b 警示里给出真值 479",
-                  "479" in warns[0]["content"], warns[0]["content"][:100])
+            check("C1b 警示里给出真值 477",
+                  "477" in warns[0]["content"], warns[0]["content"][:100])
 
-        # C2 数对（479）→ 不标红
+        # C2 数对（477）→ 不标红
         msgs2 = [
             {"role": "user", "content": "[非图片文件: DOC.md] 核对一下"},
             {"role": "tool_log", "name": "read_file",
              "args": json.dumps({"path": doc, "offset": 0, "limit": 999999}),
              "result": "…全文…"},
-            {"role": "assistant", "content": "DOC.md 全文已读，共 479 节。"},
+            {"role": "assistant", "content": "DOC.md 全文已读，共 477 节。"},
         ]
         w2 = _mk(msgs2)
         w2._audit_count_claims()
         w2w = [m for m in msgs2 if m.get("role") == "audit_warn"]
-        check("C2 数对（479）→ 不标红", len(w2w) == 0,
+        check("C2 数对（477）→ 不标红", len(w2w) == 0,
               "误报 %d 张" % len(w2w))
+
+        # C7 宽容判定：文件有「编号节 + 非编号标题（附则）」时，两种口径都算对。
+        # 现场③预验发现的误报：137 个「第N节」+ 1 个「## 附则」，
+        # 答 137（编号节）和 138（把附则也算一节）在语义上都成立 → 都不该标红。
+        import re as _re
+        doc2 = os.path.join(tmp, "MANUAL.md")
+        parts2 = ["# 手册\n\n"]
+        for i in range(1, 138):
+            parts2.append("## 第%03d节 · 要点\n\n- 内容\n\n" % i)
+        parts2.append("## 附则\n\n- 说明\n")
+        with open(doc2, "w", encoding="utf-8") as f:
+            f.write("".join(parts2))
+        t2 = "".join(parts2)
+        check("C7a 该文件编号节 = 137",
+              CW._count_units(t2, "节") == 137,
+              "=%s" % CW._count_units(t2, "节"))
+        check("C7b 全标题口径 = 138",
+              CW._count_units(t2, "节", alt_null=True)[1] == 138,
+              "=%s" % (CW._count_units(t2, "节", alt_null=True),))
+        for ans, lbl in ((137, "答 137（编号节）"), (138, "答 138（含附则）")):
+            m7 = [
+                {"role": "user", "content": "[非图片文件: MANUAL.md] 多少节？"},
+                {"role": "tool_log", "name": "read_file",
+                 "args": json.dumps({"path": doc2, "offset": 0, "limit": 999999}),
+                 "result": "…全文…"},
+                {"role": "assistant", "content": "MANUAL.md 共 %d 节。" % ans},
+            ]
+            w7 = _mk(m7)
+            w7._audit_count_claims()
+            w7w = [m for m in m7 if m.get("role") == "audit_warn"]
+            check("C7c %s → 不标红（两种口径都算对）" % lbl,
+                  len(w7w) == 0, "误报 %d 张" % len(w7w))
+        # C7d 但 80 这种离谱数仍要标红
+        m7d = [
+            {"role": "user", "content": "[非图片文件: MANUAL.md] 多少节？"},
+            {"role": "tool_log", "name": "read_file",
+             "args": json.dumps({"path": doc2, "offset": 0, "limit": 999999}),
+             "result": "…全文…"},
+            {"role": "assistant", "content": "MANUAL.md 共 80 节。"},
+        ]
+        w7d = _mk(m7d)
+        w7d._audit_count_claims()
+        check("C7d 答 80（离谱低估）→ 仍标红",
+              len([m for m in m7d if m.get("role") == "audit_warn"]) == 1)
 
         # C3 没读全就数（区间有洞）→ 归批⑦管，本层不越权
         msgs3 = [

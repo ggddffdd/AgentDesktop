@@ -9979,24 +9979,33 @@ class ChatWindow(QMainWindow):
         r"(节|章|条|项|行|段|页|篇)")
 
     @staticmethod
-    def _count_units(text, unit):
+    def _count_units(text, unit, alt_null=False):
         """v4.194 批⑧：对文件正文**确定性计数** unit 类单元。
 
         只处理可正则判定的单元；无法可靠计数的返回 None（该单元放弃回验）。
-        口径：**节/章/篇 = markdown 二级及以下标题**（`## `~`###### `）——
-        不含一级标题 `# `（那是文档大标题，不是"节"）。这一点必须与直觉对齐：
-        现场②的文件有 1 个 `# 标题` + 480 个 `## 第N节`，真值「节数 = 477」
-        （第003~第479）——若把 `# 标题` 也算进去就会多算。
+
+        口径（关键，曾因口径不一致误报）：
+          - 文件里若有**编号式节**（`## 第N节`/`## 第N章`）→ 真值取**编号的个数**，
+            **不含**「附则/附录/说明」这类非编号标题（它们不是"节"）。
+            例：137 个 `第N节` + 1 个 `## 附则` → 真值 **137**，不是 138。
+          - 若无编号式标题 → 退化为「二级标题数」（`## `~`###### `，不含一级 `# `）。
+          - 行 = 行数；页/条/项/段 = 不可确定性计数 → None（放弃回验）。
+        alt_null=True 时返回 (主口径, 备选口径)，供"两种答法都算对"的宽容判定。
         """
         if text is None:
             return None
         if unit in ("节", "章", "篇"):
-            # 二级及以下 markdown 标题（`## `~`###### `），排除一级 `# `
-            n = len(re.findall(r"^\s{0,3}#{2,6}\s+\S", text, re.M))
-            if n:
-                return n
-            # 兜底：非标题式（正文里写「第N节」）
-            return len(re.findall(r"第\s*\d+\s*[节章篇]", text))
+            # 主口径：编号式节数（第N节）
+            numbered = len(re.findall(r"^\s{0,3}#{2,6}\s+[^\n]{0,20}?第\s*\d+\s*[节章篇]",
+                                      text, re.M))
+            if not numbered:
+                numbered = len(re.findall(r"第\s*\d+\s*[节章篇]", text))
+            # 备选口径：所有二级及以下标题数
+            allheads = len(re.findall(r"^\s{0,3}#{2,6}\s+\S", text, re.M))
+            main = numbered if numbered else allheads
+            if alt_null:
+                return (main, allheads)
+            return main
         if unit == "行":
             if not text:
                 return 0
@@ -10161,7 +10170,14 @@ class ChatWindow(QMainWindow):
                     truth = self._count_units(txt, unit)
                     if truth is None:
                         continue  # 该单位不可确定性计数 → 放弃
-                    if truth != num:
+                    # 宽容判定：文件的"节数"常有两种合理口径（编号节数 vs 全部标题数）。
+                    # 例：137 个「第N节」+ 1 个「附则」→ 137 和 138 都该算对
+                    # （后者把附则也算作一节，语义上说得通）。只有两种口径都对不上才标红。
+                    accepts = {truth}
+                    alt = self._count_units(txt, unit, alt_null=True)
+                    if isinstance(alt, tuple):
+                        accepts |= {x for x in alt if x is not None}
+                    if num not in accepts:
                         hits.append((base, unit, num, truth))
                     break
             if not hits:
