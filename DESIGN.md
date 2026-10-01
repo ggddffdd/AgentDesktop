@@ -187,10 +187,32 @@
 - 默认透明；hover → `row_hover` `#F7F8FC`（或 `sidebar_hover` `#E4E8F2` 在侧栏）
 - 激活项：侧栏 `sidebar_active` `#1A73E8` 底 + 白字 + 左侧 `sidebar_active_bar` 蓝条
 
+#### 4.4.1 导航分组（v4.198.0 新增·硬性）
+
+- 导航 10 项分三组：**工作**（对话/编排/军团）、**创作**（生图/生视频/数字人/导演台）、
+  **系统**（工具/任务/设置）。组间距 10px，组标题 `faint` + `font_micro` + `padding-left:16px`。
+- **铁律：分组是纯视觉的，绝不能改变 `nav_defs` 的顺序。**
+  因为 `nav_defs` 顺序 == `main_stack` 页面顺序（`_switch_nav(idx) -> setCurrentIndex(idx+1)`）。
+  按「好看」重排 = 军团页静默串页。
+- 实现方式：分组写成模块级常量 `NAV_GROUPS = ((组名, (成员...)), ...)`，
+  渲染时只决定「在哪一项前插组标题」，`enumerate` 出来的 `i` 不受影响。
+- 新增导航项必须改**两处**：`nav_defs` 插项 + `NAV_GROUPS` 加成员。
+  只改一处 → `tests/test_nav_ia_198.py` A4/A5/A6 判红（A4 抓顺序、A5 抓遗漏、A6 抓多余）。
+
 ### 4.5 状态指示 / 标签
 
 - 小标签：`border-radius:6px; padding:2px 6px; font-size:12px;`（危险 `danger` / 成功 `ok` / 警告 `warn` / 紫 `accent2`）
 - 工具状态点：`tool_running` `#FBBC04`（黄）/ `tool_done` `#34A853`（绿）
+
+#### 4.5.1 底部状态条（v4.198.0 修订·硬性）
+
+- 高度 **28px**（原 24px 装不下 12px 字 + chip 内边距，字会被上下裁）。
+- **状态条只放状态**：连接状态、任务状态条、计费信息。
+  **不放操作说明** —— 「Enter 发送 · Shift+Enter 换行」已移入输入框 placeholder
+  （用户视线在输入框，说明放那儿才有用；放状态条最右端等于没有）。
+- 计费信息（要不要花钱）用 **chip 样式**抬出来：`bg` 底 + `border` 边 +
+  `border-radius:10px` + `padding:3px 10px`，字色用 `dim` 而不是 `faint`。
+  不能和「● 已连接」一个灰字样式混在一起。
 
 ---
 
@@ -269,6 +291,12 @@
 - **无传统 Web 断点**。桌面窗口为主，关键适配点：
   - **高 DPI**：程序应启用 `Qt.AA_EnableHighDpiScaling`（Qt6 默认开），QSS 用 px 即可自动缩放。
   - **最小窗口**：建议主窗口 min width ≥ 960px；窄于该值时侧栏可折叠为图标。
+  - **侧栏折叠（v4.198.0 已落地）**：窗口宽度 `< NAV_COLLAPSE_WIDTH(1100)` 自动收成
+    64px 图标栏（`NAV_COLLAPSED_W`），≥ 该值恢复 256px（`NAV_EXPANDED_W`）。
+    纯视觉切换：不动页面栈、不动导航下标。实现要求两条 ——
+    ① 必须有**状态短路**（`_nav_collapsed` 比对），否则拖动边框每帧重排会卡；
+    ② 折叠时**文字必须隐藏**（组标题 / 导航文字 / Logo 名 / 用户名），
+    否则 64px 栏里文字被裁。守卫见 `tests/test_nav_ia_198.py` B 组、D 组。
   - **触控目标**：可点击控件最小 28–32px 高（按钮 padding 已满足）；图标按钮至少 32×32。
   - **滚动条**：细滚动条样式（宽 6px、圆角 3px、轨道 `rgba(148,163,184,0.25)`，见 ui.py 实测），保持克制。
   - **折叠策略**：面板（编排页/对话页）按功能切换，日常只面对对话页，不堆所有面板于同一屏。

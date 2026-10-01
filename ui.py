@@ -275,6 +275,27 @@ DELIVERY_COLORS = {
     "file":  ("delivery_blue", "accent"),
 }
 
+# v4.198.0 二期：导航分组（**纯视觉**，绝不能改变 nav_defs 的顺序）
+#
+# 为什么分组必须写成「组名 → 成员名单」而不是直接改 nav_defs 的顺序：
+#   nav_defs 的顺序和 main_stack 的页面顺序是**同一个序列** ——
+#   `_switch_nav(idx) -> main_stack.setCurrentIndex(idx + 1)`（首页占 index 0）。
+#   按「好看」重排导航项，军团页就会静默串页。分组只加组标题与间距，
+#   成员顺序仍以 nav_defs 为准（`tests/test_nav_ia_198.py` A4 钉死：展平必须逐项相等）。
+#
+# 想新增导航项时：① 按序插进 nav_defs；② 把名字加进下面对应组的成员元组；
+# ③ 探针会自动校验两边一致 —— 只改一处会判红。
+NAV_GROUPS = (
+    ("工作", ("对话", "编排", "军团")),
+    ("创作", ("生图", "生视频", "数字人", "导演台")),
+    ("系统", ("工具", "任务", "设置")),
+)
+
+# 侧栏折叠：窄于此宽度自动收成图标栏（DESIGN.md §8 要求窄屏折叠，此前没落地）
+NAV_COLLAPSE_WIDTH = 1100   # 触发阈值（宽 < 该值则折叠）
+NAV_EXPANDED_W = 256        # 展开态宽度
+NAV_COLLAPSED_W = 64        # 折叠态宽度（只留图标）
+
 # v4.114：Feather 风格线性 SVG 图标（24×24 viewBox, stroke 2, round caps）
 # 用于侧栏导航，替代 emoji——矢量渲染基线天然齐平，选中态可换色
 _NAV_ICONS = {
@@ -3322,7 +3343,8 @@ class ChatWindow(QMainWindow):
         ifl.addWidget(attach_btn, 0, Qt.AlignBottom)
 
         self.input_box = MultiLineInput()
-        self.input_box.setPlaceholderText("输入自然语言指令…")
+        # v4.198.0：操作提示从状态条搬到这里 —— 用户视线落在输入框，说明才有用
+        self.input_box.setPlaceholderText("输入自然语言指令…（Enter 发送 · Shift+Enter 换行）")
         self.input_box.sendRequested.connect(self.send)
         # v4.189：关 QTextEdit 默认拖放（拖文件只会插 URL 文本），统一由
         # ChatWindow.dropEvent 处理（拖进输入区 = 加附件；拖文本仍可插入）。
@@ -3639,7 +3661,8 @@ class ChatWindow(QMainWindow):
     # ============ 状态条（24）============
     def _build_status_bar(self):
         self.status_bar = QWidget()
-        self.status_bar.setFixedHeight(24)
+        # v4.198.0：24px 装不下 12px 字 + chip 内边距（字会被上下裁），抬到 28px
+        self.status_bar.setFixedHeight(28)
         self.status_bar.setStyleSheet(
             f"background:{THEME['card']};border-top:1px solid {THEME['border']};")
         sb_lay = QHBoxLayout(self.status_bar)
@@ -3653,12 +3676,16 @@ class ChatWindow(QMainWindow):
         sb_lay.addWidget(self.task_strip)
         self.task_strip.refresh()
         sb_lay.addStretch(1)
+        # v4.198.0：计费信息是「要花钱」的信息，之前和状态条其它灰字一个样式、
+        # 埋在最右下角，等于没有。给它 chip 底 + 深一档的字色，抬出来。
         token_label = QLabel("Agnes 免费 · DeepSeek 已订阅")
-        token_label.setStyleSheet(f"color:{THEME['faint']};font-size:{THEME['font_micro']};")
+        token_label.setStyleSheet(
+            f"color:{THEME['dim']};font-size:{THEME['font_micro']};"
+            f"background:{THEME['bg']};border:1px solid {THEME['border']};"
+            f"border-radius:10px;padding:3px 10px;")
         sb_lay.addWidget(token_label)
-        hint = QLabel("Enter 发送 · Shift+Enter 换行")
-        hint.setStyleSheet(f"color:{THEME['faint']};font-size:{THEME['font_micro']};")
-        sb_lay.addWidget(hint)
+        # v4.198.0：「Enter 发送 · Shift+Enter 换行」是**操作说明**不是状态，
+        # 放在状态条最右端没人看。已移进输入框 placeholder（视线落点在那儿）。
 
     # ============ 按钮样式 ============
     @staticmethod
@@ -5626,9 +5653,12 @@ class ChatWindow(QMainWindow):
         logo_row.addWidget(logo_name, 1)
         sb.addLayout(logo_row)
         sb.addSpacing(12)
+        # v4.198.0：折叠态要藏掉文字，留引用（详见 _set_sidebar_collapsed）
+        self._sidebar_logo_name = logo_name
 
         # ---- 导航 pill（v4.135.0：新增「军团」项）----
         self.nav_buttons = []
+        self._nav_group_labels = []   # v4.198.0：组标题（折叠时隐藏）
         # 面板挂载范式（整合工作台）：
         #   nav_defs 顺序 == main_stack 页面顺序（首页占 index 0，不在 nav 中）。
         #   新增面板只需：① 在此按序插入 (label, icon)；② 在 _init_ui 的 main_stack
@@ -5652,7 +5682,25 @@ class ChatWindow(QMainWindow):
         nav_lay = QVBoxLayout(nav_container)
         nav_lay.setContentsMargins(0, 0, 0, 0)
         nav_lay.setSpacing(4)
+        # v4.198.0：分组只决定「在哪一项前面插一条组标题」，
+        # 不参与 enumerate —— i 仍然严格等于 nav_defs 的下标，页面栈绑定不动。
+        _group_of = {}
+        for _gname, _members in NAV_GROUPS:
+            for _m in _members:
+                _group_of[_m] = _gname
+        _cur_group = None
         for i, (label, icon) in enumerate(nav_defs):
+            _g = _group_of.get(label)
+            if _g is not None and _g != _cur_group:
+                _cur_group = _g
+                if self._nav_group_labels:      # 第一组前不留空档
+                    nav_lay.addSpacing(10)
+                _gl = QLabel(_g)
+                _gl.setStyleSheet(
+                    f"color:{THEME['faint']};font-size:{THEME['font_micro']};"
+                    f"padding-left:16px;padding-top:2px;background:transparent;")
+                nav_lay.addWidget(_gl)
+                self._nav_group_labels.append(_gl)
             # v4.114：SVG 线性图标替代 emoji——矢量描边风格统一，基线天然齐平，
             # 选中态由 _update_nav_styles 重新渲染为白色
             btn = QPushButton()
@@ -5677,6 +5725,7 @@ class ChatWindow(QMainWindow):
             btn.setProperty("iconLbl", icon_lbl)
             btn.setProperty("textLbl", text_lbl)
             btn.setProperty("navIcon", icon)
+            btn.setProperty("iconBox", box)   # v4.198.0：折叠时改它的内边距让图标居中
             btn.setFixedHeight(44)
             btn.setCursor(Qt.PointingHandCursor)
             btn.clicked.connect(lambda _, idx=i: self._switch_nav(idx))
@@ -5702,8 +5751,59 @@ class ChatWindow(QMainWindow):
             f"font-size:12px;color:{THEME['ok']};background:transparent;")
         user_row.addWidget(online)
         sb.addLayout(user_row)
+        self._sidebar_uname = uname      # v4.198.0：折叠时隐藏
+        self._sidebar_online = online
+        self._nav_collapsed = False      # 初始为展开（宽度由 _init_ui 决定，见 resizeEvent）
 
         self._update_nav_styles(-1)
+
+    def _set_sidebar_collapsed(self, collapsed):
+        """v4.198.0：侧栏展开/折叠切换（纯视觉，不动页面栈、不动导航下标）。
+
+        折叠态只留 64px 图标栏：文字（组标题/导航文字/Logo 名/用户名）隐藏，
+        图标内边距改为居中。**短路是必须的** —— resizeEvent 每帧都来，
+        没有 `== collapsed` 判断的话拖动窗口边框会疯狂重排。
+
+        为什么不做成手动折叠按钮：DESIGN.md §8 的诉求是「窄屏别占地方」，
+        加按钮反而多一个要学的控件；自动折叠用户不用管。
+        """
+        if getattr(self, "_nav_collapsed", None) == collapsed:
+            return
+        if not hasattr(self, "sidebar") or self.sidebar is None:
+            return
+        self._nav_collapsed = collapsed
+        self.sidebar.setFixedWidth(NAV_COLLAPSED_W if collapsed else NAV_EXPANDED_W)
+        try:
+            if getattr(self, "_sidebar_logo_name", None) is not None:
+                self._sidebar_logo_name.setVisible(not collapsed)
+            for _lbl in getattr(self, "_nav_group_labels", []) or []:
+                _lbl.setVisible(not collapsed)
+            for _btn in getattr(self, "nav_buttons", []) or []:
+                _tl = _btn.property("textLbl")
+                if _tl is not None:
+                    _tl.setVisible(not collapsed)
+                _box = _btn.property("iconBox")
+                if _box is not None:
+                    # 展开：图标距左 16px；折叠：64px 宽里居中（(64-18)/2 = 23）
+                    _box.layout().setContentsMargins(
+                        23 if collapsed else 16, 0, 23 if collapsed else 8, 0)
+            for _w in (getattr(self, "_sidebar_uname", None),
+                       getattr(self, "_sidebar_online", None)):
+                if _w is not None:
+                    _w.setVisible(not collapsed)
+        except Exception:
+            pass
+
+    def resizeEvent(self, event):
+        """v4.198.0：窄屏自动折叠侧栏（DESIGN.md §8 此前只写在规范里，代码没做）。"""
+        try:
+            self._set_sidebar_collapsed(self.width() < NAV_COLLAPSE_WIDTH)
+        except Exception:
+            pass
+        try:
+            super().resizeEvent(event)
+        except Exception:
+            pass
 
     def _update_nav_styles(self, active):
         """刷新导航 pill 选中态：active=-1 表示首页(无选中)。v4.114 SVG 图标同步换色。"""
