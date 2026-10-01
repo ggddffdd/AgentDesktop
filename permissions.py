@@ -17,7 +17,8 @@ import hashlib
 import logging
 from dataclasses import dataclass
 
-from risk import RiskClass, classify, tier_of, ALWAYS_CONFIRM, command_danger_level
+from risk import (RiskClass, classify, tier_of, ALWAYS_CONFIRM, command_danger_level,
+                  task_risk_level, TASK_CONFIRM_LEVELS)
 
 log = logging.getLogger(__name__)
 
@@ -120,7 +121,7 @@ class PermissionEngine:
         return False
 
     # ---------- 核心决策 ----------
-    def decide(self, name, args=None, explicit_intent=True):
+    def decide(self, name, args=None, explicit_intent=True, task_risk=None):
         """给定工具名与参数，返回 Decision。
 
         v4.74 边界安全增强：
@@ -198,6 +199,23 @@ class PermissionEngine:
                 return Decision(True, True,
                                 f"'{name}' 含高危操作（{_dlabel}），需你确认后执行",
                                 "high_risk_exec")
+
+        # 2.58) v4.196 批⑬ **任务级风险闸**：同一把锤子钉钉子和砸承重墙不是一回事。
+        #        critical 任务（数据删改迁移 / 法规税务合同 / 资金收付 / 医疗 /
+        #        生产发布 / 凭据密钥）一旦要动**写入或执行**，必须人工确认，
+        #        且**不受 auto 模式与会话信任短路** —— 位于会话信任之前故无法被绕过。
+        #        只读仍然放行（否则"帮我看看合同里写了啥"也被拦，就矫枉过正了）。
+        #        `task_risk` 既可以直接传等级串（"critical"），也可以传任务原文
+        #        （内部自动分级，方便调用方偷懒）。
+        if task_risk:
+            _lvl, _label = (str(task_risk), "")
+            if _lvl not in TASK_CONFIRM_LEVELS:
+                _lvl, _label = task_risk_level(str(task_risk))
+            if _lvl in TASK_CONFIRM_LEVELS and risk != RiskClass.READ:
+                return Decision(True, True,
+                                f"本任务属高风险（{_label or _lvl}），"
+                                f"'{name}' 需你逐次确认，auto 模式与会话信任均不豁免",
+                                "task_risk_critical")
 
         # 2.6) 来源闸（v4.169.0 P0-3）：本轮用户消息没有执行意图（纯提问/讨论/评价）时，
         #      模型自行发起的**非只读**操作一律要确认。

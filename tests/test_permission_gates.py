@@ -30,7 +30,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from permissions import PermissionEngine, args_fingerprint, Decision   # noqa: E402
-from risk import ALWAYS_CONFIRM, RiskClass, classify, tier_of          # noqa: E402
+from risk import (ALWAYS_CONFIRM, RiskClass, classify, tier_of,  # noqa: E402
+                  task_risk_level, TASK_CONFIRM_LEVELS)
 
 log = logging.getLogger("test_permission_gates")
 
@@ -158,7 +159,16 @@ def part_d_run_workflow_gate():
                if isinstance(n, ast.ClassDef) and n.name == "AgentWorker")
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef)
               and n.name == "_run_workflow_guarded")
-    ns = {}
+    # v4.196 批⑬：exec 出来的函数要能见到模块级常量 FORCE_CONFIRM_RULES
+    # （以及 v4.196 新增的任务风险闸）。用**真模块**取值而不是手抄一份，
+    # 否则探针手里的清单与源码漂移，等于没校验。
+    try:
+        import agent as _AG
+    except Exception:
+        _AG = None
+    ns = {
+        "FORCE_CONFIRM_RULES": tuple(getattr(_AG, "FORCE_CONFIRM_RULES", ()) or ()),
+    }
     exec(ast.get_source_segment(src, fn), ns)
 
     class _FakeMW:
@@ -231,9 +241,21 @@ def part_f_force_confirm_channel():
     seg = src[src.index("def _maybe_confirm("):]
     seg = seg[:seg.index("\n    def ", 10)]
     check("F2 force=True 时跳过信任短路", "if not force:" in seg)
+    # v4.196 批⑬：原先校验的是**字面量** `force=(dec.rule in ("always_confirm",
+    # "high_risk_exec"))`，新规则一加进来就假失败。改为**语义化**核验：
+    # 从源码里解析出 force 用到的那份规则清单，再看该含的是不是都在里面 ——
+    # 以后加规则不该让这条探针失效，新增规则漏配才是它该报的事。
+    try:
+        import agent as _AG
+        _rules = tuple(getattr(_AG, "FORCE_CONFIRM_RULES", ()) or ())
+    except Exception:
+        _rules = ()
     check("F3 调用点按 rule 传 force（含 ①-B high_risk_exec）",
-          'force=(dec.rule in ("always_confirm", "high_risk_exec"))' in src,
-          f"命中 always_confirm {src.count('always_confirm')} 次")
+          "always_confirm" in _rules and "high_risk_exec" in _rules,
+          "force 规则清单=%s" % (_rules,))
+    check("F3b force 清单与源码调用点同源（不是两处手抄）",
+          src.count("FORCE_CONFIRM_RULES)") >= 2 and "self.FORCE_CONFIRM_RULES" not in src,
+          "调用点未使用同一份常量")
     ui = open(_UI_PATH, encoding="utf-8-sig").read()
     check("F4 UI 侧确认弹窗识别 _confirm_force",
           "_confirm_force" in ui and "session_trusted" in ui)
@@ -261,7 +283,10 @@ def part_g_negative():
         ns = {"os": os, "log": log, "Decision": Decision,
               "RiskClass": RiskClass, "classify": classify, "tier_of": tier_of,
               "ALWAYS_CONFIRM": ALWAYS_CONFIRM,
-              "args_fingerprint": args_fingerprint}
+              "args_fingerprint": args_fingerprint,
+              # v4.196 批⑬：decide 源码里新增的任务风险闸依赖
+              "task_risk_level": task_risk_level,
+              "TASK_CONFIRM_LEVELS": TASK_CONFIRM_LEVELS}
         exec(patched, ns)
         return ns["decide"]
 

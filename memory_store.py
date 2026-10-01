@@ -32,6 +32,8 @@ MEMORY_PATH = os.path.join(MEMORY_DIR, "memory.md")
 MEMORY_DB_PATH = os.path.join(MEMORY_DIR, "memory.db")  # v4.59 SQLite FTS5 搜索库
 # v4.73：钉住核心画像（永远注入，不滚出、不依赖召回命中）——解决"早期重要记忆被滚动淘汰冲掉"
 PINNED_PATH = os.path.join(MEMORY_DIR, "memory_core.md")
+# v4.196 批⑫：待确认区（记忆准入关落不住的条目暂存于此，等人点头才入库）
+PENDING_PATH = os.path.join(MEMORY_DIR, "memory_pending.md")
 
 # ---- v4.74：路径可配置（测试隔离用，生产绝不调用） + 自动备份/自愈 ----
 MAX_BACKUPS = 20  # 轮转保留快照份数（每份含 memory/core/db 三文件）
@@ -43,11 +45,13 @@ def _configure(base_dir):
     测试只改 MEMORY_DIR 无效，写入落到了真实文件。改为可重配置后，测试先 _configure
     到临时目录即可彻底隔离，绝不碰真实数据。
     """
-    global MEMORY_DIR, MEMORY_PATH, MEMORY_DB_PATH, PINNED_PATH, _DB_READY, _SALT_PATH
+    global MEMORY_DIR, MEMORY_PATH, MEMORY_DB_PATH, PINNED_PATH
+    global PENDING_PATH, _DB_READY, _SALT_PATH
     MEMORY_DIR = os.path.abspath(base_dir)
     MEMORY_PATH = os.path.join(MEMORY_DIR, "memory.md")
     MEMORY_DB_PATH = os.path.join(MEMORY_DIR, "memory.db")
     PINNED_PATH = os.path.join(MEMORY_DIR, "memory_core.md")
+    PENDING_PATH = os.path.join(MEMORY_DIR, "memory_pending.md")
     _DB_READY = False
     # v4.153 P2-06：重配目录后必须把延迟计算的 salt 路径也清掉，
     # 否则 _salt_path() 仍指向旧目录的 memory.salt（salt 非 secret，但路径错了会读错文件）。
@@ -833,6 +837,90 @@ def append_memory(fact, type=None, topic=None, tags=None, pinned=False):
 
 
 # ============ v4.59 SQLite FTS5 搜索层 ============
+
+# ============ v4.196 批⑫：待确认区（记忆准入关的缓冲层） ============
+#
+# 为什么单开一个区：过去自动记忆只有「入库 / 不入库」两个结局。不入库的
+# 那部分（推断、无据的工具结论、低置信度、与旧记忆冲突）**连痕迹都不留**，
+# 用户既不知道模型想记什么，也无法纠正 —— 等于把关变成了失忆。
+# 现在拦下来的条目全落这里，标注「谁想记、凭什么、为什么没让它进」，
+# 由人决定放行进正式记忆还是删掉。
+
+@_sync
+def append_pending(entry):
+    """写入一条待确认记忆。entry 为 dict，至少含 fact / reason。
+
+    返回 True/False。既认证模型 reactor 此处不抛异常接住即可。
+    """
+    try:
+        e = entry if isinstance(entry, dict) else {}
+        fact = str(e.get("fact") or "").strip()
+        if not fact:
+            return False
+        ensure_dir()
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+        head = f"## {ts}"
+        src = e.get("source")
+        if src:
+            head += f" [来源:{src}]"
+        top = e.get("topic")
+        if top:
+            head += f" #{top}"
+        meta = []
+        if e.get("category"):
+            meta.append("类别 %s" % e["category"])
+        if e.get("confidence") is not None:
+            meta.append("置信 %.2f" % float(e["confidence"]))
+        if e.get("evidence_id"):
+            meta.append("证据 ⟦EV#%s⟧" % e["evidence_id"])
+        if e.get("expires_at"):
+            meta.append("过期 %s" % e["expires_at"])
+        body = [fact]
+        body.append("- 拦截原因：%s" % (e.get("reason") or "未说明"))
+        if meta:
+            body.append("- " + " · ".join(meta))
+        block = f"\n{head}\n" + "\n".join(body) + "\n"
+        _prev = _read_text_file_ex(PENDING_PATH)
+        if _prev is False:
+            log.error("待确认区读取失败，放弃写入：%s", PENDING_PATH)
+            return False
+        existing = _prev or ""
+        if fact in existing:
+            return True  # 同内容已在待确认区，不重复堆
+        _write_text_file(PENDING_PATH, existing + block)
+        return True
+    except Exception as e:
+        log.warning("写入待确认区失败: %s", e)
+        return False
+
+
+def load_pending():
+    """读取待确认区全文（无则空串）。"""
+    ensure_dir()
+    return _read_text_file(PENDING_PATH).strip()
+
+
+def pending_count():
+    """待确认区条目数。"""
+    txt = load_pending()
+    if not txt:
+        return 0
+    return txt.count("\n## ") + (1 if txt.startswith("## ") else 0)
+
+
+@_sync
+def clear_pending():
+    """清空待确认区（用户审阅完毕），返回是否成功。"""
+    ensure_dir()
+    try:
+        phys = _physical(PENDING_PATH)
+        if os.path.exists(phys):
+            os.remove(phys)
+        return True
+    except Exception as e:
+        log.warning("清空待确认区失败: %s", e)
+        return False
+
 
 def _ensure_db():
     """v4.73：惰性初始化 SQLite FTS5（只建一次）。失败则降级（搜索层不可用，但主流程不受影响）。"""

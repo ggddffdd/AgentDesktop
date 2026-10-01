@@ -151,9 +151,20 @@ def part_c_run_python():
 def part_d_agent_force_channel():
     print("\n-- D) agent 层 force 通道包含 high_risk_exec --")
     src = open(_AGENT_PATH, encoding="utf-8-sig").read()
+    # v4.196 批⑬：不再比对字面量字符串（新增规则会把它顶成假失败），
+    # 改为解析出的**同一份常量**里有没有这条 —— 探针该管的是「漏配」，
+    # 而不是「多了个新规则」。
+    try:
+        import agent as _AG
+        _rules = tuple(getattr(_AG, "FORCE_CONFIRM_RULES", ()) or ())
+    except Exception:
+        _rules = ()
     check("D1 force 条件含 high_risk_exec",
-          'force=(dec.rule in ("always_confirm", "high_risk_exec"))' in src,
-          "未找到 high_risk_exec 的 force 分支")
+          "high_risk_exec" in _rules,
+          "force 规则清单=%s" % (_rules,))
+    check("D1b 两条既有规则都还在（防改漏）",
+          "always_confirm" in _rules and "high_risk_exec" in _rules,
+          "force 规则清单=%s" % (_rules,))
     check("D2 仍保留 always_confirm 短路",
           "always_confirm" in src)
     check("D3 _confirm_text 有 ⚠️ 高危提示",

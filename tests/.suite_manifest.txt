@@ -32,6 +32,7 @@ test_legion_audit.py
 test_legion_permissions.py
 test_legion_resume_fill.py
 test_legion_status.py
+test_memory_gate_196.py
 test_no_stall_186.py
 test_outcome_honesty_195.py
 test_p0p1_runcmd_fix_186.py
@@ -53,6 +54,7 @@ test_task_wiring.py
 test_thinking_channel_reasoning.py
 test_twin_seg_resilience.py
 test_uidecision_fix_186.py
+test_uncertainty_gate_196.py
 test_v4102_1021_twin_bg.py
 test_v4102_image_compress.py
 test_v4102_twin_v2.py

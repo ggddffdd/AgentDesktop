@@ -9551,6 +9551,8 @@ class ChatWindow(QMainWindow):
         # v4.195 批⑩：断言-证据绑定回验——判据从「附近有没有 URL」换成
         # 「这条被引用的证据原文，支不支持这句断言」（批⑨ 登记了原文才做得到）。
         self._audit_claim_evidence()
+        # v4.196 批⑬：语气—证据等级匹配——管「没编造但说得太满」那一半。
+        self._audit_tone_evidence()
         self._do_save()  # v4.58：agent 结束做一次最终落盘
         self._flush_render()  # v4.60o：冲刷待渲染定时器，避免末条消息重复插入
         self.input_box.setFocus()
@@ -10490,6 +10492,97 @@ class ChatWindow(QMainWindow):
                 "role": "audit_warn", "content": warn,
             })
             # 只落 store，UI 交给 _flush_render 统一渲染（防重复卡）
+        except Exception:
+            pass  # 校验器绝不阻断 agent 完成流程
+
+    # ---- v4.196 批⑬：有关证语气的第 11 层 ----
+    def _audit_tone_evidence(self):
+        """v4.196 批⑬：语气—证据等级匹配检查（第 11 层）。
+
+        前十层全是「有没有编」，这一层管另一半：**没编，但说得比证据允许的程度更满**。
+        这类句子查不出假话（每个字都可能在某处出现过），但读者的**确定性感知**
+        超过了实际证据水平 —— 效果等同于错。
+
+        判定链（uncertainty.decision table）：
+          零证据 / 用了失败调用 / 需实时数据却没调工具 → refuse（应该说不知道）
+          单一来源                                   → hedged（只能「初步判断」）
+          多来源互相打架                             → conflict（必须两边都摆）
+          ≥2 条独立成功证据                          → answer（可以下结论）
+        然后看回复里有没有**强肯定句**（「确定是/答案就是/百分之百…」）
+        越过它应属的等级 → 提醒改写。
+
+        防误报三条（沿用批⑩ 的教训，判据收紧会放大此前的抽取缺陷）：
+          ① 本轮没登记证据 → 直接退出（让位批③，新层不抢旧层的活）
+          ② 句子已带保留词（可能/待核实/似乎…）或已在承认不知道 → 放行
+          ③ 全回复找不到强肯定句 → 不提示（不必没事找事）
+
+        任何异常整体吞掉，绝不阻断 agent 完成流程。
+        """
+        try:
+            try:
+                import evidence as _ev_mod
+                import uncertainty as _unc
+            except Exception:
+                return
+            msgs = self.store.active().messages
+            last_user_idx, query = -1, ""
+            for i in range(len(msgs) - 1, -1, -1):
+                m = msgs[i]
+                if m.get("role") == "user" and not m.get("_internal"):
+                    last_user_idx = i
+                    c = m.get("content", "")
+                    if isinstance(c, list):
+                        c = self._extract_text(m)
+                    query = str(c or "")
+                    break
+            if last_user_idx < 0:
+                return
+            tail = msgs[last_user_idx + 1:]
+            evmap = self._ce_collect_evidence_map(tail)
+            if not evmap:
+                return  # ① 本轮无登记证据 → 让位批③
+            tools_used = [m.get("name") for m in tail if m.get("role") == "tool_log"]
+            last_asst = ""
+            for m in reversed(msgs):
+                if m.get("role") == "assistant":
+                    c = m.get("content", "")
+                    if isinstance(c, list):
+                        c = self._extract_text(m)
+                    last_asst = str(c or "")
+                    if last_asst.strip():
+                        break
+            if not last_asst.strip():
+                return
+            rows = [{"id": k, "ok": v.get("ok"), "raw": (v.get("raw") or "")[:4000],
+                     "tool": v.get("tool")} for k, v in evmap.items()]
+            cited = [int(e) for (e, _s, _t) in _ev_mod.parse_ev_tags(last_asst)]
+            vd = _unc.assess(query, rows, tools_used=tools_used, cited_ids=cited)
+            if vd["level"] == _unc.LEVEL_ANSWER:
+                return
+            body = _ev_mod.strip_ev_tags(last_asst)
+            segs, prev = [], 0
+            for m in self._AUDIT_SENT_SPLIT_RE.finditer(body):
+                s = body[prev:m.end()]
+                if s.strip():
+                    segs.append(s)
+                prev = m.end()
+            if body[prev:].strip():
+                segs.append(body[prev:])
+            bad = []
+            for seg in segs:
+                okflag, why = _unc.tone_allowed(seg, vd["level"])
+                if not okflag:
+                    bad.append((seg.strip()[:56].replace("\n", " "), why))
+            if not bad:
+                return  # ③ 没有越界的强肯定句 → 不打扰
+            lines = ["· 「%s」→ %s" % (s, w) for s, w in bad[:2]]
+            warn = ("⚠️ 语气核验（批⑬）：本轮证据只到「%s」级（%s），"
+                    "但回复里有句子说得太满：\n%s\n应改为：%s"
+                    % (vd["level"], vd["reason"], "\n".join(lines),
+                       _unc.system_hint(vd["level"])))
+            self.store.active().messages.append({
+                "role": "audit_warn", "content": warn,
+            })
         except Exception:
             pass  # 校验器绝不阻断 agent 完成流程
 

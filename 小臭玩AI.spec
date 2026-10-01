@@ -27,7 +27,11 @@ hiddenimports = ['PySide6', 'PySide6.QtPrintSupport', 'PySide6.QtWebEngineWidget
                # （与本清单里 tool_manager_ui / legion / agnes_text 同一个坑：
                # 函数内 import 静态分析扫不到）。漏登记的表现是打包后工具调用
                # 照常执行但**没有任何证据入账**，回验全线静默降级 —— 难查且无声。
-               'evidence']
+               'evidence',
+               # v4.196 批⑫ 记忆准入关 / 批⑬ 不确定性决策表：同为函数内延迟导入
+               # （agent._auto_remember / ui._audit_tone_evidence）。漏登记的表现
+               # 不同但一样静默：前者「所有提炼条目都写不进去」，后者「语气层整体不生效」。
+               'memory_gate', 'uncertainty']
 
 
 a = Analysis(
