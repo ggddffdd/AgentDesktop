@@ -396,7 +396,7 @@ def _make_card(app, task):
     badge = QLabel(auto.ACTION_LABELS.get(action, action))
     badge.setStyleSheet(
         f"background:{_badge_bg(action)};color:white;border-radius:9px;"
-        f"padding:4px 12px;font-size:11px;font-weight:600;")
+        f"padding:4px 12px;font-size:{THEME['font_micro']};font-weight:600;")
     row1.addWidget(badge)
     row1.addStretch(1)
 

@@ -38,9 +38,9 @@ def _theme() -> dict:
         return {
             "bg": "#F7F8FC", "panel": "#FFFFFF", "card": "#FFFFFF",
             "border": "#E5E7EB", "text": "#202124", "dim": "#5F6368",
-            "faint": "#9AA0A6", "ok": "#34A853", "warn": "#FBBC04",
+            "faint": "#6B7280", "ok": "#34A853", "warn": "#FBBC04",
             "danger": "#EA4335", "accent": "#1A73E8", "tool_running": "#1A73E8",
-            "font_micro": "11px", "font_second": "12px", "font_body": "13px",
+            "font_micro": "12px", "font_second": "12px", "font_body": "13px",
         }
 
 

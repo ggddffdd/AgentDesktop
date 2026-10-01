@@ -40,6 +40,7 @@ test_permission_gates.py
 test_popup_clamp.py
 test_postref_fix_186.py
 test_radius_norm.py
+test_readability_197.py
 test_risk_policy_single_table.py
 test_robust_fix_186.py
 test_route_injection_guard.py

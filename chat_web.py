@@ -113,11 +113,11 @@ html, body {{ margin:0; padding:0; background: {t.get("bg", "#F7F8FC")};
   border-radius: 14px; }}
 .bubble a {{ color: {t.get("link", "#1A73E8")}; text-decoration: none; }}
 .bubble a:hover {{ text-decoration: underline; }}
-.actions {{ margin: 4px 0 0 4px; font-size: 11px; }}
+.actions {{ margin: 4px 0 0 4px; font-size: 12px; }}
 .actions a {{ color: {t.get("link", "#1A73E8")}; text-decoration: none; margin-right: 12px;
   opacity: .85; }}
 .actions a:hover {{ opacity: 1; text-decoration: underline; }}
-.actions .sep {{ color: {t.get("faint", "#9AA0A6")}; margin-right: 12px; }}
+.actions .sep {{ color: {t.get("faint", "#6B7280")}; margin-right: 12px; }}
 /* ---- markdown ---- */
 .bubble h1,.bubble h2,.bubble h3 {{ margin: .5em 0 .3em; line-height: 1.35; }}
 .bubble h1 {{ font-size: 1.25em; }} .bubble h2 {{ font-size: 1.15em; }} .bubble h3 {{ font-size: 1.05em; }}
@@ -150,7 +150,7 @@ html, body {{ margin:0; padding:0; background: {t.get("bg", "#F7F8FC")};
 .tool-dot.done {{ background: {t.get("tool_done", "#34A853")}; }}
 @keyframes pulse {{ 50% {{ opacity: .35; }} }}
 .tool-name {{ font-weight: bold; color: {t.get("text", "#202124")}; }}
-.tool-args {{ color: {t.get("faint", "#9AA0A6")}; margin-left: 8px; }}
+.tool-args {{ color: {t.get("faint", "#6B7280")}; margin-left: 8px; }}
 .tool-result {{ color: {t.get("dim", "#5F6368")}; margin-left: 8px; font-style: italic; }}
 .tool-wrap {{ margin: 8px 0 8px 40px; }}
 .tool-wrap .tool-card {{ border-left: 3px solid {t.get("tool_done", "#34A853")}; }}

@@ -192,12 +192,12 @@ html,body{margin:0;padding:0;background:var(--bg);
 .thumb3{height:120px;border-radius:6px;cursor:zoom-in;object-fit:cover;background:#000;}
 .ph{color:var(--dim);font-size:12px;padding:8px;text-align:center;}
 .info{padding:8px 8px 4px;font-size:12px;color:var(--text);word-break:break-word;}
-.desc{padding:0 8px 8px;font-size:11px;color:var(--dim);}
+.desc{padding:0 8px 8px;font-size:12px;color:var(--dim);}
 .btns{display:flex;gap:6px;padding:8px 8px 8px;flex-wrap:wrap;}
 .btns a{font-size:12px;color:var(--accent);cursor:pointer;user-select:none;
   border:1px solid var(--border);border-radius:6px;padding:4px 8px;background:var(--bg);}
 .btns a:hover{background:var(--accent);color:#fff;border-color:var(--accent);}
-.qc{font-size:11px;padding:0 8px 8px;}
+.qc{font-size:12px;padding:0 8px 8px;}
 .qc.fail{color:#d98c3f;}
 /* v4.168.0：质检跳过要看得见 —— 灰蓝色，与"通过(默认色)/未通过(橙)"都不同，
    避免"没质检"在视觉上被当成"通过" */

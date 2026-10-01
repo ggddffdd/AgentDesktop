@@ -119,9 +119,13 @@ THEME = {
     # ---- Text ----
     "text": "#202124",
     "dim": "#5F6368",
-    "faint": "#9AA0A6",
-    "placeholder": "#9AA0A6",
-    "weak": "#9AA0A6",
+    # v4.197.0 可读性一期：旧值 #9AA0A6 在白底只有 **2.6:1**（WCAG AA 需 4.5），
+    # 而它承载了状态条全部文字、placeholder、角标、时间戳 —— 全项目最大的一处
+    # 可读性欠账。#6B7280 = 4.8:1，仍明显浅于正文 #202124（15.9:1），层级不丢。
+    # 改键不改值：THEME 键名一个不动，500+ 处引用零改动。
+    "faint": "#6B7280",
+    "placeholder": "#6B7280",
+    "weak": "#6B7280",
 
     # ---- Accent (Google 蓝 #1A73E8) ----
     "accent": "#1A73E8",
@@ -245,7 +249,9 @@ THEME = {
     "prism_soft": "qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 rgba(255,107,157,0.14),stop:0.5 rgba(0,210,255,0.10),stop:1 rgba(123,104,238,0.14))",
 
     # ---- 字号 token（v4.182.0，DESIGN.md §3.2 层级表 · theme_qss.F 同源镜像）----
-    "font_micro": "11px",      # 微标签：角标、时间戳、状态小字（10px 已归一到此）
+    # v4.197.0：11px → 12px。11px 在 100%/125% 缩放下笔画糊、且与 12px 仅差 1px
+    # 却多占一档层级；归到 12px 后与 font_second 合并，层级表更干净。
+    "font_micro": "12px",      # 微标签：角标、时间戳、状态小字（10/11px 已归一到此）
     "font_second": "12px",     # 次级：提示、次级说明、小按钮文字
     "font_body": "13px",       # 正文/控件（默认值）
     "font_input": "14px",      # 输入框/强调按钮专用（分场景归档决策）
@@ -2268,11 +2274,11 @@ class TaskStatusStrip(QWidget):
         lay.setSpacing(8)
 
         self.icon = QLabel("")
-        self.icon.setStyleSheet(f"color:{THEME['accent']};font-size:11px;")
+        self.icon.setStyleSheet(f"color:{THEME['accent']};font-size:{THEME['font_micro']};")
         lay.addWidget(self.icon)
 
         self.text = QLabel("")
-        self.text.setStyleSheet(f"color:{THEME['dim']};font-size:11px;")
+        self.text.setStyleSheet(f"color:{THEME['dim']};font-size:{THEME['font_micro']};")
         lay.addWidget(self.text)
 
         self.retry_btn = QPushButton("重试")
@@ -2280,7 +2286,7 @@ class TaskStatusStrip(QWidget):
         self.retry_btn.setCursor(Qt.PointingHandCursor)
         self.retry_btn.setStyleSheet(
             f"QPushButton{{background:transparent;border:none;padding:0 4px;"
-            f"color:{THEME['accent']};font-size:11px;}}"
+            f"color:{THEME['accent']};font-size:{THEME['font_micro']};}}"
             f"QPushButton:hover{{color:{THEME['accent_hover']};}}")
         self.retry_btn.clicked.connect(self._on_retry)
         self.retry_btn.hide()
@@ -2291,7 +2297,7 @@ class TaskStatusStrip(QWidget):
         self.clear_btn.setCursor(Qt.PointingHandCursor)
         self.clear_btn.setStyleSheet(
             f"QPushButton{{background:transparent;border:none;padding:0 4px;"
-            f"color:{THEME['faint']};font-size:11px;}}"
+            f"color:{THEME['faint']};font-size:{THEME['font_micro']};}}"
             f"QPushButton:hover{{color:{THEME['dim']};}}")
         self.clear_btn.clicked.connect(self._on_clear)
         self.clear_btn.hide()
@@ -2336,8 +2342,8 @@ class TaskStatusStrip(QWidget):
                 more = f" +{len(active) - 1}" if len(active) > 1 else ""
                 detail = f" · {t.get('detail')}" if t.get("detail") else ""
                 self.icon.setText("●")
-                self.icon.setStyleSheet(f"color:{THEME['accent']};font-size:11px;")
-                self.text.setStyleSheet(f"color:{THEME['dim']};font-size:11px;")
+                self.icon.setStyleSheet(f"color:{THEME['accent']};font-size:{THEME['font_micro']};")
+                self.text.setStyleSheet(f"color:{THEME['dim']};font-size:{THEME['font_micro']};")
                 self.text.setText(
                     f"{t.get('kind_label', '任务')} · {t.get('state_label', '')}{more}{detail}")
                 self.retry_btn.hide()
@@ -2352,8 +2358,8 @@ class TaskStatusStrip(QWidget):
                 if t.get("detail"):
                     msg += f"：{t['detail']}"
                 self.icon.setText("⚠")
-                self.icon.setStyleSheet(f"color:{THEME['danger']};font-size:11px;")
-                self.text.setStyleSheet(f"color:{THEME['danger']};font-size:11px;")
+                self.icon.setStyleSheet(f"color:{THEME['danger']};font-size:{THEME['font_micro']};")
+                self.text.setStyleSheet(f"color:{THEME['danger']};font-size:{THEME['font_micro']};")
                 self.text.setText(msg)
                 self._latest_retryable = t if t.get("retryable") else None
                 self.retry_btn.setVisible(bool(self._latest_retryable))
@@ -2363,8 +2369,8 @@ class TaskStatusStrip(QWidget):
             if recent:
                 t = recent[0]
                 self.icon.setText("✓")
-                self.icon.setStyleSheet(f"color:{THEME['ok']};font-size:11px;")
-                self.text.setStyleSheet(f"color:{THEME['faint']};font-size:11px;")
+                self.icon.setStyleSheet(f"color:{THEME['ok']};font-size:{THEME['font_micro']};")
+                self.text.setStyleSheet(f"color:{THEME['faint']};font-size:{THEME['font_micro']};")
                 self.text.setText(f"{t.get('kind_label', '任务')} {t.get('state_label', '完成')}")
                 self._latest_retryable = None
                 self.retry_btn.hide()
@@ -3239,7 +3245,10 @@ class ChatWindow(QMainWindow):
         _top_lay.setSpacing(8)
         self.status_label = QLabel("")
         self.status_label.setStyleSheet(
-            f"color:{THEME['faint']};font-size:11px;min-height:12px;")
+            # v4.197.0：字号 11→12 后 min-height 必须同步抬到 16px，
+            # 否则 12px 字（实际行高约 15-16px）会被 12px 容器裁掉底部 ——
+            # 提字号反而更难读。
+            f"color:{THEME['faint']};font-size:{THEME['font_micro']};min-height:16px;")
         _top_lay.addWidget(self.status_label, 1)
         self.chat_model_combo = _NoWheelCombo()
         self.chat_model_combo.setFixedHeight(28)
@@ -3250,7 +3259,7 @@ class ChatWindow(QMainWindow):
             "其他选项 = 手动锁定，本轮起全程只用该模型，不再自动切换")
         self.chat_model_combo.setStyleSheet(
             f"QComboBox{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:6px;padding:4px 8px;font-size:11px;color:{THEME['dim']};}}"
+            f"border-radius:6px;padding:4px 8px;font-size:{THEME['font_micro']};color:{THEME['dim']};}}"
             f"QComboBox:hover{{border-color:{THEME['border_hover']};}}"
             f"QComboBox:focus{{border:1px solid {THEME['accent']};}}"
             f"QComboBox::drop-down{{border:none;width:18px;}}"
@@ -3379,7 +3388,7 @@ class ChatWindow(QMainWindow):
         ia_lay.addWidget(input_frame)
 
         input_hint = QLabel("Enter 发送 · Shift+Enter 换行")
-        input_hint.setStyleSheet(f"color:{THEME['placeholder']};font-size:11px;padding-left:8px;")
+        input_hint.setStyleSheet(f"color:{THEME['placeholder']};font-size:{THEME['font_micro']};padding-left:8px;")
         ia_lay.addWidget(input_hint)
 
         return input_area
@@ -3637,7 +3646,7 @@ class ChatWindow(QMainWindow):
         sb_lay.setContentsMargins(16, 0, 16, 0)
         sb_lay.setSpacing(12)
         self.conn_status = QLabel("● 已连接")
-        self.conn_status.setStyleSheet(f"color:{THEME['ok']};font-size:11px;")
+        self.conn_status.setStyleSheet(f"color:{THEME['ok']};font-size:{THEME['font_micro']};")
         sb_lay.addWidget(self.conn_status)
         # 可观测性：任务状态条（已接收/处理中/完成/失败原因 + 重试）
         self.task_strip = TaskStatusStrip(self.status_bar)
@@ -3645,10 +3654,10 @@ class ChatWindow(QMainWindow):
         self.task_strip.refresh()
         sb_lay.addStretch(1)
         token_label = QLabel("Agnes 免费 · DeepSeek 已订阅")
-        token_label.setStyleSheet(f"color:{THEME['faint']};font-size:11px;")
+        token_label.setStyleSheet(f"color:{THEME['faint']};font-size:{THEME['font_micro']};")
         sb_lay.addWidget(token_label)
         hint = QLabel("Enter 发送 · Shift+Enter 换行")
-        hint.setStyleSheet(f"color:{THEME['faint']};font-size:11px;")
+        hint.setStyleSheet(f"color:{THEME['faint']};font-size:{THEME['font_micro']};")
         sb_lay.addWidget(hint)
 
     # ============ 按钮样式 ============
@@ -4485,7 +4494,7 @@ class ChatWindow(QMainWindow):
 
         hint = QLabel("模式：① 加了参考图→参考图模式（≤5 张，模型参考其人物/场景/画风，多图优先）"
                       "；② 只加首帧或首尾帧→关键帧模式（首帧锁定/首尾过渡）；③ 都没加→纯文生视频。")
-        hint.setStyleSheet(f"font-size:11px;color:{THEME['dim']};")
+        hint.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['dim']};")
         hint.setWordWrap(True)
         lay.addWidget(hint)
 
@@ -6859,7 +6868,7 @@ class ChatWindow(QMainWindow):
                         '<div class="tool-wrap">'
                         f'<img src="file:///{img_abs.replace(os.sep, "/")}" '
                         f'style="max-width:320px;border-radius:10px;"/>'
-                        f'<div style="font-size:11px;color:{THEME["faint"]};margin-top:4px;">'
+                        f'<div style="font-size:{THEME['font_micro']};color:{THEME["faint"]};margin-top:4px;">'
                         f'{html_mod.escape(result)}</div></div>'
                     )
                     return self._wrap_msg(bubble, idx)
@@ -6956,7 +6965,7 @@ class ChatWindow(QMainWindow):
 
         self.dv_empty_hint = QLabel("工具生成的文件会出现在这里\n（生图 / 写文件 / 跑代码产出等）")
         self.dv_empty_hint.setStyleSheet(
-            f"color:{THEME['faint']};font-size:11px;line-height:1.5;padding:8px 4px 20px 4px;"
+            f"color:{THEME['faint']};font-size:{THEME['font_micro']};line-height:1.5;padding:8px 4px 20px 4px;"
             f"background:transparent;")
         self.dv_empty_hint.setWordWrap(True)
         dv.addWidget(self.dv_empty_hint)
@@ -7039,7 +7048,7 @@ class ChatWindow(QMainWindow):
         collapse_btn = QPushButton("收起面板")
         collapse_btn.setFixedHeight(28)
         collapse_btn.setStyleSheet(
-            f"QPushButton{{color:{THEME['faint']};font-size:11px;"
+            f"QPushButton{{color:{THEME['faint']};font-size:{THEME['font_micro']};"
             f"border:none;border-radius:6px;background:transparent;}}"
             f"QPushButton:hover{{background:{THEME['sidebar_hover']};color:{THEME['text']};}}")
         collapse_btn.clicked.connect(self._toggle_deliverables)
@@ -7135,7 +7144,7 @@ class ChatWindow(QMainWindow):
         else:
             btn.setStyleSheet(
                 f"QPushButton{{text-align:left;border:none;background:transparent;"
-                f"color:{THEME['dim']};font-size:11px;font-weight:600;"
+                f"color:{THEME['dim']};font-size:{THEME['font_micro']};font-weight:600;"
                 f"padding:4px 4px 4px 12px;}}"
                 f"QPushButton:hover{{color:{THEME['text']};}}")
         btn.clicked.connect(lambda _=False, k=key: self._dv_toggle_group(k))
@@ -7691,7 +7700,7 @@ class ChatWindow(QMainWindow):
         gmt.setStyleSheet(f"font-size:12px;font-weight:600;color:{THEME['text']};")
         gml.addWidget(gmt)
         gmd = QLabel("切换 API 后端与模型")
-        gmd.setStyleSheet(f"font-size:11px;color:{THEME['faint']};")
+        gmd.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};")
         gml.addWidget(gmd)
 
         # v4.148.8：改 _NoWheelCombo（滚轮不再切档）；最小宽度 260 → 200
@@ -7713,7 +7722,7 @@ class ChatWindow(QMainWindow):
         gakt.setStyleSheet(f"font-size:12px;font-weight:600;color:{THEME['text']};")
         gakl.addWidget(gakt)
         gakd = QLabel("用于认证的密钥，回车保存")
-        gakd.setStyleSheet(f"font-size:11px;color:{THEME['faint']};")
+        gakd.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};")
         gakl.addWidget(gakd)
 
         api_row = QHBoxLayout()
@@ -7750,7 +7759,7 @@ class ChatWindow(QMainWindow):
         encd = QLabel("启用后聊天记录与长期记忆以 Fernet 加密落盘（.enc），明文不残留；"
                       "口令经 PBKDF2 派生，salt 存于本地。留空=关闭加密。")
         encd.setWordWrap(True)
-        encd.setStyleSheet(f"font-size:11px;color:{THEME['faint']};")
+        encd.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};")
         encl.addWidget(encd)
         enc_row = QHBoxLayout()
         self.enc_pw_edit = QLineEdit()
@@ -7861,7 +7870,7 @@ class ChatWindow(QMainWindow):
         bkd = QLabel("定时把 ~/Documents/小臭玩AI（记忆/配置/反馈）备份到 backups/。"
                      "由 Windows 任务计划程序执行，关程序也能跑。")
         bkd.setWordWrap(True)
-        bkd.setStyleSheet(f"font-size:11px;color:{THEME['faint']};")
+        bkd.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};")
         bkl.addWidget(bkd)
         bk_row = QHBoxLayout()
         self.ab_freq_combo = _NoWheelCombo()
@@ -7915,7 +7924,7 @@ class ChatWindow(QMainWindow):
         vl.addWidget(vt)
         from config import APP_VERSION, APP_BUILD_DATE, UPDATE_CHECK_URL
         vinfo = QLabel(f"当前版本：{APP_VERSION}　构建日期：{APP_BUILD_DATE}")
-        vinfo.setStyleSheet(f"font-size:11px;color:{THEME['faint']};")
+        vinfo.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};")
         vl.addWidget(vinfo)
         vrow = QHBoxLayout()
         chk_btn = QPushButton("检查更新")
@@ -8472,7 +8481,7 @@ class ChatWindow(QMainWindow):
         for cat in order:
             cat_lbl = QLabel(cat)
             cat_lbl.setStyleSheet(
-                f"font-size:11px;font-weight:600;color:{THEME['faint']};"
+                f"font-size:{THEME['font_micro']};font-weight:600;color:{THEME['faint']};"
                 f"padding-left:4px;margin-top:4px;background:transparent;")
             layout.addWidget(cat_lbl)
             for sk in cats[cat]:

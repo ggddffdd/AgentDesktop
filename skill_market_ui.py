@@ -174,7 +174,7 @@ class SkillMarketWindow(QMainWindow):
 
         # 状态栏
         self.status_bar = QLabel("就绪")
-        self.status_bar.setStyleSheet("color:gray;font-size:11px;border-top:1px solid #eee;padding:8px 4px;")
+        self.status_bar.setStyleSheet("color:#6B7280;font-size:12px;border-top:1px solid #eee;padding:8px 4px;")
         root.addWidget(self.status_bar)
 
     # ---------- 数据加载 ----------
@@ -323,17 +323,17 @@ class SkillMarketWindow(QMainWindow):
 
         badge = QLabel(e.get("category", "未分类"))
         badge.setStyleSheet(
-            "QLabel{background:%s;color:%s;border-radius:10px;padding:4px 12px;font-size:11px;}" % (THEME["accent_violet_bg2"], THEME["accent_violet"])
+            "QLabel{background:%s;color:%s;border-radius:10px;padding:4px 12px;font-size:%s;}" % (THEME["accent_violet_bg2"], THEME["accent_violet"], THEME["font_micro"])
         )
         top.addWidget(badge)
 
         # 状态/来源标签
         if e.get("installed"):
             st = QLabel("✅ 已安装" if self._is_enabled(e["name"]) else "⚪ 已禁用")
-            st.setStyleSheet(f"QLabel{{color:{THEME['on_green'] if self._is_enabled(e['name']) else THEME['faint']};font-size:11px;}}")
+            st.setStyleSheet(f"QLabel{{color:{THEME['on_green'] if self._is_enabled(e['name']) else THEME['faint']};font-size:{THEME['font_micro']};}}")
         else:
             st = QLabel("🆕 可发现")
-            st.setStyleSheet("QLabel{color:%s;font-size:11px;}" % THEME["warn_gold"])
+            st.setStyleSheet("QLabel{color:%s;font-size:%s;}" % (THEME["warn_gold"], THEME["font_micro"]))
         top.addWidget(st)
         lay.addLayout(top)
 

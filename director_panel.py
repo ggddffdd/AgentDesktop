@@ -722,7 +722,7 @@ def build_director_panel(app):
     app.director_mode_film.setChecked(True)
     row2.addWidget(mode_seg)
     mode_hint = QLabel("模式")
-    mode_hint.setStyleSheet(f"font-size:11px;color:{THEME['faint']};")
+    mode_hint.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};")
     row2.addWidget(mode_hint)
 
     row2.addSpacing(14)
@@ -769,7 +769,7 @@ def build_director_panel(app):
     # --- 2.5 行：模式/内容开关灰字说明 ---
     app.director_mode_hint = QLabel(
         "剧情短片：AI 编故事分镜，走完整流水线 · 本人形象口播：锁照片说话，台词默认直通（台词芯片仅在短片模式下生效）")
-    app.director_mode_hint.setStyleSheet(f"font-size:11px;color:{THEME['faint']};padding-left:4px;")
+    app.director_mode_hint.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};padding-left:4px;")
     pl.addWidget(app.director_mode_hint)
 
     # --- 第三行：参考图 ---
@@ -787,7 +787,7 @@ def build_director_panel(app):
     app.director_ref_preview.setAlignment(Qt.AlignCenter)
     app.director_ref_preview.setStyleSheet(
         f"QLabel{{background:{THEME['bg']};border:1px solid {THEME['border']};"
-        f"border-radius:8px;color:{THEME['dim']};font-size:11px;}}")
+        f"border-radius:8px;color:{THEME['dim']};font-size:{THEME['font_micro']};}}")
     ref.addWidget(app.director_ref_preview)
     app.director_ref_label = QLabel("")
     app.director_ref_label.setStyleSheet(f"color:{THEME['dim']};font-size:12px;")
@@ -2974,7 +2974,7 @@ def _modify_clip(app, idx):
     prev.setPlainText(prompt or "（暂无，可能这镜还没生成过）")
     prev.setMaximumHeight(130)
     prev.setStyleSheet(f"QTextEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
-                       f"border-radius:6px;padding:8px 8px;font-size:11px;color:{THEME['dim']};}}")
+                       f"border-radius:6px;padding:8px 8px;font-size:{THEME['font_micro']};color:{THEME['dim']};}}")
     v.addWidget(prev)
     il = QLabel("你的修改意见（告诉它这一镜怎么改；留空=直接重生成）：")
     il.setStyleSheet(f"color:{THEME['text']};font-size:12px;font-weight:600;")

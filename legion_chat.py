@@ -573,7 +573,7 @@ class LegionChatPanel(QWidget):
         html = (
             '<div style="margin:0 0 8px 0;padding:%s;background:transparent;'
             '%s;border-radius:8px;">'
-            '<div style="margin:0 0 4px 0;font-size:11px;color:%s;">'
+            '<div style="margin:0 0 4px 0;font-size:' + THEME['font_micro'] + ';color:%s;">'
             '<span style="font-weight:700;color:%s;">%s</span>'
             % (pad, border, faint_c, color, _esc(role))
         )
