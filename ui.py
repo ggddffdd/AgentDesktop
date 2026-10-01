@@ -9791,20 +9791,61 @@ class ChatWindow(QMainWindow):
                              "未读完", "还剩", "剩余", "部分读", "读到第",
                              "没读到最后", "分 8 段", "分段读", "还没读")
 
+    @staticmethod
+    def _merge_ranges(ranges):
+        """把 [(a,b), ...] 合并成不重叠、升序的区间列表。"""
+        if not ranges:
+            return []
+        rs = sorted((int(a), int(b)) for a, b in ranges if b > a)
+        out = []
+        for a, b in rs:
+            if out and a <= out[-1][1]:
+                if b > out[-1][1]:
+                    out[-1] = (out[-1][0], b)
+            else:
+                out.append((a, b))
+        return out
+
+    @staticmethod
+    def _find_gaps(ranges, total):
+        """v4.192 批⑦：在合并后的区间列表中找 [0, total) 内的空洞。
+
+        返回缺口列表 [(a,b), ...]（a<b），无缺口返回 []。
+        """
+        merged = ChatWindow._merge_ranges(ranges)
+        gaps = []
+        cur = 0
+        for a, b in merged:
+            if a > cur:
+                gaps.append((cur, a))
+            cur = max(cur, b)
+        if cur < total:
+            gaps.append((cur, total))
+        return gaps
+
     def _audit_partial_reads(self):
-        """v4.190 批⑤：你说读全了，机器算你读了多少。
+        """v4.190 批⑤ + v4.192 批⑦：你说读全了，机器算你「有没有读全」。
 
-        背景（2026-10-01 实锤）：模型第一次只读到 20000/49050 字符就声称
-        「整份读完」并据此列清单、下结论，被用户指出后才补读。批④只查「有没有
-        调 read_file」（它确实调了），查不出「读了 41% 却说 100%」。
+        背景（2026-10-01 实锤）：
+        - 批⑤原始版本：模型第一次只读到 20000/49050 字符就声称「整份读完」并
+          据此列清单、下结论。批④只查「有没有调 read_file」（它确实调了），
+          查不出「读了 41% 却说 100%」。
+        - 批⑦升级（新实锤）：模型采用**乱序多窗口**读取（0~20000、11300~16200、
+          8900~10400 …），窗口之间留缝且自身未对齐，结果漏掉头部两整节
+          （v4.190.0 / v4.189.1），还下了「文件退化、记录丢失」的反向强结论。
+          批⑤旧算法 `covered = max(offset+limit)` 只记「最大到达位置」，
+          中间有洞也看不见（因为最大位置确实到了 55151），故漏报。
 
-        算法：本轮 read_file 的 args 提取 offset/limit → 该文件本轮最大覆盖
-        字符位 = max(offset + limit)；与文件实际字符数比 → 覆盖不足即未读全。
+        批⑦算法：本轮每个 read_file 的 args 提取 (offset, offset+limit) 记成
+        区间 → 合并 → 对 [0, total) 求缺口。声称读全但存在缺口即标红，
+        并在警示里**指出未覆盖区间**（而非只给百分比）。
+
         触发：最后 assistant 同一句里「提及该文件（或本轮只读了这一个文件）∧
-        出现读全声称词 ∧ 无自我限定词」→ audit_warn 标红，带百分比。
+        出现读全声称词 ∧ 无自我限定词」→ audit_warn 标红。
 
         防误报：文件读不到/超大（>2MB）fail-open；结果被裁导致 offset 缺失时
-        按 0 计（覆盖率只会偏低 → 可能漏报，不会误报）。
+        按 0 计（只会漏报不会误报）；缺口小于 200 字符视为「边缘未读」不报
+        （避免因压缩/对齐误差误伤）。
         """
         try:
             msgs = self.store.active().messages
@@ -9816,8 +9857,8 @@ class ChatWindow(QMainWindow):
                     break
             if last_user_idx < 0:
                 return
-            # 1) 本轮每个文件的最大覆盖字符位
-            covered = {}
+            # 1) 本轮每个文件的已覆盖区间列表（v4.192 批⑦：不再是单一 max）
+            covered = {}  # path -> [(a, b), ...]
             for m in msgs[last_user_idx + 1:]:
                 if m.get("role") != "tool_log" or m.get("name") != "read_file":
                     continue
@@ -9830,12 +9871,12 @@ class ChatWindow(QMainWindow):
                 _l = self._READ_LIMIT_RE.search(s)
                 lim = int(_l.group(1)) if _l else getattr(
                     tools_mod, "TOOL_READ_LIMIT", 8000)
-                covered[p] = max(covered.get(p, 0), off + lim)
+                covered.setdefault(p, []).append((off, off + lim))
             if not covered:
                 return
-            # 2) 与文件实际长度比 → 未读全集合
-            unfin = {}
-            for p, cov in covered.items():
+            # 2) 与文件实际长度比 → 存在「覆盖空洞」的集合
+            unfin = {}  # path -> (gaps, total)
+            for p, rngs in covered.items():
                 try:
                     if os.path.getsize(p) > 2 * 1024 * 1024:
                         continue  # 超大文件不读，fail-open
@@ -9843,8 +9884,14 @@ class ChatWindow(QMainWindow):
                         total = len(f.read())
                 except Exception:
                     continue  # 读不到/已删除：无法判定，跳过
-                if total and cov < total:
-                    unfin[p] = (cov, total)
+                if not total:
+                    continue
+                gaps = self._find_gaps(rngs, total)
+                # 单缺口 < 200 字符视为边缘未读/对齐误差，不报（防误伤）
+                real = [(a, b) for a, b in gaps if (b - a) >= 200]
+                if real or (gaps and sum(b - a for a, b in gaps) >= 200):
+                    unfin[p] = (real if real else gaps, total,
+                                sum(b - a for a, b in gaps))
             if not unfin:
                 return
             # 3) 最后 assistant 回复：同句「读全声称 ∧ 提及该文件」→ 标红
@@ -9860,7 +9907,7 @@ class ChatWindow(QMainWindow):
             if not last_asst.strip():
                 return
             hits = []
-            for p, (cov, total) in unfin.items():
+            for p, (gaps, total, miss) in unfin.items():
                 base = os.path.basename(p)
                 stem = os.path.splitext(base)[0]
                 # 本轮只这一个文件时，允许「这份文件」式指代（不要求出现文件名）
@@ -9872,17 +9919,20 @@ class ChatWindow(QMainWindow):
                         continue
                     if any(k in sent for k in self._READ_PARTIAL_HINT_KW):
                         continue  # 自己声明只读了一部分 → 如实报告，豁免
-                    hits.append((base, cov, total))
+                    hits.append((base, gaps, total, miss))
                     break
             if not hits:
                 return
             _d = []
-            for base, cov, total in hits[:3]:
-                _d.append(f"{base} 读到 {cov}/{total} 字符"
-                          f"（{cov * 100 // total}%）")
+            for base, gaps, total, miss in hits[:3]:
+                _g = "、".join(f"{a}~{b}" for a, b in gaps[:3])
+                if len(gaps) > 3:
+                    _g += " 等"
+                _d.append(f"{base} 有 {len(gaps)} 处未覆盖区间（{_g}，"
+                          f"共缺 {miss} 字符 / 全文 {total}）")
             warn = (f"⚠️ 读取核验失败：回复声称整份读完，但本轮实际"
-                    f"：{'；'.join(_d)}——疑似未读全就下结论。"
-                    "请要求它续读到文件末尾（read_file offset=…）后重新回答。")
+                    f"：{'；'.join(_d)}——疑似**漏读整段却下结论**（不是只差百分之几，"
+                    "是中间有洞）。请要求它用 read_file offset=缺口起点 补读后重新回答。")
             self.store.active().messages.append({
                 "role": "audit_warn", "content": warn,
             })

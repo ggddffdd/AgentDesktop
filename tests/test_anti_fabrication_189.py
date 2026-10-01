@@ -13,6 +13,7 @@
   [G] 批④ 附件必读——agent 注入接线 + 行为回验（声称已读但没调 read_file 标红）
   [H] 拖拽添加附件——窗口级 dragEnter/drop + _ingest_attachment 统一入口
   [J] 批⑥ 引用纪律下放 tool result——read_file 首尾钉纪律 + 空/失败结果显式化
+  [K] 批⑦ 读取区间空洞检测——乱序多窗口留缝漏读也能查出（v4.192）
   [F] 三文件语法编译
 """
 import inspect
@@ -419,6 +420,12 @@ def main():
                     "args": json.dumps({"path": path, "offset": offset}),
                     "result": "…内容…"}
 
+        def _tl_read_range(path, offset, limit):
+            return {"role": "tool_log", "name": "read_file",
+                    "args": json.dumps({"path": path, "offset": offset,
+                                        "limit": limit}),
+                    "result": "…内容…"}
+
         # I1 原景重现：只读 0~8000（+ 续读到 20000）却说「整份读完」
         wI1 = _mkmw([
             {"role": "user", "content": "读完再跟我说"},
@@ -434,22 +441,41 @@ def main():
                 if m.get("role") == "audit_warn"]
         check("I1 只读 41% 却声称整份读完 → 标红", len(_wI1) == 1,
               _wI1[0]["content"][:70] if _wI1 else "无警示")
-        check("I1b 警示带覆盖率百分比",
-              bool(_wI1) and "%）" in _wI1[0]["content"],
-              _wI1[0]["content"][-40:] if _wI1 else "")
+        check("I1b 警示指出未覆盖区间（批⑦：不再是单一百分比）",
+              bool(_wI1) and "未覆盖区间" in _wI1[0]["content"]
+              and "~" in _wI1[0]["content"],
+              _wI1[0]["content"][-60:] if _wI1 else "")
 
-        # I2 真的读全了（续读覆盖到末尾）→ 不误伤
+        # I2 真的读全了（连续覆盖到末尾，无洞）→ 不误伤
         wI2 = _mkmw([
             {"role": "user", "content": "读完再跟我说"},
             _tl_read_off(big, 0),
             _tl_read_off(big, 8000),
-            _tl_read_off(big, _total_len - 1000),
+            _tl_read_off(big, 16000),
+            _tl_read_off(big, 24000),
+            _tl_read_off(big, 32000),
+            _tl_read_off(big, 40000),
+            _tl_read_range(big, 48000, _total_len - 48000),  # 覆盖到文件末尾
             {"role": "assistant", "content": "已整份读完 BIGLOG.md，清单如下。"},
         ])
         wI2._audit_partial_reads()
-        check("I2 续读覆盖到末尾 → 不误伤",
+        check("I2 连续读全（无洞）→ 不误伤",
               not any(m.get("role") == "audit_warn"
                       for m in wI2.store.active().messages))
+
+        # I2b 批⑦核心用例：乱序跳到末尾但中间有洞（旧 max 算法会漏报）
+        wI2b = _mkmw([
+            {"role": "user", "content": "读完再跟我说"},
+            _tl_read_off(big, 0),
+            _tl_read_off(big, _total_len - 2000),  # 直接跳读末尾
+            {"role": "assistant", "content": "已整份读完 BIGLOG.md，清单如下。"},
+        ])
+        wI2b._audit_partial_reads()
+        _wI2b = [m for m in wI2b.store.active().messages
+                 if m.get("role") == "audit_warn"]
+        check("I2b 批⑦：首尾读+中间大洞 → 仍标红（旧 max 算法会漏报）",
+              len(_wI2b) == 1,
+              _wI2b[0]["content"][:70] if _wI2b else "无警示（漏报=旧算法缺陷）")
 
         # I3 如实声明只读了一部分 → 豁免
         wI3 = _mkmw([
@@ -577,6 +603,78 @@ def main():
             TS.WORKSPACE_DIR = _orig_ws
     except Exception as e:
         check("J 组批⑥探针", False, str(e)[:120])
+
+    # ================= [K] 批⑦：读取区间空洞检测 =================
+    print("=== [K] 批⑦ 读取区间空洞检测（v4.192） ===")
+    try:
+        # K1-K6 单元级：区间合并 + 缺口算法（直接测 ChatWindow 静态方法）
+        from ui import ChatWindow as _CW
+        _mg = _CW._merge_ranges
+        _gp = _CW._find_gaps
+        check("K1 相邻区间合并",
+              _mg([(0, 100), (100, 200)]) == [(0, 200)])
+        check("K2 重叠区间合并",
+              _mg([(0, 150), (100, 200)]) == [(0, 200)])
+        check("K3 乱序区间合并",
+              _mg([(200, 300), (0, 100), (50, 250)]) == [(0, 300)])
+        check("K4 无洞：连续覆盖",
+              _gp([(0, 100), (100, 200)], 200) == [])
+        check("K5 首尾读+中间大洞 → 检出中间缺口",
+              _gp([(0, 100), (900, 1000)], 1000) == [(100, 900)])
+        check("K6 未读到末尾 → 尾部缺口",
+              _gp([(0, 100)], 1000) == [(100, 1000)])
+
+        # K7-K9 行为级：用真实文件走 _audit_partial_reads
+        k7 = os.path.join(tmp, "HOLE.md")
+        with open(k7, "w", encoding="utf-8") as f:
+            f.write(("内容段落行\n" * 2000))  # ≈12000 字符
+        _l7 = len(open(k7, encoding="utf-8").read())
+        _kb = os.path.basename(k7)
+
+        def _tlk(path, off, lim):
+            return {"role": "tool_log", "name": "read_file",
+                    "args": json.dumps({"path": path, "offset": off,
+                                        "limit": lim}),
+                    "result": "…内容…"}
+
+        # K7 乱序多窗口留缝（复刻本次实战：0~5000、8000~12000 漏了 5000~8000）
+        wK7 = _mkmw([
+            {"role": "user", "content": "读完再下结论"},
+            _tlk(k7, 0, 5000),
+            _tlk(k7, 8000, 4000),
+            {"role": "assistant", "content": f"整份读完 {_kb}，结论如下。"},
+        ])
+        wK7._audit_partial_reads()
+        _wK7 = [m for m in wK7.store.active().messages
+                if m.get("role") == "audit_warn"]
+        check("K7 乱序多窗口留缝漏读 → 标红并指出缺口区间",
+              len(_wK7) == 1 and "5000~8000" in _wK7[0]["content"],
+              _wK7[0]["content"][:80] if _wK7 else "无警示")
+
+        # K8 有洞但如实声明「只读了部分」→ 豁免（不误伤诚实者）
+        wK8 = _mkmw([
+            {"role": "user", "content": "先看一部分"},
+            _tlk(k7, 0, 5000),
+            {"role": "assistant", "content": f"我只读了 {_kb} 前 5000 字符，还没读全。"},
+        ])
+        wK8._audit_partial_reads()
+        check("K8 有洞但如实声明部分读 → 豁免",
+              not any(m.get("role") == "audit_warn"
+                      for m in wK8.store.active().messages))
+
+        # K9 小洞（<200 字符）不报（防对齐误差误伤）
+        wK9 = _mkmw([
+            {"role": "user", "content": "读完再说"},
+            _tlk(k7, 0, 5050),
+            _tlk(k7, 5150, _l7),  # 缺口 5050~5150 = 100 字符
+            {"role": "assistant", "content": f"整份读完 {_kb}。"},
+        ])
+        wK9._audit_partial_reads()
+        check("K9 缺口 <200 字符 → 不误伤",
+              not any(m.get("role") == "audit_warn"
+                      for m in wK9.store.active().messages))
+    except Exception as e:
+        check("K 组批⑦探针", False, str(e)[:120])
 
     print("=== [F] 三文件语法编译 ===")
     import py_compile
