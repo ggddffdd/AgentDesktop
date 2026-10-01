@@ -76,9 +76,20 @@ def _collect_approved_palette(root):
 
 
 def _find_ui_files(root):
+    # v4.197.0：tests/ 与 backup_*/ 不进扫描范围。
+    # 理由：**测试是「检查」颜色的地方，不是「使用」颜色的地方**。
+    # 可读性守卫（tests/test_readability_197.py）必须在代码里写死旧值 #9aa0a6
+    # 才能证明"它不达标"——把它算成违规，等于禁止写这条守卫。
+    # 同理 backup_*/ 是历史快照，改它没有意义，也不该阻塞构建。
+    _EXCLUDE_DIRS = ('tests', 'backup', '__pycache__', '.git', 'dist')
+
+    def _excluded(dirpath):
+        rel = os.path.relpath(dirpath, root).replace('\\', '/')
+        return any(seg in rel.split('/') for seg in _EXCLUDE_DIRS)
+
     ui_files = []
     for _root, _dirs, _files in os.walk(root):
-        if any(seg in _root for seg in ('.git', 'dist', '__pycache__')):
+        if _excluded(_root):
             continue
         for fn in _files:
             # 排除以 _ 开头的临时/开发脚本（如 _smoke_* / _verify_* / _audit_*）
