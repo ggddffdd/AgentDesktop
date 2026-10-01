@@ -9548,6 +9548,9 @@ class ChatWindow(QMainWindow):
         # v4.194 批⑧：可数事实计数回验——读全了但「共 N 节」数错 → 标红。
         # （实锤：读全 95137 字符的文件，正文事实全对，却把 477 节说成 80 节）
         self._audit_count_claims()
+        # v4.195 批⑩：断言-证据绑定回验——判据从「附近有没有 URL」换成
+        # 「这条被引用的证据原文，支不支持这句断言」（批⑨ 登记了原文才做得到）。
+        self._audit_claim_evidence()
         self._do_save()  # v4.58：agent 结束做一次最终落盘
         self._flush_render()  # v4.60o：冲刷待渲染定时器，避免末条消息重复插入
         self.input_box.setFocus()
@@ -10205,6 +10208,288 @@ class ChatWindow(QMainWindow):
                 "role": "audit_warn", "content": warn,
             })
             # 同上：只落 store，UI 交给 _flush_render 统一渲染（防重复卡）
+        except Exception:
+            pass  # 校验器绝不阻断 agent 完成流程
+
+    # ---- v4.195 批⑩：Claim-Evidence 断言-证据绑定（declarative 转向的核心） ----
+    #
+    # 前八层做的是 **detective**：事后检测 + 猜模型意图。
+    #   批③猜「这句是不是在引用」、批⑤/⑦猜「读完没有」、
+    #   legion 猜「数字附近有没有 URL」。
+    #   → 猜就有绕过空间（先集中列来源再给数字、「据公开资料」模糊措辞、
+    #     用表格让数字脱离检测窗口……本质都是让机器猜不出来）。
+    #
+    # 批⑩ 改成 **declarative**：模型显式声明，机器只验证、不推断。
+    #   · 工具结果先登记成编号证据 [EV#n]（批⑨ 已落地，完整原文留存）
+    #   · 模型引用时必须标注 ⟦EV#n⟧，可精确到行 ⟦EV#n:L12-30⟧
+    #   · 机器只问一句：**这条被引用的证据原文，支不支持这句断言**
+    #
+    # 三条防误报铁律：
+    #   1) 本轮没有登记任何证据 → 本层直接退出，让位批③（不抢活、不双标）
+    #   2) 回复完全没用 ⟦EV#n⟧ 协议 → 不做裸断言扫描（渐进生效，
+    #      否则一上来就全站标红，等于把批③的活抢过来还做得更吵）
+    #   3) 抽不出「确定性可回验 token」的句子不验（宁漏勿错）
+
+    # 强证据 token：**确定性可在证据原文里 grep 到**的最小单元。
+    # 有了它，「URL 存在即通过」这种粗判据就被换掉了。
+    _CE_TOKEN_RES = (
+        ("版本号", re.compile(r"v\d+\.\d+(?:\.\d+)?", re.I)),
+        ("百分比", re.compile(r"\d+(?:\.\d+)?\s*%")),
+        ("原文引用", re.compile(
+            r"[「『“\"']([^」』”\"'「『]{4,80})[」』”\"']")),
+        ("文件路径", re.compile(
+            r"[\w一-鿿\-\./\\]+\.(?:md|py|txt|json|ya?ml|csv|xlsx?|docx?|pdf"
+            r"|log|ini|spec|exe|dll|js|ts|jsx|tsx|html?|css|sh|bat)\b", re.I)),
+        ("标识符", re.compile(r"\b[A-Z][A-Z0-9]*(?:[-_][A-Z0-9]+){1,3}\b")),
+        ("日期", re.compile(r"\d{4}[-/年]\d{1,2}(?:[-/月]\d{1,2})?")),
+    )
+
+    # 模糊/推断表达：模型自己标了不确定 → 免验（鼓励「宁可不确定」）
+    _CE_HEDGE_KW = ("可能", "大概", "也许", "或许", "推测", "猜测", "估计",
+                    "约为", "左右", "差不多", "应该是", "不敢肯定",
+                    "不确定", "待核实", "未证实", "个人看法", "我认为",
+                    "建议", "猜测是", "看上去")
+    # 元话语句首：在讲「我要怎么做」，不是在陈述结论
+    _CE_META_PREFIX = ("我来", "我读", "我先", "我会", "我再", "我继续",
+                       "接下来", "下一步", "以下是", "下面是", "如上",
+                       "综上", "好的", "请您", "如果您", "希望", "正在",
+                       "已经读到", "准备")
+    # 诚实报告信号：如实说「没有/失败」不该被当成无证据主张
+    _CE_HONEST_KW = ("RESULT NOT FOUND", "文件不存在", "读取失败", "找不到",
+                     "未能读到", "没读到", "查无", "并未", "没有出现",
+                     "没在", "查不到", "不存在", "无法核实", "没法确认")
+
+    @classmethod
+    def _ce_extract_tokens(cls, sent):
+        """抽取句中**确定性可回验**的事实 token → [(类别, token)]。
+
+        抽不出来就不验 —— 与「抽出来但对不上」是两回事，
+        前者是护栏的能力边界（宁漏勿错），后者才是风险。
+        """
+        out = []
+        s = str(sent or "")
+        if not s:
+            return out
+        # 先剥掉 ⟦EV#n⟧ / ⟦EV#n:L12-30⟧ 引用标记：
+        #   标记本身不是断言内容。实测不剥会把行号片 **L1-10** 当成「标识符」
+        #   类事实 token 抽出（匹配 [A-Z][A-Z0-9]*[-_][A-Z0-9]+），
+        #   于是本来完全被支持的断言被降级成 partial —— 现在 partial 也判 Funk，
+        #   直接变成误报。「引用标记」与「被断言的事实」必须分开。
+        try:
+            import evidence as _ev0
+            s = _ev0.strip_ev_tags(s)
+        except Exception:
+            s = re.sub(r"⟦EV#\d+(?::L\d+-\d+)?⟧", "", s)
+        for kind, rx in cls._CE_TOKEN_RES:
+            for m in rx.finditer(s):
+                t = (m.group(1) if m.groups() else m.group(0)).strip()
+                if t and (kind, t) not in out:
+                    out.append((kind, t))
+        return out
+
+    @classmethod
+    def _ce_is_claim(cls, sent):
+        """这句是不是「需要证据支撑的事实断言」。"""
+        s = str(sent or "").strip()
+        if not s or len(s) > 400 or "```" in s:
+            return False
+        if any(k in s for k in cls._CE_HEDGE_KW):
+            return False
+        if any(s.startswith(k) for k in cls._CE_META_PREFIX):
+            return False
+        if any(k in s for k in cls._CE_HONEST_KW):
+            return False
+        return bool(cls._ce_extract_tokens(s))
+
+    @staticmethod
+    def _ce_collect_evidence_map(msgs):
+        """本轮 tool_log 里登记过的证据 → {eid: {raw, ok, tool}}。"""
+        out = {}
+        try:
+            import evidence as _ev
+        except Exception:
+            return out
+        for m in msgs or []:
+            if m.get("role") != "tool_log":
+                continue
+            eid = m.get("evidence_id")
+            if eid is None:
+                continue
+            try:
+                eid = int(eid)
+            except Exception:
+                continue
+            if eid in out:
+                continue
+            rec = None
+            try:
+                rec = _ev.get(eid)
+            except Exception:
+                rec = None
+            if not rec:
+                continue
+            out[eid] = {"raw": rec.get("raw") or "",
+                        "ok": bool(rec.get("ok", 1)),
+                        "tool": rec.get("tool") or ""}
+        return out
+
+    @classmethod
+    def _ce_evidence_text(cls, ev, start_line=None, end_line=None):
+        """按行区间取证据原文；无区间取全文。"""
+        raw = (ev or {}).get("raw") or ""
+        if not (start_line or end_line):
+            return raw
+        ls = raw.split("\n")
+        a = max(1, int(start_line or 1))
+        b = min(len(ls), int(end_line or len(ls)))
+        if b < a:
+            return ""
+        return "\n".join(ls[a - 1:b])
+
+    @classmethod
+    def _ce_verify_sentence(cls, sent, tags, evmap):
+        """回验一句断言 → (level, detail)。
+
+        level 由好到坏：direct > partial > no_token > unsupported
+                        > failed_evidence > hallucinated
+        一句引了多个证据时取**最坏**的那个（伪造编号比「对不上」更严重）。
+        """
+        toks = cls._ce_extract_tokens(sent)
+        if not toks:
+            return ("no_token", "无可回验 token")
+        _ORDER = {"direct": 0, "partial": 1, "no_token": 2,
+                  "unsupported": 3, "failed_evidence": 4, "hallucinated": 5}
+        best, best_detail = None, ""
+        for eid, ls, le in (tags or []):
+            ev = (evmap or {}).get(eid)
+            if ev is None:
+                lv = "hallucinated"
+                detail = "证据 EV#%s 本轮从未登记（编号是编的？）" % eid
+            elif not ev.get("ok", True):
+                lv = "failed_evidence"
+                detail = ("EV#%s 是一次**失败**的调用 —— 工具失败禁止据此补全事实"
+                          % eid)
+            else:
+                txt = cls._ce_evidence_text(ev, ls, le)
+                miss = [t for k, t in toks if t not in txt]
+                if not miss:
+                    lv = "direct"
+                    detail = ""
+                elif len(miss) < len(toks):
+                    # partial 也算不通过：每个 token 都是「确定性可回验的事实单元」，
+                    # 一句里只要有一个查不到，就意味着**有东西没核实到**。
+                    # （原本 partial 放行 → 实测漏报「一句两个事实、一个对一个编的」）
+                    lv = "partial"
+                    detail = ("[EV#%d] 部分要素在原文里查无：" % eid
+                              + "、".join(miss[:3]))
+                else:
+                    lv = "unsupported"
+                    detail = ("[EV#%d] 原文里查无：" % eid
+                              + "、".join(miss[:3]))
+            if best is None or _ORDER[lv] > _ORDER[best]:
+                best, best_detail = lv, detail
+        return (best or "unsupported", best_detail)
+
+    def _audit_claim_evidence(self):
+        """v4.195 批⑩：断言-证据绑定回验。
+
+        把判据从「附近有没有 URL」换成「这条被引用的证据原文支不支持这句断言」。
+
+        触发（全满足才判）：
+          1) 本轮 tool_log 至少登记了 1 条 Evidence（否则让位批③）；
+          2) 最后 assistant 回复里**用过** ⟦EV#n⟧ 协议（渐进生效，
+             模型还不会用时不做裸断言扫描，避免一夜之间全站标红）；
+          3) 句子被判为事实断言（有确定性 token、非模糊/元话语/诚实否定）。
+
+        判红：
+          · hallucinated    —— 引用了本轮不存在的证据编号
+          · failed_evidence —— 拿失败调用当支撑
+          · unsupported     —— 断言的事实要素在被引证据原文里一个都对不上
+          · naked           —— 同一回复里别人都标了，这句没标（标注不一致）
+
+        任何异常整体吞掉，绝不阻断 agent 完成流程。
+        """
+        try:
+            try:
+                import evidence as _ev_mod
+            except Exception:
+                return
+            msgs = self.store.active().messages
+            last_user_idx = -1
+            for i in range(len(msgs) - 1, -1, -1):
+                m = msgs[i]
+                if m.get("role") == "user" and not m.get("_internal"):
+                    last_user_idx = i
+                    break
+            if last_user_idx < 0:
+                return
+            evmap = self._ce_collect_evidence_map(msgs[last_user_idx + 1:])
+            if not evmap:
+                return  # 让位批③（本轮没登记证据 = 批⑨ 未启用）
+            last_asst = ""
+            for m in reversed(msgs):
+                if m.get("role") == "assistant":
+                    c = m.get("content", "")
+                    if isinstance(c, list):
+                        c = self._extract_text(m)
+                    last_asst = str(c or "")
+                    if last_asst.strip():
+                        break
+            if not last_asst.strip():
+                return
+            protocol_used = bool(_ev_mod.parse_ev_tags(last_asst))
+            if not protocol_used:
+                return  # 渐进：模型还没用新协议 → 不扫裸断言
+            # 逐句回验
+            segs, prev = [], 0
+            for m in self._AUDIT_SENT_SPLIT_RE.finditer(last_asst):
+                s = last_asst[prev:m.end()]
+                if s.strip():
+                    segs.append(s)
+                prev = m.end()
+            tail_s = last_asst[prev:]
+            if tail_s.strip():
+                segs.append(tail_s)
+
+            n_claim, bad = 0, []
+            for seg in segs:
+                if not self._ce_is_claim(seg):
+                    continue
+                n_claim += 1
+                tags = _ev_mod.parse_ev_tags(seg)
+                if tags:
+                    lv, detail = self._ce_verify_sentence(seg, tags, evmap)
+                    if lv in ("hallucinated", "failed_evidence", "unsupported",
+                              "partial"):
+                        clean = _ev_mod.strip_ev_tags(seg).strip()
+                        bad.append((lv, clean, detail))
+                else:
+                    clean = _ev_mod.strip_ev_tags(seg).strip()
+                    bad.append(("naked", clean, "未绑定任何 ⟦EV#n⟧"))
+            if not bad:
+                return
+            _KIND_TXT = {
+                "hallucinated": "引用了不存在的证据编号",
+                "failed_evidence": "拿失败调用当支撑",
+                "unsupported": "被引证据原文里查无实据",
+                "partial": "只有部分要素能在被引证据里查到",
+                "naked": "事实断言未绑定证据",
+            }
+            lines = []
+            for lv, clean, detail in bad[:3]:
+                _snip = clean[:56].replace("\n", " ")
+                lines.append("· 「%s」→ %s%s" % (
+                    _snip, _KIND_TXT.get(lv, lv),
+                    ("（%s）" % detail) if detail else ""))
+            warn = ("⚠️ 证据绑定核验（批⑩）：本回复 %d 条事实断言里有 %d 条"
+                    "**无法在其引用的证据里核实**，采信前请让它给出原文位置：\n"
+                    % (n_claim, len(bad)) + "\n".join(lines)
+                    + ("\n（判据不是「有没有 URL」，而是「被引证据原文里有没有这个事实」）"
+                       if any(b[0] == "unsupported" for b in bad) else ""))
+            self.store.active().messages.append({
+                "role": "audit_warn", "content": warn,
+            })
+            # 只落 store，UI 交给 _flush_render 统一渲染（防重复卡）
         except Exception:
             pass  # 校验器绝不阻断 agent 完成流程
 

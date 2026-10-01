@@ -6,6 +6,7 @@ test_audio_regress.py
 test_bridge_security.py
 test_cancel_token.py
 test_cdp_profile_path.py
+test_claim_evidence_195.py
 test_cmd_robustness_2a.py
 test_core_fix_188.py
 test_count_audit_194.py
