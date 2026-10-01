@@ -8,6 +8,7 @@ test_cancel_token.py
 test_cdp_profile_path.py
 test_cmd_robustness_2a.py
 test_core_fix_188.py
+test_count_audit_194.py
 test_dataloss_fix_186.py
 test_director_cancel_retry.py
 test_director_manifest.py

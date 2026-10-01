@@ -77,7 +77,7 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.193.0"
+APP_VERSION = "v4.194.0"
 APP_BUILD_DATE = "2026-10-01"
 # v4.164.0（2026-09-27）**运行数据归口：彻底治「dist 既是运行目录又是分发源」**：
 #   新增 config.WORKSPACE_DIR（默认 ~/Documents/小臭玩AI，与 USER_DATA_DIR 同值，
@@ -1225,6 +1225,11 @@ AGENT_SYS_APPEND = (
     "- sys_info 仅当用户明确问「系统状态/能力盘点/你有哪些工具」时才可调用；"
     "执行生图/搜索/文件/技能等具体任务前禁止先自检——直接动手，别浪费轮次。\n"
     "- 最终回答只给结论和必要信息（产物路径/关键数字），不要重复工具过程。\n"
+    "- 【v4.194 计数纪律】说「共 N 节/章/条/项/行」这类**数量**时，N 必须是"
+    "**对整个文件的确定性计数结果**（读完后逐个数，或用 run_python 数），"
+    "**禁止凭感觉估一个数**。若没数过就**不要给具体数字**——改说「很多节"
+    "（我没逐个数）」或「需要用脚本数一下」。读完 ≠ 数得对：全局计数最容易出错、"
+    "且最难被用户发现，宁可不说数，不可给错数。\n"
     "\n## 工具调用补充规则\n"
     "【重要】你运行在 Windows 系统上（PowerShell），不是 Linux / macOS。"
     "禁止使用 cat / grep / ls / head / tail / sed / awk 等 Unix 命令，"

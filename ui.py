@@ -9531,6 +9531,9 @@ class ChatWindow(QMainWindow):
         # v4.190 批⑤：部分读取回验——调了 read_file 但只读了一部分，却声称
         # 「整份读完」→ 标红（批④只查读没读，查不出读没读全）。
         self._audit_partial_reads()
+        # v4.194 批⑧：可数事实计数回验——读全了但「共 N 节」数错 → 标红。
+        # （实锤：读全 95137 字符的文件，正文事实全对，却把 477 节说成 80 节）
+        self._audit_count_claims()
         self._do_save()  # v4.58：agent 结束做一次最终落盘
         self._flush_render()  # v4.60o：冲刷待渲染定时器，避免末条消息重复插入
         self.input_box.setFocus()
@@ -9940,6 +9943,234 @@ class ChatWindow(QMainWindow):
             warn = (f"⚠️ 读取核验失败：回复声称整份读完，但本轮实际"
                     f"：{'；'.join(_d)}——疑似**漏读整段却下结论**（不是只差百分之几，"
                     "是中间有洞）。请要求它用 read_file offset=缺口起点 补读后重新回答。")
+            self.store.active().messages.append({
+                "role": "audit_warn", "content": warn,
+            })
+            # 同上：只落 store，UI 交给 _flush_render 统一渲染（防重复卡）
+        except Exception:
+            pass  # 校验器绝不阻断 agent 完成流程
+
+    # ---- v4.194 批⑧：可数事实计数回验（读全了却数错 → 标红） ----
+    # 背景（2026-10-01 对照实验现场②实锤）：小臭**已读全** 95137 字符 / 480 节的文件
+    #   （正文事实 9/9 全对），却称「第003节~第081节（共 80 个）」——真值 477 节，差 6 倍。
+    #   关键性质：这不是编造**内容**，是**全局计数失准**；七层全拦不住：
+    #     批③ 只比对版本号字符串；批④/⑤/⑦ 只管读没读完（读完了即放行）；
+    #     且「477 vs 80」**没有原文出处可对照**——不是引用错误，是统计错误。
+    # 本层原理：可数事实是**唯一可确定性回验**的编造类型——答案不在文件「哪一处」，
+    #   而在「全文有几个可数单元」，可用正则对文件真数，与回复里的数字比对。
+    # 判据（宁窄勿宽，防误报）：
+    #   同时满足 ① 单位词（节/章/条/项/行/个/段）② 数字紧邻单位词
+    #             ③ 能绑定到本轮**读全**的具体文件（出现文件名/stem/指代）
+    #   豁免：模糊表述（约/大概/左右/多个/数十/N 多）、否定语境（并没有 80 节）、
+    #         该文件本轮未读全（有空洞 → 让位批⑦，本层不越权）。
+    _COUNT_UNIT_WORDS = ("节", "章", "条", "项", "行", "段", "个", "页", "篇")
+    # 模糊表述：出现即不参与回验（模型自己都说"大约"，事后无对错可言）
+    _COUNT_VAGUE_KW = ("约", "大概", "大约", "左右", "上下", "多个", "数十",
+                       "数十个", "上百", "没数", "未数", "估计", "差不多",
+                       "粗略", "大致", "若干")
+    # 「N 个节」的提取：数字 + 可选量词 + 最多 4 个修饰字 + 单位词
+    # 覆盖「共 80 个填充节」——数字与单位词之间允许夹修饰语（填充/小/大…），
+    # 但**不允许夹第二个数字**（否则「第003节~第081节」会被误拆）。
+    # 用 (?<!\d) / (?!\d) 防吃掉多位数的一部分。
+    _COUNT_RE = re.compile(
+        r"(?<!\d)(\d{1,6})(?!\d)\s*(?:多|余)?\s*"
+        r"(?:个|条|项|行|段|页|篇)?\s*"
+        r"[\u4e00-\u9fa5]{0,4}?"
+        r"(节|章|条|项|行|段|页|篇)")
+
+    @staticmethod
+    def _count_units(text, unit):
+        """v4.194 批⑧：对文件正文**确定性计数** unit 类单元。
+
+        只处理可正则判定的单元；无法可靠计数的返回 None（该单元放弃回验）。
+        口径：**节/章/篇 = markdown 二级及以下标题**（`## `~`###### `）——
+        不含一级标题 `# `（那是文档大标题，不是"节"）。这一点必须与直觉对齐：
+        现场②的文件有 1 个 `# 标题` + 480 个 `## 第N节`，真值「节数 = 477」
+        （第003~第479）——若把 `# 标题` 也算进去就会多算。
+        """
+        if text is None:
+            return None
+        if unit in ("节", "章", "篇"):
+            # 二级及以下 markdown 标题（`## `~`###### `），排除一级 `# `
+            n = len(re.findall(r"^\s{0,3}#{2,6}\s+\S", text, re.M))
+            if n:
+                return n
+            # 兜底：非标题式（正文里写「第N节」）
+            return len(re.findall(r"第\s*\d+\s*[节章篇]", text))
+        if unit == "行":
+            if not text:
+                return 0
+            body = text[:-1] if text.endswith("\n") else text
+            return body.count("\n") + 1
+        # 页：不可由文本推断；条/项/段：语义过泛不可确定性计数 → 放弃
+        return None
+
+    @classmethod
+    def _extract_count_claims(cls, text):
+        """v4.194 批⑧：从回复里提取「可数事实」断言。
+
+        返回 [(数字, 单位词, 是否确定表述)]。
+        第三个元素 False = 模糊表述（含约/大概/左右…），不参与回验。
+
+        排除项（关键，否则误报泛滥）：
+          - 「第N节」「第003节~第081节」这类是**章节编号引用**，不是「共 N」计数
+            断言。判据：数字紧前是「第」→ 跳过（`第081节` 的 81 是编号不是总数）。
+          - 编号范围式的真实总数在「（共 80 个）」里，由常规模式捕捉。
+        """
+        out = []
+        if not text:
+            return out
+        for m in cls._COUNT_RE.finditer(text):
+            # 紧跟数字前的字符是「第」→ 这是章节编号（第81节），不是计数断言
+            pre = text[max(0, m.start() - 1):m.start()]
+            if pre == "第":
+                continue
+            num = int(m.group(1))
+            unit = m.group(2)
+            # 该数字周围（整句）含模糊词 → 标为不确定
+            s = max(0, m.start() - 12)
+            e = min(len(text), m.end() + 12)
+            ctx = text[s:e]
+            certain = not any(k in ctx for k in cls._COUNT_VAGUE_KW)
+            out.append((num, unit, certain))
+        return out
+
+    @classmethod
+    def _count_negation_near(cls, text, num):
+        """数字所在**句子**含否定词 → 「如实报告不是这个数」，豁免。"""
+        for m in re.finditer(r"(?<!\d)%d(?!\d)" % num, text):
+            start = 0
+            for sm in ChatWindow._AUDIT_SENT_SPLIT_RE.finditer(text):
+                if sm.start() < m.start():
+                    start = sm.end()
+                else:
+                    break
+            end = len(text)
+            for sm in ChatWindow._AUDIT_SENT_SPLIT_RE.finditer(text, m.end()):
+                end = sm.start()
+                break
+            if any(n in text[start:end] for n in ChatWindow._AUDIT_NEG_KW):
+                return True
+        return False
+
+    def _audit_count_claims(self):
+        """v4.194 批⑧：你说「共 N 节」，机器对文件数一遍。
+
+        触发（全部满足才判）：
+          1) 本轮有成功 read_file 的文件，且该文件**已读全**（无覆盖空洞）；
+          2) 最后 assistant 回复里出现「数字 + 单位词」的计数断言；
+          3) 该断言能绑定到某个已读全的文件（文件名/stem/「这份文件」指代）；
+          4) 断言附近无模糊词、无否定词。
+        判据：模型给的数字 ≠ 对文件真数的结果 → audit_warn 标红（附真值）。
+
+        防误报：
+          - 只处理可确定性计数的单位（节/章/篇/行），条/项/个/段/页 语义过泛
+            → 放弃回验（宁漏勿错）；
+          - 文件读取有空洞 → 本层让位批⑦（不越权）；
+          - 无法读取/超大（>2MB）→ fail-open；
+          - 任何异常整体吞掉，绝不阻断 agent 完成流程。
+        """
+        try:
+            msgs = self.store.active().messages
+            last_user_idx = -1
+            for i in range(len(msgs) - 1, -1, -1):
+                m = msgs[i]
+                if m.get("role") == "user" and not m.get("_internal"):
+                    last_user_idx = i
+                    break
+            if last_user_idx < 0:
+                return
+            # 1) 本轮每个文件的覆盖区间（复用批⑦ 的采集口径）
+            covered = {}
+            for m in msgs[last_user_idx + 1:]:
+                if m.get("role") != "tool_log" or m.get("name") != "read_file":
+                    continue
+                p = self._extract_read_path(m.get("args", ""))
+                if not p:
+                    continue
+                s = str(m.get("args", ""))
+                _o = self._READ_OFFSET_RE.search(s)
+                off = int(_o.group(1)) if _o else 0
+                _l = self._READ_LIMIT_RE.search(s)
+                lim = int(_l.group(1)) if _l else getattr(
+                    tools_mod, "TOOL_READ_LIMIT", 8000)
+                covered.setdefault(p, []).append((off, off + lim))
+            if not covered:
+                return
+            # 2) 只保留**读全**（无空洞）的文件 + 其正文
+            full = {}  # path -> text
+            for p, rngs in covered.items():
+                try:
+                    if os.path.getsize(p) > 2 * 1024 * 1024:
+                        continue  # 超大文件 fail-open
+                    with open(p, "r", encoding="utf-8", errors="replace") as f:
+                        total_txt = f.read()
+                except Exception:
+                    continue  # 读不到/已删除：跳过
+                if not total_txt:
+                    continue
+                gaps = self._find_gaps(rngs, len(total_txt))
+                real = [(a, b) for a, b in gaps if (b - a) >= 200]
+                if real or (gaps and sum(b - a for a, b in gaps) >= 200):
+                    continue  # 没读全 → 让位批⑦（本层不越权）
+                full[p] = total_txt
+            if not full:
+                return
+            # 3) 最后 assistant 回复 → 提取计数断言
+            last_asst = ""
+            for m in reversed(msgs):
+                if m.get("role") == "assistant":
+                    c = m.get("content", "")
+                    if isinstance(c, list):
+                        c = self._extract_text(m)
+                    last_asst = str(c or "")
+                    if last_asst.strip():
+                        break
+            if not last_asst.strip():
+                return
+            claims = self._extract_count_claims(last_asst)
+            if not claims:
+                return
+            # 4) 逐个断言回验（只处理可绑定的文件 + 可确定性计数的单位）
+            hits = []
+            for num, unit, certain in claims:
+                if not certain:
+                    continue  # 模糊表述不验
+                if self._count_negation_near(last_asst, num):
+                    continue  # 否定语境（如实报告不是这个数）豁免
+                # 绑定文件：回复里出现该文件名/stem；或本轮只有一个读全文件
+                #   **且回复在谈论该文件**（有指代词）时放宽。
+                #   注意：不能只凭「本轮只有一个文件」就绑定——否则闲聊里的
+                #   「这个项目共 80 个节要写」会被误判为该文件的计数（实测误报）。
+                _REFER_KW = ("这份文件", "该文件", "这个文件", "此文件",
+                             "全文", "整份", "文件里", "文件中", "本文档",
+                             "这份文档", "该文档")
+                cands = []
+                for p, txt in full.items():
+                    base = os.path.basename(p)
+                    stem = os.path.splitext(base)[0]
+                    if base in last_asst or stem in last_asst:
+                        cands.append((p, base, txt))
+                if not cands and len(full) == 1 and any(
+                        k in last_asst for k in _REFER_KW):
+                    p, txt = next(iter(full.items()))
+                    cands = [(p, os.path.basename(p), txt)]
+                if not cands:
+                    continue  # 无法绑定 → 不验（防闲聊误报）
+                for p, base, txt in cands[:1]:
+                    truth = self._count_units(txt, unit)
+                    if truth is None:
+                        continue  # 该单位不可确定性计数 → 放弃
+                    if truth != num:
+                        hits.append((base, unit, num, truth))
+                    break
+            if not hits:
+                return
+            _d = "；".join(f"{b} 的「{u}」实际是 {t}（回复写 {n}）"
+                           for b, u, n, t in hits[:3])
+            warn = (f"⚠️ 计数核验失败：{_d}——**读全了不等于数得对**。"
+                    "这类数字没有原文出处可对照，采信前请要求它逐个数一遍"
+                    "（或用脚本对文件做确定性计数）。")
             self.store.active().messages.append({
                 "role": "audit_warn", "content": warn,
             })
