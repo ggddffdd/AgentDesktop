@@ -15,6 +15,7 @@ test_director_project_isolation.py
 test_director_recover.py
 test_dist_hygiene.py
 test_frozen_smoke.py
+test_guardrail_conflicts.py
 test_high_risk_guard.py
 test_history_budget.py
 test_hotfix15.py
