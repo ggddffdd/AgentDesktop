@@ -1,0 +1,2252 @@
+{
+ "src": "D:\\小臭玩AI\\deepseek-desktop\\_bak_labels_200",
+ "stats": {
+  "ui.py:calls": 301,
+  "ui.py:unresolved": 51,
+  "ui.py:resolved": 250,
+  "director_panel.py:calls": 135,
+  "director_panel.py:resolved": 66,
+  "director_panel.py:unresolved": 69,
+  "digital_twin_panel.py:calls": 22,
+  "digital_twin_panel.py:resolved": 15,
+  "digital_twin_panel.py:unresolved": 7,
+  "automation_panel.py:calls": 28,
+  "automation_panel.py:resolved": 14,
+  "automation_panel.py:unresolved": 14,
+  "director_chat.py:calls": 9,
+  "director_chat.py:resolved": 7,
+  "director_chat.py:unresolved": 2
+ },
+ "bag": {
+  "ui.py": [
+   [
+    "QDialog",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #D2D5DA\", \"border-radius\": \"10px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"15px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"13px\", \"line-height\": \"1.6\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"15px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "QLineEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"8px 12px\"}"
+   ],
+   [
+    "",
+    "{\"QLineEdit\": \"focus\"}"
+   ],
+   [
+    "QLineEdit:focus",
+    "{\"border\": \"1px solid #1A73E8\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"15px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"13px\", \"line-height\": \"1.6\"}"
+   ],
+   [
+    "QDialog",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "QLineEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "",
+    "{\"QLineEdit\": \"focus\"}"
+   ],
+   [
+    "QLineEdit:focus",
+    "{\"border\": \"1px solid #1A73E8\"}"
+   ],
+   [
+    "QComboBox",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"0 8px\"}"
+   ],
+   [
+    "",
+    "{\"QComboBox\": \"focus\"}"
+   ],
+   [
+    "QComboBox:focus",
+    "{\"border\": \"1px solid #1A73E8\"}"
+   ],
+   [
+    "QScrollArea",
+    "{\"background\": \"transparent\", \"border\": \"none\"}"
+   ],
+   [
+    "QCheckBox",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#EA4335\", \"font-size\": \"13px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#FCE8E6\", \"border-color\": \"#EA4335\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#1A73E8\", \"border\": \"none\", \"border-radius\": \"8px\", \"color\": \"#FFFFFF\", \"font-size\": \"13px\", \"font-weight\": \"500\", \"padding\": \"0 16px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#1765CC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"none\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"0 4px\", \"text-align\": \"left\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"color\": \"#1A73E8\"}"
+   ],
+   [
+    "QComboBox",
+    "{\"background\": \"#F7F8FC\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"6px\", \"color\": \"#202124\", \"font-size\": \"12px\", \"padding\": \"0 8px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"none\", \"border-radius\": \"6px\", \"color\": \"#6B7280\", \"font-size\": \"16px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#E4E8F2\", \"color\": \"#EA4335\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#1A73E8\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"none\", \"color\": \"#1A73E8\", \"font-size\": \"12px\", \"padding\": \"0 4px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"color\": \"#1765CC\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"none\", \"color\": \"#6B7280\", \"font-size\": \"12px\", \"padding\": \"0 4px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"color\": \"#5F6368\"}"
+   ],
+   [
+    "QMainWindow",
+    "{\"background-color\": \"#F7F8FC\"}"
+   ],
+   [
+    "/* ---- ???? QSS (Codex ??) ---- */\n            QWidget",
+    "{\"font-family\": \"-apple-system, \\\"Segoe UI Variable\\\", \\\"Segoe UI\\\", \\\"Microsoft YaHei\\\", system-ui, sans-serif\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "",
+    "{\"QWidget\": \":selection\"}"
+   ],
+   [
+    "QWidget::selection",
+    "{\"background\": \"rgba(26,115,232,0.20)\", \"color\": \"#202124\"}"
+   ],
+   [
+    "QToolTip",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"12px\", \"padding\": \"8px 12px\"}"
+   ],
+   [
+    "",
+    "{\"QScrollBar\": \"vertical\"}"
+   ],
+   [
+    "QScrollBar:vertical",
+    "{\"background\": \"transparent\", \"border-radius\": \"3px\", \"margin\": \"0\", \"width\": \"6px\"}"
+   ],
+   [
+    "",
+    "{\"QScrollBar\": \":handle:vertical\"}"
+   ],
+   [
+    "QScrollBar::handle:vertical",
+    "{\"background\": \"rgba(148,163,184,0.25)\", \"border-radius\": \"4px\", \"min-height\": \"40px\"}"
+   ],
+   [
+    "",
+    "{\"QScrollBar\": \":handle:vertical:hover\"}"
+   ],
+   [
+    "QScrollBar::handle:vertical:hover",
+    "{\"background\": \"rgba(148,163,184,0.45)\"}"
+   ],
+   [
+    "",
+    "{\"QScrollBar\": \":add-line:vertical, QScrollBar::sub-line:vertical\"}"
+   ],
+   [
+    "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical",
+    "{\"height\": \"0\"}"
+   ],
+   [
+    "",
+    "{\"QScrollBar\": \":add-page:vertical, QScrollBar::sub-page:vertical\"}"
+   ],
+   [
+    "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical",
+    "{\"background\": \"transparent\"}"
+   ],
+   [
+    "",
+    "{\"QScrollBar\": \"horizontal\"}"
+   ],
+   [
+    "QScrollBar:horizontal",
+    "{\"background\": \"transparent\", \"border-radius\": \"3px\", \"height\": \"6px\", \"margin\": \"0\"}"
+   ],
+   [
+    "",
+    "{\"QScrollBar\": \":handle:horizontal\"}"
+   ],
+   [
+    "QScrollBar::handle:horizontal",
+    "{\"background\": \"rgba(148,163,184,0.25)\", \"border-radius\": \"4px\", \"min-width\": \"40px\"}"
+   ],
+   [
+    "",
+    "{\"QScrollBar\": \":handle:horizontal:hover\"}"
+   ],
+   [
+    "QScrollBar::handle:horizontal:hover",
+    "{\"background\": \"rgba(148,163,184,0.45)\"}"
+   ],
+   [
+    "",
+    "{\"QScrollBar\": \":add-line:horizontal, QScrollBar::sub-line:horizontal\"}"
+   ],
+   [
+    "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal",
+    "{\"width\": \"0\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "QSplitter",
+    "{\"background\": \"transparent\", \"border\": \"none\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\", \"border-bottom\": \"1px solid #E5E7EB\"}"
+   ],
+   [
+    "QComboBox",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "",
+    "{\"QComboBox\": \"hover\"}"
+   ],
+   [
+    "QComboBox:hover",
+    "{\"border-color\": \"#D2D5DA\"}"
+   ],
+   [
+    "",
+    "{\"QComboBox\": \"focus\"}"
+   ],
+   [
+    "QComboBox:focus",
+    "{\"border\": \"1px solid #1A73E8\"}"
+   ],
+   [
+    "",
+    "{\"QComboBox\": \":drop-down\"}"
+   ],
+   [
+    "QComboBox::drop-down",
+    "{\"border\": \"none\", \"width\": \"20px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#1A73E8\", \"border\": \"none\", \"border-radius\": \"8px\", \"color\": \"#FFFFFF\", \"font-size\": \"15px\", \"font-weight\": \"500\", \"padding\": \"0\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#1765CC\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"padding\": \"0\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"border-color\": \"#1A73E8\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"padding\": \"0\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#FCE8E6\", \"border-color\": \"#EA4335\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"padding\": \"0\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"border-color\": \"#1A73E8\"}"
+   ],
+   [
+    "QComboBox",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#5F6368\", \"font-size\": \"12px\", \"padding\": \"0 8px\"}"
+   ],
+   [
+    "",
+    "{\"QComboBox\": \"hover\"}"
+   ],
+   [
+    "QComboBox:hover",
+    "{\"border-color\": \"#D2D5DA\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"padding\": \"0\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"border-color\": \"#D2D5DA\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"padding\": \"0\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"border-color\": \"#1A73E8\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"padding\": \"0\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"border-color\": \"#1A73E8\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"padding\": \"0\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"border-color\": \"#1A73E8\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"padding\": \"0\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"border-color\": \"#1A73E8\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#5F6368\", \"font-size\": \"12px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#F1F3F4\", \"color\": \"#202124\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"12px\", \"min-height\": \"16px\"}"
+   ],
+   [
+    "QComboBox",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"6px\", \"color\": \"#5F6368\", \"font-size\": \"12px\", \"padding\": \"4px 8px\"}"
+   ],
+   [
+    "",
+    "{\"QComboBox\": \"hover\"}"
+   ],
+   [
+    "QComboBox:hover",
+    "{\"border-color\": \"#D2D5DA\"}"
+   ],
+   [
+    "",
+    "{\"QComboBox\": \"focus\"}"
+   ],
+   [
+    "QComboBox:focus",
+    "{\"border\": \"1px solid #1A73E8\"}"
+   ],
+   [
+    "",
+    "{\"QComboBox\": \":drop-down\"}"
+   ],
+   [
+    "QComboBox::drop-down",
+    "{\"border\": \"none\", \"width\": \"18px\"}"
+   ],
+   [
+    "QComboBox QAbstractItemView",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"selection-background-color\": \"#1A73E8\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#A142F4\", \"font-size\": \"12px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"none\", \"color\": \"#6B7280\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"color\": \"#EA4335\"}"
+   ],
+   [
+    "QFrame#inputCard",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1.5px solid #E5E7EB\", \"border-radius\": \"16px\", \"margin\": \"0\", \"padding\": \"4px 8px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#F1F3F4\", \"border\": \"none\", \"border-radius\": \"17px\", \"color\": \"#5F6368\", \"font-size\": \"17px\", \"font-weight\": \"500\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"rgba(26,115,232,0.08)\", \"color\": \"#1A73E8\"}"
+   ],
+   [
+    "QTextEdit",
+    "{\"background\": \"transparent\", \"border\": \"none\", \"color\": \"#202124\", \"font-size\": \"14px\", \"line-height\": \"1.5\", \"padding\": \"8px 4px\"}"
+   ],
+   [
+    "",
+    "{\"QTextEdit\": \"focus\"}"
+   ],
+   [
+    "QTextEdit:focus",
+    "{\"outline\": \"none\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"none\", \"border-radius\": \"17px\", \"color\": \"#5F6368\", \"font-size\": \"13px\", \"padding\": \"0 8px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#F1F3F4\", \"color\": \"#202124\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"pressed\"}"
+   ],
+   [
+    "QPushButton:pressed",
+    "{\"background\": \"#1A73E8\", \"color\": \"#FFFFFF\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#1A73E8\", \"border\": \"none\", \"border-radius\": \"17px\", \"color\": \"#FFFFFF\", \"font-size\": \"16px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#1765CC\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"disabled\"}"
+   ],
+   [
+    "QPushButton:disabled",
+    "{\"background\": \"#E5E7EB\", \"color\": \"#6B7280\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#EA4335\", \"border\": \"none\", \"border-radius\": \"17px\", \"color\": \"#FFFFFF\", \"font-size\": \"13px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#B3261E\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"disabled\"}"
+   ],
+   [
+    "QPushButton:disabled",
+    "{\"background\": \"#E5E7EB\", \"color\": \"#6B7280\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#1A73E8\", \"border\": \"none\", \"border-radius\": \"17px\", \"color\": \"#FFFFFF\", \"font-size\": \"13px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#1765CC\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"12px\", \"padding-left\": \"8px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#FFFFFF\", \"border-top\": \"1px solid #E5E7EB\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#34A853\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#5F6368\", \"font-size\": \"12px\", \"padding\": \"3px 10px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"20px\", \"font-weight\": \"700\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QLineEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "",
+    "{\"QLineEdit\": \"focus\"}"
+   ],
+   [
+    "QLineEdit:focus",
+    "{\"border\": \"1px solid #1A73E8\"}"
+   ],
+   [
+    "QComboBox",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "QSpinBox",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "",
+    "{\"QSpinBox\": \"focus\"}"
+   ],
+   [
+    "QSpinBox:focus",
+    "{\"border\": \"1px solid #1A73E8\"}"
+   ],
+   [
+    "QComboBox",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#F1F3F4\", \"border\": \"1px solid #1A73E8\", \"border-radius\": \"6px\", \"color\": \"#1A73E8\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "QGroupBox",
+    "{\"background\": \"#F1F3F4\", \"border\": \"1px solid #D2D5DA\", \"border-radius\": \"10px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"font-weight\": \"600\", \"margin-top\": \"8px\", \"padding\": \"12px 12px\"}"
+   ],
+   [
+    "QLineEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "QGroupBox",
+    "{\"background\": \"#F1F3F4\", \"border\": \"1px solid #FBBC04\", \"border-radius\": \"10px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"font-weight\": \"600\", \"margin-top\": \"8px\", \"padding\": \"12px 12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QLineEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "QTextEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"line-height\": \"1.6\", \"padding\": \"12px\"}"
+   ],
+   [
+    "QGroupBox",
+    "{\"background\": \"#F1F3F4\", \"border\": \"1px solid #1A73E8\", \"border-radius\": \"10px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"font-weight\": \"600\", \"margin-top\": \"8px\", \"padding\": \"12px 12px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#202124\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#202124\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"20px\", \"font-weight\": \"700\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "QComboBox",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"4px 12px\"}"
+   ],
+   [
+    "",
+    "{\"QComboBox\": \"focus\"}"
+   ],
+   [
+    "QComboBox:focus",
+    "{\"border\": \"1px solid #1A73E8\"}"
+   ],
+   [
+    "",
+    "{\"QComboBox\": \":drop-down\"}"
+   ],
+   [
+    "QComboBox::drop-down",
+    "{\"border\": \"none\", \"width\": \"18px\"}"
+   ],
+   [
+    "QComboBox QAbstractItemView",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"color\": \"#202124\", \"selection-background-color\": \"#1A73E8\"}"
+   ],
+   [
+    "QTextEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"12px 12px\"}"
+   ],
+   [
+    "",
+    "{\"QTextEdit\": \"focus\"}"
+   ],
+   [
+    "QTextEdit:focus",
+    "{\"border\": \"1px solid #1A73E8\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QListWidget",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"8px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"20px\", \"font-weight\": \"700\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QTextEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"12px 12px\"}"
+   ],
+   [
+    "",
+    "{\"QTextEdit\": \"focus\"}"
+   ],
+   [
+    "QTextEdit:focus",
+    "{\"border\": \"1px solid #1A73E8\"}"
+   ],
+   [
+    "QSpinBox",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "QComboBox",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "QLineEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"12px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "QListWidget",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"12px\", \"padding\": \"4px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QListWidget",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"8px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"20px\", \"font-weight\": \"700\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#1A73E8\", \"border\": \"none\", \"border-radius\": \"8px\", \"color\": \"#FFFFFF\", \"font-size\": \"13px\", \"font-weight\": \"500\", \"padding\": \"0 16px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#1765CC\"}"
+   ],
+   [
+    "QScrollArea",
+    "{\"background\": \"transparent\", \"border\": \"none\"}"
+   ],
+   [
+    "QScrollArea",
+    "{\"background\": \"transparent\", \"border\": \"none\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#202124\", \"font-size\": \"20px\", \"font-weight\": \"700\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QWidget#settingsInfoCard",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"padding\": \"16px\"}"
+   ],
+   [
+    "QWidget#settingsAgnesTextCard",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"padding\": \"16px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#202124\", \"font-size\": \"15px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"4px 8px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QWidget#settingsMemCard",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"padding\": \"16px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#202124\", \"font-size\": \"15px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QWidget#settingsExtCard",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"padding\": \"16px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#202124\", \"font-size\": \"15px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#202124\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#F7F8FC\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-family\": \"'Microsoft YaHei','ui-monospace','Menlo','Consolas',monospace\", \"font-size\": \"13px\", \"padding\": \"8px 8px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#5F6368\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#202124\", \"font-size\": \"13px\", \"font-weight\": \"500\"}"
+   ],
+   [
+    "QWidget#titleBar",
+    "{\"background\": \"#FFFFFF\", \"border-bottom\": \"1px solid #E5E7EB\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#202124\", \"font-size\": \"16px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "QLineEdit",
+    "{\"background\": \"#F7F8FC\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"18px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"0 16px\"}"
+   ],
+   [
+    "",
+    "{\"QLineEdit\": \"hover\"}"
+   ],
+   [
+    "QLineEdit:hover",
+    "{\"border-color\": \"#D2D5DA\"}"
+   ],
+   [
+    "",
+    "{\"QLineEdit\": \"focus\"}"
+   ],
+   [
+    "QLineEdit:focus",
+    "{\"border\": \"1px solid #1A73E8\"}"
+   ],
+   [
+    "QScrollArea",
+    "{\"background\": \"transparent\", \"border\": \"none\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#1A73E8\", \"font-size\": \"15px\", \"font-weight\": \"600\", \"margin-bottom\": \"4px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"28px\", \"font-weight\": \"700\", \"letter-spacing\": \"-0.5px\", \"margin-bottom\": \"24px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"12px\", \"font-weight\": \"600\", \"letter-spacing\": \"0.5px\", \"text-transform\": \"uppercase\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#1A73E8\", \"font-size\": \"12px\", \"font-weight\": \"400\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\"}"
+   ],
+   [
+    "QWidget#sidebarWidget",
+    "{\"background\": \"#EEF1F8\", \"border-right\": \"1px solid #E5E7EB\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#202124\", \"font-size\": \"16px\", \"font-weight\": \"600\", \"padding-left\": \"8px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#202124\", \"font-size\": \"13px\", \"font-weight\": \"500\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#34A853\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QWidget#dvWidget",
+    "{\"background-color\": \"#EEF1F8\", \"border\": \"none\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#202124\", \"font-size\": \"15px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "QFrame",
+    "{\"color\": \"#E5E7EB\", \"max-height\": \"1px\"}"
+   ],
+   [
+    "QScrollArea",
+    "{\"background\": \"transparent\", \"border\": \"none\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#6B7280\", \"font-size\": \"12px\", \"line-height\": \"1.5\", \"padding\": \"8px 4px 20px 4px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"1.5px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#5F6368\", \"font-size\": \"13px\", \"font-weight\": \"500\", \"padding\": \"0 12px\", \"text-align\": \"left\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#F1F3F4\", \"border-color\": \"#D2D5DA\", \"color\": \"#202124\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"1.5px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#5F6368\", \"font-size\": \"13px\", \"font-weight\": \"500\", \"padding\": \"0 12px\", \"text-align\": \"left\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#F1F3F4\", \"border-color\": \"#D2D5DA\", \"color\": \"#202124\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"1.5px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#5F6368\", \"font-size\": \"13px\", \"font-weight\": \"500\", \"padding\": \"0 12px\", \"text-align\": \"left\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#F1F3F4\", \"border-color\": \"#D2D5DA\", \"color\": \"#202124\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"1px solid rgba(239,68,68,0.35)\", \"border-radius\": \"10px\", \"color\": \"#EA4335\", \"font-size\": \"13px\", \"font-weight\": \"500\", \"padding\": \"0 12px\", \"text-align\": \"left\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"rgba(239,68,68,0.06)\", \"border-color\": \"#EA4335\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"none\", \"border-radius\": \"6px\", \"color\": \"#6B7280\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#E4E8F2\", \"color\": \"#202124\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#202124\", \"font-size\": \"13px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QListWidget",
+    "{\"background\": \"#F1F3F4\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#1A73E8\", \"border\": \"none\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"font-weight\": \"600\", \"padding\": \"0 16px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#5F6368\", \"font-size\": \"13px\", \"padding\": \"0 16px\"}"
+   ],
+   [
+    "QWidget",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #D2D5DA\", \"border-radius\": \"10px\"}"
+   ],
+   [
+    "QLabel",
+    "{\"background\": \"transparent\", \"color\": \"#202124\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"none\", \"color\": \"#202124\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"rgba(10,10,12,0.04)\"}"
+   ],
+   [
+    "QScrollArea",
+    "{\"background\": \"transparent\", \"border\": \"none\"}"
+   ],
+   [
+    "QComboBox",
+    "{\"background\": \"#FFFFFF\", \"border\": \"none\", \"border-radius\": \"6px\", \"color\": \"#202124\", \"font-size\": \"12px\", \"padding\": \"8px 8px\"}"
+   ],
+   [
+    "QComboBox QAbstractItemView",
+    "{\"background\": \"#FFFFFF\", \"border\": \"none\", \"color\": \"#202124\", \"selection-background-color\": \"#1A73E8\"}"
+   ],
+   [
+    "QLineEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"6px\", \"color\": \"#202124\", \"font-size\": \"12px\", \"padding\": \"8px 8px\"}"
+   ],
+   [
+    "",
+    "{\"QLineEdit\": \"focus\"}"
+   ],
+   [
+    "QLineEdit:focus",
+    "{\"border-color\": \"#1A73E8\"}"
+   ],
+   [
+    "QCheckBox",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"QCheckBox\": \":indicator\"}"
+   ],
+   [
+    "QCheckBox::indicator",
+    "{\"height\": \"16px\", \"width\": \"16px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"15px\", \"font-weight\": \"700\", \"padding-bottom\": \"4px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"12px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QFrame",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"padding\": \"16px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"12px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"none\", \"border-radius\": \"6px\", \"color\": \"#5F6368\", \"font-size\": \"16px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#E4E8F2\", \"color\": \"#202124\"}"
+   ],
+   [
+    "QFrame",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"padding\": \"16px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"12px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#1A73E8\", \"border\": \"none\", \"border-radius\": \"8px\", \"color\": \"#fff\", \"font-size\": \"12px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#1765CC\"}"
+   ],
+   [
+    "QFrame",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"padding\": \"16px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"12px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\", \"font-weight\": \"600\", \"padding-top\": \"8px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"12px\", \"padding\": \"4px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"12px\", \"padding-bottom\": \"4px\", \"padding-left\": \"4px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#FFFFFF\", \"border\": \"none\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"12px\", \"padding\": \"8px\", \"text-align\": \"left\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#D2D5DA\"}"
+   ],
+   [
+    "QFrame",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"padding\": \"16px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"12px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#1A73E8\", \"border\": \"none\", \"border-radius\": \"8px\", \"color\": \"#fff\", \"font-size\": \"12px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#1765CC\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"12px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#D2D5DA\"}"
+   ],
+   [
+    "QFrame",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"padding\": \"16px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"12px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"12px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#D2D5DA\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#FFFFFF\", \"border\": \"none\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"8px 8px\", \"text-align\": \"left\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#D2D5DA\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"13px\", \"padding\": \"12px 0\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#1A73E8\", \"border\": \"none\", \"border-radius\": \"8px\", \"padding\": \"0\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"padding\": \"0\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"padding\": \"12px 12px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#202124\", \"font-size\": \"15px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#6B7280\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "QLineEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"12px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#FFFFFF\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"12px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"border\": \"none\", \"color\": \"#202124\", \"font-size\": \"16px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"border\": \"none\", \"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"rgba(26,115,232,0.08)\", \"border-radius\": \"22px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"13px\", \"font-weight\": \"600\", \"padding-top\": \"4px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#1A73E8\", \"border\": \"none\", \"border-radius\": \"16px\", \"color\": \"#FFFFFF\", \"font-size\": \"12px\", \"font-weight\": \"600\", \"padding\": \"0 16px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#1765CC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#5F6368\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#6B7280\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#6B7280\", \"font-size\": \"12px\", \"margin-top\": \"1px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"none\", \"border-radius\": \"6px\", \"color\": \"#6B7280\", \"font-size\": \"16px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#E4E8F2\", \"color\": \"#EA4335\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#5F6368\", \"font-size\": \"13px\", \"font-weight\": \"500\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"none\", \"color\": \"#202124\", \"font-size\": \"12px\", \"font-weight\": \"700\", \"padding\": \"8px 4px 4px 4px\", \"text-align\": \"left\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"color\": \"#1A73E8\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"none\", \"color\": \"#5F6368\", \"font-size\": \"12px\", \"font-weight\": \"600\", \"padding\": \"4px 4px 4px 12px\", \"text-align\": \"left\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"color\": \"#202124\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#5F6368\", \"font-size\": \"12px\", \"line-height\": \"1.4\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#6B7280\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"6px\", \"color\": \"#5F6368\", \"font-size\": \"12px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"color\": \"#202124\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"12px\", \"padding-left\": \"20px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QFrame",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"padding\": \"16px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"12px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#6B7280\", \"font-size\": \"12px\", \"font-weight\": \"600\", \"margin-top\": \"4px\", \"padding-left\": \"4px\"}"
+   ],
+   [
+    "QFrame",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"padding\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#1A73E8\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#EA4335\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#EA4335\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#34A853\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QFrame#inputCard",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1.5px solid #1A73E8\", \"border-radius\": \"16px\", \"margin\": \"0\", \"padding\": \"4px 8px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#EA4335\", \"font-size\": \"13px\", \"padding\": \"24px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"font-weight\": \"500\", \"padding\": \"8px 12px\", \"text-align\": \"left\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#FFFFFF\", \"border-color\": \"#1A73E8\"}"
+   ],
+   [
+    "QFrame",
+    "{\"color\": \"#E5E7EB\", \"max-height\": \"1px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#6B7280\", \"font-size\": \"12px\", \"padding-left\": \"16px\", \"padding-top\": \"2px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#1A73E8\", \"border\": \"none\", \"border-radius\": \"24px\", \"color\": \"#FFFFFF\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#1765CC\", \"color\": \"#FFFFFF\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"none\", \"border-radius\": \"24px\", \"color\": \"#5F6368\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#E4E8F2\", \"color\": \"#202124\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QFrame#inputCard",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1.5px solid #E5E7EB\", \"border-radius\": \"16px\", \"margin\": \"0\", \"padding\": \"4px 8px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#FFFFFF\", \"font-size\": \"15px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\", \"color\": \"#5F6368\", \"font-size\": \"13px\", \"font-weight\": \"500\"}"
+   ]
+  ],
+  "director_panel.py": [
+   [
+    "QScrollArea",
+    "{\"background\": \"transparent\", \"border\": \"none\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"20px\", \"font-weight\": \"700\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QGroupBox",
+    "{\"background\": \"transparent\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"16px 16px 12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#6B7280\", \"font-size\": \"12px\", \"padding-left\": \"4px\"}"
+   ],
+   [
+    "QLabel",
+    "{\"background\": \"#F7F8FC\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QScrollArea",
+    "{\"background\": \"transparent\", \"border\": \"none\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QScrollArea",
+    "{\"background\": \"transparent\", \"border\": \"none\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QScrollArea",
+    "{\"background\": \"transparent\", \"border\": \"none\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QScrollArea",
+    "{\"background\": \"transparent\", \"border\": \"none\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QTextEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#202124\", \"font-size\": \"12px\", \"padding\": \"8px 12px\"}"
+   ],
+   [
+    "QDialog",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"font-weight\": \"600\", \"padding\": \"12px 12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QDialog",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"12px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "QTextEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"6px\", \"color\": \"#202124\", \"font-size\": \"12px\", \"padding\": \"8px\"}"
+   ],
+   [
+    "QDialog",
+    "{\"background\": \"#F7F8FC\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"12px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "QTextEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"6px\", \"color\": \"#5F6368\", \"font-size\": \"12px\", \"padding\": \"8px 8px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"12px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "QTextEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"6px\", \"color\": \"#202124\", \"font-size\": \"12px\", \"padding\": \"8px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QFrame",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #1A73E8\", \"border-radius\": \"10px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "QFrame",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #A142F4\", \"border-radius\": \"10px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QTableWidget",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#202124\", \"font-size\": \"12px\", \"gridline-color\": \"#E5E7EB\"}"
+   ],
+   [
+    "",
+    "{\"QHeaderView\": \":section\"}"
+   ],
+   [
+    "QHeaderView::section",
+    "{\"background\": \"#F7F8FC\", \"border\": \"none\", \"color\": \"#5F6368\", \"font-size\": \"12px\", \"padding\": \"8px\"}"
+   ],
+   [
+    "QLabel",
+    "{\"background\": \"#F7F8FC\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QScrollArea",
+    "{\"background\": \"transparent\", \"border\": \"none\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"12px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "QLineEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"6px\", \"color\": \"#202124\", \"font-size\": \"12px\", \"padding\": \"4px 8px\"}"
+   ],
+   [
+    "",
+    "{\"QLineEdit\": \"focus\"}"
+   ],
+   [
+    "QLineEdit:focus",
+    "{\"border\": \"1px solid #1A73E8\"}"
+   ],
+   [
+    "QLineEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"6px\", \"color\": \"#202124\", \"font-size\": \"12px\", \"padding\": \"4px 8px\"}"
+   ],
+   [
+    "",
+    "{\"QLineEdit\": \"focus\"}"
+   ],
+   [
+    "QLineEdit:focus",
+    "{\"border\": \"1px solid #1A73E8\"}"
+   ],
+   [
+    "QLineEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"6px\", \"color\": \"#202124\", \"font-size\": \"12px\", \"padding\": \"4px 8px\"}"
+   ],
+   [
+    "",
+    "{\"QLineEdit\": \"focus\"}"
+   ],
+   [
+    "QLineEdit:focus",
+    "{\"border\": \"1px solid #1A73E8\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #EF4444\", \"border-radius\": \"6px\", \"color\": \"#EF4444\", \"font-size\": \"12px\", \"padding\": \"8px 12px\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #EF4444\", \"border-radius\": \"6px\", \"color\": \"#EF4444\", \"font-size\": \"12px\", \"padding\": \"8px 12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "QLineEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"6px\", \"color\": \"#202124\", \"font-size\": \"12px\", \"padding\": \"4px 8px\"}"
+   ],
+   [
+    "",
+    "{\"QLineEdit\": \"focus\"}"
+   ],
+   [
+    "QLineEdit:focus",
+    "{\"border\": \"1px solid #1A73E8\"}"
+   ]
+  ],
+  "digital_twin_panel.py": [
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"20px\", \"font-weight\": \"700\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QGroupBox",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"margin-top\": \"8px\", \"padding\": \"12px 12px\"}"
+   ],
+   [
+    "",
+    "{\"QGroupBox\": \":title\"}"
+   ],
+   [
+    "QGroupBox::title",
+    "{\"left\": \"10px\", \"padding\": \"0 8px\", \"subcontrol-origin\": \"margin\"}"
+   ],
+   [
+    "QListWidget",
+    "{\"background\": \"#F7F8FC\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"padding\": \"8px\"}"
+   ],
+   [
+    "",
+    "{\"QListWidget\": \":item\"}"
+   ],
+   [
+    "QListWidget::item",
+    "{\"border-radius\": \"6px\", \"padding\": \"4px\"}"
+   ],
+   [
+    "",
+    "{\"QListWidget\": \":item:selected\"}"
+   ],
+   [
+    "QListWidget::item:selected",
+    "{\"background\": \"#E4E8F2\", \"outline\": \"2px solid #1A73E8\"}"
+   ],
+   [
+    "QLabel",
+    "{\"background\": \"#F7F8FC\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"8px\", \"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#FEE2E2\", \"border\": \"1px solid #FCA5A5\", \"border-radius\": \"8px\", \"color\": \"#991B1B\", \"font-size\": \"13px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#FECACA\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "QCheckBox",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\", \"spacing\": \"6px\"}"
+   ],
+   [
+    "",
+    "{\"QCheckBox\": \":indicator\"}"
+   ],
+   [
+    "QCheckBox::indicator",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"6px\", \"height\": \"16px\", \"width\": \"16px\"}"
+   ],
+   [
+    "",
+    "{\"QCheckBox\": \":indicator:checked\"}"
+   ],
+   [
+    "QCheckBox::indicator:checked",
+    "{\"background\": \"#1A73E8\", \"border\": \"1px solid #1A73E8\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QListWidget",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"8px\"}"
+   ],
+   [
+    "QCheckBox",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\", \"spacing\": \"6px\"}"
+   ],
+   [
+    "",
+    "{\"QCheckBox\": \":indicator\"}"
+   ],
+   [
+    "QCheckBox::indicator",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"6px\", \"height\": \"16px\", \"width\": \"16px\"}"
+   ],
+   [
+    "",
+    "{\"QCheckBox\": \":indicator:checked\"}"
+   ],
+   [
+    "QCheckBox::indicator:checked",
+    "{\"background\": \"#1A73E8\", \"border\": \"1px solid #1A73E8\"}"
+   ]
+  ],
+  "automation_panel.py": [
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"20px\", \"font-weight\": \"700\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QScrollArea",
+    "{\"background\": \"transparent\", \"border\": \"none\"}"
+   ],
+   [
+    "",
+    "{\"background\": \"transparent\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QFrame",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\"}"
+   ],
+   [
+    "QCheckBox",
+    "{\"color\": \"#202124\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"15px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "QCheckBox",
+    "{\"color\": \"#202124\", \"font-size\": \"13px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"12px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#5F6368\", \"font-size\": \"13px\", \"padding\": \"24px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#1A73E8\", \"font-size\": \"12px\"}"
+   ],
+   [
+    "",
+    "{\"color\": \"#EA4335\", \"font-size\": \"12px\"}"
+   ]
+  ],
+  "director_chat.py": [
+   [
+    "",
+    "{\"color\": \"#202124\", \"font-size\": \"12px\", \"font-weight\": \"600\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"transparent\", \"border\": \"none\", \"color\": \"#6B7280\", \"font-size\": \"12px\", \"padding\": \"0 8px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"color\": \"#202124\"}"
+   ],
+   [
+    "QTextEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#202124\", \"font-size\": \"12px\", \"padding\": \"8px 12px\"}"
+   ],
+   [
+    "QTextEdit",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"8px 12px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#1A73E8\", \"border\": \"none\", \"border-radius\": \"10px\", \"color\": \"#FFFFFF\", \"font-size\": \"13px\", \"font-weight\": \"600\", \"padding\": \"0 16px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"background\": \"#1765CC\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"disabled\"}"
+   ],
+   [
+    "QPushButton:disabled",
+    "{\"background\": \"#E5E7EB\", \"color\": \"#6B7280\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#202124\", \"font-size\": \"13px\", \"padding\": \"0 16px\"}"
+   ],
+   [
+    "QPushButton",
+    "{\"background\": \"#FFFFFF\", \"border\": \"1px solid #E5E7EB\", \"border-radius\": \"10px\", \"color\": \"#6B7280\", \"font-size\": \"13px\", \"padding\": \"0 12px\"}"
+   ],
+   [
+    "",
+    "{\"QPushButton\": \"hover\"}"
+   ],
+   [
+    "QPushButton:hover",
+    "{\"color\": \"#202124\"}"
+   ]
+  ]
+ }
+}

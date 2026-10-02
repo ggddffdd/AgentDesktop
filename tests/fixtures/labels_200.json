@@ -1,0 +1,1065 @@
+{
+ "note": "改前冻结夹具：属性集合（顺序无关）",
+ "total": 102,
+ "items": [
+  {
+   "file": "automation_panel.py",
+   "line": 101,
+   "target": "label_body",
+   "sel": "QCheckBox",
+   "props": {
+    "color": "#202124",
+    "font-size": "13px"
+   }
+  },
+  {
+   "file": "automation_panel.py",
+   "line": 280,
+   "target": "label_title_xl",
+   "sel": "",
+   "props": {
+    "font-size": "20px",
+    "font-weight": "700",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "automation_panel.py",
+   "line": 285,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "automation_panel.py",
+   "line": 314,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "automation_panel.py",
+   "line": 392,
+   "target": "label_title",
+   "sel": "",
+   "props": {
+    "font-size": "15px",
+    "font-weight": "600",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "automation_panel.py",
+   "line": 421,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "digital_twin_panel.py",
+   "line": 112,
+   "target": "label_title_xl",
+   "sel": "",
+   "props": {
+    "font-size": "20px",
+    "font-weight": "700",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "digital_twin_panel.py",
+   "line": 117,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "digital_twin_panel.py",
+   "line": 191,
+   "target": "label_body",
+   "sel": "",
+   "props": {
+    "font-size": "13px",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "digital_twin_panel.py",
+   "line": 205,
+   "target": "label_body",
+   "sel": "",
+   "props": {
+    "font-size": "13px",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "digital_twin_panel.py",
+   "line": 218,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "digital_twin_panel.py",
+   "line": 230,
+   "target": "label_body",
+   "sel": "",
+   "props": {
+    "font-size": "13px",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "digital_twin_panel.py",
+   "line": 248,
+   "target": "label_body",
+   "sel": "",
+   "props": {
+    "font-size": "13px",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "digital_twin_panel.py",
+   "line": 345,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "color": "#5F6368",
+    "font-size": "12px"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 578,
+   "target": "label_title_xl",
+   "sel": "",
+   "props": {
+    "font-size": "20px",
+    "font-weight": "700",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 583,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 616,
+   "target": "label_body",
+   "sel": "",
+   "props": {
+    "font-size": "13px",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 640,
+   "target": "label_body",
+   "sel": "",
+   "props": {
+    "font-size": "13px",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 651,
+   "target": "label_body",
+   "sel": "",
+   "props": {
+    "font-size": "13px",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 665,
+   "target": "label_body",
+   "sel": "",
+   "props": {
+    "font-size": "13px",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 670,
+   "target": "label_body",
+   "sel": "",
+   "props": {
+    "font-size": "13px",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 687,
+   "target": "label_body",
+   "sel": "",
+   "props": {
+    "font-size": "13px",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 725,
+   "target": "label_micro",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#6B7280"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 793,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "color": "#5F6368",
+    "font-size": "12px"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 845,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "color": "#5F6368",
+    "font-size": "12px"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 859,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 891,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 904,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 942,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 985,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 1017,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 1049,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 1942,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "color": "#5F6368",
+    "font-size": "12px"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 2992,
+   "target": "label_second_text",
+   "sel": "",
+   "props": {
+    "color": "#202124",
+    "font-size": "12px"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 3589,
+   "target": "label_body",
+   "sel": "",
+   "props": {
+    "color": "#202124",
+    "font-size": "13px"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 3659,
+   "target": "label_body",
+   "sel": "",
+   "props": {
+    "color": "#202124",
+    "font-size": "13px"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 3764,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 3770,
+   "target": "label_body",
+   "sel": "",
+   "props": {
+    "font-size": "13px",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 3890,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 4025,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 4038,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 4130,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 4347,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 4359,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 4372,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "director_panel.py",
+   "line": 4689,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 1262,
+   "target": "label_title",
+   "sel": "",
+   "props": {
+    "color": "#202124",
+    "font-size": "15px",
+    "font-weight": "600"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 1269,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "color": "#5F6368",
+    "font-size": "12px"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 1309,
+   "target": "label_title",
+   "sel": "",
+   "props": {
+    "color": "#202124",
+    "font-size": "15px",
+    "font-weight": "600"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 1349,
+   "target": "label_title",
+   "sel": "",
+   "props": {
+    "color": "#202124",
+    "font-size": "15px",
+    "font-weight": "600"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 1481,
+   "target": "label_body",
+   "sel": "QCheckBox",
+   "props": {
+    "color": "#202124",
+    "font-size": "13px"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 2344,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "color": "#5F6368",
+    "font-size": "12px"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 2409,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "color": "#5F6368",
+    "font-size": "12px"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 2436,
+   "target": "label_micro",
+   "sel": "",
+   "props": {
+    "color": "#6B7280",
+    "font-size": "12px"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 3779,
+   "target": "label_title_xl",
+   "sel": "",
+   "props": {
+    "font-size": "20px",
+    "font-weight": "700",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 3784,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 3886,
+   "target": "label_title",
+   "sel": "",
+   "props": {
+    "font-size": "15px",
+    "font-weight": "600",
+    "color": "#202124",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 3889,
+   "target": "label_micro",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#6B7280",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 3935,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 4175,
+   "target": "label_second_text",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#202124",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 4179,
+   "target": "label_second_text",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#202124",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 4307,
+   "target": "label_title_xl",
+   "sel": "",
+   "props": {
+    "font-size": "20px",
+    "font-weight": "700",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 4310,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 4317,
+   "target": "label_body",
+   "sel": "",
+   "props": {
+    "font-size": "13px",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 4358,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "color": "#5F6368",
+    "font-size": "12px"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 4434,
+   "target": "label_title_xl",
+   "sel": "",
+   "props": {
+    "font-size": "20px",
+    "font-weight": "700",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 4437,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 4488,
+   "target": "label_body",
+   "sel": "",
+   "props": {
+    "font-size": "13px",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 4525,
+   "target": "label_body",
+   "sel": "",
+   "props": {
+    "font-size": "13px",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 4566,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 4571,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "color": "#5F6368",
+    "font-size": "12px"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 4907,
+   "target": "label_title_xl",
+   "sel": "",
+   "props": {
+    "font-size": "20px",
+    "font-weight": "700",
+    "color": "#202124"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 4910,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 5009,
+   "target": "label_title_xl",
+   "sel": "",
+   "props": {
+    "font-size": "20px",
+    "font-weight": "700",
+    "color": "#202124",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 5012,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 5065,
+   "target": "label_title",
+   "sel": "",
+   "props": {
+    "font-size": "15px",
+    "font-weight": "600",
+    "color": "#202124",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 5072,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 5077,
+   "target": "label_body",
+   "sel": "",
+   "props": {
+    "font-size": "13px",
+    "color": "#202124",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 5104,
+   "target": "label_body",
+   "sel": "",
+   "props": {
+    "font-size": "13px",
+    "color": "#202124",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 5110,
+   "target": "label_body",
+   "sel": "",
+   "props": {
+    "font-size": "13px",
+    "color": "#202124",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 5116,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 5138,
+   "target": "label_title",
+   "sel": "",
+   "props": {
+    "font-size": "15px",
+    "font-weight": "600",
+    "color": "#202124",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 5143,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 5181,
+   "target": "label_title",
+   "sel": "",
+   "props": {
+    "font-size": "15px",
+    "font-weight": "600",
+    "color": "#202124",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 5186,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 5190,
+   "target": "label_second_text",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#202124",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 5206,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 5596,
+   "target": "label_micro",
+   "sel": "",
+   "props": {
+    "color": "#6B7280",
+    "font-size": "12px"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 5657,
+   "target": "label_micro",
+   "sel": "",
+   "props": {
+    "color": "#6B7280",
+    "font-size": "12px",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 7115,
+   "target": "label_title",
+   "sel": "",
+   "props": {
+    "font-size": "15px",
+    "font-weight": "600",
+    "color": "#202124",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 7418,
+   "target": "label_micro",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#6B7280",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 7647,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "color": "#5F6368",
+    "font-size": "12px",
+    "background": "transparent"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 7885,
+   "target": "label_micro",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#6B7280"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 7907,
+   "target": "label_micro",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#6B7280"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 7944,
+   "target": "label_micro",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#6B7280"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 7987,
+   "target": "label_second",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#5F6368"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 8055,
+   "target": "label_micro",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#6B7280"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 8109,
+   "target": "label_micro",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#6B7280"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 8122,
+   "target": "label_micro",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#6B7280"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 8150,
+   "target": "label_micro",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#6B7280"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 8753,
+   "target": "label_micro",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#6B7280"
+   }
+  },
+  {
+   "file": "ui.py",
+   "line": 8773,
+   "target": "label_micro",
+   "sel": "",
+   "props": {
+    "font-size": "12px",
+    "color": "#6B7280"
+   }
+  }
+ ]
+}
