@@ -19,6 +19,8 @@ from PySide6.QtCore import Qt, QDate, QTime
 
 from ui import THEME
 import automation as auto
+# v4.206.0：空状态占位组件（DESIGN.md §12），与 ui.py 共用同一套
+from empty_state import empty_state
 
 log = logging.getLogger("dsdesktop")
 
@@ -46,6 +48,7 @@ class TaskEditDialog(QDialog):
             self._load(task)
 
     def _build(self):
+        from theme_qss import label_body
         lay = QVBoxLayout(self)
         lay.setSpacing(12)
 
@@ -98,7 +101,7 @@ class TaskEditDialog(QDialog):
         # 启用
         self.enabled_chk = QCheckBox("创建后立即启用")
         self.enabled_chk.setChecked(True)
-        self.enabled_chk.setStyleSheet(f"QCheckBox{{color:{THEME['text']};font-size:13px;}}")
+        self.enabled_chk.setStyleSheet(f"QCheckBox{{{label_body()}}}")
         lay.addWidget(self.enabled_chk)
 
         # 按钮
@@ -119,8 +122,9 @@ class TaskEditDialog(QDialog):
         self._on_sched_changed()
 
     def _lbl(self, text):
+        from theme_qss import label_second
         l = QLabel(text)
-        l.setStyleSheet(f"color:{THEME['dim']};font-size:12px;font-weight:600;")
+        l.setStyleSheet(label_second(weight="semibold"))
         return l
 
     def _make_once_row(self):
@@ -263,6 +267,8 @@ class TaskEditDialog(QDialog):
 # ================= 面板 =================
 
 def build_automation_panel(app):
+    from theme_qss import scroll_transparent
+    from theme_qss import label_second, label_title_xl
     page = app.automation_page
     # 清空旧布局（若有）
     if page.layout() is not None:
@@ -277,12 +283,12 @@ def build_automation_panel(app):
     lay.setSpacing(16)
 
     head = QLabel("⏰ 自动化任务")
-    head.setStyleSheet(f"font-size:{THEME['font_title_xl']};font-weight:700;color:{THEME['text']};")
+    head.setStyleSheet(label_title_xl())
     lay.addWidget(head)
 
     sub = QLabel("定时提醒 / 定时执行任务。到点后：提醒会弹窗，执行任务会自动交给 Agent 在后台跑（需 App 保持运行）。")
     sub.setWordWrap(True)
-    sub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    sub.setStyleSheet(label_second())
     lay.addWidget(sub)
 
     # 新建按钮
@@ -299,7 +305,7 @@ def build_automation_panel(app):
     # 列表滚动区
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
-    scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+    scroll.setStyleSheet(scroll_transparent())
     container = QWidget()
     container.setStyleSheet("background:transparent;")
     list_lay = QVBoxLayout(container)
@@ -311,7 +317,7 @@ def build_automation_panel(app):
 
     # 底部状态
     status = QLabel("")
-    status.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    status.setStyleSheet(label_second())
     lay.addWidget(status)
 
     app.auto_status = status
@@ -361,10 +367,15 @@ def _refresh_list(app):
 
     tasks = st.list_all()
     if not tasks:
-        empty = QLabel("还没有任务。点击上方「＋ 新建任务」创建第一个。")
-        empty.setStyleSheet(f"color:{THEME['dim']};font-size:13px;padding:24px;")
-        empty.setAlignment(Qt.AlignCenter)
-        lay.insertWidget(0, empty)
+        # v4.206.0：走 empty_state 组件（DESIGN.md §12）。**有意的视觉变化**：
+        # 一行居中灰字 → 徽章 + 主/副文案 + 行动按钮。按钮直接开新建对话框，
+        # 不用再抬头找顶部那个「＋ 新建任务」（空态里重复指引 = 让用户找两遍）。
+        lay.insertWidget(0, empty_state(
+            "还没有任务",
+            hint="定时提醒 / 定时执行，到点自动跑。",
+            action="＋ 新建任务",
+            on_action=lambda: _open_edit(app, None),
+            icon="任务"))
         return
 
     for t in tasks:
@@ -373,6 +384,7 @@ def _refresh_list(app):
 
 
 def _make_card(app, task):
+    from theme_qss import label_second, label_title
     card = QFrame()
     card.setStyleSheet(
         f"QFrame{{background:{THEME['card']};border:1px solid {THEME['border']};border-radius:10px;}}")
@@ -389,7 +401,7 @@ def _make_card(app, task):
     row1.addWidget(chk)
 
     name = QLabel(task.get("name", "未命名"))
-    name.setStyleSheet(f"font-size:{THEME['font_title']};font-weight:600;color:{THEME['text']};")
+    name.setStyleSheet(label_title())
     row1.addWidget(name)
 
     action = task.get("action", auto.ACT_REMIND)
@@ -418,7 +430,7 @@ def _make_card(app, task):
     # 第二行：调度摘要 + 下次运行
     row2 = QHBoxLayout()
     sched = QLabel(auto.schedule_summary(task))
-    sched.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    sched.setStyleSheet(label_second())
     row2.addWidget(sched)
     row2.addStretch(1)
     if task.get("enabled", True):
