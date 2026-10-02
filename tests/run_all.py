@@ -84,6 +84,18 @@ def run_one(path):
     except subprocess.TimeoutExpired:
         return path.name, 0, 1, f"TIMEOUT(>{TIMEOUT}s)", time.time() - t0, ""
 
+    # v4.209.2：判定部分抽到 classify() —— 逻辑一行没动，只为让它可被直接调用
+    return classify(path.name, rc, out, err, time.time() - t0)
+
+
+def classify(name, rc, out, err, secs):
+    """把单个套件的 (rc, stdout, stderr) 判成 (n_pass, n_fail, status, output)。
+
+    v4.209.2（BUG 审核 P1-2）从 run_one 里**原样抽出**，不改任何判定结果。
+    抽出来的理由：这段原先埋在子进程调用之后，判据只能靠"源码里有没有那个
+    if 分支"来判断 —— 那叫**看到**，不叫**验到**。抽成纯函数后可以喂合成输出，
+    直接问"这种输出会被判成什么"，假绿才真正堵住。
+    """
     n_pass = n_fail = 0
     _has_stats = False  # v4.186.0（P1-11 修）：区分「显式输出 PASS=0」与「根本没输出统计」
     m = re.search(r"PASS\s*=\s*(\d+)", out)
@@ -106,15 +118,26 @@ def run_one(path):
         # ② REGRESS_FAIL 列表（audio_regress）—— 非空即真失败
         _m = re.search(r"REGRESS_FAIL:\s*(\[.*?\])", out)
         if _m and _m.group(1).strip() not in ("[]", ""):
-            return path.name, 0, max(1, len(re.findall(r"'[^']*'", _m.group(1)))), \
-                "FAILED", time.time() - t0, out + err
+            return name, 0, max(1, len(re.findall(r"'[^']*'", _m.group(1)))), \
+                "FAILED", secs, out + err
         if re.search(r"^\s*(?:={2,}\s*)?(?:ALL_)?[A-Z0-9_]{2,}_OK\b",
                      out, re.M):
             _n = len(re.findall(r"^\s*(?:PASS:|\[OK\]|✅|✓)", out, re.M))
-            return path.name, _n, 0, "ok", time.time() - t0, out + err
-        return path.name, n_pass, n_fail, "EMPTY", time.time() - t0, out + err
+            # v4.209.2（BUG 审核 P1-2 修）：**约定写了不算数，得有人执行**。
+            # 原逻辑只看"有没有 XXX_OK 横幅"，再用 `_n` 去数 stdout 里的
+            # PASS:/[OK]/✅/✓。但 test_v4102_image_compress.py 是个手工验证脚本：
+            # 它**有** OK 横幅，却一条 PASS:/[OK] 都没有 → `_n = 0`
+            # → 返回 `PASS=0 status=ok` 假绿。后果：这类套件将来把断言全删光，
+            # 只要留着横幅，回归照样全绿。现改为：`_n == 0` 同样按 EMPTY 处理。
+            if _n == 0:
+                return name, 0, 1, "EMPTY", secs, \
+                    out + err + "\n[run_all] 有成功横幅但 0 条断言输出 —— " \
+                    "按 EMPTY 处理（请补 PASS=/FAIL= 统计输出，" \
+                    "见 run_all.py 头部约定第 3 条）"
+            return name, _n, 0, "ok", secs, out + err
+        return name, n_pass, n_fail, "EMPTY", secs, out + err
     status = "ok" if (rc == 0 and n_fail == 0) else "FAILED"
-    return path.name, n_pass, n_fail, status, time.time() - t0, out + err
+    return name, n_pass, n_fail, status, secs, out + err
 
 
 def main():
