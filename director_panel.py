@@ -39,6 +39,7 @@ from PySide6.QtGui import QPixmap, QIcon, QDesktopServices, QColor
 from PySide6.QtCore import Qt, QSize, QThread, Signal, QUrl, QObject
 
 from ui import THEME
+from ui import _brief_err
 from ui import clamp_dialog_to_screen as _clamp_dlg
 from ui import RES_PRESETS   # v4.188 P2-7：分辨率预设唯一来源（原本地一份已删，防三处漂移）
 from config import APP_DIR, WORKSPACE_DIR
@@ -561,12 +562,14 @@ def _cancel_all_director_bg(app, reason="项目已重置", stage="reset"):
 
 # ---------- 面板构建 ----------
 def build_director_panel(app):
+    from theme_qss import scroll_transparent
+    from theme_qss import label_body, label_micro, label_second, label_title_xl
     page = app.director_page
 
     # 主滚动区（防止内容溢出压到对话框）
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
-    scroll.setStyleSheet(f"QScrollArea{{border:none;background:transparent;}}")
+    scroll.setStyleSheet(scroll_transparent())
     scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
     body = QWidget()
@@ -575,12 +578,12 @@ def build_director_panel(app):
     lay.setSpacing(12)
 
     head = QLabel("导演台 · video-agent")
-    head.setStyleSheet(f"font-size:{THEME['font_title_xl']};font-weight:700;color:{THEME['text']};")
+    head.setStyleSheet(label_title_xl())
     lay.addWidget(head)
     sub = QLabel("主题 → ①剧本（可改）→ ②人物三视图（角色锁定）→ ③分镜（逐镜可改）→ "
                  "④关键帧+场景图 → ⑤逐镜生成（每镜可预览/单镜改）→ ⑥合成成片。"
                  "每步都自动把人物三视图/关键帧作参照，减少人物与场景崩坏。")
-    sub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    sub.setStyleSheet(label_second())
     lay.addWidget(sub)
 
     # 步骤指示器
@@ -613,7 +616,7 @@ def build_director_panel(app):
 
     # --- 主题 ---
     tlab = QLabel("视频主题 / 口播原稿（中文，越具体越好）")
-    tlab.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
+    tlab.setStyleSheet(label_body())
     pl.addWidget(tlab)
     app.director_topic = QTextEdit()
     app.director_topic.setFixedHeight(64)
@@ -637,7 +640,7 @@ def build_director_panel(app):
     row1 = QHBoxLayout()
     row1.setSpacing(12)
     nlab = QLabel("分镜数")
-    nlab.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
+    nlab.setStyleSheet(label_body())
     nlab.setFixedWidth(50)
     row1.addWidget(nlab)
     # v4.154：上限放宽到 40（对齐「AI 智能分镜」可能给出的丰富科普/纪录片上限）
@@ -648,7 +651,7 @@ def build_director_panel(app):
     app.director_inputs.append(app.director_n)
 
     dlab = QLabel("每镜")
-    dlab.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
+    dlab.setStyleSheet(label_body())
     dlab.setFixedWidth(40)
     row1.addWidget(dlab)
     # 新版 agnes-video-2.5-flash 时长合法范围 4~12 秒（旧版 3~16s）
@@ -662,12 +665,12 @@ def build_director_panel(app):
     # 下拉框降为兜底默认；关闭则严格按下拉框硬执行（保留旧行为兜底）。
     app.director_smart = QCheckBox("🤖 AI 智能分镜")
     app.director_smart.setChecked(True)
-    app.director_smart.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
+    app.director_smart.setStyleSheet(label_body())
     app.director_smart.setToolTip("勾选：AI 按剧本情节自主决定分镜数量与每镜时长（4~12秒），下拉框作为兜底默认；\n取消：完全按下拉框的「分镜数 / 每镜秒数」硬执行。")
     row1.addWidget(app.director_smart)
 
     rlab = QLabel("分辨率")
-    rlab.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
+    rlab.setStyleSheet(label_body())
     rlab.setFixedWidth(50)
     row1.addWidget(rlab)
     app.director_resolution = QComboBox()
@@ -684,7 +687,7 @@ def build_director_panel(app):
     row2 = QHBoxLayout()
     row2.setSpacing(12)
     slab = QLabel("风格")
-    slab.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
+    slab.setStyleSheet(label_body())
     slab.setFixedWidth(40)
     row2.addWidget(slab)
     app.director_style = QComboBox()
@@ -722,7 +725,7 @@ def build_director_panel(app):
     app.director_mode_film.setChecked(True)
     row2.addWidget(mode_seg)
     mode_hint = QLabel("模式")
-    mode_hint.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};")
+    mode_hint.setStyleSheet(label_micro())
     row2.addWidget(mode_hint)
 
     row2.addSpacing(14)
@@ -790,7 +793,7 @@ def build_director_panel(app):
         f"border-radius:8px;color:{THEME['dim']};font-size:{THEME['font_micro']};}}")
     ref.addWidget(app.director_ref_preview)
     app.director_ref_label = QLabel("")
-    app.director_ref_label.setStyleSheet(f"color:{THEME['dim']};font-size:12px;")
+    app.director_ref_label.setStyleSheet(label_second())
     ref.addWidget(app.director_ref_label, 1)
     app.director_ref_image = None
     pl.addLayout(ref)
@@ -842,7 +845,7 @@ def build_director_panel(app):
     act.addStretch(1)
     lay.addLayout(act)
     app.director_status = QLabel("")
-    app.director_status.setStyleSheet(f"color:{THEME['dim']};font-size:12px;")
+    app.director_status.setStyleSheet(label_second())
     lay.addWidget(app.director_status)
 
     # ---------- 步骤内容（堆叠） ----------
@@ -856,7 +859,7 @@ def build_director_panel(app):
     sl.setSpacing(12)
     shint = QLabel("① 剧本已生成。可直接编辑下面文字，或点「✎ 重写剧本」→ 在下方「导演对话」里补一句意见。"
                    "满意后点「采用剧本」，也可以在对话框里直接说「采用」。")
-    shint.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    shint.setStyleSheet(label_second())
     sl.addWidget(shint)
     app.director_story_edit = QTextEdit()
     app.director_story_edit.setReadOnly(False)
@@ -888,11 +891,11 @@ def build_director_panel(app):
                    "满意后点「采用人物 → 去分镜」。不满意可「✎ 重新生成人物」→ 在下方「导演对话」"
                    "里说清改谁、怎么改（如「角色1换成红衣服」），也可以点角色卡上的「✎ 说一句怎么改」。")
     chint.setWordWrap(True)
-    chint.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    chint.setStyleSheet(label_second())
     cl0.addWidget(chint)
     characters_scroll = QScrollArea()
     characters_scroll.setWidgetResizable(True)
-    characters_scroll.setStyleSheet(f"QScrollArea{{border:none;background:transparent;}}")
+    characters_scroll.setStyleSheet(scroll_transparent())
     app.director_characters_web = DirectorWebView(THEME, lambda s: _on_web_action(app, s))
     characters_scroll.setWidget(app.director_characters_web)
     cl0.addWidget(characters_scroll, 1)
@@ -901,7 +904,7 @@ def build_director_panel(app):
                        "（同一把剑、同一块招牌）照样会漂移。抽取后每件生成一张参考图，"
                        "并写进逐镜提示词与参考图；不抽取则完全不影响原流程。")
     clue_hint.setWordWrap(True)
-    clue_hint.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    clue_hint.setStyleSheet(label_second())
     cl0.addWidget(clue_hint)
     app.director_clues_web = DirectorWebView(THEME, lambda s: _on_web_action(app, s))
     app.director_clues_web.setMinimumHeight(200)
@@ -939,11 +942,11 @@ def build_director_panel(app):
     shhint = QLabel("② 分镜已生成。可逐镜修改「中文/英文提示词/运镜/台词/场景」，也可删镜或加镜；"
                     "满意后点「采用分镜 → 生成」。要让分镜整体重排，点「✎ 重排分镜」→ 在下方"
                     "「导演对话」里说怎么改（如「开头太慢，第一镜给个特写」）。")
-    shhint.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    shhint.setStyleSheet(label_second())
     shl.addWidget(shhint)
     shots_scroll = QScrollArea()
     shots_scroll.setWidgetResizable(True)
-    shots_scroll.setStyleSheet(f"QScrollArea{{border:none;background:transparent;}}")
+    shots_scroll.setStyleSheet(scroll_transparent())
     app.director_shots_body = QWidget()
     app.director_shots_layout = QVBoxLayout(app.director_shots_body)
     app.director_shots_layout.setContentsMargins(0, 0, 0, 0)
@@ -982,11 +985,11 @@ def build_director_panel(app):
                    "只想改某一镜 → 点那张卡上的「✎ 说一句怎么改」（如「改成雨夜，灯笼亮起来」），"
                    "要整批重来才点「✎ 重新生成关键帧」。")
     khint.setWordWrap(True)
-    khint.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    khint.setStyleSheet(label_second())
     kl.addWidget(khint)
     keyframes_scroll = QScrollArea()
     keyframes_scroll.setWidgetResizable(True)
-    keyframes_scroll.setStyleSheet(f"QScrollArea{{border:none;background:transparent;}}")
+    keyframes_scroll.setStyleSheet(scroll_transparent())
     app.director_keyframes_web = DirectorWebView(THEME, lambda s: _on_web_action(app, s))
     keyframes_scroll.setWidget(app.director_keyframes_web)
     kl.addWidget(keyframes_scroll, 1)
@@ -1014,11 +1017,11 @@ def build_director_panel(app):
     cl.setContentsMargins(0, 0, 0, 0)
     cl.setSpacing(12)
     app.director_clips_progress = QLabel("⑤ 准备逐镜生成…")
-    app.director_clips_progress.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    app.director_clips_progress.setStyleSheet(label_second())
     cl.addWidget(app.director_clips_progress)
     clips_scroll = QScrollArea()
     clips_scroll.setWidgetResizable(True)
-    clips_scroll.setStyleSheet(f"QScrollArea{{border:none;background:transparent;}}")
+    clips_scroll.setStyleSheet(scroll_transparent())
     app.director_clips_web = DirectorWebView(THEME, lambda s: _on_web_action(app, s))
     clips_scroll.setWidget(app.director_clips_web)
     cl.addWidget(clips_scroll, 1)
@@ -1046,7 +1049,7 @@ def build_director_panel(app):
     ml.setContentsMargins(0, 0, 0, 0)
     ml.setSpacing(12)
     mhint = QLabel("⑥ 全部片段已生成。可回「生成」步骤单镜修改，或直接点「合成成片」。")
-    mhint.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    mhint.setStyleSheet(label_second())
     ml.addWidget(mhint)
     app.director_merge_web = DirectorWebView(THEME, lambda s: _on_web_action(app, s))
     ml.addWidget(app.director_merge_web, 1)
@@ -1167,6 +1170,25 @@ def _set_status(app, text, err=False):
     color = THEME["accent"] if not err else THEME["danger_text"]
     app.director_status.setStyleSheet(f"color:{color};font-size:12px;")
     app.director_status.setText(text)
+
+
+# v4.210.0（BUG 审核 P2-4）：动态文案进状态栏前的**压缩入口**。
+# 为什么需要：状态栏是单行 QLabel，v4.209.1 实测后明确**不开 wordWrap、也没加 elide**
+# —— 超长文本不会被换行也不会出现省略号，而是**直接被裁掉**。异常信息、文件路径
+# 动辄上百字，用户看到的是半句话。
+# 为什么是 36：不是拍的数。v4.209.1 实测 460px 是"贴边"阈值（容器 460px 时
+# 标签可用 432px），12px 中文约 12px/字 → 460/12 ≈ 38 字，留 2 字余量取 36。
+# 改这个数前请先重算：状态栏宽度或字号一变，这个上限就失效了。
+_STATUS_MAX = 36
+
+
+def _status_dyn(text):
+    """把动态文案（异常 e / 路径 / 后端 msg）压到状态栏放得下的长度。
+
+    只压**进状态栏的那一份** —— `_log()` / `app._director_agent_error` 仍记原文，
+    排障要看完整堆栈时去日志和错误标记里找，不要靠状态栏那一行的字数。
+    """
+    return _brief_err(text, limit=_STATUS_MAX)
 
 
 # ---------- 导演阶段状态机（v4.153.3 P3-11，轻量，不重写现有 60+ 读取点） ----------
@@ -1909,6 +1931,7 @@ def _show_understand_card(app, topic_raw, info, on_ok):
       声音 → 台词开关；镜头数/每镜秒数 → 面板数字框
     「取消」= 什么都不发生（不换令牌、不清存档、不建工程）。
     """
+    from theme_qss import label_body, label_second
     try:
         from ui import _NoWheelCombo
     except Exception:
@@ -1932,19 +1955,19 @@ def _show_understand_card(app, topic_raw, info, on_ok):
     head = QLabel(f"你的主题：{topic_raw}")
     head.setWordWrap(True)
     head.setStyleSheet(
-        f"color:{THEME['text']};font-size:13px;font-weight:600;background:{THEME['card']};"
-        f"border:1px solid {THEME['border']};border-radius:8px;padding:12px 12px;")
+        label_body(weight="semibold") + "background:#FFFFFF;border:1px solid #E5E7EB;border-radius:8px;padding:12px 12px;")
     v.addWidget(head)
 
     tip = QLabel("下面是它对你这句主题的理解。**不对就直接改**，改完点「确认并开写」——"
                  "在你点确认之前，它一个字都不会写、一张图都不会生成。")
     tip.setWordWrap(True)
-    tip.setStyleSheet(f"color:{THEME['dim']};font-size:12px;")
+    tip.setStyleSheet(label_second())
     v.addWidget(tip)
 
     def _lbl(t):
+        from theme_qss import label_second
         lb = QLabel(t)
-        lb.setStyleSheet(f"color:{THEME['text']};font-size:12px;font-weight:600;")
+        lb.setStyleSheet(label_second(color_key="text", weight="semibold"))
         return lb
 
     def _te(text, h, ph=""):
@@ -2417,6 +2440,7 @@ def _on_shots_ready(app, shots):
 
 
 def _build_shot_rows(app, shots):
+    from theme_qss import label_body
     _clear_layout(app.director_shots_layout)
     app.director_shot_rows = []
     with_dialogue = app.director_pipeline.with_dialogue
@@ -2427,7 +2451,7 @@ def _build_shot_rows(app, shots):
         rl.setSpacing(8)
         no = QLabel(f"镜{i+1}")
         no.setFixedWidth(34)
-        no.setStyleSheet(f"color:{THEME['text']};font-size:13px;font-weight:600;")
+        no.setStyleSheet(label_body(weight="semibold"))
         rl.addWidget(no)
         # 场景
         sc = QSpinBox()
@@ -2666,7 +2690,7 @@ def _rollback_from_web(app, kind, idx):
     res = agent_director_command(app, {"action": action, "idx": idx + 1})
     if not isinstance(res, dict) or not res.get("ok"):
         msg = (res or {}).get("msg") if isinstance(res, dict) else None
-        _set_status(app, msg or "回滚失败（没有历史版本）", err=True)
+        _set_status(app, msg or "回滚失败：还没有历史版本可回滚。", err=True)
         return
     p = getattr(app, "director_pipeline", None)
     if p is None:
@@ -2712,7 +2736,10 @@ def _rollback_from_web(app, kind, idx):
         _build_keyframe_cards(app, getattr(p, "keyframes", []) or [])
         _render_clips(app)
         _render_merge_stale(app)
-        _set_status(app, "已回滚上游资产：下游关键帧/视频/成片已标记「基于旧资产」，建议重新生成")
+        # v4.209.1：原文36 字 / 432px，是导演台 55 条 _set_status 里最贴边的一条
+        #（实测容器 460px 就卡满）。去掉「下游」二字 → 408px，留出余量。
+        # 信息不丢：前面已有"上游资产"，"下游"是冗余限定词。
+        _set_status(app, "已回滚上游资产：关键帧/视频/成片已标记「基于旧资产」，建议重新生成")
         _log(app, "⚠️ 上游资产已回滚，下游产物已标为过期（不自动重做）")
     elif kind == "rollback_kf":
         _clips = getattr(p, "clip_paths", []) or []
@@ -2798,7 +2825,7 @@ def _on_web_action(app, sig):
                 nm = (cls_[idx].get("name") if 0 <= idx < len(cls_) else "") or ""
                 _prefill_chat(app, f"道具{idx + 1}（{nm}）：")
         except Exception as e:
-            _set_status(app, f"预填输入框失败：{e}", err=True)
+            _set_status(app, f"预填输入框失败：{_status_dyn(e)}", err=True)
     # v4.133 多版本对比（四类卡片共用同一个弹窗，靠 sig 区分）
     elif kind == "vers":
         _open_versions(app, "clip", idx)
@@ -2905,6 +2932,7 @@ def _play_video(app, path):
 @_safe
 def _view_prompt(app, idx):
     """弹窗显示某镜实际发给模型的提示词 +（若有）失败原因，让用户看得懂、改得准。"""
+    from theme_qss import label_second
     if app.director_pipeline is None:
         return
     prompt = getattr(app.director_pipeline, "last_prompts", {}).get(idx, "")
@@ -2926,11 +2954,13 @@ def _view_prompt(app, idx):
                          f"border:1px solid {THEME["danger_text"]};border-radius:6px;padding:8px 12px;")
         v.addWidget(el)
     tl = QLabel("本次发给模型（Agnes）的实际提示词：")
-    tl.setStyleSheet(f"color:{THEME['text']};font-size:12px;font-weight:600;")
+    tl.setStyleSheet(label_second(color_key="text", weight="semibold"))
     v.addWidget(tl)
     te = QTextEdit()
     te.setReadOnly(True)
-    te.setPlainText(prompt or "（暂无，这镜可能还没生成 / 或被重置）")
+    # v4.208.0：只统一文案口径，**不接 empty_state**（DESIGN §12.5 已记理由）。
+    # 与 #2 长期记忆同类：这是 QTextEdit 里的占位串，框本身是内容容器，空时框也必须在。
+    te.setPlainText(prompt or "暂无，这镜可能还没生成 / 或被重置")
     te.setMinimumHeight(200)
     te.setStyleSheet(f"QTextEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
                      f"border-radius:6px;padding:8px;font-size:12px;color:{THEME['text']};}}")
@@ -2945,6 +2975,7 @@ def _view_prompt(app, idx):
 @_safe
 def _modify_clip(app, idx):
     """升级版修改：弹对话框，先展示本镜已发的提示词和失败原因，再让用户填修改意见。"""
+    from theme_qss import label_second
     if app.director_pipeline is None:
         _set_status(app, "流程未初始化，请先点「开始导演」。", err=True)
         return
@@ -2967,17 +2998,18 @@ def _modify_clip(app, idx):
                          f"border:1px solid {THEME["danger_text"]};border-radius:6px;padding:8px 12px;")
         v.addWidget(el)
     tl = QLabel("本次已发给模型的提示词（可照抄其中想保留的设定）：")
-    tl.setStyleSheet(f"color:{THEME['text']};font-size:12px;font-weight:600;")
+    tl.setStyleSheet(label_second(color_key="text", weight="semibold"))
     v.addWidget(tl)
     prev = QTextEdit()
     prev.setReadOnly(True)
-    prev.setPlainText(prompt or "（暂无，可能这镜还没生成过）")
+    # v4.208.0：同上，只统一文案口径，不接组件（QTextEdit 占位串，框必须保留）。
+    prev.setPlainText(prompt or "暂无，可能这镜还没生成过")
     prev.setMaximumHeight(130)
     prev.setStyleSheet(f"QTextEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
                        f"border-radius:6px;padding:8px 8px;font-size:{THEME['font_micro']};color:{THEME['dim']};}}")
     v.addWidget(prev)
     il = QLabel("你的修改意见（告诉它这一镜怎么改；留空=直接重生成）：")
-    il.setStyleSheet(f"color:{THEME['text']};font-size:12px;font-weight:600;")
+    il.setStyleSheet(label_second(color_key="text", weight="semibold"))
     v.addWidget(il)
     te = QTextEdit()
     te.setPlaceholderText("例：主体换成小孩 / 背景去掉文字水印 / 镜头拉远一点 / 时长改 3 秒 / "
@@ -2989,7 +3021,7 @@ def _modify_clip(app, idx):
     # 完全替换模式：内容审核被拦（content_policy_violation / 400）时，
     # 追加修改意见没用——原提示词的触发词还在。需整段覆盖原提示词。
     replace_chk = QCheckBox("完全替换原提示词（整段覆盖，不再追加修改意见）")
-    replace_chk.setStyleSheet(f"color:{THEME['text']};font-size:12px;")
+    replace_chk.setStyleSheet(label_second("text"))
     replace_chk.setToolTip("勾选后，上面填的内容会直接替换本镜英文提示词，而不是追加。\n"
                            "适用：Agnes 报 content_policy_violation / 400 内容违规时，"
                            "原提示词含触发词必须整段换掉。")
@@ -3034,7 +3066,7 @@ def _regenerate_clip(app, idx):
 def _regenerate_all(app):
     state = getattr(app, "director_clips_state", None)
     if not state:
-        _set_status(app, "还没有可重新生成的片段。", err=True)
+        _set_status(app, "还没有可重新生成的片段。先跑一遍生成或重生成。")
         return
     if app.director_pipeline is None:
         _set_status(app, "流程未初始化，请先点「开始导演」。", err=True)
@@ -3121,7 +3153,9 @@ def _on_merge_ready(app, ok, msg, path):
         # v4.141 P0：失败必须先置错误标记，解锁后抓的快照才会如实报 failed。
         app._director_agent_error = f"合成失败：{msg or '未产出成片文件'}"
         app._director_agent_cancelled = False
-        _set_status(app, "合成失败：" + msg, err=True)
+        # v4.210.0：msg 来自后端，长度不可控 → 进状态栏前先压缩（原文仍在 _log 里）
+        # 兜底串与上一行错误标记保持一致：msg 可能是 None，否则状态栏会显示"None"。
+        _set_status(app, "合成失败：" + _status_dyn(msg or "未产出成片文件"), err=True)
         _log(app, "❌ 合成失败。")
         _save_session(app)
     # 结果已全部落地，此刻解锁才安全（快照拿到的一定是最终状态）。
@@ -3232,7 +3266,9 @@ def _on_error(app, e):
     app._director_agent_error = str(e)
     _set_director_phase(app, DirectorPhase.ERROR)   # v4.153.3 P3-11
     _set_busy(app, False)
-    _set_status(app, f"出错：{e}", err=True)
+    # v4.210.0：_on_error 是全局兜底，e 可能是任意异常；完整原文在
+    # app._director_agent_error 与 _log 里，状态栏只放压缩后的一行。
+    _set_status(app, f"出错：{_status_dyn(e)}", err=True)
     _log(app, f"❌ {e}")
 
 
@@ -3565,6 +3601,7 @@ def _load_session(app):
 
 def _maybe_offer_resume(app):
     """面板构建后调用：若有未完成任务，顶部显示「继续 / 放弃」横幅。"""
+    from theme_qss import label_body
     sp = _session_path()
     if not os.path.isfile(sp):
         return
@@ -3586,7 +3623,7 @@ def _maybe_offer_resume(app):
     label = QLabel(
         f"💾 发现上次未完成的导演台任务（进行到：{STEP_LABELS[min(step, len(STEP_LABELS)-1)]}）。"
         f"可继续编辑，不必从头开始。")
-    label.setStyleSheet(f"color:{THEME['text']};font-size:13px;")
+    label.setStyleSheet(label_body())
     bl.addWidget(label, 1)
     cont = QPushButton("▶ 继续")
     cont.setFixedHeight(32)
@@ -3634,6 +3671,7 @@ def _maybe_offer_remote_resume(app):
         · 继续查询已提交任务 —— 只轮询 + 下载，不再提交（不重复扣费）
         · 放弃远端任务并重新生成 —— 标记放弃，之后正常重新生成
     """
+    from theme_qss import label_body
     p = getattr(app, "director_pipeline", None)
     if p is None:
         return
@@ -3656,7 +3694,7 @@ def _maybe_offer_remote_resume(app):
         f"🔌 发现 {len(pend)} 个**已提交但没接回**的远端视频任务（{shots}{more}）。\n"
         f"远端可能仍在生成、仍在消耗额度。建议先「继续查询」，别急着重新生成。")
     label.setWordWrap(True)
-    label.setStyleSheet(f"color:{THEME['text']};font-size:13px;")
+    label.setStyleSheet(label_body())
     bl.addWidget(label, 1)
     btn_resume = QPushButton("🔌 继续查询已提交任务")
     btn_resume.setFixedHeight(32)
@@ -3750,6 +3788,7 @@ SPEC_FIELDS = (
 @_safe
 def _open_project_spec(app):
     """项目制作规格（Flova「文档区」同款）：写一次，全片每一步都带着。"""
+    from theme_qss import label_body, label_second
     spec = dict(getattr(app, "director_spec", {}) or {})
     dlg = QDialog(app)
     dlg.setWindowTitle("项目设定 · 制作规格")
@@ -3761,13 +3800,13 @@ def _open_project_spec(app):
     hint = QLabel("写一次，之后 剧本 / 分镜 / 人物 / 道具 / 关键帧 / 视频 每一步都自动带上。"
                   "留空 = 不约束（与没填时行为完全一致，不会多加一个字）。")
     hint.setWordWrap(True)
-    hint.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    hint.setStyleSheet(label_second())
     lay.addWidget(hint)
 
     edits = {}
     for key, label, ph in SPEC_FIELDS:
         lb = QLabel(label)
-        lb.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
+        lb.setStyleSheet(label_body())
         lay.addWidget(lb)
         e = QTextEdit()
         e.setPlainText(spec.get(key, "") or "")
@@ -3872,9 +3911,10 @@ def _media_items(app):
 @_safe
 def _open_media_library(app):
     """媒体库：本片全部素材一览，标注挂在哪一镜 / 未关联。"""
+    from theme_qss import label_second
     items = _media_items(app)
     if not items:
-        _set_status(app, "还没有素材——点「开始导演」跑起来后这里才有东西。")
+        _set_status(app, "还没有素材。先点「开始导演」，跑起来后这里就有东西。")
         return
 
     dlg = QDialog(app)
@@ -3887,7 +3927,7 @@ def _open_media_library(app):
     left = QVBoxLayout()
     tip = QLabel("「关联」= 这件素材用在哪一镜；标「未关联」的说明它还没参与任何一镜的生成。")
     tip.setWordWrap(True)
-    tip.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    tip.setStyleSheet(label_second())
     left.addWidget(tip)
 
     tbl = QTableWidget(len(items), 4)
@@ -4013,6 +4053,8 @@ def _open_media_library(app):
 # ---------- ③ Prompt 草稿预审 ----------
 def _prompt_preview_dialog(app, title, tip, drafts):
     """列出每镜 prompt 草稿供编辑。返回 {镜号: 文本}；点取消返回 None。"""
+    from theme_qss import scroll_transparent
+    from theme_qss import label_second
     dlg = QDialog(app)
     dlg.setWindowTitle(title)
     _fit_dlg(dlg, 780, 640)
@@ -4022,12 +4064,12 @@ def _prompt_preview_dialog(app, title, tip, drafts):
 
     hint = QLabel(tip)
     hint.setWordWrap(True)
-    hint.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    hint.setStyleSheet(label_second())
     lay.addWidget(hint)
 
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
-    scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+    scroll.setStyleSheet(scroll_transparent())
     body = QWidget()
     bl = QVBoxLayout(body)
     bl.setContentsMargins(0, 0, 0, 0)
@@ -4035,7 +4077,7 @@ def _prompt_preview_dialog(app, title, tip, drafts):
     edits = {}
     for idx, text in drafts:
         lb = QLabel(f"镜 {idx}")
-        lb.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+        lb.setStyleSheet(label_second())
         bl.addWidget(lb)
         e = QTextEdit()
         e.setPlainText(text or "")
@@ -4111,9 +4153,10 @@ def _preview_prompts(app, kind):
 @_safe
 def _open_export_dialog(app):
     """导出：成片 / 工程文件（EDL+FCPXML）/ 素材包。"""
+    from theme_qss import label_second
     p = getattr(app, "director_pipeline", None)
     if p is None:
-        _set_status(app, "还没有工程可导出。", err=True)
+        _set_status(app, "还没有工程可导出。先点「开始导演」建一个。")
         return
 
     dlg = QDialog(app)
@@ -4127,7 +4170,7 @@ def _open_export_dialog(app):
                  "· 工程文件：EDL + FCPXML，可直接拖进剪映 / PR / 达芬奇精修\n"
                  "· 素材包：zip，含片段 + 关键帧 + 三视图 + 道具图 + 分镜表 + 剧本")
     tip.setWordWrap(True)
-    tip.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    tip.setStyleSheet(label_second())
     lay.addWidget(tip)
 
     def _do(kind):
@@ -4156,7 +4199,10 @@ def _open_export_dialog(app):
                               f" / FCPXML {'✓' if ok2 else '✗ ' + m2}）")
                     _set_status(app, f"工程文件已导出到 {d}")
                 else:
-                    _set_status(app, f"工程文件导出失败：{m1 or m2}", err=True)
+                    # v4.210.0：m1/m2 是后端原始报错，长度不可控 → 压缩
+                    # （两个都失败才走到这里，取先出现的那条；完整原文在 _log）
+                    _set_status(app,
+                                f"工程文件导出失败：{_status_dyn(m1 or m2)}", err=True)
             else:
                 dst, _ = QFileDialog.getSaveFileName(
                     app, "导出素材包", "导演台素材包.zip", "压缩包 (*.zip)")
@@ -4169,7 +4215,7 @@ def _open_export_dialog(app):
                 else:
                     _set_status(app, msg, err=True)
         except Exception as e:
-            _set_status(app, f"导出失败：{e}", err=True)
+            _set_status(app, f"导出失败：{_status_dyn(e)}", err=True)
             _log(app, f"❌ 导出失败：{e}")
         dlg.accept()
 
@@ -4214,9 +4260,10 @@ _VER_KIND_NAME = {"clip": "片段", "keyframe": "关键帧",
 @_safe
 def _open_timeline(app):
     """时间线编排（重排 / 裁切 / 转场）+ 音频轨（BGM / 音量 / 闪避）+ 字幕样式。"""
+    from theme_qss import label_second
     p = getattr(app, "director_pipeline", None)
     if p is None or not [x for x in (getattr(p, "clip_paths", None) or []) if x]:
-        _set_status(app, "还没有可用片段——先去「生成」步骤出片，再来编排时间线。", err=True)
+        _set_status(app, "还没有可用片段。先去「生成」出片，再来编排时间线。")
         return
     # v4.133.1：留一份打开前的编排。预览会把当前界面参数写进 p.timeline，
     # 用户点「取消」时得还原回去——否则自以为没改，内存里其实已经改了。
@@ -4344,7 +4391,7 @@ def _open_timeline(app):
     tip2 = QLabel("BGM 只在「合成成片」时混入，片段自带的人声/音效照常保留。\n"
                   "音量 20~35% 是人声为主时的经验值；开着闪避，说话时 BGM 会自动让路。")
     tip2.setWordWrap(True)
-    tip2.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    tip2.setStyleSheet(label_second())
     l2.addWidget(tip2)
     l2.addStretch(1)
 
@@ -4356,7 +4403,7 @@ def _open_timeline(app):
     hint = QLabel("顺序用 ↑↓ 调；入点/出点按素材实际秒数裁；转场指这一镜「后面」接什么。"
                   "改完点「应用」，之后合成与导出都按这条时间线走。")
     hint.setWordWrap(True)
-    hint.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    hint.setStyleSheet(label_second())
     l1.addWidget(hint)
 
     cols = ["#", "镜", "内容", "素材", "入点", "出点", "转场", "转场时长", "本镜"]
@@ -4369,7 +4416,7 @@ def _open_timeline(app):
     l1.addWidget(tbl, 1)
 
     total_lab = QLabel("")
-    total_lab.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    total_lab.setStyleSheet(label_second())
 
     def _refresh_total():
         t = 0.0
@@ -4648,6 +4695,7 @@ def _open_timeline(app):
 @_safe
 def _open_versions(app, kind, idx):
     """单镜/角色/道具的多版本并排对比：看清差别后挑一版，一键换上。"""
+    from theme_qss import label_second
     p = getattr(app, "director_pipeline", None)
     if p is None:
         return
@@ -4657,7 +4705,7 @@ def _open_versions(app, kind, idx):
         return
     items = p.version_items(kind, idx)
     if len(items) < 2:
-        _set_status(app, "还没有历史版本可比——改一次（✎改 / ↻重生成）就有了。", err=True)
+        _set_status(app, "还没有历史版本。改一次（✎改 / ↻重生成）就有了。")
         return
     kname = _VER_KIND_NAME.get(kind, kind)
 
@@ -4686,7 +4734,7 @@ def _open_versions(app, kind, idx):
     right.addWidget(prev, 0, Qt.AlignCenter)
     info_lab = QLabel("")
     info_lab.setWordWrap(True)
-    info_lab.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    info_lab.setStyleSheet(label_second())
     right.addWidget(info_lab)
 
     def _show(row):

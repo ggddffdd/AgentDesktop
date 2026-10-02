@@ -58,6 +58,8 @@ from PySide6.QtGui import QBrush, QColor
 import legion
 from legion_worker import LegionWorker
 from legion_chat import LegionChatPanel
+# v4.208.0：空状态组件（波次成员空态）。组件自身惰性 import ui，不会循环依赖。
+from empty_state import empty_state
 from legion_status_widget import LegionStatusStrip, LegionAuditFeed
 from ui import THEME
 from ui import clamp_dialog_to_screen as _clamp_dlg
@@ -2086,7 +2088,8 @@ class LegionWindow(QWidget):
                                     "先在左侧或团队库选中要固化的项目。")
             return
         if not legion.wave_members(p):
-            QMessageBox.information(self, "团队是空的", "这个项目还没有成员，没有可固化的阵容。")
+            QMessageBox.information(self, "还没有成员",
+                                    "这个项目还没有成员，先给波次里加人。")
             return
         dlg = ProjectEditor(p, self)
         dlg.setWindowTitle("存为配方")
@@ -2189,12 +2192,12 @@ class LegionWindow(QWidget):
         """v4.148.1：聊天框「启动军团 <任务>」→ 用当前选中团队开跑。"""
         p = self._cur_project()
         if not p:
-            self.chat_panel.say("系统", "还没有选中团队 —— 先去「🧩 团队库」选一个"
+            self.chat_panel.say("系统", "还没有选中团队。先去「团队库」选一个。"
                                         "（或克隆/新建一个），再回来启动。")
             return
         if not legion.wave_members(p):
-            self.chat_panel.say("系统", f"团队「{p.get('name')}」还没有成员 —— "
-                                        "去「🧩 团队库 → 编辑成员/波次」加人后再启动。")
+            self.chat_panel.say("系统", f"团队「{p.get('name')}」还没有成员。"
+                                        "去「团队库 → 编辑成员/波次」加人后再启动。")
             return
         if self.worker is not None and self.worker.isRunning():
             self.chat_panel.say("系统", "军团正在跑 —— 等它跑完，或先「⛔ 停止」。")
@@ -2498,7 +2501,12 @@ class LegionWindow(QWidget):
         did = legion.clear_target_memory(p.get("id", ""), what)
         self._refresh_projects()
         self._refresh_head()
-        QMessageBox.information(self, "已清空", did or "没有可清的内容")
+        # v4.210.0：原来标题**写死**「已清空」—— 可 `did` 为空恰恰表示
+        # **一个都没清**，标题和正文自相矛盾（对话框级别的"文案说谎"，与 P2-2 同类）。
+        # 标题跟着 did 走；「没有可清的内容」保留原句式（DESIGN §13.5：
+        # "可清的内容"不是用户要补的东西，属状态说明，不该说"还没有"）。
+        QMessageBox.information(self, "已清空" if did else "无需清空",
+                                did or "没有可清的内容")
 
     # ---- 项目增删改 ----
     def _add_project(self):
@@ -2558,7 +2566,7 @@ class LegionWindow(QWidget):
         if not roster:
             QMessageBox.information(
                 self, "已装进技能库",
-                "「%s」已装好。\n\n项目「%s」还没有在编成员 —— 先组队，"
+                "「%s」已装好。\n\n项目「%s」还没有在编成员。先组队，"
                 "组队时可以直接勾上这个技能。" % (slug, p.get("name", "")))
             return
         labels = ["%s%s（第 %d 波）%s"
@@ -2750,7 +2758,16 @@ class LegionWindow(QWidget):
             bl = QVBoxLayout(box)
             members = wave.get("members") or []
             if not members:
-                bl.addWidget(QLabel("（本波还没有成员，点下面「+ 添加成员」）"))
+                # v4.208.0：接empty_state 完整形态（DESIGN §12.5 波次 3）。
+                # 为什么这处该接、而 #2 长期记忆那处不该接：
+                # 这里整个 GroupBox 就是"本波成员"这块区域，区域是空的；
+                # #2 那个QTextEdit 框本身是内容容器（记忆浏览器），空的时候框也必须在。
+                # **不给行动按钮**：下方 2798 行已存在「+ 添加成员」真实按钮，
+                # 再给一个就是重复入口。
+                bl.addWidget(empty_state(
+                    "本波还没有成员",
+                    hint="点下面「+ 添加成员」给他派活。",
+                    icon="军团"))
             for mi, m in enumerate(members):
                 row = QHBoxLayout()
                 name_l = QLabel(f"{m.get('emoji', '')} {m.get('name', '')}".strip())
@@ -2805,6 +2822,16 @@ class LegionWindow(QWidget):
             bl.addLayout(brow)
             self.waves_lay.addWidget(box)
 
+        # v4.210.0（BUG 审核 P2-3）：新建项目默认带 1 个空波（`waves=[{"members": []}]`），
+        # 所以"一个波都没有"只在**用户把最后一波删掉**后出现 —— 此时上面的 for
+        # 循环一次都不执行，整个波次区只剩 addStretch，看起来像"加载失败"。
+        # 补空态（不重复给按钮：真正的「+ 添加波次」在面板顶部，一直可见）。
+        if not waves:
+            self.waves_lay.addWidget(empty_state(
+                "还没有波次",
+                hint="点上方「+ 添加波次」开始组队。",
+                icon="军团"))
+
         self.waves_lay.addStretch(1)
 
     def _on_gate_changed(self, enabled=None, retry=None, mode=None,
@@ -2824,7 +2851,9 @@ class LegionWindow(QWidget):
             if str(mode) != "off" and not legion.pm_role(self.data):
                 QMessageBox.information(
                     self, "缺少项目经理",
-                    "角色库里没有「项目经理」角色，调度验收不会生效。\n"
+                    # v4.210.0：角色是用户能补的（正文第二句就让他去角色库新建）
+                    # → 待办语义，按 DESIGN §13.5 用「还没有」
+                    "角色库里还没有「项目经理」角色，调度验收不会生效。\n"
                     "重启程序会自动补上该预置角色；或到角色库手动新建一个同名角色。")
         if enabled is not None:
             p["gate_enabled"] = bool(enabled)
@@ -3448,8 +3477,11 @@ class LegionWindow(QWidget):
             return
         ck = legion.has_checkpoint(p.get("id", ""))
         if not ck:
-            QMessageBox.information(self, "没有 checkpoint",
-                                    "这个项目没有存档可续跑。")
+            # v4.210.0（BUG 审核 P2-1）：句式对齐 §13.2 口径一「还没有X」。
+            # checkpoint 是**跑出来的**，用"还没有"才对（暗示跑完就有）；
+            # 正文补了下一步，两段用句号断开（口径二）。
+            QMessageBox.information(self, "还没有 checkpoint",
+                                    "这个项目还没有存档可续跑。先跑一轮，跑完会自动存档。")
             return
         if ck.get("corrupt"):
             # v4.125 M-03：损坏存档——告知而非冒充可续跑
@@ -3782,7 +3814,7 @@ class LegionWindow(QWidget):
         """打开最近一份报告（手动入口，防止弹窗被略过后找不回来）。"""
         path = getattr(self, "_last_report", "") or legion.latest_report()
         if not path or not os.path.exists(path):
-            QMessageBox.information(self, "报告", "还没有生成过报告。")
+            QMessageBox.information(self, "报告", "还没有生成过报告。跑完一波就会出来。")
             return
         if not self._open_path(path):
             QMessageBox.information(self, "报告", f"已找到但打不开：\n{path}")

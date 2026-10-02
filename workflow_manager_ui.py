@@ -396,7 +396,8 @@ class WorkflowManagerWindow(QWidget):
             return
         prompt = (step.get("prompt") or "").strip()
         if not prompt:
-            QMessageBox.information(self, "提示", "这一步没有提示词")
+            # v4.210.0：提示词是用户能补上的 → 待办语义，按 DESIGN §13.5 用「还没有」
+            QMessageBox.information(self, "提示", "这一步还没有提示词")
             return
         self.main_window.send_user_prompt(prompt, force_agent=bool(step.get("force_agent", False)))
         step["_done"] = True

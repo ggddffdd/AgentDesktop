@@ -41,6 +41,14 @@ import task_status
 # v4.88：自动化任务（定时提醒 / 定时执行 Agent 任务）
 import automation
 
+# v4.204.0：轻量非模态提示（DESIGN.md §11）。纯 Qt + 标准库，不反向依赖 ui，
+# 所以顶层 import 不会形成环；样式在渲染时惰性取 theme_qss。
+from toast import register_toast_host, toast  # noqa: F401  (toast 供全项目调用)
+
+# v4.206.0：空状态占位组件（DESIGN.md §12）。同理不反向依赖 ui（内部惰性 import），
+# 顶层 import 不成环；会话空态已迁入。
+from empty_state import empty_state  # noqa: F401  (empty_state 供全项目调用)
+
 # v4.109：路由旁路日志（只写不读，任何失败静默吞掉，绝不干扰对话）
 try:
     import route_log   # v4.109：旁路埋点（路由/用量/技能），只写不读
@@ -149,6 +157,9 @@ THEME = {
     "card_green_icon": "#34A853",
     "card_orange_bg": "rgba(251,188,4,0.12)",
     "card_orange_icon": "#FBBC04",
+    # v4.199.0：第四张卡（数字人视频）用紫，accent2 同值，不引入新色
+    "card_purple_bg": "rgba(162,66,244,0.10)",
+    "card_purple_icon": "#A142F4",
 
     # ---- Chat bubbles (浅色，蓝强调) ----
     "user_bg": "#E8F0FE",
@@ -258,6 +269,19 @@ THEME = {
     "font_title": "15px",      # 标题（weight>=600）
     "font_icon_btn": "16px",   # 纯图标按钮
     "font_title_xl": "20px",   # 页面大标题
+
+    # ---- 间距 token（v4.200.0，DESIGN.md §3.3 · theme_qss.S 同源镜像）----
+    # 取值来自全量实测（_qss_dup_scan 统计 ui.py + 各 panel 的 padding/margin/
+    # setSpacing 裸值频次）：4/8/12/16/20/24 六档覆盖了非 0 值的绝大多数，
+    # 32 虽出现 12 次但都是「区块级大留白」，另有归属，不进基座六档。
+    # 类型是 int —— layout 的 setSpacing/setContentsMargins 要 int；拼 QSS 时
+    # 用 theme_qss.gap() 拿带 px 的字符串，不要在调用处手写 f"...px"。
+    "space_xs": 4,      # 图标与文字的贴身间隙、chip 竖向内距
+    "space_sm": 8,      # chip/小控件的内距
+    "space_md": 12,     # 列表行、输入框默认内距
+    "space_lg": 16,     # 卡片内距（最高频）
+    "space_xl": 20,     # 卡片之间、区块之间
+    "space_xxl": 24,    # 页面级留白
 }
 
 # 交付物类型 → 彩色竖条配色
@@ -324,6 +348,44 @@ _NAV_ICONS = {
     "导出":   '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>',
     "设置":   '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
 }
+
+
+def _brief_err(exc, limit=160):
+    """把异常压成一行短文本（v4.205.0：专供 toast 的 detail）。
+
+    toast 卡片最宽 420px，detail 是 QLabel —— **不可选中、不可复制**。
+    长堆栈放上去既读不完也抄不走，所以超过 limit 一律截断。
+    需要完整信息的错误（要复制堆栈给开发者的）照旧走 QMessageBox / 状态条，
+    不走 toast。
+    """
+    s = " ".join(str(exc).split())
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _session_preview(s, maxlen=46):
+    """最近对话列表用：取会话里最后一条有文本的消息，压成一行摘要。
+
+    会话列表原来只有「标题 + 时间」。标题是 AI 生成的概括（"文件差异核对"这种），
+    隔了两天回来看，一排标题长得几乎一样——**标题只能定位"哪个会话"，
+    摘要才能定位"说到哪儿了"**。
+
+    Session.messages 规范是 dict 列表 {"role","content"}，历史版本可能混进带
+    .content 的对象，两种都兜一下。没有可展示文本时返回空串，由调用方决定占位。
+    """
+    msgs = getattr(s, "messages", None) or []
+    for m in reversed(msgs):
+        c = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+        if not isinstance(c, str) or not c.strip():
+            continue
+        role = m.get("role") if isinstance(m, dict) else getattr(m, "role", "")
+        # 单行预览里 markdown 记号全是噪声：加粗/标题/代码/表格竖线统统去掉，
+        # 换行压成空格（否则预览会因为源文本换行而顶出第二行）
+        t = " ".join(c.split())
+        t = re.sub(r"[*`>#|]", "", t).strip().lstrip("-").strip()
+        if len(t) > maxlen:
+            t = t[:maxlen - 1] + "…"
+        return ("我：" if role == "user" else "") + t
+    return ""
 
 
 def _nav_icon_pixmap(icon_name, color, size=18, device_ratio=2.0):
@@ -1211,20 +1273,21 @@ class ThemedDialog(QDialog):
 
 class ConfirmDialog(ThemedDialog):
     def _build(self):
+        from theme_qss import label_second, label_title
         self._result = False
         self._trusted = False
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 24, 24, 24)
         lay.setSpacing(16)
         self._title = QLabel("")
-        self._title.setStyleSheet(f"color:{THEME['text']};font-size:15px;font-weight:600;")
+        self._title.setStyleSheet(label_title())
         self._detail = QLabel("")
         self._detail.setWordWrap(True)
         self._detail.setStyleSheet(f"color:{THEME['dim']};font-size:13px;line-height:1.6;")
         lay.addWidget(self._title)
         lay.addWidget(self._detail)
         self._trust = QCheckBox("本次会话信任（不再逐个确认）")
-        self._trust.setStyleSheet(f"color:{THEME['dim']};font-size:12px;")
+        self._trust.setStyleSheet(label_second())
         lay.addWidget(self._trust)
         row = QHBoxLayout()
         row.addStretch(1)
@@ -1259,12 +1322,13 @@ class ConfirmDialog(ThemedDialog):
 
 class RenameDialog(ThemedDialog):
     def _build(self):
+        from theme_qss import label_title
         self._text = ""
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 24, 24, 24)
         lay.setSpacing(16)
         t = QLabel("重命名对话")
-        t.setStyleSheet(f"color:{THEME['text']};font-size:15px;font-weight:600;")
+        t.setStyleSheet(label_title())
         lay.addWidget(t)
         self._edit = QLineEdit()
         self._edit.setPlaceholderText("例如：小说《死亡倒计时》大纲")
@@ -1300,11 +1364,12 @@ class RenameDialog(ThemedDialog):
 
 class InfoDialog(ThemedDialog):
     def _build(self):
+        from theme_qss import label_title
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 24, 24, 24)
         lay.setSpacing(16)
         self._title = QLabel("")
-        self._title.setStyleSheet(f"color:{THEME['text']};font-size:15px;font-weight:600;")
+        self._title.setStyleSheet(label_title())
         self._detail = QLabel("")
         self._detail.setWordWrap(True)
         self._detail.setStyleSheet(f"color:{THEME['dim']};font-size:13px;line-height:1.6;")
@@ -1383,6 +1448,8 @@ class SessionManagerDialog(QDialog):
     """v4.79：会话管理——置顶 / 分组 / 批量删除 / 筛选。"""
 
     def __init__(self, parent):
+        from theme_qss import scroll_transparent
+        from theme_qss import label_body
         super().__init__(parent)
         self.parent = parent
         self.store = parent.store
@@ -1424,7 +1491,7 @@ class SessionManagerDialog(QDialog):
         # ---- 列表 ----
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+        self.scroll.setStyleSheet(scroll_transparent())
         self.list_widget = QWidget()
         self.list_lay = QVBoxLayout(self.list_widget)
         self.list_lay.setContentsMargins(0, 0, 0, 0)
@@ -1436,7 +1503,7 @@ class SessionManagerDialog(QDialog):
         bottom = QHBoxLayout()
         bottom.setSpacing(8)
         self.sel_all = QCheckBox("全选")
-        self.sel_all.setStyleSheet(f"QCheckBox{{color:{THEME['text']};font-size:13px;}}")
+        self.sel_all.setStyleSheet(f"QCheckBox{{{label_body()}}}")
         self.sel_all.stateChanged.connect(self._toggle_all)
         bottom.addWidget(self.sel_all)
         bottom.addStretch(1)
@@ -1490,9 +1557,21 @@ class SessionManagerDialog(QDialog):
         items = self.store.all_sorted(query=self.search.text(), folder=folder_key)
 
         if not items:
-            empty = QLabel("没有匹配的会话")
-            empty.setStyleSheet(f"color:{THEME['placeholder']};font-size:13px;padding:12px 0;")
-            self.list_lay.addWidget(empty)
+            # v4.207.0：接empty_state 的 compact 形态（行内单行，给窄侧栏）。
+            # 同时修一个文案说谎的问题：all_sorted 返回空有两种原因 ——
+            # 「搜的词没匹配上」和「一个会话都没有」，原来两种共用同一句
+            # 「没有匹配的会话」，新用户第一次打开（搜索框是空的）会懵。
+            # 所以按**有没有搜索词**分两句：空搜索词 = 还没开始；有关键词 = 没搜到。
+            # 注意：这个对话框里**没有新建按钮**（只有搜索框 + 分组筛选），
+            # 所以空态不能指引"点上方新建"—— 会指向不存在的控件。
+            q = (self.search.text() or "").strip()
+            if q:
+                self.list_lay.addWidget(empty_state(
+                    f"没有匹配「{q}」的会话", compact=True, icon="对话"))
+            else:
+                self.list_lay.addWidget(empty_state(
+                    "还没有会话", hint="在主界面发起对话后会出现在这里",
+                    compact=True, icon="对话"))
             return
 
         for s in items:
@@ -2287,6 +2366,7 @@ class TaskStatusStrip(QWidget):
     _changed = Signal(object)   # 任意线程 emit → GUI 线程 _render
 
     def __init__(self, parent=None):
+        from theme_qss import label_second
         super().__init__(parent)
         self._latest_retryable = None
 
@@ -2299,7 +2379,7 @@ class TaskStatusStrip(QWidget):
         lay.addWidget(self.icon)
 
         self.text = QLabel("")
-        self.text.setStyleSheet(f"color:{THEME['dim']};font-size:{THEME['font_micro']};")
+        self.text.setStyleSheet(label_second())
         lay.addWidget(self.text)
 
         self.retry_btn = QPushButton("重试")
@@ -2354,6 +2434,7 @@ class TaskStatusStrip(QWidget):
 
     # ---- 渲染（GUI 线程）----
     def _render(self, snap):
+        from theme_qss import label_micro, label_second
         try:
             active = (snap or {}).get("active") or []
             recent = (snap or {}).get("recent") or []
@@ -2364,7 +2445,7 @@ class TaskStatusStrip(QWidget):
                 detail = f" · {t.get('detail')}" if t.get("detail") else ""
                 self.icon.setText("●")
                 self.icon.setStyleSheet(f"color:{THEME['accent']};font-size:{THEME['font_micro']};")
-                self.text.setStyleSheet(f"color:{THEME['dim']};font-size:{THEME['font_micro']};")
+                self.text.setStyleSheet(label_second())
                 self.text.setText(
                     f"{t.get('kind_label', '任务')} · {t.get('state_label', '')}{more}{detail}")
                 self.retry_btn.hide()
@@ -2391,7 +2472,7 @@ class TaskStatusStrip(QWidget):
                 t = recent[0]
                 self.icon.setText("✓")
                 self.icon.setStyleSheet(f"color:{THEME['ok']};font-size:{THEME['font_micro']};")
-                self.text.setStyleSheet(f"color:{THEME['faint']};font-size:{THEME['font_micro']};")
+                self.text.setStyleSheet(label_micro())
                 self.text.setText(f"{t.get('kind_label', '任务')} {t.get('state_label', '完成')}")
                 self._latest_retryable = None
                 self.retry_btn.hide()
@@ -2535,6 +2616,9 @@ class ChatWindow(QMainWindow):
                 names = ", ".join(c.name for c in config.mcp_clients)
                 self.status_label.setText(f"🔌 MCP: {names} ({total_tools} 工具)")
         QTimer.singleShot(100, _init_mcp)
+
+        # 注：toast 挂载点在 __init__ **末尾**（见 _mount_toast），
+        # 因为它要挂在 main_stack 上 —— 那时 main_stack 才建好。
 
     def _spawn_thread(self, w):
         """审计修复 B（统一方案）：把运行中的 QThread 挂到 graveyard，
@@ -2758,6 +2842,25 @@ class ChatWindow(QMainWindow):
         self._edge_filter = _EdgeResizeFilter(self)
         QApplication.instance().installNativeEventFilter(self._edge_filter)
 
+        self._mount_toast()
+
+    def _mount_toast(self):
+        """v4.205.0：toast 挂载点（DESIGN.md §11）—— 轻量非模态反馈。
+
+        为什么挂 main_stack 而不是 chat_col（v4.204.0 的原选择）：
+        chat_col 只是**对话页**里的右栏。切到设置页 / 工具页时它整体隐藏，
+        挂在它上面的浮层跟着消失 —— 而"API Key 已保存""配对码已复制"这类提示
+        恰恰发生在设置页，弹了等于没弹。main_stack 是所有页面共同的容器，
+        挂它才能保证"哪个页面触发，哪个页面看得见"。
+
+        avoid=input_area 保留：它只在对话页可见，`_ToastLayer._reposition`
+        里有 `av.isVisible()` 判断，其它页面自动退化成"距底 24px"。
+        """
+        try:
+            register_toast_host(self.main_stack, avoid=self.input_area)
+        except Exception:                     # noqa: BLE001
+            log.exception("toast 挂载失败（已降级：提示不显示）")
+
     def _post_show_init(self):
         """v4.152：show() 之后才做的「非首屏」初始化。
 
@@ -2918,6 +3021,7 @@ class ChatWindow(QMainWindow):
 
         # ---- 左：聊天列 ----
         chat_col = QWidget()
+        self.chat_col = chat_col   # v4.204.0：toast 浮层的宿主
         chat_col.setStyleSheet(f"background:{THEME['bg']};")
         cc_lay = QVBoxLayout(chat_col)
         cc_lay.setContentsMargins(0, 0, 0, 0)
@@ -3094,8 +3198,9 @@ class ChatWindow(QMainWindow):
         # 记录聊天列布局，延迟创建后用于把占位容器替换成真实视图
         self.chat_col_lay = cc_lay
 
-        # 输入区
-        cc_lay.addWidget(self._build_input_area())
+        # 输入区（v4.204.0：存引用，供 toast 避让 —— 浮层不能遮住输入框）
+        self.input_area = self._build_input_area()
+        cc_lay.addWidget(self.input_area)
 
         # v4.109：模型下拉填充（必须在 _build_input_area 建好 combo 之后）
         self._fill_model_combo()
@@ -3253,6 +3358,7 @@ class ChatWindow(QMainWindow):
 
     def _build_input_area(self):
         """输入区卡片：状态/技能条 + 附件 + 输入框 + 发送。"""
+        from theme_qss import label_second
         input_area = QWidget()
         input_area.setStyleSheet(f"background:{THEME['bg']};")
         ia_lay = QVBoxLayout(input_area)
@@ -3302,7 +3408,7 @@ class ChatWindow(QMainWindow):
         skb_lay.setSpacing(8)
         self.skill_name_label = QLabel("")
         self.skill_name_label.setStyleSheet(
-            f"color:{THEME['accent2']};font-size:12px;font-weight:600;")
+            label_second(color_key="accent2", weight="semibold"))
         skb_lay.addWidget(self.skill_name_label)
         skb_lay.addStretch(1)
         skill_clear_btn = QPushButton("取消技能")
@@ -3701,16 +3807,18 @@ class ChatWindow(QMainWindow):
 
     # ============ 浏览器扩展辅助 ============
     def _copy_ext_token(self):
+        # v4.205.0：改走 toast —— 复制结果是一次性事件，弹在右下角比写进
+        # 输入区上方的状态条更看得见（状态条在对话页，这里是设置页触发的）。
         tok = self.cfg.get("browser_bridge_token", "")
         if not tok:
-            self.status_label.setText("配对码为空，请重启小臭以生成")
+            toast("配对码为空，重启小臭可重新生成", kind="warn")
             return
         try:
             from PySide6.QtWidgets import QApplication
             QApplication.clipboard().setText(tok)
-            self.status_label.setText("✅ 配对码已复制到剪贴板")
+            toast("配对码已复制到剪贴板", kind="success")
         except Exception as e:
-            self.status_label.setText("复制失败：" + str(e))
+            toast("复制失败", kind="error", detail=_brief_err(e))
 
     def _open_path(self, path):
         """用系统默认程序打开文件/目录。"""
@@ -3725,6 +3833,7 @@ class ChatWindow(QMainWindow):
     def _build_orchestrate_page(self):
         # v4.152.2：**幂等** —— 内容改由「首次切页」补建（_ensure_lazy_page），
         # 但外部（验证脚本等）也可能显式调用；重复构建会把控件二次 addWidget 到同一页。
+        from theme_qss import label_micro, label_second, label_title, label_title_xl
         if getattr(self, "_orchestrate_built", False):
             return
         self._orchestrate_built = True
@@ -3734,12 +3843,12 @@ class ChatWindow(QMainWindow):
         lay.setSpacing(16)
 
         head = QLabel("小说一条龙 · 编排")
-        head.setStyleSheet(f"font-size:{THEME['font_title_xl']};font-weight:700;color:{THEME['text']};")
+        head.setStyleSheet(label_title_xl())
         lay.addWidget(head)
         sub = QLabel("精简流水线（3Phase+2检查）：爆款雷达 → 选题验证 → 写手成稿 → 虚拟编辑审稿 → 终稿定稿"
                      "（节点间传递上文，结果写入下方日志）。短篇按「字数」一次性写满；长篇按章生成，"
                      "跑完点「续写下一章」出下一章。\n注意：爆款雷达出 3 个切入点后【会停下等你选定】，运行中可随时点「暂停/插入意见」改方向。")
-        sub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+        sub.setStyleSheet(label_second())
         lay.addWidget(sub)
 
         cfg_row = QHBoxLayout()
@@ -3841,10 +3950,10 @@ class ChatWindow(QMainWindow):
             dot.setStyleSheet(f"color:{node_colors[color]};font-size:12px;background:transparent;")
             cl.addWidget(dot)
             tl = QLabel(name)
-            tl.setStyleSheet(f"font-size:{THEME['font_title']};font-weight:600;color:{THEME['text']};background:transparent;")
+            tl.setStyleSheet(f"{label_title()}background:transparent;")
             cl.addWidget(tl)
             st = QLabel("待运行")
-            st.setStyleSheet(f"font-size:12px;color:{THEME['faint']};background:transparent;")
+            st.setStyleSheet(f"{label_micro()}background:transparent;")
             cl.addStretch(1)
             cl.addWidget(st)
             node_grid.addWidget(card, i // 3, i % 3)
@@ -3890,7 +3999,7 @@ class ChatWindow(QMainWindow):
         pb_lay = QVBoxLayout(self.orch_pause_box)
         pb_lay.setSpacing(8)
         self.orch_pause_hint = QLabel("")
-        self.orch_pause_hint.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+        self.orch_pause_hint.setStyleSheet(label_second())
         pb_lay.addWidget(self.orch_pause_hint)
         pf_row = QHBoxLayout()
         self.orch_feedback = QLineEdit()
@@ -4112,6 +4221,7 @@ class ChatWindow(QMainWindow):
             self._show_resume_banner(active[0])
 
     def _show_resume_banner(self, cp):
+        from theme_qss import label_second
         self._clear_resume_banner()
         stage_idx = int(cp.get("stage", 0))
         stage_name = "未知"
@@ -4130,11 +4240,11 @@ class ChatWindow(QMainWindow):
         bl.setSpacing(12)
         info = QLabel(f"上次进行到「{stage_name}」阶段（{updated}），是否从断点继续？"
                       f"（已完成的阶段不会重跑）")
-        info.setStyleSheet(f"font-size:12px;color:{THEME['text']};background:transparent;")
+        info.setStyleSheet(f"{label_second('text')}background:transparent;")
         bl.addWidget(info, 1)
         auto_cb = QCheckBox("总是自动续跑")
         auto_cb.setChecked(bool(self.cfg.get("orch_auto_resume", True)))
-        auto_cb.setStyleSheet(f"font-size:12px;color:{THEME['text']};background:transparent;")
+        auto_cb.setStyleSheet(f"{label_second('text')}background:transparent;")
         auto_cb.setToolTip("开启后，崩溃/强杀重开 APP 会自动从断点继续，不再弹此确认")
         auto_cb.toggled.connect(lambda on: self._set_auto_resume(bool(on)))
         bl.addWidget(auto_cb)
@@ -4254,6 +4364,7 @@ class ChatWindow(QMainWindow):
     # ============ 生图页 ============
     def _build_image_page(self):
         # v4.152.2：幂等（同 _build_orchestrate_page）
+        from theme_qss import label_body, label_second, label_title_xl
         if getattr(self, "_image_built", False):
             return
         self._image_built = True
@@ -4262,17 +4373,17 @@ class ChatWindow(QMainWindow):
         lay.setContentsMargins(32, 24, 32, 24)
         lay.setSpacing(16)
         head = QLabel("生图 · Agnes Image")
-        head.setStyleSheet(f"font-size:{THEME['font_title_xl']};font-weight:700;color:{THEME['text']};")
+        head.setStyleSheet(label_title_xl())
         lay.addWidget(head)
         sub = QLabel(f"模型：{self.cfg.get('image_gen_model','agnes-image-2.1-flash')}　尺寸可下方选择")
-        sub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+        sub.setStyleSheet(label_second())
         lay.addWidget(sub)
 
         # ---- 参数行：尺寸下拉 ----
         opt_row = QHBoxLayout()
         opt_row.setSpacing(12)
         size_lbl = QLabel("尺寸")
-        size_lbl.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
+        size_lbl.setStyleSheet(label_body())
         opt_row.addWidget(size_lbl)
         self.image_size_combo = _NoWheelCombo()
         self.image_size_combo.setFixedHeight(34)
@@ -4313,7 +4424,7 @@ class ChatWindow(QMainWindow):
         gen.clicked.connect(self._gen_image)
         row.addWidget(gen)
         self.image_status = QLabel("")
-        self.image_status.setStyleSheet(f"color:{THEME['dim']};font-size:12px;")
+        self.image_status.setStyleSheet(label_second())
         row.addWidget(self.image_status)
         row.addStretch(1)
         lay.addLayout(row)
@@ -4381,6 +4492,7 @@ class ChatWindow(QMainWindow):
     # ============ 生视频页 ============
     def _build_video_page(self):
         # v4.152.2：幂等（同 _build_orchestrate_page）
+        from theme_qss import label_body, label_second, label_title_xl
         if getattr(self, "_video_built", False):
             return
         self._video_built = True
@@ -4389,10 +4501,10 @@ class ChatWindow(QMainWindow):
         lay.setContentsMargins(32, 24, 32, 24)
         lay.setSpacing(16)
         head = QLabel("生视频 · Agnes Video")
-        head.setStyleSheet(f"font-size:{THEME['font_title_xl']};font-weight:700;color:{THEME['text']};")
+        head.setStyleSheet(label_title_xl())
         lay.addWidget(head)
         sub = QLabel("文生视频 / 图生视频（Agnes 直连，免费）。生成可能需数分钟，请耐心等待。")
-        sub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+        sub.setStyleSheet(label_second())
         lay.addWidget(sub)
 
         self.video_prompt = QTextEdit()
@@ -4440,10 +4552,11 @@ class ChatWindow(QMainWindow):
 
         # ---- 首帧 / 尾帧上传（关键帧模式）----
         def _frame_row(label_text, line_edit, tooltip):
+            from theme_qss import label_body
             row = QHBoxLayout()
             lbl = QLabel(label_text)
             lbl.setFixedWidth(36)
-            lbl.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
+            lbl.setStyleSheet(label_body())
             row.addWidget(lbl)
             line_edit.setPlaceholderText(tooltip)
             line_edit.setFixedHeight(34)
@@ -4480,7 +4593,7 @@ class ChatWindow(QMainWindow):
         ref_row = QHBoxLayout()
         ref_lbl = QLabel("参考图")
         ref_lbl.setFixedWidth(36)
-        ref_lbl.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
+        ref_lbl.setStyleSheet(label_body())
         ref_row.addWidget(ref_lbl)
         self.video_ref_input = QLineEdit()
         self.video_ref_input.setPlaceholderText("粘贴图片 URL 或本地路径，点“添加”加入（最多 5 张）")
@@ -4521,12 +4634,12 @@ class ChatWindow(QMainWindow):
 
         hint = QLabel("模式：① 加了参考图→参考图模式（≤5 张，模型参考其人物/场景/画风，多图优先）"
                       "；② 只加首帧或首尾帧→关键帧模式（首帧锁定/首尾过渡）；③ 都没加→纯文生视频。")
-        hint.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['dim']};")
+        hint.setStyleSheet(label_second())
         hint.setWordWrap(True)
         lay.addWidget(hint)
 
         self.video_status = QLabel("")
-        self.video_status.setStyleSheet(f"color:{THEME['dim']};font-size:12px;")
+        self.video_status.setStyleSheet(label_second())
         lay.addWidget(self.video_status)
 
         self._video_paths = []
@@ -4854,6 +4967,8 @@ class ChatWindow(QMainWindow):
     # ============ 工具箱页 ============
     def _build_tools_page(self):
         # v4.152.2：幂等（同 _build_orchestrate_page）
+        from theme_qss import label_second, scroll_transparent
+        from theme_qss import label_second, label_title_xl
         if getattr(self, "_tools_built", False):
             return
         self._tools_built = True
@@ -4862,10 +4977,10 @@ class ChatWindow(QMainWindow):
         lay.setContentsMargins(32, 24, 32, 24)
         lay.setSpacing(16)
         head = QLabel("工具箱")
-        head.setStyleSheet(f"font-size:{THEME['font_title_xl']};font-weight:700;color:{THEME['text']};")
+        head.setStyleSheet(label_title_xl())
         lay.addWidget(head)
         sub = QLabel("点选技能后将应用到当前对话，并自动切到对话页。")
-        sub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+        sub.setStyleSheet(label_second())
         lay.addWidget(sub)
 
         # 技能市场入口
@@ -4884,7 +4999,7 @@ class ChatWindow(QMainWindow):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        scroll.setStyleSheet(scroll_transparent())
         inner = QWidget()
         grid = QGridLayout(inner)
         grid.setContentsMargins(0, 0, 0, 0)
@@ -4902,7 +5017,7 @@ class ChatWindow(QMainWindow):
         r = 0
         for c in order:
             cl = QLabel(c)
-            cl.setStyleSheet(f"font-size:12px;font-weight:600;color:{THEME['faint']};")
+            cl.setStyleSheet(label_second(color_key="faint", weight="semibold"))
             grid.addWidget(cl, r, 0, 1, 3)
             r += 1
             col = 0
@@ -4937,6 +5052,8 @@ class ChatWindow(QMainWindow):
         # v4.152.2：幂等（同 _build_orchestrate_page）。
         # 设置页是这批里最重的（实测首次构建 431ms），但也被验证脚本直接访问
         # （_verify_ui_model_v41490 读 self.agnes_text_combo）→ 幂等是必需的。
+        from theme_qss import scroll_transparent
+        from theme_qss import label_body, label_second, label_title, label_title_xl
         if getattr(self, "_settings_built", False):
             return
         self._settings_built = True
@@ -4952,7 +5069,7 @@ class ChatWindow(QMainWindow):
         _scroll.setWidgetResizable(True)
         _scroll.setFrameShape(QFrame.NoFrame)
         _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        _scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        _scroll.setStyleSheet(scroll_transparent())
         _inner = QWidget()
         _inner.setStyleSheet(f"background:{THEME['bg']};")
         _scroll.setWidget(_inner)
@@ -4964,10 +5081,10 @@ class ChatWindow(QMainWindow):
         lay.setContentsMargins(32, 24, 32, 24)
         lay.setSpacing(16)
         head = QLabel("设置")
-        head.setStyleSheet(f"font-size:{THEME['font_title_xl']};font-weight:700;color:{THEME['text']};background:transparent;")
+        head.setStyleSheet(f"{label_title_xl()}background:transparent;")
         lay.addWidget(head)
         sub = QLabel("当前配置摘要；点击按钮打开详细设置弹层。")
-        sub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};background:transparent;")
+        sub.setStyleSheet(f"{label_second()}background:transparent;")
         lay.addWidget(sub)
 
         info = QWidget()
@@ -5020,19 +5137,19 @@ class ChatWindow(QMainWindow):
         al = QVBoxLayout(at_card)
         al.setSpacing(12)
         at_head = QLabel("Agnes 文本模型（军团 / 导演台文本环节）")
-        at_head.setStyleSheet(f"font-size:15px;font-weight:600;color:{THEME['text']};background:transparent;")
+        at_head.setStyleSheet(f"{label_title()}background:transparent;")
         al.addWidget(at_head)
         at_sub = QLabel(
             "3.0 是新一代文本模型（512K 上下文 / 65K 输出，官方当前限免），主打长任务不跑偏、"
             "少空转；2.5 是现役稳定版。默认 2.5 —— 3.0 发布初期实测稳定性一般，"
             "选 3.0 时超时/5xx/流中断/空响应会自动回退 2.5。生图与生视频模型不受影响。")
         at_sub.setWordWrap(True)
-        at_sub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};background:transparent;")
+        at_sub.setStyleSheet(f"{label_second()}background:transparent;")
         al.addWidget(at_sub)
 
         at_row = QHBoxLayout()
         at_lbl = QLabel("文本模型：")
-        at_lbl.setStyleSheet(f"font-size:13px;color:{THEME['text']};background:transparent;")
+        at_lbl.setStyleSheet(f"{label_body()}background:transparent;")
         at_row.addWidget(at_lbl)
         self.agnes_text_combo = _NoWheelCombo()
         self.agnes_text_combo.setFixedHeight(32)
@@ -5059,19 +5176,19 @@ class ChatWindow(QMainWindow):
 
         self.agnes_fallback_chk = QCheckBox("3.0 失败自动回退 2.5（超时 / 5xx / 流中断 / 空响应）")
         self.agnes_fallback_chk.setChecked(bool(self.cfg.get("agnes_text_fallback", True)))
-        self.agnes_fallback_chk.setStyleSheet(f"font-size:13px;color:{THEME['text']};background:transparent;")
+        self.agnes_fallback_chk.setStyleSheet(f"{label_body()}background:transparent;")
         self.agnes_fallback_chk.stateChanged.connect(self._on_agnes_fallback_changed)
         al.addWidget(self.agnes_fallback_chk)
 
         self.agnes_thinking_chk = QCheckBox("允许 Thinking（仅 3.0 档 + PM 验收/复杂规划，思考占用输出额度）")
         self.agnes_thinking_chk.setChecked(bool(self.cfg.get("agnes_thinking_enabled", False)))
-        self.agnes_thinking_chk.setStyleSheet(f"font-size:13px;color:{THEME['text']};background:transparent;")
+        self.agnes_thinking_chk.setStyleSheet(f"{label_body()}background:transparent;")
         self.agnes_thinking_chk.stateChanged.connect(self._on_agnes_thinking_changed)
         al.addWidget(self.agnes_thinking_chk)
 
         self.agnes_stats_lbl = QLabel("")
         self.agnes_stats_lbl.setWordWrap(True)
-        self.agnes_stats_lbl.setStyleSheet(f"font-size:12px;color:{THEME['dim']};background:transparent;")
+        self.agnes_stats_lbl.setStyleSheet(f"{label_second()}background:transparent;")
         al.addWidget(self.agnes_stats_lbl)
         self._refresh_agnes_stats()
 
@@ -5093,12 +5210,12 @@ class ChatWindow(QMainWindow):
         ml = QVBoxLayout(mem_card)
         ml.setSpacing(12)
         mhead = QLabel("我的记忆（跨对话长期记忆）")
-        mhead.setStyleSheet(f"font-size:15px;font-weight:600;color:{THEME['text']};background:transparent;")
+        mhead.setStyleSheet(f"{label_title()}background:transparent;")
         ml.addWidget(mhead)
         msub = QLabel("小臭会在对话中自动记住你的稳定偏好、约定与身份，并在新对话里沿用。"
                       "可在此查看；清空会删除全部记忆（不可恢复）。")
         msub.setWordWrap(True)
-        msub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};background:transparent;")
+        msub.setStyleSheet(f"{label_second()}background:transparent;")
         ml.addWidget(msub)
         self.mem_view = QTextEdit()
         self.mem_view.setReadOnly(True)
@@ -5136,16 +5253,16 @@ class ChatWindow(QMainWindow):
         el = QVBoxLayout(ext_card)
         el.setSpacing(12)
         ehead = QLabel("浏览器扩展（抓网页进对话）")
-        ehead.setStyleSheet(f"font-size:15px;font-weight:600;color:{THEME['text']};background:transparent;")
+        ehead.setStyleSheet(f"{label_title()}background:transparent;")
         el.addWidget(ehead)
         esub = QLabel("装好「小臭抓网页」扩展后，在任意网页一键把正文/选中文字发到小臭，"
                       "让 AI 帮你总结、提取、分析。配对码只需复制一次到扩展里。")
         esub.setWordWrap(True)
-        esub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};background:transparent;")
+        esub.setStyleSheet(f"{label_second()}background:transparent;")
         el.addWidget(esub)
         etok_row = QHBoxLayout()
         etok_lbl = QLabel("配对码：")
-        etok_lbl.setStyleSheet(f"font-size:12px;color:{THEME['text']};background:transparent;")
+        etok_lbl.setStyleSheet(f"{label_second('text')}background:transparent;")
         etok_row.addWidget(etok_lbl)
         tok_val = self.cfg.get("browser_bridge_token", "")
         self.ext_token_edit = QLineEdit(tok_val)
@@ -5161,7 +5278,7 @@ class ChatWindow(QMainWindow):
         etok_row.addWidget(ecopy)
         el.addLayout(etok_row)
         estatus = QLabel("桥接服务：本机 127.0.0.1:9100（已自动启动）")
-        estatus.setStyleSheet(f"font-size:12px;color:{THEME['dim']};background:transparent;")
+        estatus.setStyleSheet(f"{label_second()}background:transparent;")
         el.addWidget(estatus)
         einstall = QPushButton("打开扩展安装说明")
         einstall.setFixedHeight(34)
@@ -5188,13 +5305,14 @@ class ChatWindow(QMainWindow):
         lay.addStretch(1)
 
     def _kv(self, k, v):
+        from theme_qss import label_body
         w = QWidget()
         hl = QHBoxLayout(w)
         hl.setContentsMargins(0, 0, 0, 0)
         k_l = QLabel(k)
         k_l.setStyleSheet(f"font-size:13px;color:{THEME['dim']};background:transparent;")
         v_l = QLabel(str(v))
-        v_l.setStyleSheet(f"font-size:13px;color:{THEME['text']};font-weight:500;background:transparent;")
+        v_l.setStyleSheet(label_body(weight="medium") + "background:transparent;")
         hl.addWidget(k_l)
         hl.addStretch(1)
         hl.addWidget(v_l)
@@ -5207,7 +5325,11 @@ class ChatWindow(QMainWindow):
             from memory_store import load_memory, memory_stats
             mem = load_memory()
             n, sz = memory_stats()
-            self.mem_view.setPlainText(mem if mem else "（暂无长期记忆，对话中小臭会自动积累）")
+            # v4.207.0：只统一文案口径，**不接empty_state**（DESIGN §12.5 已记理由）。
+            # 这是 QTextEdit 里的占位串，不是空区域 —— 记忆框本身就是内容容器，
+            # 空的时候框也必须在（用户要能看到"这里有个东西在攒"）。
+            # 去掉了原先的圆括号：那是"注记"语气，跟全局的主/副两级口径不一致。
+            self.mem_view.setPlainText(mem if mem else "暂无长期记忆，对话中小臭会自动积累")
             self.mem_view.append(f"\n— 共 {n} 条 · {sz} 字节 —")
         except Exception as e:
             self.mem_view.setPlainText(f"读取记忆失败：{e}")
@@ -5228,7 +5350,7 @@ class ChatWindow(QMainWindow):
 
     # ============ 自定义标题栏 ============
     def _build_title_bar(self):
-        """构建顶栏(48)：Logo/应用名 + 搜索框(480) + 头像 + 系统按钮，支持拖动。"""
+        """构建顶栏(48)：Logo/应用名 + 搜索框(200~480 可伸缩) + 头像 + 系统按钮，支持拖动。"""
         self.title_bar = QWidget()
         self.title_bar.setFixedHeight(48)
         self.title_bar.setObjectName("titleBar")
@@ -5254,16 +5376,27 @@ class ChatWindow(QMainWindow):
         tb_layout.addWidget(logo_name)
         tb_layout.addSpacing(16)
 
-        # ---- 搜索框 (480×36) ----
+        # ---- 搜索框（可伸缩：200~480，宽屏顶满 480，窄窗不再挤爆顶栏）----
+        # v4.199.0：原来是 setFixedSize(480,36)。窗口一窄，Logo/头像/三个系统按钮
+        # 的必需宽度 (~320px) 加上 480 的固定搜索框就溢出了；而这条搜索框的真实
+        # 作用域只是「当前对话」(见 _search_in_chat)，本不该占掉顶栏一半的死宽度。
+        # 改成 FixedHeight + Min/Max + stretch：宽屏吃掉多余空间上限 480，窄屏收到 200。
         self.search_box = QLineEdit()
-        self.search_box.setFixedSize(480, 36)
-        self.search_box.setPlaceholderText("搜索对话、文件、工具…")
+        self.search_box.setFixedHeight(36)
+        self.search_box.setMinimumWidth(200)
+        self.search_box.setMaximumWidth(480)
+        # placeholder 必须说清作用域。旧文案「搜索对话、文件、工具…」承诺了三个域，
+        # 实际只搜当前会话 —— 用户搜文件或工具搜不到，第一反应是「搜索坏了」。
+        self.search_box.setPlaceholderText("搜索当前对话…（Enter 下一处）")
+        self.search_box.setToolTip(
+            "在当前对话里搜索\nEnter 下一处 · Shift+Enter 上一处 · Esc 清除")
         self.search_box.setStyleSheet(
             f"QLineEdit{{background:{THEME['bg']};border:1px solid {THEME['border']};"
             f"border-radius:18px;padding:0 16px;font-size:13px;color:{THEME['text']};}}"
             f"QLineEdit:hover{{border-color:{THEME['border_hover']};}}"
             f"QLineEdit:focus{{border:1px solid {THEME['accent']};}}")
-        tb_layout.addWidget(self.search_box)
+        # stretch=1：与后面那个 addStretch(1) 对半分剩余空间，再由 min/max 收敛到 200~480。
+        tb_layout.addWidget(self.search_box, 1)
         # v4.75：对话内搜索（回车搜索 / Shift+回车上一处 / Esc 清除）
         self.search_box.installEventFilter(self)
 
@@ -5339,7 +5472,8 @@ class ChatWindow(QMainWindow):
 
     # ============ 欢迎页 ============
     def _build_welcome_page(self):
-        """构建欢迎页：问候语 + 标题 + 3 张功能卡片 + 最近对话列表。"""
+        """构建欢迎页：问候语 + 标题 + 4 张能力卡片 + 最近对话列表（含摘要）。"""
+        from theme_qss import label_second, label_title, scroll_transparent
         wl = QVBoxLayout(self.welcome_page)
         wl.setContentsMargins(32, 36, 32, 28)
         wl.setSpacing(0)
@@ -5348,7 +5482,7 @@ class ChatWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        scroll.setStyleSheet(scroll_transparent())
         scroll_content = QWidget()
         scroll_content.setStyleSheet("background:transparent;")
         scl = QVBoxLayout(scroll_content)
@@ -5370,7 +5504,7 @@ class ChatWindow(QMainWindow):
 
         greeting = QLabel(f"{greeting_text}")
         greeting.setStyleSheet(
-            f"font-size:{THEME['font_title']};font-weight:600;color:{THEME['accent']};margin-bottom:4px;")
+            label_title(color_key="accent") + "margin-bottom:4px;")
         scl.addWidget(greeting)
 
         # ---- 标题 ----
@@ -5380,23 +5514,32 @@ class ChatWindow(QMainWindow):
             f"letter-spacing:-0.5px;margin-bottom:24px;")
         scl.addWidget(title)
 
-        # ---- 3 张功能卡片 ----
+        # ---- 4 张能力卡片 ----
+        # v4.199.0：换掉旧的「写文章 / 写代码 / 做设计」。那三张的问题是
+        # **说的事和这个产品没关系** —— 它们回答的是「AI 能干什么」这种通用问题，
+        # 而这个产品真正需要首页承担的，是「能力发现」：
+        #   文件对账 / 生图 / 数字人视频 / 军团编排，这几项藏得深，不摆出来等于没有。
+        #   （真要写一篇文章，输入框就在下面，不需要一张卡提醒。）
+        # 图标直接复用导航图标集 _NAV_ICONS，不新增绘制代码。
         cards_row = QHBoxLayout()
-        cards_row.setSpacing(16)
+        cards_row.setSpacing(14)
 
         card_data = [
-            ("blue",   "编辑", "写文章",
-             "知乎短故事、头条评论、小红书笔记，AI帮你写"),
-            ("green",  "代码", "写代码",
-             "修Bug、加功能、调样式，交给Agent搞定"),
-            ("orange", "设计", "做设计",
-             "生成配图、改页面UI、出HTML排版"),
+            ("blue",   "文档", "文件对账",
+             "上传表格或文档，核对差异、出具报告"),
+            ("orange", "生图", "生成配图",
+             "一句话描述画面，直接出图"),
+            ("purple", "数字人", "数字人视频",
+             "一张照片配台词，生成口播视频"),
+            ("green",  "军团", "军团编排",
+             "多 Agent 分工，自动跑完一条流水线"),
         ]
 
         self.welcome_cards = []
         for color_key, icon_str, card_title, card_desc in card_data:
             card = QPushButton()
-            card.setMinimumSize(200, 150)
+            # 最小宽 200 → 176：4 张并排，窗口约 960px 起才不会被挤（4×176+3×14=746）。
+            card.setMinimumSize(176, 150)
             card.setMaximumHeight(158)
             card.setCursor(Qt.PointingHandCursor)
 
@@ -5467,13 +5610,12 @@ class ChatWindow(QMainWindow):
         recent_header = QHBoxLayout()
         recent_label = QLabel("最近对话")
         recent_label.setStyleSheet(
-            f"font-size:12px;font-weight:600;color:{THEME['faint']};"
-            f"text-transform:uppercase;letter-spacing:0.5px;")
+            label_second(color_key="faint", weight="semibold") + "text-transform:uppercase;letter-spacing:0.5px;")
         recent_header.addWidget(recent_label)
         recent_header.addStretch(1)
         view_all = QLabel("查看全部")
         view_all.setStyleSheet(
-            f"font-size:12px;color:{THEME['accent']};font-weight:400;")
+            label_second(color_key="accent", weight="normal"))
         view_all.setCursor(Qt.PointingHandCursor)
         view_all.mousePressEvent = lambda e: self._open_session_manager()
         recent_header.addWidget(view_all)
@@ -5495,6 +5637,7 @@ class ChatWindow(QMainWindow):
     def _refresh_recent_on_welcome(self):
         """刷新欢迎页的最近对话列表。"""
         # 清空旧项
+        from theme_qss import label_body, label_micro
         while self.welcome_recent_layout.count():
             item = self.welcome_recent_layout.takeAt(0)
             w = item.widget()
@@ -5506,47 +5649,28 @@ class ChatWindow(QMainWindow):
                   if s.messages and s.sid != self.store.active_sid][:5]
 
         if not recent:
-            # v4.112：空态占位卡（图标徽章 + 主/副文案 + 新建对话按钮）
-            card = QWidget()
-            card.setStyleSheet("background:transparent;")
-            cl = QVBoxLayout(card)
-            cl.setContentsMargins(0, 8, 0, 8)
-            cl.setSpacing(8)
-            cl.setAlignment(Qt.AlignHCenter)
-
-            # 圆形图标徽章（v4.115：emoji 改 SVG 线性图标）
-            badge = QLabel()
-            badge.setFixedSize(44, 44)
-            badge.setAlignment(Qt.AlignCenter)
-            badge.setPixmap(_nav_icon_pixmap("对话", THEME["accent"], 20))
-            badge.setStyleSheet(
-                f"background:{THEME['card_blue_bg']};border-radius:22px;")
-            cl.addWidget(badge, 0, Qt.AlignHCenter)
-
-            main_lbl = QLabel("还没有对话")
-            main_lbl.setAlignment(Qt.AlignCenter)
-            main_lbl.setStyleSheet(
-                f"color:{THEME['dim']};font-size:13px;font-weight:600;padding-top:4px;")
-            cl.addWidget(main_lbl)
-
-            sub_lbl = QLabel("点击下方开始你的第一条对话")
-            sub_lbl.setAlignment(Qt.AlignCenter)
-            sub_lbl.setStyleSheet(
-                f"color:{THEME['placeholder']};font-size:12px;")
-            cl.addWidget(sub_lbl)
-
-            new_btn = QPushButton("新建对话")
-            new_btn.setCursor(Qt.PointingHandCursor)
-            new_btn.setFixedHeight(32)
-            new_btn.setFixedWidth(116)
-            new_btn.setStyleSheet(
-                f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
-                f"border-radius:16px;font-size:12px;font-weight:600;padding:0 16px;}}"
-                f"QPushButton:hover{{background:{THEME['accent_hover']};}}")
-            new_btn.clicked.connect(self._new_session)
-            cl.addWidget(new_btn, 0, Qt.AlignHCenter)
-
-            self.welcome_recent_layout.addWidget(card)
+            # v4.210.0（BUG 审核 P2-2）：这里原来**不分情况**就说"还没有对话"。
+            # 但 recent 过滤掉了当前会话（`s.sid != active_sid`）—— 用户只开了
+            # 1 个会话、正停在上面时，recent 为空，页面却告诉他"还没有对话"。
+            # 这和 #3「搜索无结果 vs 一个都没有」是同一类文案说谎。
+            # 分叉：**真的一个会话都没有** 才说"还没有对话"。
+            _has_any_session = bool(self.store.all_sorted())
+            if _has_any_session:
+                # 有会话、只是"列表里没有别的" —— 不说"还没有"，也不给
+                # 「新建对话」按钮（他已经在新会话里了，再建一个是噪音）。
+                # 指引的「查看全部」在上方标题栏里真实存在（5616 行，可点）。
+                self.welcome_recent_layout.addWidget(empty_state(
+                    "这里是最近对话",
+                    hint="你正在的这个会话不重复列出。点上方「查看全部」管理全部会话。",
+                    icon="对话"))
+                return
+            # v4.206.0：抽成 empty_state 组件（DESIGN.md §12）。**视觉零变化** ——
+            # 徽章 44 + 图标 20 + 主文案 13px/600/dim(+4px 上留白) + 副文案 12px/faint
+            # + 胶囊按钮 116×32 accent 底白字，逐项等价于 v4.112 那段内联 QSS。
+            self.welcome_recent_layout.addWidget(empty_state(
+                "还没有对话",
+                hint="点击下方开始你的第一条对话",
+                action="新建对话", on_action=self._new_session, icon="对话"))
             return
 
         dot_colors = [THEME["accent"], THEME["ok"], THEME["tool_running"]]
@@ -5565,7 +5689,10 @@ class ChatWindow(QMainWindow):
 
             row = QWidget()
             row.setCursor(Qt.PointingHandCursor)
-            row.setFixedHeight(40)
+            # v4.199.0：40 → 56。标题 13px + 摘要 12px + 行距 2px + 上下留白。
+            # 沿用一期的教训：**往容器里加内容，必须同步抬容器高度** ——
+            # 不然第二行直接被裁掉，比没有摘要更糟。
+            row.setFixedHeight(56)
             rl = QHBoxLayout(row)
             rl.setContentsMargins(0, 0, 0, 0)
             rl.setSpacing(12)
@@ -5574,18 +5701,35 @@ class ChatWindow(QMainWindow):
             dot.setFixedSize(6, 6)
             dot.setStyleSheet(
                 f"background:{dot_colors[i % len(dot_colors)]};"
-                f"border-radius:3px;")
-            rl.addWidget(dot)
+                f"border-radius:3px;margin-top:7px;")
+            # 圆点要对齐第一行标题。两行结构下如果垂直居中，圆点会漂到两行中间。
+            rl.addWidget(dot, 0, Qt.AlignTop)
+
+            # ---- 标题 + 摘要（上下两行）----
+            txt_col = QVBoxLayout()
+            txt_col.setContentsMargins(0, 0, 0, 0)
+            txt_col.setSpacing(2)
 
             lbl = QLabel(display)
             lbl.setStyleSheet(
                 f"color:{THEME['dim']};font-size:13px;background:transparent;")
-            rl.addWidget(lbl, 1)
+            txt_col.addWidget(lbl)
+
+            # v4.207.0：只改文案，**不接 empty_state**（DESIGN §12.5 已记理由）。
+            # 这里是"这个会话还没有消息"，属于**行内字段兜底**而不是空区域 ——
+            # 套上徽章+主副+按钮的行内形态会把会话行高顶变形。
+            # "暂无内容" 太含糊（看起来像加载失败），改成说清"还没有消息"。
+            preview_lbl = QLabel(_session_preview(s) or "还没有消息")
+            preview_lbl.setStyleSheet(
+                f"{label_micro()}background:transparent;")
+            txt_col.addWidget(preview_lbl)
+            rl.addLayout(txt_col, 1)
 
             time_lbl = QLabel(time_str)
             time_lbl.setStyleSheet(
-                f"color:{THEME['placeholder']};font-size:12px;background:transparent;")
-            rl.addWidget(time_lbl)
+                f"color:{THEME['placeholder']};font-size:12px;background:transparent;"
+                f"margin-top:1px;")
+            rl.addWidget(time_lbl, 0, Qt.AlignTop)
 
             # 悬停删除按钮
             del_btn = QPushButton("×")
@@ -5630,6 +5774,7 @@ class ChatWindow(QMainWindow):
     # ============ 侧边栏 (256px 导航) ============
     def _build_sidebar(self):
         """构建侧栏(256)：Logo + 6 导航 pill + 用户区。"""
+        from theme_qss import label_body
         self.sidebar = QWidget()
         self.sidebar.setFixedWidth(256)
         self.sidebar.setStyleSheet(
@@ -5716,7 +5861,7 @@ class ChatWindow(QMainWindow):
             icon_lbl.setPixmap(_nav_icon_pixmap(icon, THEME["dim"], 18))
             text_lbl = QLabel(label)
             text_lbl.setStyleSheet(
-                f"font-size:{THEME['font_body']};font-weight:500;color:{THEME['dim']};background:transparent;")
+                label_body(color_key="dim", weight="medium") + "background:transparent;")
             il.addWidget(icon_lbl)
             il.addWidget(text_lbl, 1)
             bl = QVBoxLayout(btn)
@@ -5744,7 +5889,7 @@ class ChatWindow(QMainWindow):
         user_row.addWidget(avatar)
         uname = QLabel("User")
         uname.setStyleSheet(
-            f"font-size:{THEME['font_body']};font-weight:500;color:{THEME['text']};background:transparent;")
+            label_body(weight="medium") + "background:transparent;")
         user_row.addWidget(uname, 1)
         online = QLabel("● 在线")
         online.setStyleSheet(
@@ -5807,6 +5952,7 @@ class ChatWindow(QMainWindow):
 
     def _update_nav_styles(self, active):
         """刷新导航 pill 选中态：active=-1 表示首页(无选中)。v4.114 SVG 图标同步换色。"""
+        from theme_qss import label_body, label_title
         for i, btn in enumerate(self.nav_buttons):
             text_lbl = btn.property("textLbl")
             icon_lbl = btn.property("iconLbl")
@@ -5818,7 +5964,7 @@ class ChatWindow(QMainWindow):
                     f"QPushButton:hover{{background:{THEME['accent_hover']};color:white;}}")
                 if text_lbl:
                     text_lbl.setStyleSheet(
-                        f"font-size:{THEME['font_title']};font-weight:600;color:white;background:transparent;")
+                        label_title(color_key="white") + "background:transparent;")
                 if icon_lbl and icon_name:
                     icon_lbl.setPixmap(_nav_icon_pixmap(icon_name, THEME["white"], 18))
             else:
@@ -5828,7 +5974,7 @@ class ChatWindow(QMainWindow):
                     f"QPushButton:hover{{background:{THEME['blue_hover']};color:{THEME['text']};}}")
                 if text_lbl:
                     text_lbl.setStyleSheet(
-                        f"font-size:{THEME['font_body']};font-weight:500;color:{THEME['dim']};background:transparent;")
+                        label_body(color_key="dim", weight="medium") + "background:transparent;")
                 if icon_lbl and icon_name:
                     icon_lbl.setPixmap(_nav_icon_pixmap(icon_name, THEME["dim"], 18))
 
@@ -5922,10 +6068,14 @@ class ChatWindow(QMainWindow):
             if card is sender:
                 idx = i
                 break
+        # ⚠️ 这里的 prompts 必须与上面 card_data 严格同序、等长：
+        # 按下标取值，多一个少一个都不会报错（越界那条点了没反应），
+        # 属于典型的**静默失真**，已由 tests/test_welcome_ia_199.py A1 条钉死。
         prompts = [
-            "帮我写一篇知乎短故事，主题自拟",
-            "帮我写一段 Python 代码，实现",
-            "帮我设计一个页面 UI，要求",
+            "（先在输入框左侧添加文件）帮我核对这两份文件的差异，输出报告：",
+            "帮我生成一张配图，画面是",
+            "帮我做一条数字人口播视频，内容是",
+            "用军团编排完成这个任务：",
         ]
         if 0 <= idx < len(prompts):
             self.input_box.setPlainText(prompts[idx])
@@ -6148,7 +6298,7 @@ class ChatWindow(QMainWindow):
         if not s:
             return
         if self._busy:
-            self.status_label.setText("正在处理，稍后再删除对话")
+            toast("正在处理，稍后再删除对话", kind="warn")
             return
         title = s.title or "新会话"
         n = len(self.store.sessions)
@@ -6168,12 +6318,13 @@ class ChatWindow(QMainWindow):
             no_btn.setText("取消")
         if box.exec() == QMessageBox.Yes:
             self._close_session(sid)
-            self.status_label.setText(f"已删除「{title}」")
+            # v4.205.0：删除结果是一次性确认（确认框本身已经打断过一次了）→ toast。
+            toast(f"已删除「{title}」", kind="success")
 
     def _request_delete_session(self, sid, title):
         """删除指定对话（欢迎页最近列表用）：先确认。"""
         if self._busy:
-            self.status_label.setText("正在处理，稍后再删除对话")
+            toast("正在处理，稍后再删除对话", kind="warn")
             return
         if not sid or sid not in self.store.sessions:
             return
@@ -6191,7 +6342,8 @@ class ChatWindow(QMainWindow):
             no_btn.setText("取消")
         if box.exec() == QMessageBox.Yes:
             self._close_session(sid)
-            self.status_label.setText(f"已删除「{title}」")
+            # v4.205.0：删除结果是一次性确认（确认框本身已经打断过一次了）→ toast。
+            toast(f"已删除「{title}」", kind="success")
 
     def _rename_session(self):
         sid = self.store.active_sid
@@ -6638,7 +6790,8 @@ class ChatWindow(QMainWindow):
             data = res.get("data") or {}
             latest = data.get("version", "")
             if not latest or latest == APP_VERSION:
-                QMessageBox.information(self, "检查更新", f"已是最新版本：{APP_VERSION}")
+                # v4.205.0："已是最新"只是一句结论，不值得为它打断操作 → toast。
+                toast("已是最新版本", kind="info", detail=APP_VERSION)
             else:
                 dlg = QMessageBox(self)
                 dlg.setWindowTitle("发现新版本")
@@ -7017,6 +7170,8 @@ class ChatWindow(QMainWindow):
 
     # ============ 交付物面板 (260px) ============
     def _build_deliverables(self):
+        from theme_qss import scroll_transparent
+        from theme_qss import label_title
         self.deliverables = QWidget()
         self.deliverables.setFixedWidth(260)
         self.deliverables.setStyleSheet(
@@ -7031,7 +7186,7 @@ class ChatWindow(QMainWindow):
         head = QHBoxLayout()
         title = QLabel("交付物")
         title.setStyleSheet(
-            f"font-size:{THEME['font_title']};font-weight:600;color:{THEME['text']};background:transparent;")
+            f"{label_title()}background:transparent;")
         head.addWidget(title)
         head.addStretch(1)
         self.dv_count_label = QLabel("0")
@@ -7053,7 +7208,7 @@ class ChatWindow(QMainWindow):
         self.dv_scroll = QScrollArea()
         self.dv_scroll.setWidgetResizable(True)
         self.dv_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.dv_scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        self.dv_scroll.setStyleSheet(scroll_transparent())
         self.dv_list = QWidget()
         self.dv_list.setStyleSheet("background:transparent;")
         self.dv_list_layout = QVBoxLayout(self.dv_list)
@@ -7261,6 +7416,7 @@ class ChatWindow(QMainWindow):
 
     def _dv_make_card(self, d):
         """单个交付物卡片（原 _refresh_deliverables 内联逻辑抽出来复用）。"""
+        from theme_qss import label_body, label_micro
         rel = d.get("rel", "")
         kind = d.get("kind", "file")
         name = d.get("name", os.path.basename(rel))
@@ -7299,7 +7455,7 @@ class ChatWindow(QMainWindow):
         name_row.addWidget(dot)
         name_lbl = QLabel(name if len(name) <= 24 else name[:23] + "…")
         name_lbl.setStyleSheet(
-            f"font-size:13px;font-weight:600;color:{THEME['text']};background:transparent;")
+            label_body(weight="semibold") + "background:transparent;")
         name_row.addWidget(name_lbl, 1)
         ci_lay.addLayout(name_row)
 
@@ -7334,7 +7490,7 @@ class ChatWindow(QMainWindow):
         if t:
             t_lbl = QLabel(t[:5])
             t_lbl.setStyleSheet(
-                f"font-size:{THEME['font_micro']};color:{THEME['faint']};background:transparent;")
+                f"{label_micro()}background:transparent;")
             tag_wrap_lay.addWidget(t_lbl)
         tag_wrap_lay.addStretch()
         ci_lay.addWidget(tag_wrap)
@@ -7539,6 +7695,7 @@ class ChatWindow(QMainWindow):
         return os.path.join(base, plan_item["kind"], plan_item["name"])
 
     def _on_archive_products(self):
+        from theme_qss import label_second
         if self._busy:
             self.status_label.setText("正在处理，稍后再归档")
             return
@@ -7548,7 +7705,10 @@ class ChatWindow(QMainWindow):
             return
         plan = self._scan_archive_plan(pdir)
         if not plan:
-            self.status_label.setText("产物根目录没有需要归档的内容（已按日期分层）")
+            # v4.210.0（BUG 审核 P2-1）：句式对齐 §13.2 口径一；括号改句号分段（口径二）。
+            # 这处是"点了归档 → 发现没东西可归档"的回执，属于 §13 的管辖范围。
+            self.status_label.setText(
+                "产物根目录还没有需要归档的内容。文件已按日期分层放好，不用再归档。")
             return
 
         from PySide6.QtWidgets import QListWidgetItem
@@ -7562,7 +7722,7 @@ class ChatWindow(QMainWindow):
             f"取消勾选 = 保持原样不动。点「开始归档」后才会真正移动文件，"
             f"移动记录会写入 产物/_归档记录/ 便于回溯。")
         tip.setWordWrap(True)
-        tip.setStyleSheet(f"color:{THEME['dim']};font-size:12px;background:transparent;")
+        tip.setStyleSheet(f"{label_second()}background:transparent;")
         lay.addWidget(tip)
 
         row = QHBoxLayout()
@@ -7638,7 +7798,8 @@ class ChatWindow(QMainWindow):
         chosen = [plan[i] for i in range(lst.count())
                   if lst.item(i).checkState() == Qt.Checked]
         if not chosen:
-            self.status_label.setText("没有勾选任何项，未做改动")
+            # v4.210.0：勾选是用户接下来能做的事 → 待办语义，按 §13.5 用「还没有」
+            self.status_label.setText("还没有勾选任何项，未做改动")
             return
         self._do_archive(pdir, chosen, proj_edit.text().strip() or "历史归档")
 
@@ -7721,6 +7882,7 @@ class ChatWindow(QMainWindow):
              不给则由外层限高后自适应；
           3. 真正的高度上限与屏幕钳制交给 `clamp_popup_to_screen`（在 `_show_popup`）。
         """
+        from theme_qss import label_second, scroll_transparent
         popup = QWidget(self, Qt.Popup | Qt.FramelessWindowHint)
         popup.setFixedWidth(width)
         popup.setStyleSheet(
@@ -7729,7 +7891,7 @@ class ChatWindow(QMainWindow):
             f"QLabel{{color:{THEME['text']};background:transparent;}}"
             f"QPushButton{{border:none;background:transparent;color:{THEME['text']};}}"
             f"QPushButton:hover{{background:rgba(10,10,12,0.04);}}"
-            f"QScrollArea{{background:transparent;border:none;}}"
+            f"{scroll_transparent()}"
             f"QComboBox{{background:{THEME['elev']};border:none;border-radius:6px;"
             f"padding:8px 8px;font-size:12px;color:{THEME['text']};}}"
             f"QComboBox QAbstractItemView{{background:{THEME['card']};border:none;"
@@ -7737,7 +7899,7 @@ class ChatWindow(QMainWindow):
             f"QLineEdit{{background:{THEME['elev']};border:1px solid {THEME['border']};"
             f"border-radius:6px;padding:8px 8px;color:{THEME['text']};font-size:12px;}}"
             f"QLineEdit:focus{{border-color:{THEME['accent']};}}"
-            f"QCheckBox{{font-size:12px;color:{THEME['dim']};}}"
+            f"QCheckBox{{{label_second()}}}"
             f"QCheckBox::indicator{{width:16px;height:16px;}}")
         outer = QVBoxLayout(popup)
         outer.setContentsMargins(16, 16, 16, 16)
@@ -7759,9 +7921,10 @@ class ChatWindow(QMainWindow):
         return popup, layout
 
     def _popup_title(self, layout, text):
+        from theme_qss import label_title
         t = QLabel(text)
         t.setStyleSheet(
-            f"font-size:{THEME['font_title']};font-weight:700;color:{THEME['text']};padding-bottom:4px;")
+            label_title(weight="bold") + "padding-bottom:4px;")
         layout.addWidget(t)
 
     def _build_skill_popup(self):
@@ -7781,6 +7944,7 @@ class ChatWindow(QMainWindow):
         # 下面 model_combo 的 setMinimumWidth(260) + popup 边距 16×2 + 分组内边距 12×2
         # = 316 > 300 —— 容器比子控件的最小宽度还窄，Qt 只能强行压缩/重叠，
         # 视觉上就是「挤成一团」。这里给足宽度，并同时把 combo 的最小宽度降到 200。
+        from theme_qss import label_body, label_micro, label_second
         popup, layout = self._popup_base(360)
         self._popup_title(layout, "设置")
 
@@ -7797,10 +7961,10 @@ class ChatWindow(QMainWindow):
         gml.setSpacing(8)
 
         gmt = QLabel("模型选择")
-        gmt.setStyleSheet(f"font-size:12px;font-weight:600;color:{THEME['text']};")
+        gmt.setStyleSheet(label_second(color_key="text", weight="semibold"))
         gml.addWidget(gmt)
         gmd = QLabel("切换 API 后端与模型")
-        gmd.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};")
+        gmd.setStyleSheet(label_micro())
         gml.addWidget(gmd)
 
         # v4.148.8：改 _NoWheelCombo（滚轮不再切档）；最小宽度 260 → 200
@@ -7819,10 +7983,10 @@ class ChatWindow(QMainWindow):
         gakl.setSpacing(8)
 
         gakt = QLabel("API Key")
-        gakt.setStyleSheet(f"font-size:12px;font-weight:600;color:{THEME['text']};")
+        gakt.setStyleSheet(label_second(color_key="text", weight="semibold"))
         gakl.addWidget(gakt)
         gakd = QLabel("用于认证的密钥，回车保存")
-        gakd.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};")
+        gakd.setStyleSheet(label_micro())
         gakl.addWidget(gakd)
 
         api_row = QHBoxLayout()
@@ -7854,12 +8018,12 @@ class ChatWindow(QMainWindow):
         encl.setContentsMargins(12, 12, 12, 12)
         encl.setSpacing(8)
         enct = QLabel("记忆加密口令")
-        enct.setStyleSheet(f"font-size:12px;font-weight:600;color:{THEME['text']};")
+        enct.setStyleSheet(label_second(color_key="text", weight="semibold"))
         encl.addWidget(enct)
         encd = QLabel("启用后聊天记录与长期记忆以 Fernet 加密落盘（.enc），明文不残留；"
                       "口令经 PBKDF2 派生，salt 存于本地。留空=关闭加密。")
         encd.setWordWrap(True)
-        encd.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};")
+        encd.setStyleSheet(label_micro())
         encl.addWidget(encd)
         enc_row = QHBoxLayout()
         self.enc_pw_edit = QLineEdit()
@@ -7888,10 +8052,11 @@ class ChatWindow(QMainWindow):
         gtl.setSpacing(8)
 
         gtt = QLabel("功能开关")
-        gtt.setStyleSheet(f"font-size:12px;font-weight:600;color:{THEME['text']};")
+        gtt.setStyleSheet(label_second(color_key="text", weight="semibold"))
         gtl.addWidget(gtt)
 
         def _toggle_row(title, desc, var_name, checked, color=None):
+            from theme_qss import label_second
             row_w = QWidget()
             rl = QVBoxLayout(row_w)
             rl.setContentsMargins(0, 0, 0, 0)
@@ -7902,7 +8067,7 @@ class ChatWindow(QMainWindow):
             if color:
                 cb.setStyleSheet(f"color:{color};font-size:12px;")
             else:
-                cb.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+                cb.setStyleSheet(label_second())
             rl.addWidget(cb)
 
             dl = QLabel(desc)
@@ -7928,7 +8093,7 @@ class ChatWindow(QMainWindow):
 
         # ---- 执行模式（v4.50，借鉴 openworker 的权限引擎；替换旧「手动级操作免确认」开关）----
         _mode_label = QLabel("执行模式")
-        _mode_label.setStyleSheet(f"font-size:13px;color:{THEME['text']};font-weight:600;padding-top:8px;")
+        _mode_label.setStyleSheet(label_body(weight="semibold") + "padding-top:8px;")
         gtl.addWidget(_mode_label)
         _mode_cb = _NoWheelCombo()
         _mode_cb.setStyleSheet(f"font-size:12px;color:{THEME['text']};padding:4px;")
@@ -7965,12 +8130,12 @@ class ChatWindow(QMainWindow):
         bkl.setContentsMargins(12, 12, 12, 12)
         bkl.setSpacing(8)
         bkt = QLabel("自动备份（系统级）")
-        bkt.setStyleSheet(f"font-size:12px;font-weight:600;color:{THEME['text']};")
+        bkt.setStyleSheet(label_second(color_key="text", weight="semibold"))
         bkl.addWidget(bkt)
         bkd = QLabel("定时把 ~/Documents/小臭玩AI（记忆/配置/反馈）备份到 backups/。"
                      "由 Windows 任务计划程序执行，关程序也能跑。")
         bkd.setWordWrap(True)
-        bkd.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};")
+        bkd.setStyleSheet(label_micro())
         bkl.addWidget(bkd)
         bk_row = QHBoxLayout()
         self.ab_freq_combo = _NoWheelCombo()
@@ -8020,11 +8185,11 @@ class ChatWindow(QMainWindow):
         vl.setContentsMargins(12, 12, 12, 12)
         vl.setSpacing(8)
         vt = QLabel("版本与更新")
-        vt.setStyleSheet(f"font-size:12px;font-weight:600;color:{THEME['text']};")
+        vt.setStyleSheet(label_second(color_key="text", weight="semibold"))
         vl.addWidget(vt)
         from config import APP_VERSION, APP_BUILD_DATE, UPDATE_CHECK_URL
         vinfo = QLabel(f"当前版本：{APP_VERSION}　构建日期：{APP_BUILD_DATE}")
-        vinfo.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};")
+        vinfo.setStyleSheet(label_micro())
         vl.addWidget(vinfo)
         vrow = QHBoxLayout()
         chk_btn = QPushButton("检查更新")
@@ -8037,7 +8202,7 @@ class ChatWindow(QMainWindow):
         vrow.addWidget(chk_btn)
         if not (self.cfg.get("update_check_url", "") or UPDATE_CHECK_URL):
             note = QLabel("（本地构建，无在线更新通道）")
-            note.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};")
+            note.setStyleSheet(label_micro())
             vrow.addWidget(note)
         vrow.addStretch(1)
         vl.addLayout(vrow)
@@ -8053,7 +8218,7 @@ class ChatWindow(QMainWindow):
             pl.setContentsMargins(12, 12, 12, 12)
             pl.setSpacing(8)
             pt = QLabel("性能基线")
-            pt.setStyleSheet(f"font-size:12px;font-weight:600;color:{THEME['text']};")
+            pt.setStyleSheet(label_second(color_key="text", weight="semibold"))
             pl.addWidget(pt)
             # 最近一次冷启动耗时分解
             su = _pb.last_startup()
@@ -8065,7 +8230,7 @@ class ChatWindow(QMainWindow):
             else:
                 sl = QLabel("尚未采集到启动耗时（启动后才会记录）")
             sl.setWordWrap(True)
-            sl.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};")
+            sl.setStyleSheet(label_micro())
             pl.addWidget(sl)
             # 按钮行：跑基线 / 设为基线
             prow = QHBoxLayout()
@@ -8570,6 +8735,7 @@ class ChatWindow(QMainWindow):
             bar.setVisible(False)
 
     def _populate_skill_lib(self, layout):
+        from theme_qss import label_second
         cats = {}
         order = []
         for sk in self._skills:
@@ -8581,8 +8747,7 @@ class ChatWindow(QMainWindow):
         for cat in order:
             cat_lbl = QLabel(cat)
             cat_lbl.setStyleSheet(
-                f"font-size:{THEME['font_micro']};font-weight:600;color:{THEME['faint']};"
-                f"padding-left:4px;margin-top:4px;background:transparent;")
+                label_second(color_key="faint", weight="semibold") + "padding-left:4px;margin-top:4px;background:transparent;")
             layout.addWidget(cat_lbl)
             for sk in cats[cat]:
                 btn = QPushButton(f'  {sk.get("name", "")}')
@@ -8643,6 +8808,7 @@ class ChatWindow(QMainWindow):
 
     def _open_skill_review_dialog(self):
         """弹出技能审核对话框：列出待审核技能，逐条「通过 / 拒绝」。"""
+        from theme_qss import label_body, label_micro
         try:
             import skill_review
         except Exception as e:
@@ -8656,8 +8822,12 @@ class ChatWindow(QMainWindow):
         dlg.setMinimumHeight(380)
         root = QVBoxLayout(dlg)
         if not pending:
-            root.addWidget(QLabel("暂无待审核技能。模型自动创建的技能会出现在这里，"
-                                  "通过后才会正式生效。"))
+            # v4.206.0：走 empty_state 组件（DESIGN.md §12）。**这里是有意的视觉变化**：
+            # 原来只有一行居中灰字，现在补上徽章 + 主/副两级文案，与会话空态同一套说法。
+            root.addWidget(empty_state(
+                "暂无待审核技能",
+                hint="模型自动创建的技能会出现在这里，通过后才会正式生效。",
+                icon="技能"))
             btn_close = QPushButton("关闭")
             btn_close.setStyleSheet(self._secondary_btn_style())
             btn_close.clicked.connect(dlg.accept)
@@ -8668,7 +8838,7 @@ class ChatWindow(QMainWindow):
 
         hint = QLabel(f"共 {len(pending)} 个待审核技能。通过后移入正式技能目录并热重载；"
                       f"拒绝则删除。通过后即可在对话中调用。")
-        hint.setStyleSheet(f"font-size:12px;color:{THEME['faint']};")
+        hint.setStyleSheet(label_micro())
         root.addWidget(hint)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -8684,11 +8854,11 @@ class ChatWindow(QMainWindow):
             bl.setContentsMargins(8, 8, 8, 8)
             title = QLabel(f"{sk.get('display_name', sk.get('name',''))}   "
                            f"[{sk.get('category','自动生成')}]   {sk.get('created','')}")
-            title.setStyleSheet(f"font-size:13px;font-weight:600;color:{THEME['text']};")
+            title.setStyleSheet(label_body(weight="semibold"))
             bl.addWidget(title)
             desc = QLabel(sk.get("description", "") or "（无描述）")
             desc.setWordWrap(True)
-            desc.setStyleSheet(f"font-size:12px;color:{THEME['faint']};")
+            desc.setStyleSheet(label_micro())
             bl.addWidget(desc)
             row = QHBoxLayout()
             row.addStretch(1)
@@ -8839,10 +9009,11 @@ class ChatWindow(QMainWindow):
         key = self.api_key_edit.text().strip()
         self.cfg["api_key"] = key
         self._save_cfg()
+        # v4.205.0：保存结果是一次性确认，不需要常驻 —— 走 toast。
         if key:
-            self.status_label.setText("API Key 已保存")
+            toast("API Key 已保存", kind="success")
         else:
-            self.status_label.setText("API Key 已清空，发送前请重新填写")
+            toast("API Key 已清空，发送前请重新填写", kind="warn")
 
     def _toggle_api_key_visible(self, checked):
         self.api_key_edit.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
@@ -8852,7 +9023,7 @@ class ChatWindow(QMainWindow):
         """v4.76：富格式导出当前会话——Markdown / HTML / PDF / Word(.docx)。"""
         session = self.store.active()
         if not session.messages:
-            self.status_label.setText("当前会话没有内容可导出")
+            toast("当前会话没有内容可导出", kind="warn")
             return
         default_name = (session.title or "会话").replace("/", "_")
         filters = ("Markdown 文件 (*.md);;HTML 网页 (*.html);;"
@@ -8875,10 +9046,13 @@ class ChatWindow(QMainWindow):
                 self._export_pdf(session, path)
             elif ext == ".docx":
                 self._export_docx(session, path)
-            self.status_label.setText(f"已导出：{os.path.basename(path)}（{ext[1:].upper()}）")
+            # v4.205.0：成功是一次性确认 → toast；文件名进 detail（副标题）。
+            toast("会话已导出", kind="success",
+                  detail=f"{os.path.basename(path)}（{ext[1:].upper()}）")
         except Exception as e:
             log.error("导出失败: %s", e)
-            self.status_label.setText(f"导出失败：{e}")
+            # 失败要能读完（error 不自动消失、带 ✕），但堆栈不可复制 → 压成一行。
+            toast("导出失败", kind="error", detail=_brief_err(e))
 
     # ============ v4.76：富格式导出 ============
     def _export_css(self):
