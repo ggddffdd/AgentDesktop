@@ -41,6 +41,15 @@ FILES = ['ui.py', 'director_panel.py', 'legion_ui.py', 'automation_panel.py',
 
 RE = re.compile(r'border-radius:\s*([0-9]+)px')
 
+
+def _read(name):
+    """读项目源文件（静态扫，不 import，避免拉起 Qt 依赖）。"""
+    path = os.path.join(ROOT, name)
+    if not os.path.exists(path):
+        return ""
+    with open(path, encoding='utf-8-sig') as fh:
+        return fh.read()
+
 # DESIGN.md §7：矩形元素只允许这三档
 ALLOWED_RECT = {6, 8, 10}
 
@@ -112,7 +121,8 @@ def main():
         ('ui.py', 16, '32px 输入卡必须保持 16px 胶囊'),
         ('ui.py', 18, '36px 搜索框必须保持 18px 胶囊'),
         ('ui.py', 13, '26px 缩略图必须保持 13px 圆形'),
-        ('ui.py', 22, '44px 徽章必须保持 22px 圆形'),
+        # ('ui.py', 22, '44px 徽章') —— v4.206.0 起真源在 theme_qss.empty_badge，
+        #   改到下面 2b 段去守（同一个语义，扫法不同）。
         ('chat_web.py', 14, 'Web 聊天气泡必须保持 14px 胶囊'),
         ('director_panel.py', 14, '步骤徽章必须保持 14px 胶囊'),
         ('automation_panel.py', 9, '自动化 badge 必须保持 9px 胶囊'),
@@ -120,6 +130,21 @@ def main():
     for f, v, label in expect_present:
         got = exempt_seen.get(f, {}).get(v, 0)
         check(label, got > 0, extra=f"实际 {got} 处")
+
+    # v4.206.0：44px 徽章的真源从 ui.py 搬进了 theme_qss.empty_badge()（DESIGN §12
+    # 空状态组件化）。按文件扫不到它了 —— 工厂里写的是 `size // 2` 的计算式，
+    # 不是字面量 22。所以这条守卫改成扫"工厂表达式 + 尺寸常量"两处：
+    # 徽章 44 + 圆形语义（//2）= 22，语义等价，且后人想"归正"圆角时
+    # 改的是 size 或工厂表达式，两处都会被这条抓到。
+    print("-- 2b) 44px 徽章的圆形语义（真源已搬到 theme_qss.empty_badge）--")
+    tq_src = _read('theme_qss.py')
+    es_src = _read('empty_state.py')
+    check("theme_qss.empty_badge 仍是「直径 ÷ 2」的圆形",
+          'def empty_badge' in tq_src and 'border-radius:{size // 2}px' in tq_src)
+    check("徽章直径仍是 44（empty_state.BADGE_SIZE）",
+          'BADGE_SIZE = 44' in es_src)
+    check("徽章底色与圆角仍走 token 工厂（不再在 ui.py 里手写 22）",
+          'border-radius:22px' not in _read('ui.py'))
 
     print("-- 3) DESIGN.md 必须载明豁免清单（判据同源）--")
 

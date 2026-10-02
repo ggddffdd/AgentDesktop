@@ -129,6 +129,7 @@ class DirectorChatBar(QWidget):
 
     # ---------- UI ----------
     def _build_ui(self):
+        from theme_qss import label_second
         from ui import THEME
         self._theme = THEME
         lay = QVBoxLayout(self)
@@ -141,7 +142,7 @@ class DirectorChatBar(QWidget):
         stat_row.setSpacing(8)
         self.step_label = QLabel("尚未开拍")
         self.step_label.setStyleSheet(
-            f"color:{THEME['text']};font-size:12px;font-weight:600;")
+            label_second(color_key="text", weight="semibold"))
         stat_row.addWidget(self.step_label)
         stat_row.addStretch(1)
         self.expand_btn = QPushButton("⤢ 展开")

@@ -57,6 +57,29 @@ FONT_NORMALIZE = {
 }
 
 
+# ============================================================
+# 间距 token（DESIGN.md §3.3 · v4.200.0 立）
+# ============================================================
+# 与 F 的关键差别：**F 是手写镜像，S 是从 THEME 派生**。
+# v4.197.0 踩过一次「ui.py 和 theme_qss.py 两份手写字典不同步」，字号那一层
+# 只能靠探针事后比对；间距这层从一开始就只写真源（ui.py THEME），本层取派生值，
+# 结构上不可能漂移 —— 探针只需断言派生关系成立即可。
+# ⚠️ 本段的改动很容易被误恢复：theme_qss.py 相对 HEAD 一直有新内容，
+#    任何 `git checkout HEAD -- theme_qss.py` 都会把它连根拔掉。
+_SPACE_KEYS = ("xs", "sm", "md", "lg", "xl", "xxl")
+S = {k: THEME["space_" + k] for k in _SPACE_KEYS}
+
+
+def gap(key: str) -> str:
+    """取间距 token 的 QSS 形式：gap('lg') → '16px'。
+
+    layout 的 setSpacing/setContentsMargins 要 int → 用 S[key]；
+    拼 QSS 的 padding/margin 要带单位 → 用 gap(key)。不要在调用处手写
+    f"{16}px"，那等于又造了一份字面量。
+    """
+    return f"{S[key]}px"
+
+
 def fs(size_key: str) -> str:
     """取字号 token。fs('body') → '13px'。拼 QSS 用，不传裸数字。"""
     return F[size_key]
@@ -198,6 +221,15 @@ def combo_style() -> str:
     )
 
 
+def scroll_transparent() -> str:
+    """透明无边框滚动区（v4.201.0 收口 13 处）。
+
+    这 13 处在 3 个文件里有**两种书写顺序**（`border` 在前 / `background` 在前），
+    语义完全是同一件事。收口后统一由本函数产出，属性集合与任一旧写法等价。
+    """
+    return "QScrollArea{border:none;background:transparent;}"
+
+
 def chk_style() -> str:
     """复选框。源自 director_panel.py `_chk_style`（L220）。"""
     return (
@@ -209,32 +241,139 @@ def chk_style() -> str:
 # ============================================================
 # 模式函数：标签/微标签族
 # ============================================================
-def label_micro(color_key: str = "faint") -> str:
-    """微标签（11px）：角标、时间戳、状态小字。10px 表外字号归一到这。"""
-    return f"color:{THEME[color_key]};font-size:{F['micro']};"
+def _w(weight) -> str:
+    """字重片段。weight 为 None → 不输出（保持调用点原样，向后兼容 102 处）。"""
+    if not weight:
+        return ""
+    return f"font-weight:{W[weight]};"
 
 
-def label_second(color_key: str = "dim") -> str:
-    """次级标签（12px）：提示、次级说明。"""
-    return f"color:{THEME[color_key]};font-size:{F['second']};"
+def label_micro(color_key: str = "faint", weight: str = None) -> str:
+    """微标签（12px）：角标、时间戳、状态小字。10px 表外字号归一到这。"""
+    return f"color:{THEME[color_key]};font-size:{F['micro']};" + _w(weight)
 
 
-def label_body(color_key: str = "text") -> str:
+def label_second(color_key: str = "dim", weight: str = None) -> str:
+    """次级标签（12px）：提示、次级说明。weight 取 W 的键名。"""
+    return f"color:{THEME[color_key]};font-size:{F['second']};" + _w(weight)
+
+
+def label_body(color_key: str = "text", weight: str = None) -> str:
     """正文标签（13px）。"""
-    return f"color:{THEME[color_key]};font-size:{F['body']};"
+    return f"color:{THEME[color_key]};font-size:{F['body']};" + _w(weight)
 
 
-def label_title(color_key: str = "text") -> str:
-    """区块标题（15px/600）。"""
+def label_title(color_key: str = "text", weight: str = "semibold") -> str:
+    """区块标题（15px，默认 600）。"""
     return (
-        f"color:{THEME[color_key]};font-size:{F['title']};"
-        f"font-weight:{W['semibold']};"
+        f"color:{THEME[color_key]};font-size:{F['title']};" + _w(weight)
     )
 
 
-def label_title_xl(color_key: str = "text") -> str:
+def label_title_xl(color_key: str = "text", weight: str = "bold") -> str:
     """页面大标题（20px/700）。收编 9 处 20px 页头（v4.182.0 新增层级）。"""
     return (
-        f"color:{THEME[color_key]};font-size:{F['title_xl']};"
-        f"font-weight:{W['bold']};"
+        f"color:{THEME[color_key]};font-size:{F['title_xl']};" + _w(weight)
+    )
+
+
+# ============================================================
+# 空状态样式（DESIGN.md §12 · v4.206.0 新增）
+# ============================================================
+# 4 件套：徽章底 / 主文案 / 副文案 / 行动按钮。
+# 刻意**不另立字号层级** —— 主副文案直接复用 label_body / label_micro，
+# 空状态不是新的一档字号，只是"同样字号的另一种用法"。
+# 新形态只有两个：圆形徽章、胶囊行动按钮。
+
+
+def empty_badge(bg_key: str = "card_blue_bg", size: int = 44) -> str:
+    """空状态圆形徽章底色。size 传偶数（border-radius = size/2）。"""
+    return f"background:{THEME[bg_key]};border-radius:{size // 2}px;"
+
+
+def empty_title() -> str:
+    """空状态主文案：13px / 600 / dim + 4px 上留白（与徽章拉开一点距离）。"""
+    return label_body(color_key="dim", weight="semibold") + "padding-top:4px;"
+
+
+def empty_hint() -> str:
+    """空状态副文案：12px / faint。"""
+    return label_micro()
+
+
+def empty_action_btn() -> str:
+    """空状态行动按钮：胶囊（radius 16 = 高 32 的一半）、accent 底白字、12px/600。"""
+    return (
+        f"QPushButton{{background:{THEME['accent']};color:{THEME['white']};"
+        f"border:none;border-radius:16px;font-size:{F['second']};font-weight:{W['semibold']};"
+        f"padding:0 16px;}}"
+        f"QPushButton:hover{{background:{THEME['accent_hover']};}}"
+    )
+
+
+def empty_title_compact() -> str:
+    """compact 形态主文案：12px / dim（不复用 empty_title 的 13px/600 + 4px 上留白）。
+
+    v4.207.0 新增。compact 是**行内**形态：单行、不居中、不带徽章框，
+    13px/600 在 200px 宽的侧栏里会显得过重，且 4px 上留白是给徽章让位的，
+    没有徽章时这段留白就是莫名其妙的空白。
+    """
+    return label_second(color_key="dim")
+
+
+def empty_hint_compact() -> str:
+    """compact 形态副文案：12px / faint（v4.209.2 补，修 nguyenly compact hint 没走 token）。
+
+    背景：`_compact_state` 里副文案原先只写了 `background:transparent;`，
+    既无 color 也无 font-size → Qt 回退到**系统默认 9pt 纯黑**，
+    而同排的 compact 主文案是 12px/dim 灰。结果副文案比主文案还抢眼，
+    视觉层级直接倒置（见 DESIGN §12.5 表格新增的「副文案」行）。
+
+    为什么值跟完整形态的 empty_hint 一样（都是 label_micro）：
+    F['micro'] 与 F['second'] **同为 12px**（v4.197.0 归一的结果），
+    compact 主副文案本来就应该是同级字号，靠**颜色**分 dim/faint 拉开层级。
+    所以这里不另起一个新值，直接复用 `label_micro()` —— 但保留独立 token 名，
+    是因为它是组件契约的一部分：后人改这里不会顺手改坏完整形态。
+    """
+    return label_micro()
+
+
+# ============================================================
+# Toast 样式（DESIGN.md §11 · v4.204.0 新增）
+# ============================================================
+# 语义色只用在「左侧 3px 竖条 + 12px 图标点」，底色恒为 card ——
+# 原因：warn = #FBBC04 是亮黄，整块做底色会让白字读不清、黑字刺眼。
+TOAST_KIND_COLOR = {
+    "success": "ok",       # 保存/复制/导出成功
+    "info":    "accent",   # 中性提示
+    "warn":    "warn",     # 已继续但有折损
+    "error":   "danger",   # 操作失败
+}
+
+
+def toast_card() -> str:
+    """toast 卡片：白底 + 1px 边框 + 圆角 8（不带内边距，内边距由布局给）。"""
+    return (
+        f"background:{THEME['card']};"
+        f"border:1px solid {THEME['border']};"
+        f"border-radius:8px;"
+    )
+
+
+def toast_bar(kind: str) -> str:
+    """左侧语义竖条（3px 宽，由调用方定宽）。"""
+    return f"background:{THEME[TOAST_KIND_COLOR[kind]]};border-radius:2px;"
+
+
+def toast_dot(kind: str) -> str:
+    """语义图标点（12px）。"""
+    return f"color:{THEME[TOAST_KIND_COLOR[kind]]};font-size:{F['micro']};"
+
+
+def toast_close_btn() -> str:
+    """关闭按钮：默认淡色、hover 变深。"""
+    return (
+        f"QPushButton{{background:transparent;border:none;"
+        f"color:{THEME['faint']};font-size:{F['second']};padding:0 2px;}}"
+        f"QPushButton:hover{{color:{THEME['text']};}}"
     )

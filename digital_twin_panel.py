@@ -103,18 +103,19 @@ def _migrate_legacy_avatars(new_dir):
 
 
 def build_twin_panel(app):
+    from theme_qss import label_body, label_second, label_title_xl
     page = app.twin_page
     lay = QVBoxLayout(page)
     lay.setContentsMargins(32, 24, 32, 24)
     lay.setSpacing(16)
 
     head = QLabel("数字人分身 · 我自己")
-    head.setStyleSheet(f"font-size:{THEME['font_title_xl']};font-weight:700;color:{THEME['text']};")
+    head.setStyleSheet(label_title_xl())
     lay.addWidget(head)
     sub = QLabel("本人形象 + 口播台词 → 数字人口播视频（Agnes 直连，免费）。"
                  "长台词自动分段生成并拼接，段间用上一片段末帧接力（脸不跳变）；"
                  "成片自动烧录「AI 生成」标识。")
-    sub.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    sub.setStyleSheet(label_second())
     lay.addWidget(sub)
 
     # ---------------- 本人形象库 ----------------
@@ -188,7 +189,7 @@ def build_twin_panel(app):
     ward = QVBoxLayout()
     ward.setSpacing(8)
     wlab = QLabel("衣橱 / 场景描述（可选）")
-    wlab.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
+    wlab.setStyleSheet(label_body())
     ward.addWidget(wlab)
     app.twin_scene = QTextEdit()
     app.twin_scene.setFixedHeight(96)
@@ -202,7 +203,7 @@ def build_twin_panel(app):
     dia = QVBoxLayout()
     dia.setSpacing(8)
     dlab = QLabel("口播台词（中文，必填）")
-    dlab.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
+    dlab.setStyleSheet(label_body())
     dia.addWidget(dlab)
     app.twin_dialogue = QTextEdit()
     app.twin_dialogue.setFixedHeight(96)
@@ -215,7 +216,7 @@ def build_twin_panel(app):
     # 段数 / 总时长算出来给他看，误会当场消除。
     app.twin_seg_preview = QLabel("")
     app.twin_seg_preview.setWordWrap(True)
-    app.twin_seg_preview.setStyleSheet(f"font-size:12px;color:{THEME['dim']};")
+    app.twin_seg_preview.setStyleSheet(label_second())
     dia.addWidget(app.twin_seg_preview)
     app.twin_dialogue.textChanged.connect(lambda: _update_twin_seg_preview(app))
     mid.addLayout(dia, 1)
@@ -227,7 +228,7 @@ def build_twin_panel(app):
     opt.setSpacing(12)
 
     dur_lab = QLabel("每段时长")
-    dur_lab.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
+    dur_lab.setStyleSheet(label_body())
     dur_lab.setToolTip(
         "Agnes 单次生成上限 12 秒——这是「每一段」的时长，不是整条视频的长度。\n"
         "长口播会按这个秒数**自动切成多段**，逐段生成后再拼成一整条长视频，\n"
@@ -245,7 +246,7 @@ def build_twin_panel(app):
     opt.addWidget(app.twin_duration)
 
     res_lab = QLabel("分辨率")
-    res_lab.setStyleSheet(f"font-size:13px;color:{THEME['text']};")
+    res_lab.setStyleSheet(label_body())
     opt.addWidget(res_lab)
     app.twin_resolution = QComboBox()
     for label, val in RES_PRESETS:
@@ -262,11 +263,7 @@ def build_twin_panel(app):
         "勾选后：背景 / 房间 / 陈设 / 光线一律沿用参考图，只有人在说话。\n"
         "不勾选：模型会按「衣橱 / 场景描述」重新生成背景。")
     app.twin_keep_bg.setStyleSheet(
-        f"QCheckBox{{color:{THEME['text']};font-size:13px;spacing:6px;}}"
-        f"QCheckBox::indicator{{width:16px;height:16px;border-radius:6px;"
-        f"border:1px solid {THEME['border']};background:{THEME['card']};}}"
-        f"QCheckBox::indicator:checked{{background:{THEME['accent']};"
-        f"border:1px solid {THEME['accent']};}}")
+        _chk_style())
     opt.addWidget(app.twin_keep_bg)
 
     gen_btn = QPushButton("生成分身口播视频")
@@ -342,7 +339,7 @@ def build_twin_panel(app):
     lay.addLayout(opt2)
 
     app.twin_status = QLabel("")
-    app.twin_status.setStyleSheet(f"color:{THEME['dim']};font-size:12px;")
+    app.twin_status.setStyleSheet(label_second())
     lay.addWidget(app.twin_status)
 
     # ---------------- 结果列表 ----------------
