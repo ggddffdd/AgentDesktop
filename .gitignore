@@ -84,6 +84,16 @@ icon.ico
 # 探针脚本（_probe_*/probe_* 前缀）
 _probe_*.py
 probe_*.py
+# ⚠️ 例外：「三坑探针」必须入库。2026-10-03 加。
+#    probe_graphics.py 是节点画布（设计稿第 0 步）的一次性探针，但它同时是
+#    tests/test_probe_graphics.py 的**被测对象**——判据要读它的源码做静态断言、
+#    要真跑它三档 QT_SCALE_FACTOR 做行为断言。被 ignore 吞掉的后果是：clone 下来
+#    的仓库里判据会因找不到被测文件全线崩红（与当年 vision_qc.py 被误忽略同一类
+#    坑，只是这次缺的是「被测物」而不是生产源码）。
+#    探针的一次性产出（日志 / 指标 JSON / 跨档比对数据）不入库。
+!probe_graphics.py
+_probe_graphics_result.json
+_pg_out/
 # ⚠️ 2026-09-27 修正：`vision_qc.py` 曾被误写进这一组忽略规则（它夹在 probe 脚本
 #    之间，看着像探针）。实际它是**生产源码**——被 video_pipeline.py 与
 #    digital_twin_panel.py import，直接决定 VLM 质检行为。被忽略的后果是：
