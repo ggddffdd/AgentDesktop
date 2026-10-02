@@ -379,7 +379,7 @@ class SkillMarketWindow(QMainWindow):
     def _install(self, url):
         url = (url or "").strip()
         if not url:
-            QMessageBox.information(self, "提示", "该技能没有可用的安装链接。\n在线搜索结果请用其仓库链接安装，或从「从链接安装」粘贴。")
+            QMessageBox.information(self, "提示", "该技能还没有可用的安装链接。\n请用其仓库链接安装，或从「从链接安装」粘贴。")
             return
         self.status_bar.setText(f"安装中：{url[:60]} …")
         self.link_btn.setEnabled(False)
