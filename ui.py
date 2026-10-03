@@ -223,6 +223,18 @@ THEME = {
     "gray2": "#A0A0A0",              # 浅灰（行前景）
     "bg_alt": "#F6F7F9",             # 浅底（技能市场滚动区）
 
+    # ---- 节点画布语义色（设计稿 §9：状态/节点底色；值取代码精确值，零视觉变化，单一事实源）----
+    "canvas_pending": "#9AA4B2",     # 节点未开始（灰）
+    "canvas_completed": "#1E8E3E",   # 节点完成（绿）
+    "canvas_failed": "#D93025",      # 节点失败/错误红
+    "canvas_cancelled": "#B06000",   # 节点已取消（暗黄）
+    "canvas_incomplete": "#E37400",  # 节点未完成（橙）
+    "canvas_img_bg": "#E6F4EA",      # 图生图节点底（浅绿）
+    "canvas_video_bg": "#FCE8E6",    # 视频节点底（浅红）
+    "canvas_twin_bg": "#F3E8FD",     # 数字分身节点底（浅紫）
+    "canvas_promo_bg": "#FEF7E0",    # 促销动效节点底（浅琥珀）
+    "canvas_final_bg": "#ECEFF1",    # 终态输出节点底（浅灰）
+
     # ---- 数据/特征色（批3 从裸 hex 收编；带前缀命名，表明是特征局部语义，非全局通用色）----
     "role_green": "#2E7D32",         # 角色色：大哥（绿）
     "role_pm_blue": "#1565C0",       # 角色色：项目经理（蓝）

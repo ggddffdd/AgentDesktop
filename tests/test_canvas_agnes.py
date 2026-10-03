@@ -95,6 +95,17 @@ if active("A7"):
 # --------------------------------------------------------------------------
 # B 行为（mock 注入，不真打网络）
 # --------------------------------------------------------------------------
+def _touch(path, payload=b"x"):
+    """写一个非空占位文件（含父目录），供 mock 回调模拟「真产出」。
+    内容不参与校验，只满足 存在 + 非空；扩展名由调用方给对。"""
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(payload)
+    return path
+
+
 class _Calls:
     def __init__(self):
         self.inpaint = []
@@ -108,11 +119,17 @@ class _Calls:
     def do_video(self, node, asset_root, src_image_path, prompt):
         nid = getattr(node, "id", "x")
         self.video.append((nid, src_image_path, prompt))
-        return os.path.join(asset_root, "video", "%s_clip.mp4" % nid)
+        p = os.path.join(asset_root, "video", "%s_clip.mp4" % nid)
+        # 必须真落盘：执行器侧 validate_output（Wave A #6）校验 存在+非空+扩展名+在资产目录内，
+        # 返回不存在的路径会诚实地判 failed —— mock 若不写文件，测的就不是「注入生效」而是假绿。
+        _touch(p, b"\x00\x00\x00\x18ftypmp42")
+        return p
 
     def do_motion(self, src_paths, out_path, params):
         self.motion.append((src_paths, out_path))
-        return out_path + ".gif"
+        p = out_path + ".gif"
+        _touch(p, b"GIF89a")
+        return p
 
 
 if active("B1"):

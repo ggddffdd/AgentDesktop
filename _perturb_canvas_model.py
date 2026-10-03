@@ -24,6 +24,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = HERE
 CANVAS = os.path.join(ROOT, "canvas_graph.py")
 JUDGE = os.path.join(ROOT, "tests", "test_canvas_model.py")
+
+# 护栏：快照被测源码 + 装 SIGTERM/SIGINT/atexit 还原 + 残留变异预检
+sys.path.insert(0, ROOT)
+import _perturb_guard as _guard  # noqa: E402
+_guard.arm()
+
 SRC = open(CANVAS, encoding="utf-8").read()
 
 PASS_N = 0
@@ -142,6 +148,19 @@ case("P07 撤掉 _order_seen 去重判断（if True）",
 case("P08 删掉 self.status = \"pending\"",
      drop_line('        self.status = "pending"'),
      ["A8"])
+
+# ---- Wave A #3：单入端口禁止静默覆盖 ----
+case("P09 撤掉单入端口拒第二条（if not tp.multi → if False）",
+     sub("            if not tp.multi:", "            if False:"),
+     ["A14"])
+case("P10 撤掉同四元组幂等判断（if (from_node, from_port) in existing → if False）",
+     sub("            if (from_node, from_port) in existing:",
+         "            if False:"),
+     ["A15"])
+case("P11 撤掉 _incoming_assets 的 multi 收列表分支（if False）",
+     sub('                if port is not None and getattr(port, "multi", False):',
+         "                if False:"),
+     ["A16"])
 
 # ---- 反向：没坏就不许红（防判据过宽）----
 print("\n=== 反向：原样通过时不许有任何红项 ===")

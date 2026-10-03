@@ -308,11 +308,19 @@ class CanvasGraph:
         下游 _wrap 在跑自己的 executor 前注入 in_assets。
         """
         out = {}
+        tn = self.nodes.get(node_id)
         for e in self.data_edges:
             if e.to_node == node_id:
                 up = self.nodes.get(e.from_node)
-                if up is not None:
-                    out[e.to_port] = up.out_assets.get(e.from_port)
+                if up is None:
+                    continue
+                a = up.out_assets.get(e.from_port)
+                port = (tn.inputs or {}).get(e.to_port) if tn is not None else None
+                if port is not None and getattr(port, "multi", False):
+                    # 多入端口：收成列表，不覆盖（单入端口已由 connect_data 拒绝第二条）
+                    out.setdefault(e.to_port, []).append(a)
+                else:
+                    out[e.to_port] = a
         return out
 
     # ---- 资产库（第 2 步）----
@@ -369,6 +377,19 @@ class CanvasGraph:
                 f"端口类型不兼容：{from_node}.{from_port}({fp.port_type}) → "
                 f"{to_node}.{to_port}({tp.port_type})，连线时即拒绝"
                 f"（{tp.port_type} 端口只接受 {sorted(_PORT_ACCEPTS[tp.port_type])}）")
+        # 单入端口（multi=False）：禁止第二条「不同来源」的数据边 —— 否则运行时
+        # _incoming_assets 会因 dict 后写覆盖，静默丢弃在先的输入（用户无感知）。
+        # 同一四元组重复连接视为幂等 no-op（支持重复调用 / UI 预校验回滚后重连）。
+        existing = [(e.from_node, e.from_port) for e in self.data_edges
+                    if e.to_node == to_node and e.to_port == to_port]
+        if existing:
+            if (from_node, from_port) in existing:
+                return self
+            if not tp.multi:
+                raise ValueError(
+                    f"{to_node}.{to_port} 是单入端口（multi=False），"
+                    f"已有来自 {existing[0][0]}.{existing[0][1]} 的连接；"
+                    f"如需多入请把该端口标为 multi=True（拒绝静默覆盖）")
         edge = DataEdge(from_node, from_port, to_node, to_port, label, asset)
         self.data_edges.append(edge)
         # 数据边自动隐含顺序边：上游先完成（同一对节点只 depend 一次）

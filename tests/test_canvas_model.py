@@ -140,6 +140,17 @@ check("A12 image 端口接受 scene/character_views/keyframe（接资产库引�
 check("A13 提供 build_sample_graph 工厂（无 UI 建示例图）",
       "def build_sample_graph" in SRC)
 
+# 单入端口禁止静默覆盖（Wave A #3）：connect_data 必须拦第二条「不同来源」的数据边
+check("A14 connect_data 拒绝单入端口（multi=False）接第二条不同来源的数据边",
+      "if not tp.multi:" in CD and "拒绝静默覆盖" in CD,
+      "否则 _incoming_assets 后写覆盖，静默丢弃在先输入（用户无感知）")
+check("A15 connect_data 对同一四元组重复连接幂等（不重复建边）",
+      "(from_node, from_port) in existing" in CD and "existing = [" in CD)
+check("A16 _incoming_assets 对 multi 端口收成列表（不覆盖）",
+      'getattr(port, "multi", False)' in _slice_func("_incoming_assets")
+      and ".append(a)" in _slice_func("_incoming_assets"),
+      "multi=True 端口必须累积成 list，否则多入等于白标")
+
 
 # ==========================================================================
 # B/C 组：行为 + 结构
@@ -239,6 +250,62 @@ else:
         check("B10 纯顺序边可建（不传资产）", len(g5.order_edges) == 1)
     except Exception as e:  # noqa: BLE001
         check("B10 纯顺序边", False, f"{type(e).__name__}: {e}")
+
+    # ---- Wave A #3：单入端口禁止静默覆盖 ----
+    try:
+        gm = cg.CanvasGraph()
+        s1 = cg.CanvasNode("s1", "source_prompt",
+                           outputs={"prompt": cg.Port("prompt", "prompt")})
+        s2 = cg.CanvasNode("s2", "source_prompt",
+                           outputs={"prompt": cg.Port("prompt", "prompt")})
+        d = cg.CanvasNode("d", "gen_image",
+                          inputs={"prompt": cg.Port("prompt", "prompt")})
+        gm.add_node(s1); gm.add_node(s2); gm.add_node(d)
+        gm.connect_data("s1", "prompt", "d", "prompt")
+        n1 = len(gm.data_edges)
+        # 同一四元组重复连接 → 幂等 no-op
+        gm.connect_data("s1", "prompt", "d", "prompt")
+        check("B11 同一四元组重复连接幂等（不新增边、不抛错）",
+              len(gm.data_edges) == n1, f"{n1} → {len(gm.data_edges)}")
+        # 不同来源接同一单入端口 → 必拒
+        raised_single = False
+        try:
+            gm.connect_data("s2", "prompt", "d", "prompt")
+        except ValueError:
+            raised_single = True
+        check("B12 单入端口接第二条不同来源 → 抛 ValueError（拒绝静默覆盖）",
+              raised_single)
+        check("B12b 拒绝后边数不变（不留半条边）",
+              len(gm.data_edges) == n1, f"实际 {len(gm.data_edges)}")
+        check("B12c 拒绝后生效的仍是第一个来源",
+              (gm.data_edges[0].from_node, gm.data_edges[0].from_port)
+              == ("s1", "prompt"),
+              f"{gm.data_edges[0].from_node}.{gm.data_edges[0].from_port}")
+    except Exception as e:  # noqa: BLE001
+        check("B11-B12 单入端口禁止静默覆盖", False, f"{type(e).__name__}: {e}")
+
+    # ---- Wave A #3：multi=True 端口允许多入且收成列表 ----
+    try:
+        gx = cg.CanvasGraph()
+        a1 = cg.CanvasNode("a1", "gen_image",
+                           outputs={"image": cg.Port("image", "image")})
+        a2 = cg.CanvasNode("a2", "gen_image",
+                           outputs={"image": cg.Port("image", "image")})
+        acc = cg.CanvasNode("acc", "promo_fx",
+                            inputs={"frames": cg.Port("frames", "image", multi=True)})
+        gx.add_node(a1); gx.add_node(a2); gx.add_node(acc)
+        gx.connect_data("a1", "image", "acc", "frames")
+        gx.connect_data("a2", "image", "acc", "frames")
+        check("B13 multi=True 端口允许两条不同来源的数据边（不拒）",
+              len(gx.data_edges) == 2, f"实际 {len(gx.data_edges)}")
+        a1.out_assets["image"] = cg.AssetRef(kind="image", name="a1", path="P1")
+        a2.out_assets["image"] = cg.AssetRef(kind="image", name="a2", path="P2")
+        got = gx._incoming_assets("acc").get("frames")
+        check("B14 multi 端口 _incoming_assets 收成列表（两条都在，无覆盖）",
+              isinstance(got, list) and len(got) == 2
+              and [r.path for r in got] == ["P1", "P2"], str(got))
+    except Exception as e:  # noqa: BLE001
+        check("B13-B14 multi 端口收成列表", False, f"{type(e).__name__}: {e}")
 
     # ---------------- C 组：结构 ----------------
     print("\n[C] 结构：示例图断言")

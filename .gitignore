@@ -17,6 +17,8 @@ images/
 avatars/
 
 # ===== 构建产物 =====
+# build_safe.py 的构建日志（每次打包都会重写，无版本价值，且体积不小）
+build_log.txt
 build/
 dist/
 dist_tmp_*/

@@ -19,6 +19,11 @@ EXPORT = os.path.join(ROOT, "canvas_export.py")
 TEST = os.path.join(ROOT, "tests", "test_canvas_localedit.py")
 PY = r"C:/Users/xyb/AppData/Local/Programs/Python/Python312/python.exe"
 
+# 护栏：快照被测源码 + 装 SIGTERM/SIGINT/atexit 还原 + 残留变异预检
+sys.path.insert(0, ROOT)
+import _perturb_guard as _guard  # noqa: E402
+_guard.arm()
+
 
 def run_test():
     """返回 (fail_tokens, all_green)。"""

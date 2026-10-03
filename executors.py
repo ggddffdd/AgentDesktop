@@ -42,6 +42,46 @@ def stage_path(asset_root, kind, node_id, port):
     return os.path.join(d, f"{node_id}_{port}{ext}")
 
 
+# 执行器产出校验：kind → 允许的扩展名（比 stage_path 的 _EXT 宽松 —— 例如 video 允许 .gif）
+_OUTPUT_EXTS = {
+    "image": (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"),
+    "clip":  (".mp4", ".mov", ".webm", ".mkv", ".avi"),
+    "video": (".mp4", ".mov", ".webm", ".mkv", ".gif"),
+    "audio": (".mp3", ".wav", ".m4a", ".aac", ".flac"),
+}
+
+
+def validate_output(path, expected_kind, asset_root=None):
+    """执行器产出校验：非空路径 + 文件存在 + 非空 + 扩展名相符 + 位于资产目录内。
+
+    不合法一律抛 UnsupportedEditMode —— 宁可节点 failed，也不登记「假完成」的无效资产
+    （外部回调可能返回错误文本、不存在路径或越目录路径）。返回规整后的路径。
+    """
+    if not isinstance(path, str) or not path.strip():
+        raise UnsupportedEditMode("执行器未返回有效输出路径: %r" % (path,))
+    p = path.strip()
+    if not os.path.isfile(p):
+        raise UnsupportedEditMode("执行器输出文件不存在: %s" % p)
+    try:
+        if os.path.getsize(p) <= 0:
+            raise UnsupportedEditMode("执行器输出文件为空: %s" % p)
+    except OSError as e:
+        raise UnsupportedEditMode("执行器输出无法读取: %s (%s)" % (p, e))
+    if asset_root:
+        root = os.path.abspath(asset_root)
+        try:
+            if os.path.commonpath([os.path.abspath(p), root]) != root:
+                raise UnsupportedEditMode("执行器输出越出资产目录: %s" % p)
+        except ValueError:
+            raise UnsupportedEditMode("执行器输出越出资产目录: %s" % p)
+    exts = _OUTPUT_EXTS.get(expected_kind)
+    if exts and not p.lower().endswith(exts):
+        raise UnsupportedEditMode(
+            "执行器输出扩展名与 %s 不符（应为 %s）: %s"
+            % (expected_kind, "/".join(exts), os.path.basename(p)))
+    return p
+
+
 def _png_to_array(path):
     img = Image.open(path).convert("RGB")
     return np.asarray(img, dtype=np.uint8)
@@ -109,6 +149,7 @@ def gen_image_executor(node, asset_root, inpaint_fn=None):
             _array_to_png(out_arr, out_path)
         else:
             out_path = src_path
+        out_path = validate_output(out_path, "image", asset_root)
         produced = None
         for p in out_ports:
             ref = AssetRef(
@@ -204,6 +245,7 @@ def gen_video_executor(node, asset_root, inpaint_fn=None, video_fn=None, graph=N
         if video_fn is None:
             raise UnsupportedEditMode("gen_video 需 video_fn（未注入 Agnes 视频回调）")
         out_path = video_fn(node, asset_root, src_path, prompt)
+        out_path = validate_output(out_path, "clip", asset_root)
         produced = None
         for p in out_ports:
             ref = AssetRef(
@@ -243,6 +285,7 @@ def promo_fx_executor(node, asset_root, inpaint_fn=None, video_fn=None, graph=No
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         params = (node.config or {}).get("motion_params") or {}
         res = motion_fn(img_paths, out_path, params)
+        res = validate_output(res, "video", asset_root)
         produced = None
         for p in out_ports:
             ref = AssetRef(

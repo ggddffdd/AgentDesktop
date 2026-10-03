@@ -18,6 +18,11 @@ SRC = os.path.join(HERE, "canvas_export.py")
 TEST = os.path.join(HERE, "tests", "test_canvas_export.py")
 PY = "C:/Users/xyb/AppData/Local/Programs/Python/Python312/python.exe"
 
+# 护栏：快照被测源码 + 装 SIGTERM/SIGINT/atexit 还原 + 残留变异预检
+sys.path.insert(0, HERE)
+import _perturb_guard as _guard  # noqa: E402
+_guard.arm()
+
 # (变异名, 目标判据, 原串, 替换为)
 MUTATIONS = [
     ("M1", "A1", "def export_project_json(", "def export_project_json_x("),

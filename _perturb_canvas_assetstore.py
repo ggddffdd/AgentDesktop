@@ -20,6 +20,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = HERE
 CANVAS = os.path.join(ROOT, "canvas_graph.py")
 JUDGE = os.path.join(ROOT, "tests", "test_canvas_assetstore.py")
+
+# 护栏：快照被测源码 + 装 SIGTERM/SIGINT/atexit 还原 + 残留变异预检
+sys.path.insert(0, ROOT)
+import _perturb_guard as _guard  # noqa: E402
+_guard.arm()
+
 SRC = open(CANVAS, encoding="utf-8").read()
 
 PASS_N = 0

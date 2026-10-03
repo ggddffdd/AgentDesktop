@@ -157,13 +157,29 @@ def section_b():
     cmd.undo()
     check("B5b .undo 恢复坐标", g5.nodes["img"].pos == (0.0, 0.0))
 
-    # B6 ConnectCommand redo/undo 增删边（用初始图不存在的新边 vid.clip->final.main）
-    n0 = len(g.data_edges)
-    cc = cp.ConnectCommand(g, None, "vid", "clip", "final", "main")
+    # B6 ConnectCommand redo/undo 增删边
+    # 注：必须用**独立小图**。示例图里 final.main / final.promo 各自已有一条数据边，
+    # 往同一个单入端口再连第二条会被 connect_data 拒绝
+    # （Wave A #3：单入端口禁止静默覆盖），
+    # 所以「在示例图上随便挑一条边」的旧写法本质上依赖的是被修掉的覆盖 bug。
+    g6 = cg.CanvasGraph()
+    s6 = cg.CanvasNode("s", "source_prompt",
+                       outputs={"prompt": cg.Port("prompt", "prompt")})
+    t6 = cg.CanvasNode("t", "gen_image",
+                       inputs={"prompt": cg.Port("prompt", "prompt")})
+    g6.add_node(s6)
+    g6.add_node(t6)
+    n0 = len(g6.data_edges)
+    cc = cp.ConnectCommand(g6, None, "s", "prompt", "t", "prompt")
     cc.redo()
-    check("B6 ConnectCommand.redo 增边", len(g.data_edges) == n0 + 1)
+    check("B6 ConnectCommand.redo 增边", len(g6.data_edges) == n0 + 1)
+    e6 = g6.data_edges[0] if g6.data_edges else None
+    check("B6c redo 后边为 s.prompt→t.prompt",
+          e6 is not None
+          and (e6.from_node, e6.from_port, e6.to_node, e6.to_port)
+          == ("s", "prompt", "t", "prompt"))
     cc.undo()
-    check("B6b .undo 删边", len(g.data_edges) == n0)
+    check("B6b .undo 删边", len(g6.data_edges) == n0)
 
     # B7 EditConfigCommand redo/undo
     ecmd = cp.EditConfigCommand(g, None, "src", {}, {"prompt": "X"})

@@ -89,8 +89,16 @@ def _a():
     lay = _slice_func("layout_graph")
     check("A6 分层公式 1+max(assigned)", "1 + max(assigned" in lay)
     check("A7 X 按拓扑层展开", "MARGIN + depth * col_gap" in SRC)
+    # A8：判据必须落在 STATUS_COLOR 字典本身，不能在整文件搜子串 ——
+    # 状态色值改走 THEME["canvas_incomplete"] 后，整文件搜 "incomplete" 恒为真
+    # （值里就含这个子串），判据永远绿、扰动打不红（假绿）。
+    _sc = (SRC.split("STATUS_COLOR = {", 1)[1].split("}", 1)[0]
+           if "STATUS_COLOR = {" in SRC else "")
     check("A8 状态色六态齐全(incomplete/cancelled)",
-          "incomplete" in SRC and "cancelled" in SRC)
+          all(('"%s"' % s) in _sc for s in
+              ("pending", "in_progress", "completed", "failed",
+               "cancelled", "incomplete")),
+          "STATUS_COLOR 缺键: %r" % _sc[:120])
     check("A9 ScenePlan 往返序列化", "def from_dict" in SRC)
 
 

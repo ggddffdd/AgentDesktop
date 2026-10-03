@@ -98,6 +98,14 @@ run("A9 use_real_executors 装配真实执行器（调 apply_real_executors）",
     "apply_real_executors" in GRAPH_SRC)
 run("A10 passthrough 真实写占位文件（open(path",
     "open(path" in EXEC_SRC and "placeholder" in EXEC_SRC)
+# Wave A #6：执行器产出校验
+run("A11 executors 含 validate_output（执行器产出校验）",
+    hasattr(ex, "validate_output"))
+run("A12 executors 含 _OUTPUT_EXTS 映射（kind → 允许扩展名）",
+    isinstance(getattr(ex, "_OUTPUT_EXTS", None), dict)
+    and {"image", "clip", "video"}.issubset(ex._OUTPUT_EXTS))
+run("A13 三个执行器均接入了 validate_output（gen_image / gen_video / promo_fx）",
+    EXEC_SRC.count("validate_output(") >= 4)  # 1 定义 + 3 调用
 
 
 # --------------------------------------------------------------------------
@@ -220,16 +228,29 @@ run("B6 inpaint_fn 被调用且结果被应用（像素减半）",
 # B7 passthrough：其余节点落盘占位 + 全部 completed + 资产登记
 # 注：样本图含 gen_video / promo_fx 节点，需注入回调方能跑通全图
 # （gen_video 未注入 video_fn 时会诚实抛 UnsupportedEditMode，阻塞 final）
+# 回调必须真落盘：Wave A #6 的 validate_output 会校验「存在+非空+扩展名+在资产目录内」，
+# 返回不存在的路径 → 该节点诚实 failed → final 被阻塞 → B7b 全 completed 崩。
 root_b7 = tempfile.mkdtemp()
 g_b7 = cg.build_sample_graph()
 
 
+def _write_placeholder(path, payload=b"x"):
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(payload)
+    return path
+
+
 def _b7_video(node, asset_root, src_image_path, prompt):
-    return os.path.join(asset_root, "video", "%s_clip.mp4" % node.id)
+    return _write_placeholder(
+        os.path.join(asset_root, "video", "%s_clip.mp4" % node.id),
+        b"\x00\x00\x00\x18ftypmp42")
 
 
 def _b7_motion(src_paths, out_path, params):
-    return out_path + ".gif"
+    return _write_placeholder(out_path + ".gif", b"GIF89a")
 
 
 g_b7.use_real_executors(root_b7, video_fn=_b7_video, motion_fn=_b7_motion)
@@ -243,6 +264,110 @@ run("B7b 所有节点 run 后均为 completed",
     all(n.status == "completed" for n in g_b7.nodes.values()))
 run("B7c 资产被登记（registered=True）",
     final_ref is not None and final_ref.registered)
+
+
+# --------------------------------------------------------------------------
+# B8 validate_output：执行器产出校验（Wave A #6 —— 宁可 failed，不登记假完成）
+# --------------------------------------------------------------------------
+root_v = tempfile.mkdtemp()
+
+
+def _v_raises(fn, *a, **kw):
+    """期待抛 UnsupportedEditMode，返回 (是否抛了, 异常文本)。"""
+    try:
+        fn(*a, **kw)
+    except il.UnsupportedEditMode as e:
+        return True, str(e)
+    except Exception as e:  # noqa: BLE001
+        return False, "抛错类型不对: %s: %s" % (type(e).__name__, e)
+    return False, "未抛错"
+
+
+# 合法产出：返回规整路径
+p_ok = os.path.join(root_v, "image", "ok.png")
+_write_placeholder(p_ok, b"PNG")
+v_ok = ex.validate_output(p_ok, "image", root_v)
+run("B8 validate_output 接受合法产出并返回规整路径", v_ok == p_ok, str(v_ok))
+
+# 前后空白应被 strip
+v_strip = ex.validate_output("  %s  " % p_ok, "image", root_v)
+run("B8b validate_output 规整首尾空白", v_strip == p_ok, str(v_strip))
+
+# 文件不存在
+t, d = _v_raises(ex.validate_output,
+                 os.path.join(root_v, "image", "nope.png"), "image", root_v)
+run("B8c 输出文件不存在 → 抛 UnsupportedEditMode", t, d)
+
+# 空文件
+p_empty = os.path.join(root_v, "image", "empty.png")
+open(p_empty, "wb").close()
+t, d = _v_raises(ex.validate_output, p_empty, "image", root_v)
+run("B8d 输出文件为空（0 字节）→ 抛 UnsupportedEditMode", t, d)
+
+# 扩展名不符（clip 却给 .png）
+t, d = _v_raises(ex.validate_output, p_ok, "clip", root_v)
+run("B8e 扩展名与 kind 不符（.png 当 clip）→ 抛 UnsupportedEditMode", t, d)
+
+# 越出资产目录
+outside = os.path.join(tempfile.mkdtemp(), "outside.png")
+_write_placeholder(outside, b"PNG")
+t, d = _v_raises(ex.validate_output, outside, "image", root_v)
+run("B8f 输出越出资产目录 → 抛 UnsupportedEditMode", t, d)
+
+# 非字符串 / 空串 / None
+bad_kinds = [(None, "None"), ("", "空串"), ("   ", "纯空白")]
+all_bad = all(_v_raises(ex.validate_output, v, "image", root_v)[0]
+              for v, _ in bad_kinds)
+run("B8g 非字符串/空串/纯空白 → 抛 UnsupportedEditMode", all_bad,
+    str([(lbl, _v_raises(ex.validate_output, v, "image", root_v)[1])
+         for v, lbl in bad_kinds]))
+
+# 不给 asset_root 时跳过目录围栏（仍校验存在+非空+扩展名）
+v_noroot = ex.validate_output(p_ok, "image")
+run("B8h 未给 asset_root 时跳过目录围栏但其余校验照做", v_noroot == p_ok, str(v_noroot))
+
+# B9 端到端：video_fn 返回不存在的路径 → gen_video 节点诚实 failed（不冒充完成）
+root_v9 = tempfile.mkdtemp()
+g_v9 = cg.build_sample_graph()
+
+
+def _v9_fake_video(node, asset_root, src_image_path, prompt):
+    return os.path.join(asset_root, "video", "%s_clip.mp4" % node.id)  # 不落盘
+
+
+def _v9_ok_motion(src_paths, out_path, params):
+    return _write_placeholder(out_path + ".gif", b"GIF89a")
+
+
+g_v9.use_real_executors(root_v9, video_fn=_v9_fake_video, motion_fn=_v9_ok_motion)
+g_v9.run({})
+run("B9 假路径（video_fn 不落盘）→ vid 节点诚实 failed",
+    g_v9.nodes["vid"].status == "failed", g_v9.nodes["vid"].status)
+run("B9b 下游 promo/final 因上游 failed 被阻塞（不冒充 completed）",
+    g_v9.nodes["promo"].status != "completed"
+    and g_v9.nodes["final"].status != "completed",
+    "promo=%s final=%s" % (g_v9.nodes["promo"].status, g_v9.nodes["final"].status))
+
+# B10 端到端：motion_fn 返回越出资产目录的路径 → promo_fx 诚实 failed
+root_v10 = tempfile.mkdtemp()
+outside10 = os.path.join(tempfile.mkdtemp(), "evil.gif")
+g_v10 = cg.build_sample_graph()
+
+
+def _v10_ok_video(node, asset_root, src_image_path, prompt):
+    return _write_placeholder(
+        os.path.join(asset_root, "video", "%s_clip.mp4" % node.id),
+        b"\x00\x00\x00\x18ftypmp42")
+
+
+def _v10_evil_motion(src_paths, out_path, params):
+    return _write_placeholder(outside10, b"GIF89a")  # 越目录
+
+
+g_v10.use_real_executors(root_v10, video_fn=_v10_ok_video, motion_fn=_v10_evil_motion)
+g_v10.run({})
+run("B10 越目录产出（motion_fn 写外部路径）→ promo 节点诚实 failed",
+    g_v10.nodes["promo"].status == "failed", g_v10.nodes["promo"].status)
 
 
 # --------------------------------------------------------------------------

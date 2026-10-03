@@ -23,6 +23,11 @@ ORIG = os.path.join(ROOT, "canvas_panel.py")
 TEST = os.path.join(ROOT, "tests", "test_canvas_panel.py")
 PY = "C:/Users/xyb/AppData/Local/Programs/Python/Python312/python.exe"
 
+# 护栏：快照被测源码 + 装 SIGTERM/SIGINT/atexit 还原 + 残留变异预检
+sys.path.insert(0, ROOT)
+import _perturb_guard as _guard  # noqa: E402
+_guard.arm()
+
 # (name, target判据, old锚点, new替换, static_only)
 MUTATIONS = [
     # PA：X 坐标反向展开 → A7 静态红；全跑时 B5(单调)/B6(final最右) 也红

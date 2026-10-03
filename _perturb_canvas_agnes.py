@@ -28,8 +28,16 @@ EXEC = os.path.join(ROOT, "executors.py")
 GRAPH = os.path.join(ROOT, "canvas_graph.py")
 BRIDGE = os.path.join(ROOT, "agnes_bridge.py")
 
+# 护栏：快照被测源码 + 装 SIGTERM/SIGINT/atexit 还原 + 残留变异预检
+# （防进程被强杀后留下半截变异体，让后续判据「基线已红」）
+sys.path.insert(0, ROOT)
+import _perturb_guard as _guard  # noqa: E402
+_guard.arm()
+
 # 备份原始内容，结束时确保还原
-_BACKUP = {EXEC: open(EXEC).read(), GRAPH: open(GRAPH).read(), BRIDGE: open(BRIDGE).read()}
+_BACKUP = {EXEC: open(EXEC, encoding="utf-8").read(),
+           GRAPH: open(GRAPH, encoding="utf-8").read(),
+           BRIDGE: open(BRIDGE, encoding="utf-8").read()}
 
 
 def _env(check):
@@ -116,7 +124,7 @@ if __name__ == "__main__":
     finally:
         # 无论如何还原三份原始文件
         for fp, content in _BACKUP.items():
-            open(fp, "w").write(content)
+            open(fp, "w", encoding="utf-8").write(content)
     if FAILS:
         print("\n扰动失败项: %s" % ", ".join(FAILS))
         sys.exit(1)

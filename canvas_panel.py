@@ -30,6 +30,7 @@ from typing import Dict, List, Optional
 
 import canvas_graph as cg
 from canvas_graph import NODE_TYPES
+from ui import THEME
 # 阶段 C：图片局部编辑的可用 transform 操作（供对话框下拉 + 引擎共用）
 from image_local_edit import VALID_TRANSFORM_OPS as VALID_TRANSFORM_OPS_C
 
@@ -53,20 +54,20 @@ HAS_DPR = True
 # 颜色（对齐 ui.py 的 THEME：sidebar_active #1A73E8、danger #D93025 等）
 # --------------------------------------------------------------------------
 STATUS_COLOR = {
-    "pending":     "#9AA4B2",   # 灰：未开始
-    "in_progress": "#1A73E8",   # 蓝：进行中
-    "completed":   "#1E8E3E",   # 绿：完成
-    "failed":      "#D93025",   # 红：失败
-    "cancelled":   "#B06000",   # 暗黄：已取消
-    "incomplete":  "#E37400",   # 橙：未完成
+    "pending":     THEME["canvas_pending"],     # 灰：未开始
+    "in_progress": THEME["accent"],             # 蓝：进行中
+    "completed":   THEME["canvas_completed"],   # 绿：完成
+    "failed":      THEME["canvas_failed"],      # 红：失败
+    "cancelled":   THEME["canvas_cancelled"],   # 暗黄：已取消
+    "incomplete":  THEME["canvas_incomplete"],  # 橙：未完成
 }
 NODE_FILL = {
-    "source_prompt": "#E8F0FE",
-    "gen_image":     "#E6F4EA",
-    "gen_video":     "#FCE8E6",
-    "digital_twin":  "#F3E8FD",
-    "promo_fx":      "#FEF7E0",
-    "final_output":  "#ECEFF1",
+    "source_prompt": THEME["user_bg"],
+    "gen_image":     THEME["canvas_img_bg"],
+    "gen_video":     THEME["canvas_video_bg"],
+    "digital_twin":  THEME["canvas_twin_bg"],
+    "promo_fx":      THEME["canvas_promo_bg"],
+    "final_output":  THEME["canvas_final_bg"],
 }
 
 
@@ -162,7 +163,7 @@ class ScenePlan:
 
 def status_color(status: str) -> str:
     """节点状态 → 主题色（六态齐全，缺省回退灰）。"""
-    return STATUS_COLOR.get(status, "#9AA4B2")
+    return STATUS_COLOR.get(status, THEME["canvas_pending"])
 
 
 def _node_parents(g: "cg.CanvasGraph", nid: str) -> List[str]:
@@ -223,7 +224,7 @@ def layout_graph(g: "cg.CanvasGraph") -> ScenePlan:
                 label=NODE_TYPES.get(n.node_type, n.node_type),
                 x=nx, y=ny, w=NODE_W, h=NODE_H,
                 status=n.status,
-                fill=NODE_FILL.get(n.node_type, "#ECEFF1"),
+                fill=NODE_FILL.get(n.node_type, THEME["canvas_final_bg"]),
                 border=status_color(n.status),
                 in_ports=list(n.inputs.keys()),
                 out_ports=list(n.outputs.keys()),
@@ -288,7 +289,7 @@ def region_svg_overlay(region: Optional[dict], ox: float, oy: float,
     """
     if not region:
         return (f'<rect x="{ox+4:.1f}" y="{oy+4:.1f}" width="{ow-8:.1f}" '
-                f'height="{oh-8:.1f}" fill="none" stroke="#D93025" '
+                f'height="{oh-8:.1f}" fill="none" stroke="{THEME['canvas_failed']}" '
                 f'stroke-width="2" stroke-dasharray="5 3"/>')
     if region.get("type") == "rect":
         rx = ox + region["x"] * ow
@@ -296,13 +297,13 @@ def region_svg_overlay(region: Optional[dict], ox: float, oy: float,
         rw = region["w"] * ow
         rh = region["h"] * oh
         return (f'<rect x="{rx:.1f}" y="{ry:.1f}" width="{rw:.1f}" height="{rh:.1f}" '
-                f'fill="rgba(217,48,37,0.15)" stroke="#D93025" stroke-width="2" '
+                f'fill="rgba(217,48,37,0.15)" stroke="{THEME['canvas_failed']}" stroke-width="2" '
                 f'stroke-dasharray="5 3"/>')
     pts = region.get("points", [])
     if pts:
         d = "M " + " L ".join("%.1f %.1f" % (ox + p[0] * ow, oy + p[1] * oh)
                               for p in pts) + " Z"
-        return (f'<path d="{d}" fill="rgba(217,48,37,0.15)" stroke="#D93025" '
+        return (f'<path d="{d}" fill="rgba(217,48,37,0.15)" stroke="{THEME['canvas_failed']}" '
                 f'stroke-width="2" stroke-dasharray="5 3"/>')
     return ""
 
@@ -341,9 +342,9 @@ class PortItem(QGraphicsEllipseItem):
         self.port = port
         self.side = side                 # 'L' 输入 / 'R' 输出
         self.port_type = port_type
-        color = "#1A73E8" if side == "L" else "#E37400"
+        color = THEME["accent"] if side == "L" else THEME["canvas_incomplete"]
         self.setBrush(QBrush(QColor(color)))
-        self.setPen(QPen(QColor("#FFFFFF"), 1))
+        self.setPen(QPen(QColor(THEME["white"]), 1))
         self.setAcceptHoverEvents(True)
         self.setCursor(Qt.PointingHandCursor if side == "R" else Qt.CrossCursor)
 
@@ -380,8 +381,8 @@ class CanvasNodeItem(QGraphicsRectItem):
         # 资产落地标记（右下角小圆：绿=已落地，灰=未落地）
         mark = QGraphicsEllipseItem(
             QRectF(spec.x + spec.w - 14, spec.y + spec.h - 14, 8, 8), self)
-        mark.setBrush(QBrush(QColor("#1E8E3E" if spec.registered else "#9AA4B2")))
-        mark.setPen(QPen(QColor("#FFFFFF"), 1))
+        mark.setBrush(QBrush(QColor(THEME["canvas_completed"] if spec.registered else THEME["canvas_pending"])))
+        mark.setPen(QPen(QColor(THEME["white"]), 1))
         # 端口：左输入 / 右输出（可交互 PortItem）
         ports = node.inputs if node is not None else {}
         for i, p in enumerate(spec.in_ports):
@@ -431,11 +432,11 @@ class CanvasEdgeItem(QGraphicsPathItem):
             c1 = QPointF((p0.x() + p1.x()) / 2, p0.y())
             c2 = QPointF((p0.x() + p1.x()) / 2, p1.y())
             path.cubicTo(c1, c2, p1)
-            self.setPen(QPen(QColor("#1A73E8"), 2))
+            self.setPen(QPen(QColor(THEME["accent"]), 2))
         else:
             # 顺序边：虚线直线
             path.lineTo(p1)
-            pen = QPen(QColor("#9AA4B2"), 1.5, Qt.DashLine)
+            pen = QPen(QColor(THEME["canvas_pending"]), 1.5, Qt.DashLine)
             self.setPen(pen)
         self.setPath(path)
 
@@ -471,7 +472,7 @@ class CanvasScene(QGraphicsScene):
             return
         self._link_src = port_item
         self._temp_link = QGraphicsPathItem()
-        self._temp_link.setPen(QPen(QColor("#1A73E8"), 2, Qt.DashLine))
+        self._temp_link.setPen(QPen(QColor(THEME["accent"]), 2, Qt.DashLine))
         self.addItem(self._temp_link)
 
     def _clear_link(self):
@@ -704,8 +705,8 @@ class MaskEditorWidget(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setCursor(Qt.CrossCursor)
         bg = QGraphicsRectItem(0, 0, size, size)
-        bg.setBrush(QBrush(QColor("#ECEFF1")))
-        bg.setPen(QPen(QColor("#9AA4B2")))
+        bg.setBrush(QBrush(QColor(THEME["canvas_final_bg"])))
+        bg.setPen(QPen(QColor(THEME["canvas_pending"])))
         bg.setFlag(QGraphicsRectItem.ItemIsSelectable, False)
         bg.setFlag(QGraphicsRectItem.ItemIsMovable, False)
         self._scene.addItem(bg)
@@ -746,7 +747,7 @@ class MaskEditorWidget(QGraphicsView):
             poly = QPolygonF([QPointF(p[0] * s, p[1] * s) for p in self._poly])
             item = QGraphicsPolygonItem(poly)
             item.setBrush(QBrush(QColor(217, 48, 37, 60)))
-            item.setPen(QPen(QColor("#D93025"), 2))
+            item.setPen(QPen(QColor(THEME["canvas_failed"]), 2))
             self._scene.addItem(item)
             self._overlay = item
             return
@@ -758,7 +759,7 @@ class MaskEditorWidget(QGraphicsView):
                 rh = reg["h"] * s
                 item = QGraphicsRectItem(rx, ry, rw, rh)
                 item.setBrush(QBrush(QColor(217, 48, 37, 60)))
-                item.setPen(QPen(QColor("#D93025"), 2, Qt.DashLine))
+                item.setPen(QPen(QColor(THEME["canvas_failed"]), 2, Qt.DashLine))
                 self._scene.addItem(item)
                 self._overlay = item
             elif reg.get("type") == "polygon":
@@ -766,7 +767,7 @@ class MaskEditorWidget(QGraphicsView):
                                   for p in reg.get("points", [])])
                 item = QGraphicsPolygonItem(poly)
                 item.setBrush(QBrush(QColor(217, 48, 37, 60)))
-                item.setPen(QPen(QColor("#D93025"), 2))
+                item.setPen(QPen(QColor(THEME["canvas_failed"]), 2))
                 self._scene.addItem(item)
                 self._overlay = item
 
