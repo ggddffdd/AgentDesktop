@@ -59,10 +59,18 @@ CASES = [
      '            _ = "background:%s;border-radius:22px;"\n'
      "            # v4.206.0：抽成 empty_state 组件" % "{THEME['card_blue_bg']}",
      ["C1"]),
-    ("图标判空被删（拼错名字会留空圆点）", "empty_state.py",
+    # ⚠️ 锚点必须带「形态后缀」消歧：`if pm.isNull(): raise` 这段在 empty_state.py 里
+    # **出现两次**（_full_state 与 _compact_state 的文本完全相同），而本表用
+    # replace(old, new, 1) 只替换**第一处** —— 文件里先出现的是 _compact_state，
+    # 于是本 case 实际改的是 compact，而 206 套件的 A10 判的是 **full** 形态
+    # （`empty_state("坏图标", icon=...)` 没传 compact=True）→ 变异落在观测之外，
+    # 静默变哑弹（实测 2026-10-03 报「未命中，判据全绿」）。
+    # 补 `badge = QLabel()` 锁定 full（compact 那边是 `ico = QLabel()`）。
+    ("图标判空被删（full 形态；拼错名字会留空圆点）", "empty_state.py",
      '            if pm.isNull():\n'
-     '                raise ValueError(f"图标名不在 _NAV_ICONS 里: {icon!r}")\n',
-     "",
+     '                raise ValueError(f"图标名不在 _NAV_ICONS 里: {icon!r}")\n'
+     '            badge = QLabel()',
+     "            badge = QLabel()",
      ["A10"]),
     ("技能审核空态被塞了一个按钮", "ui.py",
      '                icon="技能"))',
@@ -112,6 +120,15 @@ def run_test(test_name="test_empty_state_206.py"):
     m = re.search(r"PASS=(\d+) FAIL=(\d+)", out)
     return red, (m.group(1), m.group(2)) if m else ("?", "?"), out
 
+
+# 护栏：快照被测源码 + 装 SIGTERM/SIGINT/atexit 三重还原 + 残留变异预检。
+# 本脚本在顶层一次跑完「改源码 → 跑判据 → 还原」，只靠下面这个 try/finally 兜底；
+# 而 Python 默认的 SIGTERM 处理器直接终止进程（不抛异常、不走 finally），
+# 被超时强杀时被测源码会留在变异态（详见 _perturb_guard.py docstring）。
+sys.path.insert(0, ROOT)
+import _perturb_guard as _guard  # noqa: E402
+
+_guard.arm()
 
 HIT, MISS = [], []
 try:

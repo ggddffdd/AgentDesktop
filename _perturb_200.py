@@ -96,36 +96,38 @@ def main():
         "① 新增一处裸写标签（回归到收口前）",
         [("ui.py", '        self._trust.setStyleSheet(label_second())\n',
           '        self._trust.setStyleSheet(label_second())\n'
-          '        self._dummy.setStyleSheet(f"color:{THEME[\'dim\']};font-size:12px;")\n')],
+          '        self._dummy.setStyleSheet(f"color:{THEME[\'dim\']};font-size:12px;")  # 扰动\n')],
         lambda r: "C1" in r or "C3" in r))
 
     # ② theme_qss 里擅自改字号 → B1 属性等价必须炸
     results.append(perturb(
         "② label_second 字号被改成 11px",
         [("theme_qss.py", 'return f"color:{THEME[color_key]};font-size:{F[\'second\']};"',
-          'return f"color:{THEME[color_key]};font-size:11px;"')],
+          'return f"color:{THEME[color_key]};font-size:11px;"  # 扰动')],
         lambda r: "B1" in r or "D[" in r))
 
     # ③ 改 UI 侧间距真源 → A2 红，同时 A3 必须仍绿（派生关系成立）
     results.append(perturb(
         "③ THEME['space_lg'] 改成 18（派生关系应仍成立）",
-        [("ui.py", '"space_lg": 16,', '"space_lg": 18,')],
+        [("ui.py", '"space_lg": 16,', '"space_lg": 18,  # 扰动')],
         lambda r: "A2" in r))
 
     # ④ theme_qss 退化成第二份手写字典 → A5 必须抓到
     results.append(perturb(
         "④ theme_qss 里又写死一份间距数字",
         [("theme_qss.py", '_SPACE_KEYS = ("xs", "sm", "md", "lg", "xl", "xxl")',
-          '_SPACE_KEYS = ("xs", "sm", "md", "lg", "xl", "xxl")\n_LEAK = {"lg": 16}')],
+          '_SPACE_KEYS = ("xs", "sm", "md", "lg", "xl", "xxl")\n_LEAK = {"lg": 16}  # 扰动')],
         lambda r: "A5" in r or "E2" in r))
 
     # ⑤ gap() 丢了 px → A4/A6 红
     results.append(perturb(
         "⑤ gap() 返回值丢掉 px 单位",
-        [("theme_qss.py", 'return f"{S[key]}px"', 'return str(S[key])')],
+        [("theme_qss.py", 'return f"{S[key]}px"', 'return str(S[key])  # 扰动')],
         lambda r: "A4" in r or "A6" in r))
 
     # ⑥ 冻结夹具被改写 → B1 必须发现（夹具是新文件，没有 HEAD 版本，靠内存快照恢复）
+    #    注：本 case 的变异体是 JSON 夹具，**加不了 `# 扰动` 标记**（JSON 没有注释语法），
+    #    所以它是全套 13 例里唯一只靠 arm() 的 atexit/信号还原兜底、预检标记扫不到的一条。
     fx = os.path.join(ROOT, "tests", "fixtures", "labels_200_before.json")
     fx_old = read(fx)
     # 夹具是 JSON：属性名带引号在文件里被转义成 \"font-size\"，直接用裸引号找不到
@@ -145,7 +147,7 @@ def main():
     results.append(perturb(
         "⑦ 一处 scroll_transparent() 被改回裸写",
         [("automation_panel.py", '    scroll.setStyleSheet(scroll_transparent())\n',
-          '    scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")\n')],
+          '    scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")  # 扰动\n')],
         lambda r: "F1" in r or "F2" in r))
 
     # ⑧ token 本身的输出被改（丢属性）→ F3 红；同时 B1 也应炸（视觉走样）
@@ -153,14 +155,14 @@ def main():
         "⑧ scroll_transparent() 输出丢了 border:none",
         [("theme_qss.py",
           'return "QScrollArea{border:none;background:transparent;}"',
-          'return "QScrollArea{background:transparent;}"')],
+          'return "QScrollArea{background:transparent;}"  # 扰动')],
         lambda r: "F3" in r or "B1" in r))
 
     # ⑨ 本地 helper 判据失明回归：把 _chk_style 改成不可静态求值的形态 → F4 红
     results.append(perturb(
         "⑨ digital_twin 的 _chk_style 改成不可静态求值",
         [("digital_twin_panel.py", "def _chk_style():\n",
-          "def _chk_style(_x=None):\n")],
+          "def _chk_style(_x=None):  # 扰动\n")],
         lambda r: "F4" in r or "B1" in r))
 
     # ⑩ v4.202.0：C3 改成「非标残留 == 0」后，新增一处 12px+text 裸写必须红
@@ -169,7 +171,7 @@ def main():
         [("director_panel.py", '    replace_chk.setStyleSheet(label_second("text"))\n',
           '    replace_chk.setStyleSheet(label_second("text"))\n'
           '    _x = QLabel()\n'
-          '    _x.setStyleSheet(f"font-size:12px;color:{THEME[\'text\']};")\n')],
+          '    _x.setStyleSheet(f"font-size:12px;color:{THEME[\'text\']};")  # 扰动\n')],
         lambda r: "C3" in r or "B1" in r))
 
     # ⑪ v4.203.0：加粗变体收口后，写回一处 12px/600/text 裸写 → G1 必须红
@@ -178,20 +180,20 @@ def main():
         [("director_panel.py", '    replace_chk.setStyleSheet(label_second("text"))\n',
           '    replace_chk.setStyleSheet(label_second("text"))\n'
           '    _y = QLabel()\n'
-          '    _y.setStyleSheet(f"font-size:12px;font-weight:600;color:{THEME[\'text\']};")\n')],
+          '    _y.setStyleSheet(f"font-size:12px;font-weight:600;color:{THEME[\'text\']};")  # 扰动\n')],
         lambda r: "G1" in r or "B1" in r))
 
     # ⑫ weight 不走 W 字典改成写死 → G4 必须红（防"看起来能跑"的假 token）
     results.append(perturb(
         "⑫ weight 写死数字不走 W（G4 应红）",
         [("theme_qss.py", '    return f"font-weight:{W[weight]};"',
-          '    return "font-weight:600;"')],
+          '    return "font-weight:600;"  # 扰动')],
         lambda r: "G4" in r or "B1" in r))
 
     # ⑬ 未经批准把 500 归一成 600 → G5 必须红（决策 B 的锁）
     results.append(perturb(
         "⑬ 把 500 归一成 600（G5 应红）",
-        [("theme_qss.py", '    "medium": 500,', '    "medium": 600,')],
+        [("theme_qss.py", '    "medium": 500,', '    "medium": 600,  # 扰动')],
         lambda r: "G5" in r or "G6" in r or "B1" in r))
 
     print(f"\n=== 扰动结果：{sum(bool(r) for r in results)}/{len(results)} 命中 ===")

@@ -5,6 +5,7 @@
 沿用 L186/L187（二进制读写 + 保留行尾）、L191（崩了红 ≠ 判据生效，必须解析 FAIL 名）。
 """
 import os
+import re
 import subprocess
 import sys
 
@@ -116,8 +117,12 @@ case("空状态白名单被塞进未登记项",
      ["E1"])
 
 # ---- F 版本与文档 ----------------------------------------------------------
-case("版本号没升",
-     "config.py", 'APP_VERSION = "v4.209.0"', 'APP_VERSION = "v4.208.0"',
+# ⚠️ 锚点不许写死版本号（同 _perturb_208 的教训）：写「当时的当前版本」跨版本必然失配，
+# 实测到 v4.210.0 时本 case 报 MISS-CONTEXT、判据从未被真正测到。改为跟随当前值。
+_VER_NOW = re.search(r'APP_VERSION\s*=\s*"([^"]+)"',
+                     open(os.path.join(ROOT, "config.py"), encoding="utf-8").read()).group(1)
+case("版本号没升（版本一致性判据应红）",
+     "config.py", 'APP_VERSION = "%s"' % _VER_NOW, 'APP_VERSION = "v0.0.0"',
      ["F4"])
 
 # 锚点要用**整段**（判据第二版改成查 §13.2 段内多要素），
@@ -163,6 +168,14 @@ def failed_checks(out):
 
 
 def main():
+    # 护栏：快照被测源码 + 装 SIGTERM/SIGINT/atexit 三重还原 + 残留变异预检。
+    # 本脚本的变异/还原都在下面的 try/finally 里，而 Python 默认的 SIGTERM 处理器
+    # 直接终止进程（不抛异常、不走 finally）→ 被超时强杀时被测源码会留在变异态。
+    sys.path.insert(0, ROOT)
+    import _perturb_guard as _guard  # noqa: E402
+
+    _guard.arm()
+
     hit, misses = 0, []
     for name, fname, old, new, expect in CASES:
         path = os.path.join(ROOT, fname)

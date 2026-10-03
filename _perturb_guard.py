@@ -35,11 +35,16 @@ _SKIP_PREFIX = "_perturb_"
 _LEFT_MARKERS = ("# 扰动",)
 _LEFT_PATTERN_EXEMPT = ("_perturb_guard.py",)
 
-# 扰动脚本会在 ROOT 下落「变异源码临时副本」（tempfile.mkstemp(prefix="canvas_mut_")）
-# 供子进程以 CANVAS_PATH 指向它跑判据，正常路径由 finally 删除。
-# 但被强杀时 finally 不执行 → 这些副本会残留成未跟踪垃圾文件。
-# arm() 记下启动时的清单，还原时把「新增的」删掉，做到零残留。
-_SCRATCH_PATTERNS = ("canvas_mut_*.py", "*_mut_*.py")
+# 扰动脚本会在 ROOT 下落两类「私有中间文件」，正常路径都由 finally 清理：
+#   ① 变异源码临时副本 —— tempfile.mkstemp(prefix="canvas_mut_") / "probe_gfx_mut_"，
+#      供子进程以 CANVAS_PATH / PROBE_GFX_PATH 指向它跑判据（不在原文件上动刀的那一路）；
+#   ② 旁路备份 —— 改原文件前先 shutil.copy(path, path + ".bak")
+#      （canvas_edit / canvas_localedit），toast 用的是 "_toast.py.perturb.bak"。
+# 但被强杀时 finally 不执行 → 上面两类都会残留成未跟踪垃圾文件。
+#   实测残留过：canvas_graph.py.bak、risk.py.bak、_toast.py.perturb.bak。
+# 这些名字都是扰动脚本的私有约定（业务源码旁不会出现 *.py.bak），
+# 故在预检阶段无条件清理是安全的；arm() 再记下启动清单，兜底删掉「本次新增的」。
+_SCRATCH_PATTERNS = ("canvas_mut_*.py", "*_mut_*.py", "*.py.bak", "*.perturb.bak")
 
 
 def _scratch_files():

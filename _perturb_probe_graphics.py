@@ -23,6 +23,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = HERE
 PROBE = os.path.join(ROOT, "probe_graphics.py")
 JUDGE = os.path.join(ROOT, "tests", "test_probe_graphics.py")
+# 护栏：本脚本**不在原文件上动刀**（变异体落 probe_gfx_mut_*.py 临时文件，
+# 靠 PROBE_GFX_PATH 指给判据），所以不会有「源码变异残留」；但被强杀时临时副本
+# 会残留，且预检能拦住「上一次残留没清干净又接着跑」的假红。统一走 arm。
+sys.path.insert(0, ROOT)
+import _perturb_guard as _guard  # noqa: E402
+
+_guard.arm()
+
 SRC = open(PROBE, encoding="utf-8").read()
 
 PASS_N = 0

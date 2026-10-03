@@ -197,6 +197,14 @@ def failed_checks(out):
 
 
 def main():
+    # 护栏：快照被测源码 + 装 SIGTERM/SIGINT/atexit 三重还原 + 残留变异预检。
+    # 本脚本的变异/还原都在下面的 try/finally 里，而 Python 默认的 SIGTERM 处理器
+    # 直接终止进程（不抛异常、不走 finally）→ 被超时强杀时被测源码会留在变异态。
+    sys.path.insert(0, ROOT)
+    import _perturb_guard as _guard  # noqa: E402
+
+    _guard.arm()
+
     hit, misses = 0, []
     for kind, name, fname, a, b, expect in CASES:
         path = os.path.join(ROOT, fname)

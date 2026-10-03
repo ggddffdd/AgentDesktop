@@ -153,8 +153,12 @@ check("B4b 原 432px 版已不存在",
 check("B4c 该文案实测就是 408px（登记的期望值）",
       _FM.horizontalAdvance(_ROLLBACK) == EXPECT_MAX_PX,
       _FM.horizontalAdvance(_ROLLBACK))
-check("B5 改动的理由写进了代码注释",
-      "432px" in _dp_raw and "余量" in _dp_raw)
+# 判据必须锚定**这一处改动**，不能只查「文件里有这两个串」——
+# `432px` 与「余量」在 director_panel.py 别处也有（阈值来历那一段），
+# 于是扰动抹掉本处理由注释后判据照样绿（实测 2026-10-03 报假哑弹）。
+check("B5 改动的理由写进了代码注释（锚定 v4.209.1 这处改动）",
+      re.search(r"#\s*v4\.209\.1：.*?432px", _dp_raw) is not None,
+      "这一处的理由注释被删或被改短")
 
 # ------------------------------------------------------------- C 布局未动
 
@@ -196,7 +200,12 @@ check("D2b DESIGN §13.3 把波 B 标成「已降级」（后人不会以为还�
       "⛔ 已降级" in _dz,
       "⛔ 已降级" not in _dz and "§13.3 里波B 不是「已降级」")
 _cl = read("CHANGELOG.md")
-check("D3 CHANGELOG 有 v4.209.1 条目", "v4.209.1" in _cl)
+# 判据要的是「**有条目**」，不是「文件里提到过」—— 用标题行匹配。
+# 原实现 `"v4.209.1" in _cl` 太松：CHANGELOG 里另有一处正文提及（「v4.206~v4.209.1
+# 五版的独立复审」），于是扰动把 `## v4.209.1` 标题整个抹掉后判据**照样通过**，
+# 扰动脚本只能报「未命中」——看起来像扰动失效，实为判据代理太弱（实测 2026-10-03）。
+check("D3 CHANGELOG 有 v4.209.1 条目（标题行）",
+      re.search(r"^##\s*\[?v4\.209\.1", _cl, re.M) is not None)
 _cf = read("config.py")
 _m = re.search(r'APP_VERSION = "v(\d+)\.(\d+)\.(\d+)"', _cf)
 _rd = read("README.md")

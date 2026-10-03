@@ -13,6 +13,15 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 UI = os.path.join(ROOT, "ui.py")
 TEST = os.path.join(ROOT, "tests", "test_welcome_ia_199.py")
 
+# 护栏：快照被测源码 + 装 SIGTERM/SIGINT/atexit 三重还原 + 残留变异预检。
+# 本脚本是**模块顶层执行**（import 完就开始改 ui.py），只在 case 内用 try/finally 还原；
+# 而 Python 默认的 SIGTERM 处理器直接终止进程（不抛异常、不走 finally），
+# 被超时强杀时 ui.py 会留在变异态（真实事故见 _perturb_guard.py docstring）。
+sys.path.insert(0, ROOT)
+import _perturb_guard as _guard  # noqa: E402
+
+_guard.arm([UI])
+
 _orig = open(UI, encoding="utf-8", newline="").read()
 _h0 = hashlib.md5(_orig.encode("utf-8")).hexdigest()
 
@@ -43,10 +52,12 @@ CASES = [
                          "            row.setFixedHeight(40)")),
 ]
 
+BAD = []          # 退出码契约用：记录「扰动没生效 / 没打红任何判据」的用例
 for name, fn in CASES:
     patched = fn(_orig)
     if patched == _orig:
         print("\n### %s\n   ⚠️ 扰动文本没命中，用例失效" % name)
+        BAD.append(name)
         continue
     open(UI, "w", encoding="utf-8", newline="").write(patched)
     try:
@@ -59,6 +70,19 @@ for name, fn in CASES:
         print("   ", f)
     if not fails:
         print("    ⛔ 没有任何判据变红 —— 这条性质没被守住")
+        BAD.append(name)
 
 _h1 = hashlib.md5(open(UI, encoding="utf-8", newline="").read().encode("utf-8")).hexdigest()
 print("\nui.py 已恢复：%s  md5=%s" % (_h0 == _h1, _h0))
+
+# 退出码契约（2026-10-03 补）：哑弹必须能被自动化发现。
+# 本脚本原先**恒 return 0** —— 「扰动文本没命中」与「没有任何判据变红」都只打印一行字，
+# 门禁/巡检拿到 exit=0 就以为通过；全仓巡检时这种静默失效只能靠人工读输出才发现，
+# 而那恰恰是最不会被做的事。md5 不一致则是更严重的事故（源码没还原），单独给码。
+if _h0 != _h1:
+    print("**源码未按原样恢复，请检查！**")
+    sys.exit(2)
+if BAD:
+    print("\n失效用例（%d 条）：%s" % (len(BAD), "、".join(BAD)))
+    sys.exit(1)
+sys.exit(0)

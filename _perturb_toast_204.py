@@ -40,6 +40,15 @@ CASES = [
      "        host.installEventFilter(self)", "        pass", "B9"),
 ]
 
+# 护栏：快照被测源码 + 装 SIGTERM/SIGINT/atexit 三重还原 + 残留变异预检。
+# 本脚本是**模块顶层执行**，且 case 循环里 `open(TARGET,"w")` 之后**只有 try 没有 finally**
+# —— 还原统一放在循环之后（第 67 行）。也就是说中途任何一次强杀/超时都会把 toast.py
+# 留在变异态，外加一个 _toast.py.perturb.bak（已在 _perturb_guard 的 scratch 清理范围内）。
+sys.path.insert(0, ROOT)
+import _perturb_guard as _guard  # noqa: E402
+
+_guard.arm([TARGET])
+
 orig = open(TARGET, encoding="utf-8", newline="").read()
 shutil.copy2(TARGET, BAK)
 results = []

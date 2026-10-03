@@ -13,6 +13,7 @@
 沿用 L186/L187（保留行尾）、L191（崩了红 ≠ 判据生效，必须解析 FAIL 名）。
 """
 import os
+import re
 import subprocess
 import sys
 
@@ -159,8 +160,12 @@ case("CHANGELOG 删掉 v4.209.2 条目",
      ["C1"])
 # 只红 C3（一致性）；C4 判的是 config 本身是不是 v4.209.2，config 没动 → 不红。
 # 第一版把 C4 也写进期望，又是我预判错了。
+# ⚠️ 锚点不许写死版本号（同 _perturb_208/209/2091 的教训；实测到 v4.210.0 时锚点失配、
+# 报 MISS-CONTEXT）。改为读当前真实版本号再换掉，与具体版本号解耦。
+_VER_NOW = re.search(r'APP_VERSION\s*=\s*"([^"]+)"',
+                     open(os.path.join(ROOT, "config.py"), encoding="utf-8").read()).group(1)
 case("README 版本与 config 不一致",
-     "README.md", "**v4.209.2**", "**v4.209.1**",
+     "README.md", "**%s**" % _VER_NOW, "**v0.0.0**",
      ["C3"])
 case("DESIGN 抹掉 v4.209.2 的修复记录",
      "DESIGN.md", "### 12.7 v4.209.2", "### 12.7 （待补）",
@@ -203,6 +208,15 @@ def failed_checks(out):
 
 
 def main():
+    # 护栏：快照被测源码 + 装 SIGTERM/SIGINT/atexit 三重还原 + 残留变异预检。
+    # 本脚本的变异/还原都在下面的 try/finally 里，而 Python 默认的 SIGTERM 处理器
+    # 直接终止进程（不抛异常、不走 finally）→ 被超时强杀时被测源码会留在变异态。
+    # 本脚本还有「新建整份文件」的 case（case_newfile），残留时更隐蔽。
+    sys.path.insert(0, ROOT)
+    import _perturb_guard as _guard  # noqa: E402
+
+    _guard.arm()
+
     hit, misses = 0, []
     for kind, name, fname, a, b, expect in CASES:
         path = os.path.join(ROOT, fname)

@@ -87,6 +87,15 @@ def run_test():
     return red, (m.group(1), m.group(2)) if m else ("?", "?"), out
 
 
+# 护栏：快照被测源码 + 装 SIGTERM/SIGINT/atexit 三重还原 + 残留变异预检。
+# 本脚本在顶层一次跑完「改源码 → 跑判据 → 还原」，只靠下面这个 try/finally 兜底；
+# 而 Python 默认的 SIGTERM 处理器直接终止进程（不抛异常、不走 finally），
+# 被超时强杀时 ui.py / diagnostic_export.py 会留在变异态（详见 _perturb_guard.py）。
+sys.path.insert(0, ROOT)
+import _perturb_guard as _guard  # noqa: E402
+
+_guard.arm()
+
 HIT, MISS = [], []
 try:
     for fp in FILES:

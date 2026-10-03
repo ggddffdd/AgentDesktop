@@ -7,6 +7,7 @@
 沿用 L191：**崩了红 ≠ 判据生效** —— 必须解析出 [FAIL] 条目名才算命中。
 """
 import os
+import re
 import subprocess
 import sys
 
@@ -130,8 +131,14 @@ case("删掉「为什么不接 #2 那种」那句对比理由",
      ["B4"])
 
 # 14) 版本号没升
-case("config.APP_VERSION 没升到 v4.208.0",
-     "config.py", 'APP_VERSION = "v4.208.0"', 'APP_VERSION = "v4.207.0"',
+#   ⚠️ 锚点**不许写死版本号**：本 case 原本写的是「当时的当前版本」v4.208.0，
+#   跨版本后 config.py 里再没有那个串 → 锚点失配 → 静默退化成哑弹
+#   （实测 2026-10-03：版本走到 v4.210.0 时报 MISS-CONTEXT，判据一次都没被真正测到）。
+#   改为「读当前真实版本号 → 换成一个明显不是它的值」，与版本号解耦、永久有效。
+_VER_NOW = re.search(r'APP_VERSION\s*=\s*"([^"]+)"',
+                     open(os.path.join(ROOT, "config.py"), encoding="utf-8").read()).group(1)
+case("config.APP_VERSION 被改回旧版本（版本一致性判据应红）",
+     "config.py", 'APP_VERSION = "%s"' % _VER_NOW, 'APP_VERSION = "v0.0.0"',
      ["F5"])
 
 # 15) DESIGN 把 5 类口径改回 4 类
@@ -159,6 +166,14 @@ def failed_checks(out):
 
 
 def main():
+    # 护栏：快照被测源码 + 装 SIGTERM/SIGINT/atexit 三重还原 + 残留变异预检。
+    # 本脚本的变异/还原都在下面的 try/finally 里，而 Python 默认的 SIGTERM 处理器
+    # 直接终止进程（不抛异常、不走 finally）→ 被超时强杀时被测源码会留在变异态。
+    sys.path.insert(0, ROOT)
+    import _perturb_guard as _guard  # noqa: E402
+
+    _guard.arm()
+
     hit, misses = 0, []
     for name, fname, old, new, expect in CASES:
         path = os.path.join(ROOT, fname)

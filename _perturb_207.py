@@ -148,9 +148,15 @@ case("#2 文案退回带圆括号的旧版",
 # 15) 有人提前动了波次 3 的活
 #     注意 old 用 `import` 不带括号的真身 —— 第一版写的是 "from PySide6"，
 #     但 legion_ui.py 的 import 顺序不是那样，导致片段没匹配上（判据没被真正测到）。
-case("有人提前给 legion_ui 接了组件",
-     "legion_ui.py", "import logging", "import logging\nfrom empty_state import empty_state",
-     ["E12a", "E12b"])
+# ⚠️ 本条 case 的旧变异是「提前给 legion_ui 加 `from empty_state import empty_state`」，
+# 期望 E12a/E12b 红 —— 那是 **v4.207 时期**的前提（当时守的是「波次 3 的活还没做，
+# legion_ui 不许接」）。v4.208 波次 3 落地后判据翻面成「恰好 2 处接入 + 必须 import」，
+# 「加 import」不再是错误：E12a 数调用点、E12b 查文案，都不随 import 变；E12c 反而
+# **要求** import 存在 → 三条判据一条都不会红 → 静默哑弹（实测 2026-10-03）。
+# 改守当前真实的防线：**import 掉了 → 接线断了**（其他判据连带红属正常，期望是包含式）。
+case("legion_ui 丢掉 empty_state 的 import（接线断了）",
+     "legion_ui.py", "from empty_state import empty_state", "",
+     ["E12c"])
 
 # 15) 有人把接入点数从 4 改成 5（多接了一处没记录的）
 case("ui.py 多接了一处未记录的调用点",
@@ -189,6 +195,14 @@ def failed_checks(out):
 
 
 def main():
+    # 护栏：快照被测源码 + 装 SIGTERM/SIGINT/atexit 三重还原 + 残留变异预检。
+    # 本脚本的变异/还原都在下面的 try/finally 里，而 Python 默认的 SIGTERM 处理器
+    # 直接终止进程（不抛异常、不走 finally）→ 被超时强杀时被测源码会留在变异态。
+    sys.path.insert(0, ROOT)
+    import _perturb_guard as _guard  # noqa: E402
+
+    _guard.arm()
+
     total = len(CASES)
     hit = 0
     misses = []
