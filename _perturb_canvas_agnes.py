@@ -34,10 +34,10 @@ sys.path.insert(0, ROOT)
 import _perturb_guard as _guard  # noqa: E402
 _guard.arm()
 
-# 备份原始内容，结束时确保还原
-_BACKUP = {EXEC: open(EXEC, encoding="utf-8").read(),
-           GRAPH: open(GRAPH, encoding="utf-8").read(),
-           BRIDGE: open(BRIDGE, encoding="utf-8").read()}
+# 备份原始内容，结束时确保还原。
+# 用**字节**快照而不是文本：文本模式读写会把 CRLF 归一/再转换（本仓生产源码全 CRLF、
+# tests 全 LF），一旦方向搞反就是「整份假 diff」（L215 同类坑）。
+_BACKUP = {p: open(p, "rb").read() for p in (EXEC, GRAPH, BRIDGE)}
 
 
 def _env(check):
@@ -55,6 +55,23 @@ def _run(check=None):
 FAILS = []
 
 
+def _read_src(fp):
+    """读被测源码：返回 (按 \\n 归一的文本, 该文件自身的行尾)。
+
+    本仓生产源码是 CRLF、tests 是 LF，所以不能既要求「多行锚点用 \\n 写得出来」，
+    又要求「写回后行尾不变」——必须显式记住行尾再还原，否则任选一边都会踩坑
+    （锚点匹配不上，或把 CRLF 改成 LF 造出整份假 diff）。
+    """
+    b = open(fp, "rb").read()
+    crlf = b.count(b"\r\n")
+    nl = "\r\n" if crlf and crlf >= b.count(b"\n") - crlf else "\n"
+    return b.decode("utf-8").replace("\r\n", "\n"), nl
+
+
+def _write_src(fp, text, nl):
+    open(fp, "wb").write(text.replace("\n", nl).encode("utf-8"))
+
+
 def _pg(desc, check, filepath, old, new):
     # 先确认基线（未变异）该判据是绿的
     base = _run(check)
@@ -62,20 +79,20 @@ def _pg(desc, check, filepath, old, new):
         print("ERR 基线已红: %s [%s]" % (desc, check))
         FAILS.append(desc)
         return
-    src = open(filepath).read()
+    src, nl = _read_src(filepath)
     if old not in src:
         print("ERR 锚点未命中: %s" % desc)
         FAILS.append(desc)
         return
-    open(filepath, "w").write(src.replace(old, new, 1))
+    _write_src(filepath, src.replace(old, new, 1), nl)
     mut = _run(check)
     if mut.returncode == 0:
         print("ERR 未变红: %s -> %s" % (desc, check))
         FAILS.append(desc)
     else:
         print("PG OK: %s -> %s 变红" % (desc, check))
-    # 还原
-    open(filepath, "w").write(src)
+    # 还原（同编码同字节，行尾不变）
+    _write_src(filepath, src, nl)
 
 
 def main():
@@ -109,6 +126,18 @@ def main():
         "    frames[0].save(out_path, save_all=True, append_images=frames[1:],\n                   duration=int(1000 / max(1, fps)), loop=0)",
         "    pass  # 扰动：不落盘")
 
+    # PG7 把明文 key 硬编码回 agnes_bridge → A8 红（2026-10-03 泄露事故的防回潮守卫）
+    _pg("明文 key 回潮（重新硬编码）", "A8", BRIDGE,
+        '_DEFAULT_BASE = "https://api.agnes-ai.cn/v1"',
+        '_DEFAULT_KEY = "sk-fake0123456789abcdefghijklmnopqrstuv"  # 扰动：明文回潮\n'
+        '_DEFAULT_BASE = "https://api.agnes-ai.cn/v1"')
+
+    # PG8 _default_cred 忽略 env（优先级写反）→ B7c 红
+    # 注：必须打成**行为**变异（B 组真跑解析），打在注释/字符串上的变异只会造成假绿。
+    _pg("凭据解析忽略 env（优先级写反）", "B7", BRIDGE,
+        '    key = (os.environ.get("AGNES_API_KEY") or "").strip()',
+        '    key = ""  # 扰动：忽略 env')
+
     # 反向基线：所有文件已还原，全量判据应全绿
     final = _run()
     if final.returncode != 0:
@@ -122,9 +151,9 @@ if __name__ == "__main__":
     try:
         main()
     finally:
-        # 无论如何还原三份原始文件
-        for fp, content in _BACKUP.items():
-            open(fp, "w", encoding="utf-8").write(content)
+        # 无论如何还原三份原始文件（字节级，行尾/编码都不受影响）
+        for fp, blob in _BACKUP.items():
+            open(fp, "wb").write(blob)
     if FAILS:
         print("\n扰动失败项: %s" % ", ".join(FAILS))
         sys.exit(1)

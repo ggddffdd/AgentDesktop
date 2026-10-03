@@ -13,8 +13,12 @@
                                       （promo_fx 真实促销动效）
   * 另有纯本地、零网络、零 ffmpeg 的 pil_promo_motion / make_promo_motion_preview，
     用于「促销动效预览」按钮（不消耗额度，随时可点）。
-  * key 默认用大哥国内站会员 key（与 key 同站 api.agnes-ai.cn/v1）；
-    env AGNES_API_KEY / AGNES_BASE_URL 可覆盖（便于换站/换号）。
+  * key **不在源码里**（2026-10-03 安全修复）：运行时按
+    env AGNES_API_KEY / AGNES_BASE_URL → 用户配置
+    ~/Documents/小臭玩AI/config.json 的 model_profiles.Agnes.api_key 解析；
+    都取不到就明确抛错（绝不静默用假 key 打网络）。
+    背景：此前此处硬编码国内站会员 key，随公开仓库 ggddffdd/AgentDesktop
+    的提交 3c9d285 泄露（打包产物 PYZ 内亦带明文），故改为运行时解析。
 
 参考：~/.workbuddy/skills/agnes-ai（agnes-image-2.5-flash 图生图、agnes-video-2.5-flash 视频）。
 """
@@ -25,17 +29,51 @@ import os
 import numpy as np
 from PIL import Image
 
-# 默认凭据（与 key 同站！国内站会员 key 只能打 api.agnes-ai.cn）
-_DEFAULT_KEY = os.environ.get("AGNES_API_KEY") or \
-    "sk-cet1D74xqRMm2ner9uSsYOvyaaAKFj1ZoReO0IeprMHCuOav"
-_DEFAULT_BASE = os.environ.get("AGNES_BASE_URL") or "https://api.agnes-ai.cn/v1"
+# 默认凭据：**源码内绝不出现明文 key**。解析顺序：
+#   1) env AGNES_API_KEY / AGNES_BASE_URL（换站/换号、CI 用）
+#   2) 用户配置 ~/Documents/小臭玩AI/config.json → model_profiles.Agnes.api_key
+#      （该文件在用户文档目录且已入 .gitignore，是项目既有的真实密钥归口）
+#   3) 都没有 → _resolve_cred 抛错，给出可操作的提示
+_DEFAULT_BASE = "https://api.agnes-ai.cn/v1"
 
-# 节制：视频接口 6 次/分钟限流，单次提交不涉及；此处仅做最小重试
-_MAX_RETRY = 2
+
+def _user_config_agnes_key():
+    """从用户配置读 Agnes key；任何异常都返回 ""（由调用方决定是否报错）。"""
+    try:
+        import json
+
+        from config import CONFIG_PATH
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            cfg = json.load(f)
+        prof = (cfg.get("model_profiles") or {}).get("Agnes") or {}
+        return (prof.get("api_key") or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _default_cred():
+    """返回 (key, base)。key 可能为空字符串，由 _resolve_cred 统一判定。"""
+    key = (os.environ.get("AGNES_API_KEY") or "").strip()
+    if not key:
+        key = _user_config_agnes_key()
+    base = (os.environ.get("AGNES_BASE_URL") or "").strip() or _DEFAULT_BASE
+    return key, base
 
 
 def _resolve_cred(api_key, base_url):
-    return (api_key or _DEFAULT_KEY), (base_url or _DEFAULT_BASE)
+    dkey, dbase = _default_cred()
+    key = (api_key or dkey or "").strip()
+    if not key:
+        raise RuntimeError(
+            "Agnes 凭据缺失：源码不再内置 key。请设置环境变量 AGNES_API_KEY，"
+            "或在 %s 的 model_profiles.Agnes.api_key 写入 key（与 base_url 同站）。"
+            % (os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI",
+                            "config.json"),))
+    return key, (base_url or dbase)
+
+
+# 节制：视频接口 6 次/分钟限流，单次提交不涉及；此处仅做最小重试
+_MAX_RETRY = 2
 
 
 def _arr_to_pil(arr):

@@ -12,6 +12,7 @@
 """
 
 import os
+import re
 import sys
 import tempfile
 
@@ -90,6 +91,24 @@ if active("A6"):
 if active("A7"):
     check("A7 DEFAULT_EXECUTORS 注册 gen_video / promo_fx",
           '"gen_video"' in EXEC and '"promo_fx"' in EXEC)
+if active("A8"):
+    # 2026-10-03 泄露事故防回潮守卫：源码里**绝不允许**出现明文 API key。
+    # 背景：agnes_bridge.py 曾硬编码国内站会员 key，随公开仓库 ggddffdd/AgentDesktop
+    # 的提交 3c9d285 泄露（打包产物 PYZ 内亦带明文）。此处按「sk- + 长随机串」形态判定，
+    # 注释/文档里的示意写法（如 sk-explicit、sk-xxxx）不匹配长随机串，不会误报。
+    _leak = re.findall(r"sk-[A-Za-z0-9_-]{24,}", AGNES)
+    check("A8 源码不得出现明文 API key（防泄露回潮）", not _leak,
+          "命中 %d 处: %s" % (len(_leak), _leak[:2]))
+if active("A9"):
+    # 凭据必须来自「运行时可换」的通道，而不是烧死在代码里
+    check("A9 凭据解析链：env AGNES_API_KEY 优先",
+          "AGNES_API_KEY" in AGNES, "否则无法换号/换站")
+    check("A9b 凭据解析链：回落用户配置 model_profiles.Agnes.api_key",
+          'prof.get("api_key")' in AGNES and "_user_config_agnes_key" in AGNES
+          and "def _default_cred(" in AGNES,
+          "否则换 key 必须改源码重打包（断言的是真实读取表达式，不是注释里的字样）")
+    check("A9c 缺 key 明确报错，不静默用假 key",
+          "Agnes 凭据缺失" in AGNES)
 
 
 # --------------------------------------------------------------------------
@@ -207,6 +226,48 @@ if active("B6"):
     out = os.path.join(tempfile.mkdtemp(), "degenerate.gif")
     r = ab.pil_promo_motion([], out, {"caption": "测试促销"})
     check("B6 无帧时退化生成 GIF", os.path.exists(r), r)
+
+
+if active("B7"):
+    # 行为：凭据解析（不真打网络）。要覆盖三种来源与失败路径 —— 只看静态字符串
+    # 挡不住「解析链写反了」（例如 env 覆盖不到、config 路径拼错）。
+    _env_bak = os.environ.pop("AGNES_API_KEY", None)
+    _base_bak = os.environ.pop("AGNES_BASE_URL", None)
+    try:
+        k1, b1 = ab._resolve_cred(None, None)
+        check("B7 无 env 时从用户配置解析出 key", bool(k1) and k1.startswith("sk-"),
+              "%s...%s" % (k1[:7], k1[-4:]) if k1 else "空")
+        check("B7b base 与 key 同站（国内站）", b1.startswith("https://api.agnes-ai.cn"),
+              b1)
+        os.environ["AGNES_API_KEY"] = "sk-envtest0123456789abcdefghijklmn"
+        os.environ["AGNES_BASE_URL"] = "https://example.invalid/v1"
+        k2, b2 = ab._resolve_cred(None, None)
+        check("B7c env 覆盖用户配置", k2 == "sk-envtest0123456789abcdefghijklmn"
+              and b2 == "https://example.invalid/v1", "%s | %s" % (k2, b2))
+        k3, b3 = ab._resolve_cred("sk-explicit", "https://x/v1")
+        check("B7d 显式传参优先级最高", k3 == "sk-explicit" and b3 == "https://x/v1",
+              "%s | %s" % (k3, b3))
+        os.environ.pop("AGNES_API_KEY", None)
+        os.environ.pop("AGNES_BASE_URL", None)
+        _orig = ab._user_config_agnes_key
+        ab._user_config_agnes_key = lambda: ""
+        try:
+            ab._resolve_cred(None, None)
+            check("B7e 缺 key 必须明确报错（不得静默打网络）", False, "未抛异常")
+        except RuntimeError as e:
+            check("B7e 缺 key 必须明确报错（不得静默打网络）",
+                  "Agnes 凭据缺失" in str(e), str(e)[:60])
+        finally:
+            ab._user_config_agnes_key = _orig
+    except Exception as e:  # noqa: BLE001
+        check("B7 凭据解析行为", False, "%s: %s" % (type(e).__name__, e))
+    finally:
+        os.environ.pop("AGNES_API_KEY", None)
+        os.environ.pop("AGNES_BASE_URL", None)
+        if _env_bak is not None:
+            os.environ["AGNES_API_KEY"] = _env_bak
+        if _base_bak is not None:
+            os.environ["AGNES_BASE_URL"] = _base_bak
 
 
 # --------------------------------------------------------------------------
