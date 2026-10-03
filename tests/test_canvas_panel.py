@@ -101,6 +101,30 @@ def _a():
           "STATUS_COLOR 缺键: %r" % _sc[:120])
     check("A9 ScenePlan 往返序列化", "def from_dict" in SRC)
 
+    # ---- Wave D（复审 #7）：占位语义要一路透传到画布 ----
+    check("A10 NodeSpec 带 placeholder 字段且随 to_dict 序列化",
+          "placeholder: bool = False" in SRC
+          and '"placeholder": self.placeholder' in SRC,
+          "不透传的话「跑通了 stub」和「真出片了」在界面上长得一模一样")
+    check("A11 layout_graph 把节点占位标记透传给 NodeSpec",
+          'placeholder=bool(getattr(n, "placeholder", False))' in lay)
+    # 注：不能用 _slice_func("CanvasNodeItem") —— 它切到「下一个 def/class」就停，
+    # 而类体里第一个 def 就是 __init__，会把真正要看的渲染代码切掉（假红/假绿）。
+    # 这里按「下一个顶层 class」切，拿到整个类体。
+    _cs = SRC.find("class CanvasNodeItem")
+    _item = SRC[_cs:SRC.find("\nclass ", _cs)] if _cs >= 0 else ""
+    # 断言「条件行 + 紧邻动作行」的组合，而不是分别搜两个串：
+    # `spec.placeholder` 在状态文字那行也出现，只搜它会漏掉「圆点分支被摘掉」这种变异
+    # （_perturb_canvas_panel.py 的 PL 就是这么把它打出来的）。
+    check("A12 资产标记三态：占位画空心圈（Qt.NoBrush），不冒充实心绿点",
+          "if spec.placeholder:\n            mark.setBrush(QBrush(Qt.NoBrush))" in _item,
+          "占位物同样是「已登记」，画实心绿点等于告诉用户内容已经生成出来了")
+    check("A13 节点状态文字带「占位」后缀（不只靠圆点颜色区分）",
+          '" · 占位" if spec.placeholder else ""' in _item,
+          "只靠颜色的话，色弱用户 / 截图里根本看不出这是占位")
+    check("A14 详情面板单独报出占位产出条数（不与「已落地」混为一谈）",
+          "占位产出: %d 个" in SRC)
+
 
 # =========================================================================
 # B 行为组：真 import canvas_panel，对示例图跑布局
@@ -152,6 +176,15 @@ def _b():
           str([r.get("registered") for r in regs]))
     check("B12 final 资产标记与 registered 一致", final.assets_registered == 1,
           "assets_registered=%d" % final.assets_registered)
+
+    # ---- Wave D（复审 #7）：占位标记必须传到画布规格上 ----
+    ph = [n.id for n in plan.nodes if n.placeholder]
+    check("B13 stub 跑完的示例图：6 个节点全标为占位", len(ph) == 6, str(ph))
+    check("B14 NodeSpec 往返保留 placeholder（to_dict/from_dict 不丢）",
+          all(n.placeholder for n in
+              cp.ScenePlan.from_dict(plan.to_dict()).nodes))
+    check("B14b 占位归占位：资产仍报 registered（画布「已落地」语义不变）",
+          all(n.registered for n in plan.nodes))
 
 
 # =========================================================================

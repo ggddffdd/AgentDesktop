@@ -1,3 +1,6 @@
 # 已知存量裸 hex 基线（file:#hex，小写）。护栏对基线内静默、只拦新增。
 # 清理一部分存量后，运行 `python ui_hex_guard.py --write-baseline` 重新生成。
 
+# 2026-10-03：canvas_export.py 因新增注释含 THEME 字样首次被纳入扫描，暴露 HEAD 既有颜色。
+# 其中 #666666（节点状态文字 fill）为老值；改走 THEME[key] 会动实际色值，等大哥批准后再做，先登记存量。
+canvas_export.py:#666666

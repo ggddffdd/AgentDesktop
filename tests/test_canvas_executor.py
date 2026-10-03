@@ -107,6 +107,25 @@ run("A12 executors 含 _OUTPUT_EXTS 映射（kind → 允许扩展名）",
 run("A13 三个执行器均接入了 validate_output（gen_image / gen_video / promo_fx）",
     EXEC_SRC.count("validate_output(") >= 4)  # 1 定义 + 3 调用
 
+# ---- Wave D 复审 #8：上游选择语义（谁当参考帧必须说得清、可复现）----
+run("A14 executors 提供上游选择 API（select_upstream / _upstream_assets / _direct_upstream）",
+    all(hasattr(ex, n) for n in
+        ("select_upstream", "_upstream_assets", "_direct_upstream")))
+run("A15 gen_video / promo_fx 改用确定性的上游选择（不再直接取递归收集的第一个）",
+    'select_upstream(graph, node, "image")' in EXEC_SRC
+    and '_upstream_assets(graph, node, "image")' in EXEC_SRC)
+_SEL_SRC = EXEC_SRC.split("def select_upstream", 1)[1].split("\ndef ", 1)[0]
+run("A16 上游选择支持显式指定（config.ref_source / config.ref_port），指不到就抛错",
+    'cfg.get("ref_source")' in _SEL_SRC and 'cfg.get("ref_port")' in _SEL_SRC
+    and _SEL_SRC.count("raise UnsupportedEditMode") >= 2,
+    "显式指定指不到却静默回落 → 用户点名要 A 却拿到 B，比直接报错难查得多")
+
+# ---- Wave D 复审 #7：占位产出必须显式标记（不能冒充真出片）----
+run("A17 passthrough_executor 的产出显式标记 placeholder=True",
+    "placeholder=True" in
+    EXEC_SRC.split("def passthrough_executor", 1)[1].split("\ndef ", 1)[0],
+    "passthrough 写的只是 manifest 占位物，却不标出来 → 与真出片长得一样")
+
 
 # --------------------------------------------------------------------------
 # B 行为
@@ -368,6 +387,91 @@ g_v10.use_real_executors(root_v10, video_fn=_v10_ok_video, motion_fn=_v10_evil_m
 g_v10.run({})
 run("B10 越目录产出（motion_fn 写外部路径）→ promo 节点诚实 failed",
     g_v10.nodes["promo"].status == "failed", g_v10.nodes["promo"].status)
+
+
+# --------------------------------------------------------------------------
+# B11-B17 Wave D：#7 占位语义 + #8 上游选择语义
+# --------------------------------------------------------------------------
+# B11 stub（默认执行器）产出的东西磁盘上并不存在 —— 必须显式标成占位，
+# 否则「registered=True + 绿点」会被读成「真出片」。
+root_ph = tempfile.mkdtemp()
+g_ph_stub = cg.CanvasGraph()
+g_ph_stub.add_node(cg.CanvasNode("s", "source_prompt",
+                                 outputs={"prompt": cg.Port("prompt", "prompt")}))
+g_ph_stub.run({})
+_ref_stub = g_ph_stub.nodes["s"].out_assets["prompt"]
+run("B11 stub 产出标记为占位（AssetRef.placeholder=True）",
+    _ref_stub is not None and _ref_stub.placeholder is True, str(_ref_stub))
+run("B11b stub 产出仍照常登记（placeholder 与 registered 是两件事）",
+    _ref_stub is not None and _ref_stub.registered is True,
+    "不登记的话调度链/资产引用就断了")
+run("B11c 跑完后节点自身也标记为占位节点（node.placeholder）",
+    g_ph_stub.nodes["s"].placeholder is True)
+run("B11d asset_registrations 同时报出 registered 与 placeholder",
+    bool(g_ph_stub.asset_registrations())
+    and g_ph_stub.asset_registrations()[0].get("placeholder") is True)
+
+# B12 真执行器产出不标占位；同一张图里的 passthrough 节点标占位
+root_ph2 = tempfile.mkdtemp()
+g_ph = cg.build_sample_graph()
+g_ph.use_real_executors(root_ph2, video_fn=_b7_video, motion_fn=_b7_motion)
+g_ph.run({})
+run("B12 真执行器节点（img/vid/promo）产出不标占位",
+    g_ph.nodes["img"].placeholder is False
+    and g_ph.nodes["vid"].placeholder is False
+    and g_ph.nodes["promo"].placeholder is False,
+    "img=%s vid=%s promo=%s" % (g_ph.nodes["img"].placeholder,
+                                g_ph.nodes["vid"].placeholder,
+                                g_ph.nodes["promo"].placeholder))
+run("B12b 同图的 passthrough 节点（digital_twin / final_output）标占位",
+    g_ph.nodes["twin"].placeholder is True
+    and g_ph.nodes["final"].placeholder is True,
+    "twin=%s final=%s" % (g_ph.nodes["twin"].placeholder,
+                          g_ph.nodes["final"].placeholder))
+
+# B13 多入节点按「输入端口声明顺序」选参考帧，与连线先后无关
+gs = cg.CanvasGraph()
+gs.add_node(cg.CanvasNode("p1", "gen_image",
+                          outputs={"o": cg.Port("o", "image")}))
+gs.add_node(cg.CanvasNode("p2", "gen_image",
+                          outputs={"o": cg.Port("o", "image")}))
+gs.add_node(cg.CanvasNode("v", "gen_video",
+                          inputs={"first": cg.Port("first", "image"),
+                                  "second": cg.Port("second", "image")},
+                          outputs={"clip": cg.Port("clip", "clip")}))
+gs.connect_data("p2", "o", "v", "second")     # 先连「第二个」端口
+gs.connect_data("p1", "o", "v", "first")      # 后连「第一个」端口
+gs.nodes["p1"].out_assets["o"] = cg.AssetRef(kind="image", name="p1", path="P1.png")
+gs.nodes["p2"].out_assets["o"] = cg.AssetRef(kind="image", name="p2", path="P2.png")
+_sel = ex.select_upstream(gs, gs.nodes["v"], "image")
+run("B13 多入节点按输入端口声明顺序选参考帧（与连线先后无关）",
+    _sel == ("P1.png", "p1.o"), str(_sel))
+run("B13b 递归收集同样按端口声明顺序（不依赖连线时序）",
+    [c["path"] for c in ex._upstream_assets(gs, gs.nodes["v"], "image")]
+    == ["P1.png", "P2.png"],
+    str([c["path"] for c in ex._upstream_assets(gs, gs.nodes["v"], "image")]))
+
+# B14 显式指定 ref_source / ref_port 生效；指不到则诚实抛错（不静默回落）
+gs.nodes["v"].config = {"ref_source": "p2.o"}
+run("B14 ref_source 显式指定覆盖端口顺序",
+    ex.select_upstream(gs, gs.nodes["v"], "image") == ("P2.png", "p2.o"))
+gs.nodes["v"].config = {"ref_source": "nope.o"}
+_t, _d = _v_raises(ex.select_upstream, gs, gs.nodes["v"], "image")
+run("B14b ref_source 指不到 → 诚实抛 UnsupportedEditMode（不静默回落）", _t, _d)
+gs.nodes["v"].config = {"ref_port": "second"}
+run("B14c ref_port 指定端口生效",
+    ex.select_upstream(gs, gs.nodes["v"], "image") == ("P2.png", "p2.o"))
+gs.nodes["v"].config = {"ref_port": "nope"}
+_t, _d = _v_raises(ex.select_upstream, gs, gs.nodes["v"], "image")
+run("B14d ref_port 指不到 → 诚实抛 UnsupportedEditMode", _t, _d)
+
+# B15 gen_video 结果里回显「实际用了哪一路上游」（出片不对时才查得下去）
+gs.nodes["v"].config = {}
+node_vid = g_ph.nodes["vid"]
+_ex_fn = ex.gen_video_executor(node_vid, root_ph2, video_fn=_b7_video, graph=g_ph)
+_res_vid = _ex_fn({})
+run("B15 gen_video 结果回显实际选中的参考来源 src_from",
+    _res_vid.get("src_from") == "img.image", str(_res_vid.get("src_from")))
 
 
 # --------------------------------------------------------------------------

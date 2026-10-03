@@ -106,6 +106,10 @@ class NodeSpec:
     out_ports: List[str] = field(default_factory=list)
     asset_count: int = 0
     assets_registered: int = 0
+    # Wave D（复审 #7）：这批产出是不是「占位物」（stub / passthrough 造的，
+    # 没接真生成）。registered 只说「登记成功」，占位物同样会登记 —— 两个标志
+    # 各自把一件事讲清楚，合起来才回答「到底有没有真出片」。
+    placeholder: bool = False
 
     @property
     def registered(self) -> bool:
@@ -119,6 +123,7 @@ class NodeSpec:
             "in_ports": list(self.in_ports), "out_ports": list(self.out_ports),
             "asset_count": self.asset_count,
             "assets_registered": self.assets_registered,
+            "placeholder": self.placeholder,
         }
 
 
@@ -229,6 +234,7 @@ def layout_graph(g: "cg.CanvasGraph") -> ScenePlan:
                 in_ports=list(n.inputs.keys()),
                 out_ports=list(n.outputs.keys()),
                 asset_count=rc["n"], assets_registered=rc["ok"],
+                placeholder=bool(getattr(n, "placeholder", False)),
             ))
 
     edges: List[EdgeSpec] = []
@@ -374,15 +380,24 @@ class CanvasNodeItem(QGraphicsRectItem):
         title = QGraphicsTextItem(spec.label, self)
         title.setFont(QFont("Microsoft YaHei", 11, QFont.Bold))
         title.setPos(spec.x + 8, spec.y + 6)
-        # 状态文字
-        st = QGraphicsTextItem(spec.status, self)
+        # 状态文字（占位节点显式标出来：completed 只说「流程跑通了」）
+        st = QGraphicsTextItem(
+            spec.status + (" · 占位" if spec.placeholder else ""), self)
         st.setFont(QFont("Microsoft YaHei", 9))
         st.setPos(spec.x + 8, spec.y + 28)
-        # 资产落地标记（右下角小圆：绿=已落地，灰=未落地）
+        # 资产标记（右下角小圆）三态，不能混：
+        #   实心绿 = 真产出且已登记；空心橙圈 = 占位物（登记了但不是真出片）；
+        #   实心灰 = 未落地。旧代码只有「绿/灰」两态，把占位物也画成实心绿点，
+        #   于是「跑通了 stub」和「真出片了」在界面上长得一模一样（复审 #7）。
         mark = QGraphicsEllipseItem(
             QRectF(spec.x + spec.w - 14, spec.y + spec.h - 14, 8, 8), self)
-        mark.setBrush(QBrush(QColor(THEME["canvas_completed"] if spec.registered else THEME["canvas_pending"])))
-        mark.setPen(QPen(QColor(THEME["white"]), 1))
+        if spec.placeholder:
+            mark.setBrush(QBrush(Qt.NoBrush))
+            mark.setPen(QPen(QColor(THEME["canvas_incomplete"]), 2))
+        else:
+            mark.setBrush(QBrush(QColor(THEME["canvas_completed"] if spec.registered
+                                        else THEME["canvas_pending"])))
+            mark.setPen(QPen(QColor(THEME["white"]), 1))
         # 端口：左输入 / 右输出（可交互 PortItem）
         ports = node.inputs if node is not None else {}
         for i, p in enumerate(spec.in_ports):
@@ -515,12 +530,14 @@ class CanvasScene(QGraphicsScene):
         if target is None:
             return
         f = (src.node_id, src.port, target.node_id, target.port)
-        # 预校验（不实际留下边）：connect_data 内部做端口存在 + 类型兼容校验
+        # 预校验走**纯**校验 API（只读、零副作用）：端口存在 / 类型兼容 /
+        # 单入端口不覆盖 / 不成环。旧写法是「先真连一次探路 → remove_data_edge 回滚」，
+        # 那会把一条已存在的边短暂删掉再重建（扰动撤销栈与底层依赖），
+        # 而且「这条线能不能连」这件事本不该通过「真改一次图」来回答。
         try:
-            self.graph.connect_data(*f)
+            self.graph.can_connect(*f)
         except ValueError:
             return
-        self.graph.remove_data_edge(*f)   # 回滚试探
         cmd = ConnectCommand(self.graph, self.undo_stack, *f)
         if self.undo_stack is not None:
             self.undo_stack.push(cmd)
@@ -1213,6 +1230,11 @@ class CanvasPanel(QWidget):
         self.detail.addItem("状态: %s" % n.status)
         self.detail.addItem("产出资产: %d 个，已落地 %d 个" % (
             len(regs), sum(1 for r in regs if r.get("registered"))))
+        # Wave D #7：把「登记成功」和「真出片」分开讲。占位物（stub / passthrough）
+        # 一样会登记，只说「已落地 N 个」会被读成内容已经生成出来了。
+        n_ph = sum(1 for r in regs if r.get("placeholder"))
+        if n_ph:
+            self.detail.addItem("占位产出: %d 个（未接真生成，仅流程占位）" % n_ph)
         le = n.config.get("local_edits")
         le = le if isinstance(le, list) else []
         if le:

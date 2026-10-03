@@ -41,18 +41,23 @@ FAIL_N = 0
 FAILED_CASES = []
 
 
-def run_judge(mutated_src, tag, tg_src=None):
-    """把变异后的源码落临时文件，静态模式跑判据，返回 (红名集合, 原始输出)。
+def run_judge(mutated_src, tag, tg_src=None, static=True):
+    """把变异后的源码落临时文件跑判据，返回 (红名集合, 原始输出)。
 
     tg_src 不为 None 时，一并把 task_graph.py 也换成变异版（判据读 TG_PATH）。
     两个临时副本都以 `*_mut_*.py` 命名 —— 护栏的 scratch 清理认得这个前缀，
     万一本脚本被强杀也能兜底删掉。
+
+    static=False 时不加 CANVAS_STATIC → 连 B/C 行为组一起跑，用来验证
+    「只有行为判据能抓到的」变异（例如成环判定恒假、can_connect 偷偷建边）。
     """
     fd, path = tempfile.mkstemp(prefix="canvas_mut_", suffix=".py", dir=ROOT)
     os.close(fd)
     with open(path, "w", encoding="utf-8") as f:
         f.write(mutated_src)
-    env = dict(os.environ, CANVAS_PATH=path, CANVAS_STATIC="1")
+    env = dict(os.environ, CANVAS_PATH=path)
+    if static:
+        env["CANVAS_STATIC"] = "1"
     tg_path = None
     if tg_src is not None:
         fd2, tg_path = tempfile.mkstemp(prefix="taskgraph_mut_", suffix=".py",
@@ -63,7 +68,7 @@ def run_judge(mutated_src, tag, tg_src=None):
         env["TG_PATH"] = tg_path
     try:
         r = subprocess.run([sys.executable, JUDGE], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=120, env=env)
+                           encoding="utf-8", errors="replace", timeout=300, env=env)
         out = (r.stdout or "") + (r.stderr or "")
     except Exception as e:  # noqa: BLE001
         out = "%s: %s" % (type(e).__name__, e)
@@ -79,10 +84,11 @@ def run_judge(mutated_src, tag, tg_src=None):
     return red, out
 
 
-def case(name, mutate, expect_ids, on="canvas"):
+def case(name, mutate, expect_ids, on="canvas", static=True):
     """mutate(src) -> 变异后源码。expect_ids：期望转红的判据名（子串匹配即可）。
 
-    on="tg" → 变异的是 task_graph.py（经 TG_PATH 传给判据），canvas_graph.py 用原版。
+    on="tg"     → 变异的是 task_graph.py（经 TG_PATH 传给判据）。
+    static=False→ 连 B/C 行为组一起跑（给「只有行为判据抓得住」的变异用）。
     """
     global PASS_N, FAIL_N
     base = TG_SRC if on == "tg" else SRC
@@ -99,9 +105,9 @@ def case(name, mutate, expect_ids, on="canvas"):
         FAILED_CASES.append(name)
         return
     if on == "tg":
-        red, _out = run_judge(SRC, name, tg_src=new_src)
+        red, _out = run_judge(SRC, name, tg_src=new_src, static=static)
     else:
-        red, _out = run_judge(new_src, name)
+        red, _out = run_judge(new_src, name, static=static)
     missing = [e for e in expect_ids if not any(e in r for r in red)]
     ok = not missing
     print("  [%s] %s   期望红 %s | 实际红 %d 项%s"
@@ -207,9 +213,14 @@ case("P14 撤掉 depend 的幂等判断（同一对节点重复登记）",
          "        if blocked_by_id in t.blocked_by:  # 扰动：不判重复\n"
          "            pass"),
      ["A19"], on="tg")
-case("P15 撤掉 connect_data 的自依赖拦截（if False）",
-     sub("        if from_node == to_node:",
-         "        if False:  # 扰动：不拦自依赖"),
+case("P15 撤掉连线校验里的自依赖拦截（if False）",
+     # 锚点必须带上「raise」那两行：`if from_node == to_node:` 现在在 would_cycle 里
+     # 也出现一次（返回 [from, to] 而不是抛错），只匹配条件行会打到 would_cycle 上，
+     # 于是 A21 照样绿、这条 case 变成假绿。
+     sub("        if from_node == to_node:\n"
+         "            raise ValueError(\n"
+         '                f"{from_node} 不能连到自己：自依赖会永远等不到就绪（run 时死锁）")',
+         "        if False:  # 扰动：不拦自依赖\n            pass"),
      ["A21"])
 case("P16 撤掉 remove_data_edge 删边后的依赖重算",
      sub("        self.data_edges = kept\n        self._sync_order_deps()",
@@ -219,6 +230,70 @@ case("P17 撤掉 _order_seen 回写（重算结果不用作下次差集）",
      sub("        self._order_seen = desired",
          "        self._order_seen = set()  # 扰动：不回写期望集合"),
      ["A20"])
+
+# ---- Wave D 发现①②：纯校验 API + 连线即成环拒绝 ----
+case("P18 撤掉数据边校验体里的成环拒绝",
+     sub('        self._reject_cycle(from_node, to_node)\n        return "ok"',
+         '        return "ok"  # 扰动：不拒成环'),
+     ["A25"])
+case("P19 撤掉顺序边连线前的成环拒绝",
+     sub("        self._reject_cycle(from_node, to_node)"
+         "   # 顺序边一样能把图连成环\n", ""),
+     ["A25"])
+case("P20 _edge_pairs 漏掉顺序边（成环判定与依赖重算一起漏）",
+     sub("        pairs |= {(e.from_node, e.to_node) for e in self.order_edges}\n", ""),
+     ["A26"])
+case("P21 校验函数不再返回 'noop'（幂等判断消失）",
+     sub('                return "noop"', '                return "ok"  # 扰动：不判幂等'),
+     ["A24"])
+case("P22 藏起纯校验 API can_connect",
+     sub("    def can_connect(self, from_node, from_port, to_node, to_port) -> bool:",
+         "    def _no_can_connect(self, from_node, from_port, to_node, to_port)"
+         " -> bool:  # 扰动：藏起 can_connect"),
+     ["A23"])
+
+# ---- 行为组专属：这些变异只有 B 组抓得住（静态判据照样绿）----
+case("P23 would_cycle 永远返回空（成环不再被拒）",
+     sub("        back = self.edge_path(to_node, from_node)\n"
+         "        return ([from_node] + back) if back else []",
+         "        return []  # 扰动：永不判成环"),
+     ["B20"], static=False)
+case("P24 can_connect 偷偷真建边（预校验变成有副作用）",
+     sub("        self._check_connect(from_node, from_port, to_node, to_port)\n"
+         "        return True",
+         "        # 扰动：预校验改成真建边\n"
+         "        self.connect_data(from_node, from_port, to_node, to_port)\n"
+         "        return True"),
+     ["B21"], static=False)
+
+# ---- Wave D #7：占位语义显式化 ----
+case("P25 stub 产出不标占位（placeholder=True 删掉）",
+     sub("                placeholder=True,\n", ""),
+     ["A27"])
+case("P26 _wrap 进入执行前不重置占位标记",
+     sub("            node.placeholder = False          # 每次重跑都重算，不沿用上一轮结论\n",
+         ""),
+     ["A28"])
+case("P27 跑完不再按产出重算节点占位标记",
+     sub('            node.placeholder = any(\n'
+         '                getattr(a, "placeholder", False)\n'
+         '                for a in node.out_assets.values() if isinstance(a, AssetRef))',
+         "            node.placeholder = False  # 扰动：不按产出重算"),
+     ["A28"], static=False)
+case("P28 AssetRef 不再序列化 placeholder（导出/导入丢占位标记）",
+     sub('            "placeholder": self.placeholder,\n', ""),
+     ["A29"])
+case("P29 asset_registrations 不再报 placeholder",
+     sub('                        "placeholder": bool(a.placeholder),\n', ""),
+     ["A30"])
+case("P30 端口序列化不写 multi（退回 v1 行为）",
+     sub('return {"type": self.port_type, "multi": bool(self.multi)}',
+         'return {"type": self.port_type}  # 扰动：不写 multi'),
+     ["A31"])
+case("P31 port_from_spec 忽略 multi（往返丢标记）",
+     sub('        multi = bool(spec.get("multi", False))',
+         "        multi = False  # 扰动：忽略 multi"),
+     ["B24"], static=False)
 
 # ---- 反向：没坏就不许红（防判据过宽）----
 print("\n=== 反向：原样通过时不许有任何红项 ===")

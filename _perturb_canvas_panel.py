@@ -50,6 +50,23 @@ MUTATIONS = [
     ("PG_status_colors", "A8", "incomplete", "", True),
     # PH：删 from_dict 往返 → A9 静态红
     ("PH_from_dict", "A9", "def from_dict", "", True),
+    # ---- Wave D #7：占位语义透传链（canvas_graph → layout_graph → 画布）----
+    # PI：删 NodeSpec.placeholder 字段 → A10 静态红
+    ("PI_no_ph_field", "A10", "    placeholder: bool = False\n", "", True),
+    # PJ：删 NodeSpec.to_dict 里的 placeholder → A10 静态红
+    ("PJ_no_ph_todict", "A10", '"placeholder": self.placeholder,', "", True),
+    # PK：layout_graph 不再透传占位标记 → A11 静态红
+    ("PK_no_ph_pass", "A11",
+     'placeholder=bool(getattr(n, "placeholder", False)),', "", True),
+    # PL：资产小圆不再分占位（占位也画实心）→ A12 静态红
+    ("PL_ph_dot", "A12", "        if spec.placeholder:",
+     "        if False:  # 扰动：占位也画实心点", True),
+    # PM：状态文字不再标占位 → A13 静态红
+    ("PM_ph_text", "A13",
+     'spec.status + (" · 占位" if spec.placeholder else "")', "spec.status", True),
+    # PN：详情面板不再单列占位条数 → A14 静态红
+    ("PN_ph_detail", "A14", '"占位产出: %d 个（未接真生成，仅流程占位）" % n_ph',
+     '"占位产出: %s" % n_ph', True),
 ]
 
 

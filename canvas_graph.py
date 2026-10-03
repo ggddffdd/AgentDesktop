@@ -140,6 +140,10 @@ class AssetRef:
     path: str = ""                 # 阶段路径 / 绝对路径（写库后回填）
     name: str = ""                 # 人读名
     registered: bool = False       # 是否已成功写库落地
+    # Wave D（复审 #7）：这条产出是不是「占位」——即由 stub / passthrough 造出来的
+    # 流程占位物（没有接真生成）。registered 只说「登记动作成功了」，占位物同样会被
+    # 登记（否则调度链断）；两个字段合起来才能回答「到底有没有真出片」。
+    placeholder: bool = False
     meta: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -149,6 +153,7 @@ class AssetRef:
             "path": self.path,
             "name": self.name,
             "registered": self.registered,
+            "placeholder": self.placeholder,
             "meta": self.meta,
         }
 
@@ -164,6 +169,34 @@ class Port:
         if self.port_type not in VALID_PORT_TYPES:
             raise ValueError(
                 f"非法端口类型: {self.port_type!r}，必须是 {sorted(VALID_PORT_TYPES)} 之一")
+
+    def to_dict(self) -> dict:
+        """端口序列化。
+
+        v2 起写成 {"type": ..., "multi": ...}。v1 只写裸 port_type 字符串，
+        `multi` 直接丢失 —— 工程存盘再读回，多入端口会退化成单入（数据丢失，
+        且画布上看不出差别，直到运行时被单入端口校验拦住才发现）。
+        """
+        return {"type": self.port_type, "multi": bool(self.multi)}
+
+
+def port_from_spec(name: str, spec: Any) -> "Port":
+    """从工程文件里的端口 spec 还原 Port（导出/导入共用，保证两侧同构）。
+
+    兼容两种形态：
+      * v2  dict  {"type": "image", "multi": true}
+      * v1  str   "image"（旧工程文件，multi 恒 False）
+    spec 形态非法 → ValueError（由 canvas_export 包成 CanvasImportError 并带定位）。
+    """
+    if isinstance(spec, dict):
+        ptype = spec.get("type")
+        multi = bool(spec.get("multi", False))
+    elif isinstance(spec, str):
+        ptype, multi = spec, False
+    else:
+        raise ValueError(
+            f"端口 {name!r} 的 spec 必须是 dict 或字符串，收到 {type(spec).__name__}")
+    return Port(name, ptype, multi=multi)
 
 
 @dataclass
@@ -216,6 +249,10 @@ class CanvasNode:
         self.out_assets: Dict[str, Optional[AssetRef]] = {p: None for p in self.outputs}
         self.status = "pending"
         self.result = None
+        # Wave D（复审 #7）：本节点当前产出的资产是不是「占位物」。
+        # 由 CanvasGraph._wrap 在每次跑完后按产出 AssetRef.placeholder 重算，
+        # 供 UI / SVG / 报告把「流程跑通了」和「真出片了」分开讲。
+        self.placeholder = False
         # executor 占位（第 5 步替换真执行器）；默认 stub 产出空 AssetRef
         self.executor = executor or self._default_executor()
 
@@ -234,6 +271,9 @@ class CanvasNode:
                 kind=out_kind,
                 name=f"{NODE_TYPES[ntype]}:{self.id}",
                 path=_stub_stage_path(out_kind, self.id, "out"),
+                # Wave D（复审 #7）：stub 的路径是**编出来的**、磁盘上并不存在，
+                # 必须显式标成占位 —— 否则「已登记 + 绿点」会读成「真出片了」。
+                placeholder=True,
                 meta={"tags": [ntype, out_kind], "project": "canvas_stage",
                       "task": f"节点 {self.id} 产出 {out_kind}（第1步 stub）"},
             )
@@ -251,9 +291,10 @@ class CanvasNode:
             "id": self.id,
             "type": self.node_type,
             "status": self.status,
-            "inputs": {p: pt.port_type for p, pt in self.inputs.items()},
-            "outputs": {p: pt.port_type for p, pt in self.outputs.items()},
+            "inputs": {p: pt.to_dict() for p, pt in self.inputs.items()},
+            "outputs": {p: pt.to_dict() for p, pt in self.outputs.items()},
             "config": self.config,
+            "placeholder": self.placeholder,
             "pos": [self.pos[0], self.pos[1]] if self.pos else None,
         }
 
@@ -297,11 +338,17 @@ class CanvasGraph:
             # 把上游通过数据边传来的 AssetRef 注入节点 in_assets
             for p, a in self._incoming_assets(node.id).items():
                 node.in_assets[p] = a
+            node.placeholder = False          # 每次重跑都重算，不沿用上一轮结论
             r = node.executor(state)
             # 第 2 步：节点产出 AssetRef 落地到资产库，回填 asset_id
             for p, a in node.out_assets.items():
                 if isinstance(a, AssetRef):
                     self._register_asset(a)
+            # Wave D（复审 #7）：本节点这轮产出里只要有占位物，节点就是「占位节点」。
+            # 记在节点上而不是让调用方自己去翻 out_assets —— UI / 报告都要问这个问题。
+            node.placeholder = any(
+                getattr(a, "placeholder", False)
+                for a in node.out_assets.values() if isinstance(a, AssetRef))
             return r
         return _exec
 
@@ -362,9 +409,73 @@ class CanvasGraph:
         return ""
 
     # ---- 连线 ----
-    def connect_data(self, from_node, from_port, to_node, to_port,
-                     label="", asset=None):
-        """数据边：校验端口存在 + 类型兼容，再建立；同时隐含一条顺序边。"""
+    def _edge_pairs(self) -> set:
+        """当前「依赖方向」的边集 {(上游, 下游)}：数据边与顺序边等价贡献。
+
+        本图是依赖的唯一事实源，`_sync_order_deps` 的期望值、成环判定都读它 ——
+        两处各写一遍循环迟早会走岔（一处忘加 order_edges，成环就漏判）。
+        """
+        pairs = {(e.from_node, e.to_node) for e in self.data_edges}
+        pairs |= {(e.from_node, e.to_node) for e in self.order_edges}
+        return pairs
+
+    def edge_path(self, from_node: str, to_node: str) -> List[str]:
+        """一条 from_node → to_node 的**有向路径**（含首尾）；不存在返回 []。
+
+        只用来把「环长什么样」讲清楚（BFS 最短路；画布量级几十个节点，成本可忽略）。
+        """
+        if from_node == to_node:
+            return [from_node]
+        adj: Dict[str, List[str]] = {}
+        for a, b in sorted(self._edge_pairs()):
+            adj.setdefault(a, []).append(b)
+        prev: Dict[str, Optional[str]] = {from_node: None}
+        queue = [from_node]
+        while queue:
+            cur = queue.pop(0)
+            for nxt in adj.get(cur, ()):
+                if nxt in prev:
+                    continue
+                prev[nxt] = cur
+                if nxt == to_node:
+                    path = [nxt]
+                    while prev[path[-1]] is not None:
+                        path.append(prev[path[-1]])
+                    return list(reversed(path))
+                queue.append(nxt)
+        return []
+
+    def would_cycle(self, from_node: str, to_node: str) -> List[str]:
+        """若加入 from→to 这条依赖会不会成环？成环返回环路径（首尾同节点），否则 []。
+
+        判法：这条边成环 ⟺ 现在的图里已经存在 to →…→ from 的通路。
+        """
+        if from_node == to_node:
+            return [from_node, to_node]
+        back = self.edge_path(to_node, from_node)
+        return ([from_node] + back) if back else []
+
+    def _reject_cycle(self, from_node: str, to_node: str) -> None:
+        """成环的连线**在变更之前**就拒（复审残留发现②）。
+
+        旧行为：环只在 `run()` 时以「任务图死锁」暴露 —— 用户得先跑一次才知道画错了，
+        而且是全局失败、不是「这条线不能画」。TaskGraph.run() 的死锁检查保留作兜底
+        （有人绕过本图直接改 _tg 时仍能拦住）。
+        """
+        cycle = self.would_cycle(from_node, to_node)
+        if cycle:
+            raise ValueError(
+                f"连线会成环：{to_node} →…→ {from_node} 已存在，再加 "
+                f"{from_node}→{to_node} 就形成环 {' → '.join(cycle)}；"
+                f"任务图必须无环才能调度（连线时即拒绝）")
+
+    def _check_connect(self, from_node, from_port, to_node, to_port) -> str:
+        """数据边的前置校验：**只读**，不改图、不碰 TaskGraph。
+
+        返回 'ok'（可以新建这条边）或 'noop'（同一四元组已连过，调用方直接返回）。
+        不合法一律抛 ValueError，且保证「抛之前图一个字节都没动」——
+        画布 `_finish_link` 就靠这个性质做无副作用预校验，不必再探路回滚。
+        """
         fn = self.nodes.get(from_node)
         tn = self.nodes.get(to_node)
         if not fn or not tn:
@@ -389,17 +500,35 @@ class CanvasGraph:
                 f"（{tp.port_type} 端口只接受 {sorted(_PORT_ACCEPTS[tp.port_type])}）")
         # 单入端口（multi=False）：禁止第二条「不同来源」的数据边 —— 否则运行时
         # _incoming_assets 会因 dict 后写覆盖，静默丢弃在先的输入（用户无感知）。
-        # 同一四元组重复连接视为幂等 no-op（支持重复调用 / UI 预校验回滚后重连）。
+        # 同一四元组重复连接视为幂等 no-op（支持重复调用 / UI 预校验后重连）。
         existing = [(e.from_node, e.from_port) for e in self.data_edges
                     if e.to_node == to_node and e.to_port == to_port]
         if existing:
             if (from_node, from_port) in existing:
-                return self
+                return "noop"
             if not tp.multi:
                 raise ValueError(
                     f"{to_node}.{to_port} 是单入端口（multi=False），"
                     f"已有来自 {existing[0][0]}.{existing[0][1]} 的连接；"
                     f"如需多入请把该端口标为 multi=True（拒绝静默覆盖）")
+        self._reject_cycle(from_node, to_node)
+        return "ok"
+
+    def can_connect(self, from_node, from_port, to_node, to_port) -> bool:
+        """**纯校验 API**：现在这条数据边能不能连？能连返回 True，不能连抛 ValueError。
+
+        零副作用（不建边、不改依赖、不动撤销栈）。画布连线前用它预校验即可，
+        不必再「先真连一次探路、再删掉回滚」—— 那种探路会把已存在的边短暂删掉
+        再重建，还让「预校验」和「真连线」跑在同一段有副作用的代码上。
+        """
+        self._check_connect(from_node, from_port, to_node, to_port)
+        return True
+
+    def connect_data(self, from_node, from_port, to_node, to_port,
+                     label="", asset=None):
+        """数据边：校验端口存在 + 类型兼容 + 不成环，再建立；同时隐含一条顺序边。"""
+        if self._check_connect(from_node, from_port, to_node, to_port) == "noop":
+            return self
         edge = DataEdge(from_node, from_port, to_node, to_port, label, asset)
         self.data_edges.append(edge)
         # 数据边自动隐含顺序边：上游先完成。去重与撤销统一交给重算
@@ -408,12 +537,13 @@ class CanvasGraph:
         return self
 
     def connect_order(self, from_node, to_node, reason=""):
-        """顺序边：只规定先后，不传资产。"""
+        """顺序边：只规定先后，不传资产。成环同样连线时即拒。"""
         if from_node not in self.nodes or to_node not in self.nodes:
             raise ValueError(f"节点不存在: {from_node} 或 {to_node}")
         if from_node == to_node:
             raise ValueError(
                 f"{from_node} 不能连到自己：自依赖会永远等不到就绪（run 时死锁）")
+        self._reject_cycle(from_node, to_node)   # 顺序边一样能把图连成环
         edge = OrderEdge(from_node, to_node, reason)
         self.order_edges.append(edge)
         self._sync_order_deps()
@@ -437,11 +567,7 @@ class CanvasGraph:
         全量重算天然幂等、与调用顺序无关，也不需要给每条回滚路径单独补一次反向
         操作（漏一处就是残留依赖）。节点/边都在画布量级（几十），成本可忽略。
         """
-        desired = set()
-        for e in self.data_edges:
-            desired.add((e.from_node, e.to_node))
-        for e in self.order_edges:
-            desired.add((e.from_node, e.to_node))
+        desired = self._edge_pairs()
         # 撤掉不再需要的依赖（删边 / 撤销连线 / 预校验回滚）
         for from_node, to_node in sorted(self._order_seen - desired):
             self._tg.undepend(to_node, from_node)
@@ -637,6 +763,9 @@ class CanvasGraph:
                         "node": nid, "port": p, "kind": a.kind,
                         "name": a.name, "asset_id": a.asset_id,
                         "path": a.path, "registered": a.registered,
+                        # Wave D #7：registered = 「登记动作成功」，placeholder = 「是占位物」。
+                        # 两个都要报出来，否则「占位流程跑通」会被读成「真出片」。
+                        "placeholder": bool(a.placeholder),
                     })
         return out
 

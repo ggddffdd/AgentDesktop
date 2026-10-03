@@ -192,6 +192,11 @@ def passthrough_executor(node, asset_root):
                 name="%s:%s:%s" % (NODE_TYPES.get(node.node_type, node.node_type),
                                     node.id, p),
                 path=path,
+                # Wave D（复审 #7）：passthrough 写的是一个「流程占位物」——
+                # 内容只是几行 manifest，扩展名却按端口类型起成 .mp4/.png。
+                # 它会被登记（调度链要完整），但必须标记为占位，别让下游/UI
+                # 把「有个文件」读成「真出片」。
+                placeholder=True,
                 meta={"tags": [node.node_type, kind],
                       "project": "canvas_runtime",
                       "task": "节点 %s 产出 %s（第5步 passthrough）" % (node.id, kind)},
@@ -232,6 +237,94 @@ def _upstream_asset_paths(graph, node, want_port_type, _seen=None):
 
 
 # --------------------------------------------------------------------------
+# 上游选择语义（Wave D · 复审 #8）：谁当参考帧，必须说得清、且可复现
+# --------------------------------------------------------------------------
+def _direct_upstream(graph, node, want_kind):
+    """直接上游里 kind 相符的资产，按 node 的**输入端口声明顺序**返回。
+
+    每项：{"path", "port"(下游输入端口名), "from"("上游节点.端口")}。
+
+    为什么强调顺序：旧实现遍历 data_edges 取第一个 —— 谁在前取决于「这条边是什么
+    时候连的」，同一个工程文件换个连线次序就能得到不同的参考帧，用户无法预期也
+    无法复现。端口声明顺序是写进工程文件的，重开、重导入都一致。
+    """
+    out = []
+    if graph is None or node is None:
+        return out
+    for port_name in (node.inputs or {}):
+        for e in getattr(graph, "data_edges", []) or []:
+            if e.to_node != node.id or e.to_port != port_name:
+                continue
+            up = graph.nodes.get(e.from_node)
+            ref = (up.out_assets or {}).get(e.from_port) if up is not None else None
+            if ref is not None and getattr(ref, "kind", "") == want_kind \
+                    and getattr(ref, "path", ""):
+                out.append({"path": ref.path, "port": e.to_port,
+                            "from": "%s.%s" % (e.from_node, e.from_port)})
+    return out
+
+
+def _upstream_assets(graph, node, want_kind):
+    """收集上游 kind 相符的资产 -> [{"path", "port", "from"}]，顺序**确定**。
+
+    顺序规则（写死，不依赖连线时序）：
+      1. 直接上游按输入端口声明顺序；
+      2. 再补递归上游（`_upstream_asset_paths` 的老行为），兼顾间接来源；
+      3. 同一路径只保留靠前的那次出现。
+    """
+    if graph is None or node is None:
+        return []
+    found, seen = [], set()
+    for c in _direct_upstream(graph, node, want_kind):
+        if c["path"] in seen:
+            continue
+        seen.add(c["path"])
+        found.append(c)
+    for p in _upstream_asset_paths(graph, node, want_kind):
+        if p in seen:
+            continue
+        seen.add(p)
+        found.append({"path": p, "port": "", "from": "递归上游"})
+    return found
+
+
+def select_upstream(graph, node, want_kind):
+    """选「哪个上游资产当参考」，返回 (path, desc)；没有则 (None, "")。
+
+    优先级（显式 > 隐式；隐式也必须确定）：
+      1. node.config["ref_source"] = "上游节点.端口" —— 显式指定。指不到就**诚实抛错**，
+         不静默回落：用户点名要 A 却拿到 B，比直接报错难查得多。
+      2. node.config["ref_port"] = "输入端口名" —— 按端口指定，该端口没货同样抛错。
+      3. 按输入端口声明顺序取第一个，来源（desc）回显出去，便于 UI/日志核对。
+
+    旧行为是「默默取第一个」——多入节点（如成片并合 main/promo）到底用了哪一路
+    谁也说不清，出片不对时无从排查。这里把选择变成显式契约。
+    """
+    cfg = getattr(node, "config", None) or {}
+    explicit = str(cfg.get("ref_source") or "").strip()
+    if explicit:
+        for c in _direct_upstream(graph, node, want_kind):
+            if c["from"] == explicit:
+                return c["path"], c["from"]
+        raise UnsupportedEditMode(
+            "ref_source=%r 指不到 kind=%s 的上游资产（可用: %s）"
+            % (explicit, want_kind,
+               [c["from"] for c in _direct_upstream(graph, node, want_kind)] or "无"))
+    only_port = str(cfg.get("ref_port") or "").strip()
+    cands = _upstream_assets(graph, node, want_kind)
+    if only_port:
+        for c in cands:
+            if c["port"] == only_port:
+                return c["path"], c["from"]
+        raise UnsupportedEditMode(
+            "ref_port=%r 上没有 kind=%s 的上游资产（可用端口: %s）"
+            % (only_port, want_kind, [c["port"] for c in cands if c["port"]] or "无"))
+    if not cands:
+        return None, ""
+    return cands[0]["path"], cands[0]["from"]
+
+
+# --------------------------------------------------------------------------
 # gen_video 真实执行器（接 Agnes 视频，或注入的 video_fn）
 # --------------------------------------------------------------------------
 def gen_video_executor(node, asset_root, inpaint_fn=None, video_fn=None, graph=None):
@@ -239,8 +332,9 @@ def gen_video_executor(node, asset_root, inpaint_fn=None, video_fn=None, graph=N
     out_ports = [p for p, pt in node.outputs.items() if pt.port_type == "clip"]
 
     def _exec(state):
-        src_paths = _upstream_asset_paths(graph, node, "image")
-        src_path = src_paths[0] if src_paths else None
+        # Wave D #8：参考帧走显式选择（config.ref_source / ref_port 优先，
+        # 否则按输入端口声明顺序），不再「默默取递归收集的第一个」。
+        src_path, src_from = select_upstream(graph, node, "image")
         prompt = (node.config or {}).get("prompt") or "动态展示画面内容"
         if video_fn is None:
             raise UnsupportedEditMode("gen_video 需 video_fn（未注入 Agnes 视频回调）")
@@ -259,7 +353,7 @@ def gen_video_executor(node, asset_root, inpaint_fn=None, video_fn=None, graph=N
             node.out_assets[p] = ref
             produced = ref
         return {"node": node.id, "type": node.node_type, "out_kind": "clip",
-                "out_path": out_path, "src_image": src_path,
+                "out_path": out_path, "src_image": src_path, "src_from": src_from,
                 "produced": produced.to_dict() if produced else None}
     return _exec
 
@@ -280,7 +374,10 @@ def promo_fx_executor(node, asset_root, inpaint_fn=None, video_fn=None, graph=No
     out_ports = [p for p, pt in node.outputs.items() if pt.port_type == "video"]
 
     def _exec(state):
-        img_paths = _upstream_asset_paths(graph, node, "image")
+        # Wave D #8：动效帧来源同样确定化（输入端口声明顺序 + 递归补齐），
+        # 并把实际用的来源回显出去（旧实现只给路径，出片不对时无从排查）。
+        frames = _upstream_assets(graph, node, "image")
+        img_paths = [f["path"] for f in frames]
         out_path = os.path.join(asset_root, "video", "%s_promo" % node.id)  # 后缀由 motion_fn 决定
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         params = (node.config or {}).get("motion_params") or {}
@@ -301,6 +398,7 @@ def promo_fx_executor(node, asset_root, inpaint_fn=None, video_fn=None, graph=No
             produced = ref
         return {"node": node.id, "type": node.node_type, "out_kind": "video",
                 "out_path": res, "frame_count": len(img_paths),
+                "frames_from": [f["from"] for f in frames],
                 "produced": produced.to_dict() if produced else None}
     return _exec
 

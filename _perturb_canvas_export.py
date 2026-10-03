@@ -15,6 +15,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "canvas_export.py")
+GRAPH = os.path.join(HERE, "canvas_graph.py")
 TEST = os.path.join(HERE, "tests", "test_canvas_export.py")
 PY = "C:/Users/xyb/AppData/Local/Programs/Python/Python312/python.exe"
 
@@ -31,59 +32,127 @@ MUTATIONS = [
     ("M4", "A4", "def export_png(", "def export_png_x("),
     ("M5", "A5", '"graph": g.to_dict()', '"graphx": g.to_dict()'),
     ("M6", "B6", "plan = layout_graph(g)", "plan = layout_graph_X(g)"),
-    ("M7", "A7", '"version": 1', '"version": 2'),
+    ("M7", "A7", '"version": 2', '"version": 3'),
     ("M8", "B5", "pos=nd.get(\"pos\"),", "pos=None,"),
+    # ---- Wave C（复审 #4 / #5）：导入校验 ----
+    ("M9", "A8", "class CanvasImportError(ValueError):",
+     "class _NoImportError(ValueError):  # 扰动：去掉专用导入异常"),
+    # 锚点必须带上上一行：函数定义行 `def _validate_project(gd, path) -> None:` 里
+    # 也含 `_validate_project(gd, path)`，只匹配调用串会先打到定义行上（源码直接语法坏掉）。
+    ("M10", "A9",
+     '    gd = data.get("graph", data) if isinstance(data, dict) else data\n'
+     "    _validate_project(gd, path)",
+     '    gd = data.get("graph", data) if isinstance(data, dict) else data\n'
+     "    pass  # 扰动：不做结构预检"),
+    ("M11", "B11",
+     '    where = os.path.basename(path or "工程文件")\n'
+     "    if not isinstance(gd, dict):",
+     '    where = ""  # 扰动：报错不带文件名\n'
+     "    if not isinstance(gd, dict):"),
+    ("M12", "B13", "            if not sep or not node or not port:",
+     "            if False:  # 扰动：不校验「节点.端口」格式"),
+]
+
+# 打在 canvas_graph.py 上的变异（端口 schema），经 CG_PATH 注入给判据：
+# 判据必须在 import canvas_export 之前先把变异版塞进 sys.modules["canvas_graph"]，
+# 否则 canvas_export 里 `import canvas_graph as cg` 拿到的还是真文件（假绿）。
+GRAPH_MUTATIONS = [
+    ("G1", "C3", '"multi": bool(self.multi)',
+     '"multi": False  # 扰动：序列化时丢掉 multi'),
+    ("G2", "C3", "    if isinstance(spec, dict):",
+     "    if False:  # 扰动：端口只认裸字符串 spec"),
 ]
 
 
-def run_with(original_path, check_name):
-    """用 CX_PATH 指向指定 canvas_export 副本、CX_CHECK 只验目标判据，返回 exit code。"""
+def run_with(check_name, cx_path=None, cg_path=None):
+    """CX_PATH / CG_PATH 指向变异副本、CX_CHECK 只验目标判据，返回 exit code。"""
     env = dict(os.environ)
-    env["CX_PATH"] = original_path
     env["CX_CHECK"] = check_name
+    if cx_path:
+        env["CX_PATH"] = cx_path
+    if cg_path:
+        env["CG_PATH"] = cg_path
     p = subprocess.run([PY, TEST], env=env,
                        capture_output=True, text=True)
     return p.returncode
 
 
+def _write_tmp(src_text, suffix):
+    tf = tempfile.NamedTemporaryFile(mode="w", suffix=suffix,
+                                     dir=tempfile.gettempdir(),
+                                     delete=False, encoding="utf-8")
+    tf.write(src_text)
+    tf.close()
+    return tf.name
+
+
 def main():
     with open(SRC, "r", encoding="utf-8") as f:
         base = f.read()
+    with open(GRAPH, "r", encoding="utf-8") as f:
+        graph_base = f.read()
 
     passed = 0
     total = 0
+    # ---- canvas_export.py 变异（CX_PATH 注入）----
     for mname, target, old, new in MUTATIONS:
         total += 1
-        # 生成变异副本
         mut = base.replace(old, new, 1)
         if mut == base:
             print(f"  [SKIP] {mname}: 未命中锚点 {old!r}")
             continue
-        tf = tempfile.NamedTemporaryFile(mode="w", suffix=".py",
-                                         dir=tempfile.gettempdir(),
-                                         delete=False, encoding="utf-8")
-        tf.write(mut)
-        tf.close()
-        rc = run_with(tf.name, target)
+        tf = _write_tmp(mut, ".py")
+        rc = run_with(target, cx_path=tf)
         ok = rc != 0  # 目标判据应翻红（exit!=0）
         print(f"  [{'OK ' if ok else 'FAIL'}] {mname} -> {target}: 变异后 exit={rc} "
               f"(期望 !=0)")
         if ok:
             passed += 1
-        os.unlink(tf.name)
+        os.unlink(tf)
+
+    # ---- canvas_graph.py 变异（CG_PATH 注入，验端口 schema 的导入侧契约）----
+    for mname, target, old, new in GRAPH_MUTATIONS:
+        total += 1
+        mut = graph_base.replace(old, new, 1)
+        if mut == graph_base:
+            print(f"  [SKIP] {mname}: 未命中锚点 {old!r}")
+            continue
+        # 变异副本必须落在仓库根目录：判据 import 时按模块名解析，
+        # 同目录才能让 canvas_export 里的 `import canvas_graph` 命中变异版。
+        tf = os.path.join(HERE, "canvas_mut_graph_%s.py" % mname)
+        with open(tf, "w", encoding="utf-8") as f:
+            f.write(mut)
+        try:
+            rc = run_with(target, cg_path=tf)
+        finally:
+            try:
+                os.remove(tf)
+            except OSError:
+                pass
+        ok = rc != 0
+        print(f"  [{'OK ' if ok else 'FAIL'}] {mname} -> {target}: 变异后 exit={rc} "
+              f"(期望 !=0)")
+        if ok:
+            passed += 1
 
     # ---- 反向基线：原文件 + 同判据应绿（exit=0）----
-    base_file = tempfile.NamedTemporaryFile(mode="w", suffix=".py",
-                                            dir=tempfile.gettempdir(),
-                                            delete=False, encoding="utf-8")
-    base_file.write(base)
-    base_file.close()
-    rc_a1 = run_with(base_file.name, "A1")
-    rc_b2 = run_with(base_file.name, "B2")
-    base_ok = (rc_a1 == 0 and rc_b2 == 0)
+    base_file = _write_tmp(base, ".py")
+    graph_file = os.path.join(HERE, "canvas_mut_graph_base.py")
+    with open(graph_file, "w", encoding="utf-8") as f:
+        f.write(graph_base)
+    try:
+        rc_a1 = run_with("A1", cx_path=base_file)
+        rc_b2 = run_with("B2", cx_path=base_file)
+        rc_c3 = run_with("C3", cx_path=base_file, cg_path=graph_file)
+    finally:
+        os.unlink(base_file)
+        try:
+            os.remove(graph_file)
+        except OSError:
+            pass
+    base_ok = (rc_a1 == 0 and rc_b2 == 0 and rc_c3 == 0)
     print(f"  [{'OK ' if base_ok else 'FAIL'}] 反向基线: 原文件 A1 exit={rc_a1} "
-          f"B2 exit={rc_b2} (期望均=0)")
-    os.unlink(base_file.name)
+          f"B2 exit={rc_b2} C3(oracle) exit={rc_c3} (期望均=0)")
 
     print("\n" + "=" * 56)
     print(f"  导出扰动：{passed}/{total} 命中翻红；反向基线 {'OK' if base_ok else 'FAIL'}")

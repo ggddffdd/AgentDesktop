@@ -32,13 +32,119 @@ from canvas_panel import layout_graph, region_svg_overlay
 # --------------------------------------------------------------------------
 # 工程文件：导出 / 导入（可编辑画布的存盘与读回）
 # --------------------------------------------------------------------------
+class CanvasImportError(ValueError):
+    """工程文件导入失败（JSON 非法 / 结构不对 / 端口非法 / 边端点缺失）。
+
+    单独一个类型，是为了让调用方能把「用户给的工程文件不对」与「我们自己代码有
+    bug」分开处理：前者该弹提示让用户改文件，后者该上报崩溃。都混成 ValueError
+    的话，UI 只能一律说「导入失败，请重试」—— 用户重试一百次也没用。
+    """
+
+
+def _split_endpoint(e, key: str, i: int, where: str):
+    """把一条边的 from/to 拆成 (节点, 端口)。
+
+    data_edges 写成 "节点.端口"；order_edges 只写节点 id（不传资产），端口留空。
+    旧实现直接 `e["from"].split(".", 1)` 解包 —— 少一个点就抛
+    「not enough values to unpack」，连是哪条边都不说。
+    """
+    if not isinstance(e, dict):
+        raise CanvasImportError(f"{where}: {key}[{i}] 必须是对象")
+    out = []
+    for side in ("from", "to"):
+        raw = e.get(side)
+        if not isinstance(raw, str) or not raw.strip():
+            raise CanvasImportError(
+                f"{where}: {key}[{i}].{side} 必须是非空字符串，收到 {raw!r}")
+        raw = raw.strip()
+        if key == "data_edges":
+            node, sep, port = raw.partition(".")
+            if not sep or not node or not port:
+                raise CanvasImportError(
+                    f"{where}: {key}[{i}].{side}={raw!r} 必须形如「节点.端口」")
+            out.append((node, port))
+        else:
+            out.append((raw, ""))
+    return out[0], out[1]
+
+
+def _require_nodes(nodes: dict, from_id: str, to_id: str, where: str,
+                   key: str, i: int) -> None:
+    for nid in (from_id, to_id):
+        if nid not in nodes:
+            raise CanvasImportError(
+                f"{where}: {key}[{i}] 引用了不存在的节点 {nid!r}"
+                f"（文件里的节点: {sorted(nodes)[:8]}）")
+
+
+def _validate_project(gd, path: str) -> None:
+    """导入前的结构预检：错误必须能定位到「哪个文件的哪个节点/哪条边」。
+
+    为什么先校验再建图：`CanvasNode` / `Port` / `connect_data` 的异常是「就事论事」
+    的（例如「非法端口类型: 'imgae'」），但它说不出是**哪个文件、哪个节点**的哪个
+    端口。工程文件是给人改的，报错不指路等于没报。
+    """
+    where = os.path.basename(path or "工程文件")
+    if not isinstance(gd, dict):
+        raise CanvasImportError(
+            f"{where}: 顶层必须是对象，收到 {type(gd).__name__}")
+    nodes = gd.get("nodes", {})
+    if not isinstance(nodes, dict):
+        raise CanvasImportError(f"{where}: nodes 必须是「节点id -> 节点定义」的对象")
+    for nid, nd in nodes.items():
+        if not isinstance(nid, str) or not nid.strip():
+            raise CanvasImportError(f"{where}: 节点 id 必须是非空字符串，收到 {nid!r}")
+        if not isinstance(nd, dict):
+            raise CanvasImportError(f"{where}: 节点 {nid} 的定义必须是对象")
+        ntype = nd.get("type")
+        if ntype not in cg.NODE_TYPES:
+            raise CanvasImportError(
+                f"{where}: 节点 {nid} 的 type={ntype!r} 不是合法节点类型"
+                f"（可选: {sorted(cg.NODE_TYPES)}）")
+        for side in ("inputs", "outputs"):
+            ports = nd.get(side, {})
+            if not isinstance(ports, dict):
+                raise CanvasImportError(f"{where}: 节点 {nid}.{side} 必须是对象")
+            for pname, spec in ports.items():
+                # v2 dict {"type","multi"}；v1 裸字符串。两种都只取 type 做校验。
+                ptype = spec.get("type") if isinstance(spec, dict) else spec
+                if ptype not in cg.VALID_PORT_TYPES:
+                    raise CanvasImportError(
+                        f"{where}: 节点 {nid}.{side} 端口 {pname!r} 的类型 "
+                        f"{ptype!r} 非法（可选: {sorted(cg.VALID_PORT_TYPES)}）")
+                if isinstance(spec, dict) and "multi" in spec \
+                        and not isinstance(spec["multi"], bool):
+                    raise CanvasImportError(
+                        f"{where}: 节点 {nid}.{side} 端口 {pname!r} 的 multi "
+                        f"必须是布尔，收到 {spec['multi']!r}")
+        if "config" in nd and not isinstance(nd["config"], dict):
+            raise CanvasImportError(f"{where}: 节点 {nid}.config 必须是对象")
+        pos = nd.get("pos")
+        if pos is not None and (not isinstance(pos, (list, tuple)) or len(pos) != 2):
+            raise CanvasImportError(
+                f"{where}: 节点 {nid}.pos 必须是 [x, y] 或 null，收到 {pos!r}")
+    for key in ("data_edges", "order_edges"):
+        if not isinstance(gd.get(key, []), list):
+            raise CanvasImportError(f"{where}: {key} 必须是数组")
+    for i, e in enumerate(gd.get("data_edges", []) or []):
+        frm, to = _split_endpoint(e, "data_edges", i, where)
+        _require_nodes(nodes, frm[0], to[0], where, "data_edges", i)
+    for i, e in enumerate(gd.get("order_edges", []) or []):
+        frm, to = _split_endpoint(e, "order_edges", i, where)
+        _require_nodes(nodes, frm[0], to[0], where, "order_edges", i)
+
+
 def export_project_json(g: "cg.CanvasGraph", path: str) -> dict:
     """把可编辑画布状态序列化为工程 JSON（含节点位置/参数/资产引用 + 连线）。
 
     返回写入的 dict（便于判据断言）。父目录不存在时自动创建。
+
+    version=2：端口写成 {"type": ..., "multi": ...}。v1 只写端口类型字符串，
+    `multi` 在存盘时就被丢掉 —— 多入端口读回来会退化成单入（运行时才被单入校验
+    拦住，画布上看不出任何差别）。导入侧对 v1 保持兼容。
     """
     data = {
-        "version": 1,
+        "version": 2,
         "generator": "canvas_export",
         "graph": g.to_dict(),   # 已含 nodes(类型/位置/参数/状态/产出) + 连线
     }
@@ -53,31 +159,55 @@ def export_project_json(g: "cg.CanvasGraph", path: str) -> dict:
 def import_project_json(path: str) -> "cg.CanvasGraph":
     """从工程 JSON 反序列化回 CanvasGraph（结构 + 默认 stub 执行器，可重渲染/再编辑）。
 
-    节点重建时恢复 id / 类型 / 端口 / config / 位置；连线（数据边 + 顺序边）原样重建。
+    节点重建时恢复 id / 类型 / 端口(含 multi) / config / 位置 / status / placeholder；
+    连线（数据边 + 顺序边）原样重建，由 `connect_data` 再走一遍端口存在 + 类型兼容
+    + 不成环校验。
     执行器用默认 stub（第 5 步接真执行器时再替换为真实实现）。
+
+    失败一律抛 CanvasImportError（带文件名 + 具体节点/边定位），不返回半成品图。
     """
+    where = os.path.basename(path or "工程文件")
     with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    gd = data.get("graph", data)
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError as e:
+            raise CanvasImportError(f"{where}: 不是合法 JSON（{e}）")
+    gd = data.get("graph", data) if isinstance(data, dict) else data
+    _validate_project(gd, path)
 
     g = cg.CanvasGraph()
     for nid, nd in gd.get("nodes", {}).items():
-        node = cg.CanvasNode(
-            nid, nd["type"],
-            inputs={k: cg.Port(k, v) for k, v in nd.get("inputs", {}).items()},
-            outputs={k: cg.Port(k, v) for k, v in nd.get("outputs", {}).items()},
-            config=nd.get("config", {}),
-            pos=nd.get("pos"),
-        )
+        try:
+            node = cg.CanvasNode(
+                nid, nd["type"],
+                inputs={k: cg.port_from_spec(k, v)
+                        for k, v in nd.get("inputs", {}).items()},
+                outputs={k: cg.port_from_spec(k, v)
+                         for k, v in nd.get("outputs", {}).items()},
+                config=nd.get("config", {}),
+                pos=nd.get("pos"),
+            )
+        except (ValueError, KeyError, TypeError) as e:
+            # 预检已过，这里再炸说明字段组合有问题（如缺 type）—— 照样带定位抛出
+            raise CanvasImportError(f"{where}: 节点 {nid} 无法重建：{e}")
         node.status = nd.get("status", "pending")
+        node.placeholder = bool(nd.get("placeholder", False))
         g.add_node(node)
 
-    for e in gd.get("data_edges", []):
-        frm, fp = e["from"].split(".", 1)
-        to, tp = e["to"].split(".", 1)
-        g.connect_data(frm, fp, to, tp, label=e.get("label", ""))
-    for e in gd.get("order_edges", []):
-        g.connect_order(e["from"], e["to"], reason=e.get("reason", ""))
+    for i, e in enumerate(gd.get("data_edges", []) or []):
+        (node_a, port_a), (node_b, port_b) = _split_endpoint(
+            e, "data_edges", i, where)
+        try:
+            g.connect_data(node_a, port_a, node_b, port_b, label=e.get("label", ""))
+        except ValueError as ex:
+            raise CanvasImportError(
+                f"{where}: data_edges[{i}] {e.get('from')} -> {e.get('to')} "
+                f"连不上：{ex}")
+    for i, e in enumerate(gd.get("order_edges", []) or []):
+        try:
+            g.connect_order(e["from"], e["to"], reason=e.get("reason", ""))
+        except ValueError as ex:
+            raise CanvasImportError(f"{where}: order_edges[{i}] 连不上：{ex}")
     return g
 
 
@@ -145,7 +275,16 @@ def export_svg(g: "cg.CanvasGraph", path: str) -> dict:
         parts.append(
             f'<text x="{n.x + 8:.1f}" y="{n.y + 40:.1f}" font-size="11" '
             f'fill="#666666">{_esc(n.status)}</text>')
-        if n.registered:
+        if n.placeholder:
+            # 占位产出：空心橙圈（= ui.THEME["canvas_incomplete"]），与「真出片」的
+            # 实心绿点区分开。占位物同样 registered，画实心绿点会被读成真出片。
+            parts.append(
+                f'<circle cx="{n.x + n.w - 12:.1f}" cy="{n.y + n.h - 12:.1f}" '
+                f'r="4" fill="none" stroke="#E37400" stroke-width="2"/>')
+            parts.append(
+                f'<text x="{n.x + 8:.1f}" y="{n.y + n.h - 22:.1f}" font-size="9" '
+                f'fill="#E37400">占位</text>')
+        elif n.registered:
             parts.append(
                 f'<circle cx="{n.x + n.w - 12:.1f}" cy="{n.y + n.h - 12:.1f}" '
                 f'r="4" fill="#1E8E3E"/>')

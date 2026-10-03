@@ -110,20 +110,23 @@ check("A1 Port 拦截非法 port_type", "__post_init__" in PP
 CN = _slice_func("CanvasNode")
 check("A2 CanvasNode 拦截未知 node_type", "node_type not in NODE_TYPES" in CN)
 
-# connect_data 校验端口存在（from_port / to_port 必须存在）
+# connect_data 的校验体住在 **只读** 的 _check_connect 里（Wave D 发现① 抽出来的），
+# connect_data 自己只负责「校验过了就建边」。契约在哪个函数里，判据就切哪个函数 ——
+# 切错了会变成「在 connect_data 里永远搜不到那个字符串」的假红。
 CD = _slice_func("connect_data")
+CC = _slice_func("_check_connect")
 # Wave B（审查 #2）：依赖重算函数 + task_graph 的两个依赖原语，各自切片判定
 SYNC = _slice_func("_sync_order_deps")
 TGDEP = _slice_src("depend", TASK_SRC)
 TGUNDEP = _slice_src("undepend", TASK_SRC)
-check("A3 connect_data 校验上游输出端口存在",
-      'fn.outputs.get(from_port)' in CD and "不存在输出端口" in CD)
-check("A4 connect_data 校验下游输入端口存在",
-      'tn.inputs.get(to_port)' in CD and "不存在输入端口" in CD)
+check("A3 connect_data 前置校验拦住「上游输出端口不存在」",
+      'fn.outputs.get(from_port)' in CC and "不存在输出端口" in CC)
+check("A4 connect_data 前置校验拦住「下游输入端口不存在」",
+      'tn.inputs.get(to_port)' in CC and "不存在输入端口" in CC)
 
 # 类型兼容校验：连线时即拒
 check("A5 connect_data 做类型兼容校验",
-      "fp.port_type not in _PORT_ACCEPTS[tp.port_type]" in CD,
+      "fp.port_type not in _PORT_ACCEPTS[tp.port_type]" in CC,
       "clip→image 这类错接必须连线时就报错")
 
 # 数据边自动隐含顺序边：connect_data → _sync_order_deps → self._tg.depend
@@ -158,12 +161,12 @@ check("A12 image 端口接受 scene/character_views/keyframe（接资产库引�
 check("A13 提供 build_sample_graph 工厂（无 UI 建示例图）",
       "def build_sample_graph" in SRC)
 
-# 单入端口禁止静默覆盖（Wave A #3）：connect_data 必须拦第二条「不同来源」的数据边
+# 单入端口禁止静默覆盖（Wave A #3）：_check_connect 必须拦第二条「不同来源」的数据边
 check("A14 connect_data 拒绝单入端口（multi=False）接第二条不同来源的数据边",
-      "if not tp.multi:" in CD and "拒绝静默覆盖" in CD,
+      "if not tp.multi:" in CC and "拒绝静默覆盖" in CC,
       "否则 _incoming_assets 后写覆盖，静默丢弃在先输入（用户无感知）")
 check("A15 connect_data 对同一四元组重复连接幂等（不重复建边）",
-      "(from_node, from_port) in existing" in CD and "existing = [" in CD)
+      "(from_node, from_port) in existing" in CC and "existing = [" in CC)
 check("A16 _incoming_assets 对 multi 端口收成列表（不覆盖）",
       'getattr(port, "multi", False)' in _slice_func("_incoming_assets")
       and ".append(a)" in _slice_func("_incoming_assets"),
@@ -190,12 +193,53 @@ check("A20 边集变化后全量重算依赖（撤多余 + 补新增 + 回写 _o
       and "self._order_seen = desired" in SYNC,
       "只加不减的依赖重算不回来，删掉的连线仍会把节点绑死")
 check("A21 connect_data 拒绝自依赖（同一节点连自己必死锁）",
-      "if from_node == to_node:" in CD and "不能连到自己" in CD,
+      "if from_node == to_node:" in CC and "不能连到自己" in CC,
       "promo/twin 这类「video 进、video 出」的节点自连类型是兼容的，端口校验拦不住")
 check("A22 删数据边/顺序边后都触发依赖重算",
       "self._sync_order_deps()" in _slice_func("remove_data_edge")
       and "self._sync_order_deps()" in _slice_func("remove_order_edge"),
       "漏掉任一处 → 该路径下删边仍留幽灵依赖")
+
+# ---- Wave D 发现①②：纯校验 API + 连线即成环拒绝 ----
+check("A23 CanvasGraph 提供纯校验 API can_connect（只读预校验）",
+      "def can_connect" in SRC and "_check_connect" in _slice_func("can_connect"),
+      "没有它，UI 只能在「先真连一次探路 → 删掉回滚」里做校验，预校验反而改了图")
+check("A24 校验体 _check_connect 只读（返回 'ok'/'noop'，自己不建边）",
+      'return "noop"' in CC and 'return "ok"' in CC
+      and "self.data_edges.append" not in CC,
+      "校验函数里建边 → can_connect 就有副作用，「纯校验」名不副实")
+check("A25 连线时即拒成环（数据边的校验体 / 顺序边都调 _reject_cycle）",
+      "self._reject_cycle(from_node, to_node)" in CC
+      and "self._reject_cycle(from_node, to_node)" in _slice_func("connect_order")
+      and "def _reject_cycle" in SRC and "def would_cycle" in SRC,
+      "成环只在 run() 暴露的话，用户得先跑一次才知道画错了（复审发现②）")
+check("A26 成环判定与依赖重算共用唯一事实源 _edge_pairs",
+      "def _edge_pairs" in SRC
+      and "self.data_edges" in _slice_func("_edge_pairs")
+      and "self.order_edges" in _slice_func("_edge_pairs")
+      and "desired = self._edge_pairs()" in SYNC,
+      "两处各写一遍循环迟早走岔（成环判定漏了 order_edges 就漏判顺序边成环）")
+
+# ---- Wave D #7：占位产出必须显式标记（「跑通了」≠「真出片了」）----
+check("A27 stub 执行器产出显式标记 placeholder=True",
+      "placeholder=True" in _slice_func("_default_executor"),
+      "stub 的路径是编的、磁盘上并不存在，不标占位就会被读成真出片")
+check("A28 节点进入执行前重置、跑完按产出重算占位标记",
+      "node.placeholder = False" in _slice_func("_wrap")
+      and "node.placeholder = any(" in _slice_func("_wrap"),
+      "执行器抛错时重算不会发生，没有进入前的重置就会一直挂着上一轮的「占位」牌子")
+check("A29 AssetRef 带 placeholder 字段且随 to_dict 落盘",
+      "placeholder: bool = False" in _slice_func("AssetRef")
+      and '"placeholder": self.placeholder' in _slice_func("AssetRef"),
+      "不落盘的话导出再导入，占位 / 真出片的区别就丢了")
+check("A30 asset_registrations 同时给出 registered 与 placeholder",
+      '"placeholder": bool(a.placeholder)' in _slice_func("asset_registrations"),
+      "只报 registered 的话，「登记成功的占位物」会被读成真出片")
+check("A31 端口序列化带 multi（v1 只写类型串会静默丢 multi）",
+      '"multi": bool(self.multi)' in _slice_func("Port")
+      and "def port_from_spec" in SRC
+      and "isinstance(spec, dict)" in _slice_func("port_from_spec"),
+      "多入端口存盘再读回退化成单入，画布上看不出差别")
 
 
 # ==========================================================================
@@ -211,7 +255,16 @@ elif not HAS_MOD:
     print("  [SKIP] 建图 / run / 拓扑 / 类型不匹配拒绝")
 
 else:
-    import canvas_graph as cg
+    if os.environ.get("CANVAS_PATH") and os.path.isfile(SRC_PATH):
+        # A 组静态切片读的是 CANVAS_PATH；B 组也必须看**同一份**源码 ——
+        # 否则改成行为变异（CANVAS_PATH 指向变异副本）时，B 组 import 的还是
+        # 仓库里的真文件，于是「行为变异」永远打不红（假绿）。
+        _spec = importlib.util.spec_from_file_location("canvas_graph", SRC_PATH)
+        cg = importlib.util.module_from_spec(_spec)
+        sys.modules["canvas_graph"] = cg
+        _spec.loader.exec_module(cg)
+    else:
+        import canvas_graph as cg
 
     print("\n[B] 行为：真 import canvas_graph 建图跑通（无 UI）")
     try:
@@ -366,6 +419,18 @@ else:
                 return list(td.get("blockedBy", []))
         return []
 
+    def _pairs_of(g):
+        return {(b, td["id"]) for td in g._tg.task_list()
+                for b in td.get("blockedBy", [])}
+
+    def _mk_xy(g):
+        """两个同型（image 进 / image 出）节点，专门用来造环。"""
+        for nid in ("x", "y"):
+            g.add_node(cg.CanvasNode(
+                nid, "gen_image",
+                inputs={"i": cg.Port("i", "image")},
+                outputs={"o": cg.Port("o", "image")}))
+
     try:
         gb = cg.build_sample_graph()
         check("B15 建图后依赖对数 == 7（6 条数据边 + 1 条顺序边，无遗漏）",
@@ -437,33 +502,182 @@ else:
     except Exception as e:  # noqa: BLE001
         check("B19 自依赖拒绝", False, f"{type(e).__name__}: {e}")
 
+    # ---------------- Wave D 发现②：成环必须连线时即拒 ----------------
     try:
-        # 成环：run 诚实报死锁；删掉环上一条边后必须能解开重跑
-        # （旧实现 depend 只增不减 → 删边也解不开，只能重启程序）
         gb6 = cg.CanvasGraph()
-        for nid in ("x", "y"):
-            gb6.add_node(cg.CanvasNode(
+        _mk_xy(gb6)
+        gb6.add_node(cg.CanvasNode("z", "gen_image"))   # 无关入口，保证图非空入口
+        gb6.connect_data("x", "o", "y", "i")
+        before_edges = len(gb6.data_edges)
+        before_pairs = _pairs_of(gb6)
+        msg, raised_cycle = "", False
+        try:
+            gb6.connect_data("y", "o", "x", "i")        # y→x 会闭合环
+        except ValueError as ex:
+            raised_cycle, msg = True, str(ex)
+        check("B20 成环连线在连线时即拒（不必跑一次 run 才知道画错了）", raised_cycle)
+        check("B20b 被拒后不留半条边、底层依赖一字节没动",
+              len(gb6.data_edges) == before_edges and _pairs_of(gb6) == before_pairs,
+              "拒绝必须发生在任何变更之前（否则 can_connect 就有副作用）")
+        check("B20c 报错里看得出环长什么样（含 x / y 与「成环」）",
+              "成环" in msg and "x" in msg and "y" in msg, msg[:90])
+
+        # 顺序边（不传资产）一样能把图连成环 —— 也必须连线时即拒
+        go6 = cg.CanvasGraph()
+        _mk_xy(go6)
+        go6.connect_order("x", "y")
+        order_rejected = False
+        try:
+            go6.connect_order("y", "x")
+        except ValueError:
+            order_rejected = True
+        check("B20d 顺序边成环同样连线即拒", order_rejected
+              and len(go6.order_edges) == 1)
+    except Exception as e:  # noqa: BLE001
+        check("B20 成环连线即拒", False, f"{type(e).__name__}: {e}")
+
+    try:
+        # 兜底：绕过画布层直接在 TaskGraph 上补一条反向依赖（模拟外部/旧数据把图弄成环），
+        # run() 仍必须诚实报死锁 —— 连线层的拦截不能把底层护栏顺带删掉。
+        gb7 = cg.CanvasGraph()
+        _mk_xy(gb7)
+        gb7.add_node(cg.CanvasNode("z", "gen_image"))
+        gb7.connect_data("x", "o", "y", "i")     # y 依赖 x
+        gb7._tg.depend("x", "y")                 # 绕过画布：x 也依赖 y → 成环
+        deadlocked = False
+        try:
+            gb7.run({})
+        except RuntimeError:
+            deadlocked = True
+        check("B20e 兜底：绕过画布直接改 _tg 造环，run 仍诚实报死锁", deadlocked)
+        check("B20f x 因有依赖已不在入口集合", "x" not in gb7._tg._entry_ids,
+              str(gb7._tg._entry_ids))
+        gb7._tg.undepend("x", "y")
+        check("B20g undepend 清空依赖后恢复入口（x 回到 _entry_ids）",
+              "x" in gb7._tg._entry_ids, str(gb7._tg._entry_ids))
+        gb7.run({})
+        st7 = {nid: n.status for nid, n in gb7.nodes.items()}
+        check("B20h 环解开后重跑全 completed（旧实现 depend 只增不减时解不开）",
+              all(s == "completed" for s in st7.values()), str(st7))
+    except Exception as e:  # noqa: BLE001
+        check("B20e 兜底死锁检查", False, f"{type(e).__name__}: {e}")
+
+    # ---------------- Wave D 发现①：can_connect 是纯校验 ----------------
+    try:
+        gc1 = cg.CanvasGraph()
+        gc1.add_node(cg.CanvasNode("a", "gen_image",
+                                   outputs={"o": cg.Port("o", "image")}))
+        gc1.add_node(cg.CanvasNode("b", "gen_image",
+                                   inputs={"i": cg.Port("i", "image")}))
+        snapshot = (len(gc1.data_edges), len(gc1.order_edges),
+                    sorted(gc1._order_seen), _pairs_of(gc1))
+        check("B21 can_connect 合法时返回 True（且此时图还没变）",
+              gc1.can_connect("a", "o", "b", "i") is True
+              and len(gc1.data_edges) == 0)
+        bad = False
+        try:
+            gc1.can_connect("b", "o", "a", "i")   # b 没有输出端口 o
+        except ValueError:
+            bad = True
+        check("B21b can_connect 不合法时抛 ValueError", bad)
+        check("B21c can_connect 全程零副作用（边集 / 依赖镜像 / 底层依赖都没动）",
+              (len(gc1.data_edges), len(gc1.order_edges),
+               sorted(gc1._order_seen), _pairs_of(gc1)) == snapshot,
+              "预校验改了图，就等于把「探路回滚」换了层皮")
+        # 已连过的四元组：can_connect 视为可连（幂等 no-op 语义），不抛错
+        gc1.connect_data("a", "o", "b", "i")
+        check("B21d 已连过的四元组 can_connect 仍返回 True（幂等 no-op 语义）",
+              gc1.can_connect("a", "o", "b", "i") is True
+              and len(gc1.data_edges) == 1)
+    except Exception as e:  # noqa: BLE001
+        check("B21 can_connect 零副作用", False, f"{type(e).__name__}: {e}")
+
+    # ---------------- edge_path：报错定位用的有向路径 ----------------
+    try:
+        gp = cg.CanvasGraph()
+        for nid in ("a", "b", "c"):
+            gp.add_node(cg.CanvasNode(
                 nid, "gen_image",
                 inputs={"i": cg.Port("i", "image")},
                 outputs={"o": cg.Port("o", "image")}))
-        gb6.add_node(cg.CanvasNode("z", "gen_image"))   # 无关入口，保证图非空入口
-        gb6.connect_data("x", "o", "y", "i")
-        gb6.connect_data("y", "o", "x", "i")
-        deadlocked = False
-        try:
-            gb6.run({})
-        except RuntimeError:
-            deadlocked = True
-        check("B20 误连成环时 run 诚实报死锁（不当成跑通）", deadlocked)
-        gb6.remove_data_edge("y", "o", "x", "i")
-        check("B20b 删边后 x 恢复为入口（undepend 重建 _entry_ids）",
-              "x" in gb6._tg._entry_ids, str(gb6._tg._entry_ids))
-        gb6.run({})
-        st6 = {nid: n.status for nid, n in gb6.nodes.items()}
-        check("B20c 删边后重跑不再死锁且全 completed（旧实现解不开）",
-              all(s == "completed" for s in st6.values()), str(st6))
+        gp.connect_data("a", "o", "b", "i")
+        gp.connect_data("b", "o", "c", "i")
+        check("B22 edge_path 给出有向通路 a→b→c",
+              gp.edge_path("a", "c") == ["a", "b", "c"], str(gp.edge_path("a", "c")))
+        check("B22b edge_path 对反向（无通路）返回空",
+              gp.edge_path("c", "a") == [], str(gp.edge_path("c", "a")))
+        check("B22c would_cycle 对 a→c 追加的边判定为成环并给出环路径",
+              gp.would_cycle("c", "a") == ["c", "a", "b", "c"],
+              str(gp.would_cycle("c", "a")))
+        check("B22d would_cycle 对不成环的边返回空", gp.would_cycle("a", "c") == [])
     except Exception as e:  # noqa: BLE001
-        check("B20 成环→删边→解开", False, f"{type(e).__name__}: {e}")
+        check("B22 edge_path / would_cycle", False, f"{type(e).__name__}: {e}")
+
+    # ---------------- Wave D #7：占位语义 ----------------
+    try:
+        gph = cg.build_sample_graph()
+        gph.run({})
+        check("B23 stub 跑完全图节点都标为占位（流程跑通 ≠ 真出片）",
+              all(n.placeholder for n in gph.nodes.values()),
+              str({nid: n.placeholder for nid, n in gph.nodes.items()}))
+        check("B23b 占位产出仍照常 registered（否则资产引用链会断）",
+              all(a.registered for n in gph.nodes.values()
+                  for a in n.out_assets.values() if isinstance(a, cg.AssetRef)))
+
+        # 换成「真产出」的执行器后，占位标记必须按实际产出重算
+        gph2 = cg.build_sample_graph()
+        gph2.set_executor("img", lambda st: (
+            gph2.nodes["img"].out_assets.update(
+                {"image": cg.AssetRef(kind="image", name="真图", path="real.png")}),
+            {"ok": True})[1])
+        gph2.run({})
+        check("B23c 产出换成真物后不再算占位（标记按产出算，不写死）",
+              gph2.nodes["img"].placeholder is False)
+        check("B23d 同图其它 stub 节点仍是占位（只看自己）",
+              gph2.nodes["vid"].placeholder is True)
+
+        # 执行器抛错时重算不会发生 → 必须靠进入前的重置，不能留着上一轮的牌子
+        gbad = cg.CanvasGraph()
+        gbad.add_node(cg.CanvasNode("bad", "gen_image",
+                                    outputs={"o": cg.Port("o", "image")}))
+        gbad.nodes["bad"].placeholder = True      # 假装上一轮是占位
+
+        def _boom(_st):
+            raise RuntimeError("boom")
+
+        gbad.set_executor("bad", _boom)
+        try:
+            gbad._wrap(gbad.nodes["bad"])({})
+        except RuntimeError:
+            pass
+        check("B23e 执行器抛错时不会留着上一轮的占位标记（进入前先重置）",
+              gbad.nodes["bad"].placeholder is False,
+              "否则「上一轮是占位」会一直挂在节点上，误导下一次排查")
+    except Exception as e:  # noqa: BLE001
+        check("B23 占位语义", False, f"{type(e).__name__}: {e}")
+
+    # ---------------- 端口 schema 往返（multi 不能丢） ----------------
+    try:
+        n_frame = cg.CanvasNode("f", "promo_fx",
+                                inputs={"frames": cg.Port("frames", "image",
+                                                          multi=True)})
+        d = n_frame.to_dict()
+        check("B24 端口 to_dict 带 multi=True",
+              d["inputs"]["frames"] == {"type": "image", "multi": True}, str(d["inputs"]))
+        back = cg.port_from_spec("frames", d["inputs"]["frames"])
+        check("B24b port_from_spec 还原 multi（往返不丢）",
+              back.multi is True and back.port_type == "image")
+        legacy = cg.port_from_spec("frames", "image")
+        check("B24c v1 裸字符串 spec 向后兼容（multi 默认 False）",
+              legacy.multi is False and legacy.port_type == "image")
+        bad_spec = False
+        try:
+            cg.port_from_spec("frames", 123)
+        except ValueError:
+            bad_spec = True
+        check("B24d 非法 spec 形态抛 ValueError（不静默造默认端口）", bad_spec)
+    except Exception as e:  # noqa: BLE001
+        check("B24 端口 schema 往返", False, f"{type(e).__name__}: {e}")
 
     # ---------------- C 组：结构 ----------------
     print("\n[C] 结构：示例图断言")

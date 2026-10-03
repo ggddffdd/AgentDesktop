@@ -140,6 +140,43 @@ def main():
         "        res = validate_output(res, \"video\", asset_root)",
         "        pass  # 扰动：不校验产出")
 
+    # ---- Wave D #8：上游选择语义 ----
+    # PG13 忽略 config.ref_source（显式指定失效）→ B14 红
+    _pg("select_upstream 忽略 ref_source（显式指定失效）", "B14", EXEC,
+        '    explicit = str(cfg.get("ref_source") or "").strip()',
+        '    explicit = ""  # 扰动：忽略 ref_source')
+
+    # PG14 指不到时不再抛错（静默回落）→ A16 红（判据数 raise 次数）
+    _pg("ref_source 指不到时不报错", "A16", EXEC,
+        '        raise UnsupportedEditMode(\n'
+        '            "ref_source=%r 指不到 kind=%s 的上游资产（可用: %s）"',
+        '        _unused = (\n'
+        '            "ref_source=%r 指不到 kind=%s 的上游资产（可用: %s）"')
+
+    # PG15 直接上游改成「按连线顺序」而非「按输入端口声明顺序」→ B13 红
+    _pg("上游顺序改成按连线先后（不再按端口声明顺序）", "B13", EXEC,
+        '    for port_name in (node.inputs or {}):\n'
+        '        for e in getattr(graph, "data_edges", []) or []:\n'
+        '            if e.to_node != node.id or e.to_port != port_name:\n'
+        '                continue',
+        '    _edges_in_order = [e for e in (getattr(graph, "data_edges", []) or [])\n'
+        '                       if e.to_node == node.id]  # 扰动：按连线顺序\n'
+        '    for port_name in [e.to_port for e in _edges_in_order]:\n'
+        '        for e in getattr(graph, "data_edges", []) or []:\n'
+        '            if e.to_node != node.id or e.to_port != port_name:\n'
+        '                continue')
+
+    # PG16 gen_video 回退旧行为（默默取递归收集的第一个，不回显来源）→ B15 红
+    _pg("gen_video 回退「默默取第一个」", "B15", EXEC,
+        '        src_path, src_from = select_upstream(graph, node, "image")',
+        '        _old_paths = _upstream_asset_paths(graph, node, "image")'
+        '  # 扰动：回退旧行为\n'
+        '        src_path, src_from = (_old_paths[0] if _old_paths else None), ""')
+
+    # PG17 passthrough 不标占位（占位物冒充真出片）→ B12 红
+    _pg("passthrough 产出不标占位", "B12", EXEC,
+        "                placeholder=True,\n", "")
+
     # 反向基线：所有文件已还原，全量判据应全绿
     final = _run()
     if final.returncode != 0:
