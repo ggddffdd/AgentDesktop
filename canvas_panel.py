@@ -16,8 +16,8 @@
                      _NO_WINDOW 写法常量，标注对齐点，避免到那步再踩。
 
 挂载说明：本文件是**独立面板**，自带 `python canvas_panel.py` 预览入口；
-暂不挂进主窗口 nav（nav_defs 被 test_nav_ia_198.py A4 钉死，动它 = 动 app shell
-核心，违背「最小侵入 / 先 1 个改动」原则）。挂主窗口的薄 builder 留作需大哥明确批准的集成步。
+另已通过 ui.py 的 `_build_canvas_page`（薄 builder + 懒导入）挂进主窗口导航
+「工作」分组下的「画布」项（nav_defs / NAV_GROUPS / main_stack 三处同步，A4 守卫仍绿）。
 """
 
 import logging

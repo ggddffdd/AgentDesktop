@@ -14,9 +14,9 @@
 | ✓ | 自带独立预览入口 `python canvas_panel.py`（真开窗口看示例图） |
 | ✓ | 复用第 0 步三坑保护法（高 DPI / windowed 安全输出 / ffmpeg _NO_WINDOW 写法常量） |
 
-| 没做（留作单独步，需你批准） | 原因 |
+| 状态 | 说明 |
 |---|---|
-| ✗ 挂进主窗口 nav | nav_defs 被 `test_nav_ia_198.py` A4 **钉死**，动它 = 动 app shell 核心，违背「最小侵入 / 先 1 个改动」。集成步见 §5 |
+| ✓ 挂进主窗口 nav | 已完成（见 `CANVAS_NAV_REPORT.md`）：`nav_defs`/`NAV_GROUPS`/`main_stack` 三处同步加「画布」，`_build_canvas_page` 薄 builder 懒导入 `CanvasPanel`，导航守卫 A4 仍 22/22 绿 |
 | ✗ 真拖拽编排 / 连线交互 | 第 3 步只验证「渲染正确」，交互编排是第 4/5 步的活 |
 | ✗ 真实执行器抽帧 | 第 0 步探针已验 ffmpeg 写法；正式抽帧归第 5 步执行器 |
 
@@ -61,22 +61,22 @@ Qt 视图层的真实渲染由 `__main__` 预览入口人工/集成验证。这�
 ### 一处预期澄清（B11/B12）
 初版判据我假设「stub 阶段 registered 全 False」，实测发现**第 2 步的 stub executor 已给 `AssetRef` 补了 `path=_stub_stage_path(...)` + meta**（见 `canvas_graph.py` `_default_executor`），所以内存 sink 下 `registered` 实为**全 True**。判据已改为验「全 True + final 落地 1 个」，与第 2 步「接资产库」真实行为一致。
 
-## 5. 挂进主窗口 nav（需你批准的集成步）
+## 5. 挂进主窗口 nav（已完成，见 `CANVAS_NAV_REPORT.md`）
 
 `ui.py` 用 `nav_defs` + `main_stack`(QStackedWidget) 组织页面，导航展平顺序被
-`tests/test_nav_ia_198.py` A4 钉死。集成第 3 步画布需：
-1. 在 `nav_defs` 按序插入「节点画布」项；
-2. 在对应分组成员元组加该名字；
-3. `ChatWindow._init_ui` 里加 `_build_canvas_page`（薄 builder，**懒导入** `canvas_panel.CanvasPanel`，不把 380 行塞进 `ui.py`）；
-4. `tests/test_nav_ia_198.py` A4 的展平顺序同步更新。
+`tests/test_nav_ia_198.py` A4 钉死。集成第 3 步画布已落地：
+1. 在 `nav_defs` 按序插入「画布」项（编排之后、军团之前）；
+2. 在 `工作` 分组成员元组同步加「画布」；
+3. `main_stack` 在编排页与军团页之间加 `canvas_page` 外壳，`_ensure_lazy_page` 追加 `(canvas_page, _build_canvas_page, "canvas")`；
+4. `_build_canvas_page` 薄 builder，**懒导入** `canvas_panel.CanvasPanel` + `build_demo()`，挂进 `canvas_page` 布局；
+5. `tests/test_nav_ia_198.py` A4 展平顺序同步更新（仍 22/22 绿）。
 
-走的是 `xiaochou-panel-embed` skill 的「热插拔薄 builder」路子，不动 app shell 逻辑。
-**这步会改 `ui.py` + 撞 nav 测试，属于动核心，需你点头再动手。**
+走的是「热插拔薄 builder」路子，不动 app shell 逻辑，不串页、不增启动成本。
 
 ## 6. 下一步（设计稿 §9 后续）
 
 - 第 4 步 · 渠道层（导出/发布到抖音/视频号等，对应画布的成片节点下游）
 - 第 5 步 · 接真实执行器（Agnes 生图/生视频、ffmpeg 抽帧、数字人口播真正落盘产出 path）
-- 集成步 · 挂主窗口 nav（见 §5，需批准）
+- 集成步 · 挂主窗口 nav（**已完成**，见 §5 与 `CANVAS_NAV_REPORT.md`）
 
 > 下一步建议：先把「挂进主窗口」做了（让画布在 app 里可见），还是先走第 4/5 步补全功能？等你定。

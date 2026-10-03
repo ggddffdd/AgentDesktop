@@ -310,7 +310,7 @@ DELIVERY_COLORS = {
 # 想新增导航项时：① 按序插进 nav_defs；② 把名字加进下面对应组的成员元组；
 # ③ 探针会自动校验两边一致 —— 只改一处会判红。
 NAV_GROUPS = (
-    ("工作", ("对话", "编排", "军团")),
+    ("工作", ("对话", "编排", "画布", "军团")),
     ("创作", ("生图", "生视频", "数字人", "导演台")),
     ("系统", ("工具", "任务", "设置")),
 )
@@ -330,6 +330,8 @@ _NAV_ICONS = {
     "生视频": '<polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>',
     "数字人": '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
     "导演台": '<rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/>',
+    # v4.x：节点画布（设计稿 §9 第3步）图标——两节点 + 连线，Feather 线性风格
+    "画布":   '<rect x="3" y="3" width="6" height="6" rx="1"/><circle cx="17" cy="6" r="3"/><rect x="3" y="15" width="6" height="6" rx="1"/><circle cx="17" cy="18" r="3"/><line x1="9" y1="6" x2="14" y2="6"/><line x1="6" y1="9" x2="6" y2="15"/><line x1="9" y1="18" x2="14" y2="18"/>',
     "工具":   '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
     "任务":   '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
     # v4.115：第二轮去 emoji 化补充图标（欢迎页/顶栏钮/交付 tag 复用）
@@ -2746,8 +2748,14 @@ class ChatWindow(QMainWindow):
         # 外壳、导航项、addWidget 全部照旧 —— 页数 / nav 下标契约不变。
         self.main_stack.addWidget(self.orchestrate_page)
 
-        # 页3：Agent 军团（v4.135.0：真内嵌为工作台一页，左导航「军团」直达）
-        # 位置紧跟「编排」——两者同属"组织协调"心智，且该位置在写死下标(0/1)之后，不串页。
+        # 页3：节点画布（设计稿 §9 第3步：挂主窗口 nav；薄 builder 懒导入 CanvasPanel）
+        self.canvas_page = QWidget()
+        self.canvas_page.setStyleSheet(f"background:{THEME['bg']};")
+        # 内容构建推迟到首次切页（_ensure_lazy_page 补建）——与军团/导演台同策略。
+        self.main_stack.addWidget(self.canvas_page)
+
+        # 页4：Agent 军团（v4.135.0：真内嵌为工作台一页，左导航「军团」直达）
+        # 位置紧跟「画布」——两者同属"组织协调"心智，且该位置在写死下标(0/1)之后，不串页。
         self.legion_page = QWidget()
         self.legion_page.setStyleSheet(f"background:{THEME['bg']};")
         # v4.152 启动提速：**内容构建推迟到 show 之后**（见 _post_show_init）。
@@ -2755,7 +2763,7 @@ class ChatWindow(QMainWindow):
         # 导航项仍在此建好 —— main_stack 页数 / nav 下标 / 军团嵌入的契约都不变。
         self.main_stack.addWidget(self.legion_page)
 
-        # 页4：生图
+        # 页5：生图
         self.image_page = QWidget()
         self.image_page.setStyleSheet(f"background:{THEME['bg']};")
         # v4.152.2 启动提速：以下各页**内容构建一律推迟**到首次切页
@@ -2765,34 +2773,34 @@ class ChatWindow(QMainWindow):
         # 而首屏只用得到 welcome(0) 与 chat(1) —— 其余不点就是纯浪费。
         self.main_stack.addWidget(self.image_page)
 
-        # 页5：生视频
+        # 页6：生视频
         self.video_page = QWidget()
         self.video_page.setStyleSheet(f"background:{THEME['bg']};")
         self.main_stack.addWidget(self.video_page)
 
-        # 页6：数字人分身（整合工作台之一）
+        # 页7：数字人分身（整合工作台之一）
         self.twin_page = QWidget()
         self.twin_page.setStyleSheet(f"background:{THEME['bg']};")
         self.main_stack.addWidget(self.twin_page)
 
-        # 页7：导演台（整合工作台之二）
+        # 页8：导演台（整合工作台之二）
         self.director_page = QWidget()
         self.director_page.setStyleSheet(f"background:{THEME['bg']};")
         # v4.152 启动提速：**内容构建推迟到 show 之后**（见 _post_show_init）。
         # 导演台整页构建实测 ~92ms，同属「不点就不需要」的成本。
         self.main_stack.addWidget(self.director_page)
 
-        # 页8：工具
+        # 页9：工具
         self.tools_page = QWidget()
         self.tools_page.setStyleSheet(f"background:{THEME['bg']};")
         self.main_stack.addWidget(self.tools_page)
 
-        # 页9：自动化任务
+        # 页10：自动化任务
         self.automation_page = QWidget()
         self.automation_page.setStyleSheet(f"background:{THEME['bg']};")
         self.main_stack.addWidget(self.automation_page)
 
-        # 页10：设置
+        # 页11：设置
         self.settings_page = QWidget()
         self.settings_page.setStyleSheet(f"background:{THEME['bg']};")
         self.main_stack.addWidget(self.settings_page)
@@ -5814,6 +5822,7 @@ class ChatWindow(QMainWindow):
         nav_defs = [
             ("对话", "对话"),
             ("编排", "编排"),
+            ("画布", "画布"),
             ("军团", "军团"),
             ("生图", "生图"),
             ("生视频", "生视频"),
@@ -6012,7 +6021,8 @@ class ChatWindow(QMainWindow):
                 (getattr(self, "twin_page", None), self._build_twin_page, "twin"),
                 (getattr(self, "tools_page", None), self._build_tools_page, "tools"),
                 (getattr(self, "automation_page", None), self._build_automation_page, "automation"),
-                (getattr(self, "settings_page", None), self._build_settings_page, "settings")):
+                (getattr(self, "settings_page", None), self._build_settings_page, "settings"),
+                (getattr(self, "canvas_page", None), self._build_canvas_page, "canvas")):
             if page is None or w is not page:
                 continue
             if name in self._lazy_built:
@@ -6024,6 +6034,21 @@ class ChatWindow(QMainWindow):
                 self._lazy_built.discard(name)      # 失败可重试
                 raise
             return
+
+    def _build_canvas_page(self):
+        """设计稿 §9 第3步：把节点画布挂进主窗口 nav（薄 builder + 懒导入）。
+
+        仅在首次切到「画布」页时由 _ensure_lazy_page 调一次。懒导入 canvas_panel
+        （Qt 依赖隔离到切页时），用 build_demo() 建一张示例流并 run 到终态，交给
+        CanvasPanel 渲染。画布本身只持引用、不碰 app shell 其它部分。
+        """
+        from canvas_panel import CanvasPanel, build_demo
+        g = build_demo()
+        panel = CanvasPanel(g)
+        lay = QVBoxLayout(self.canvas_page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(panel)
+        self._canvas_panel = panel
 
     def _open_session_manager(self):
         """v4.79：打开会话管理对话框（置顶/分组/批量删除/筛选）。"""
