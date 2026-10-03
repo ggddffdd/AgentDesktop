@@ -20,6 +20,7 @@
 「工作」分组下的「画布」项（nav_defs / NAV_GROUPS / main_stack 三处同步，A4 守卫仍绿）。
 """
 
+import json
 import logging
 import os
 import subprocess
@@ -242,14 +243,15 @@ def layout_graph(g: "cg.CanvasGraph") -> ScenePlan:
 # --------------------------------------------------------------------------
 # 视图层（Qt）：把 ScenePlan 画成可见画布（复用第 0 步三坑保护法）
 # --------------------------------------------------------------------------
-from PySide6.QtCore import QPointF, QRectF, Qt  # noqa: E402
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal  # noqa: E402
 from PySide6.QtGui import (QBrush, QColor, QFont, QPainter, QPainterPath,  # noqa: E402
-                           QPen)
-from PySide6.QtWidgets import (QApplication, QFrame, QGraphicsEllipseItem,  # noqa: E402
-                               QGraphicsPathItem, QGraphicsRectItem,
-                               QGraphicsScene, QGraphicsTextItem, QGraphicsView,
-                               QHBoxLayout, QLabel, QListWidget, QPushButton,
-                               QVBoxLayout, QWidget)
+                           QPen, QUndoCommand, QUndoStack)
+from PySide6.QtWidgets import (QApplication, QFormLayout, QFrame,  # noqa: E402
+                               QGraphicsEllipseItem, QGraphicsPathItem,
+                               QGraphicsRectItem, QGraphicsScene, QGraphicsSceneMouseEvent,
+                               QGraphicsTextItem, QGraphicsView, QHBoxLayout,
+                               QLabel, QLineEdit, QListWidget, QPushButton,
+                               QTextEdit, QVBoxLayout, QWidget)
 
 
 def _port_pos(spec: NodeSpec, side: str, idx: int, count: int):
@@ -259,14 +261,45 @@ def _port_pos(spec: NodeSpec, side: str, idx: int, count: int):
     return QPointF(x, y)
 
 
+class PortItem(QGraphicsEllipseItem):
+    """可交互端口：输出端口(side='R')可由鼠标拖出连线；输入端口('L')为连线终点。
+
+    端口是节点的子项；鼠标在输出端口按下即通知场景进入「连线模式」。
+    """
+
+    def __init__(self, node_id, port, side, port_type, x, y, parent):
+        super().__init__(QRectF(x - PORT_R, y - PORT_R, PORT_R * 2, PORT_R * 2), parent)
+        self.node_id = node_id
+        self.port = port
+        self.side = side                 # 'L' 输入 / 'R' 输出
+        self.port_type = port_type
+        color = "#1A73E8" if side == "L" else "#E37400"
+        self.setBrush(QBrush(QColor(color)))
+        self.setPen(QPen(QColor("#FFFFFF"), 1))
+        self.setAcceptHoverEvents(True)
+        self.setCursor(Qt.PointingHandCursor if side == "R" else Qt.CrossCursor)
+
+    def mousePressEvent(self, ev: QGraphicsSceneMouseEvent):
+        # 仅输出端口可发起连线
+        if self.side == "R":
+            scene = self.scene()
+            if isinstance(scene, CanvasScene):
+                scene.begin_link(self)
+            ev.accept()
+        else:
+            ev.ignore()
+
+
 class CanvasNodeItem(QGraphicsRectItem):
-    def __init__(self, spec: NodeSpec):
+    def __init__(self, spec: NodeSpec, node=None):
         super().__init__(QRectF(spec.x, spec.y, spec.w, spec.h))
         self.spec = spec
+        self.node = node                  # 对应 CanvasNode（pos/config 写回目标）
         self.setBrush(QBrush(QColor(spec.fill)))
         self.setPen(QPen(QColor(spec.border), 2))
         self.setFlags(QGraphicsRectItem.ItemIsSelectable |
                       QGraphicsRectItem.ItemIsMovable)
+        self.setAcceptHoverEvents(True)
 
         # 标题
         title = QGraphicsTextItem(spec.label, self)
@@ -281,24 +314,40 @@ class CanvasNodeItem(QGraphicsRectItem):
             QRectF(spec.x + spec.w - 14, spec.y + spec.h - 14, 8, 8), self)
         mark.setBrush(QBrush(QColor("#1E8E3E" if spec.registered else "#9AA4B2")))
         mark.setPen(QPen(QColor("#FFFFFF"), 1))
-        # 端口：左输入 / 右输出
+        # 端口：左输入 / 右输出（可交互 PortItem）
+        ports = node.inputs if node is not None else {}
         for i, p in enumerate(spec.in_ports):
-            self._dot("L", i, len(spec.in_ports))
+            pos = _port_pos(spec, "L", i, len(spec.in_ports))
+            ptype = ports.get(p).port_type if p in ports else "data"
+            PortItem(spec.id, p, "L", ptype, pos.x(), pos.y(), self)
+        ports = node.outputs if node is not None else {}
         for i, p in enumerate(spec.out_ports):
-            self._dot("R", i, len(spec.out_ports))
+            pos = _port_pos(spec, "R", i, len(spec.out_ports))
+            ptype = ports.get(p).port_type if p in ports else "data"
+            PortItem(spec.id, p, "R", ptype, pos.x(), pos.y(), self)
 
-    def _dot(self, side, idx, count):
-        pos = _port_pos(self.spec, side, idx, count)
-        d = QGraphicsEllipseItem(
-            QRectF(pos.x() - PORT_R, pos.y() - PORT_R, PORT_R * 2, PORT_R * 2), self)
-        d.setBrush(QBrush(QColor("#1A73E8" if side == "L" else "#E37400")))
-        d.setPen(QPen(QColor("#FFFFFF"), 1))
+        self._drag_start = QPointF(spec.x, spec.y)
+
+    def mousePressEvent(self, ev):
+        self._drag_start = self.pos()
+        super().mousePressEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        super().mouseReleaseEvent(ev)
+        # 拖动结束（位置变化）写回 node.pos 并 push 撤销命令
+        cur = self.pos()
+        if cur != self._drag_start and self.node is not None:
+            scene = self.scene()
+            if isinstance(scene, CanvasScene):
+                scene.on_node_moved(self, self._drag_start, cur)
 
 
 class CanvasEdgeItem(QGraphicsPathItem):
     def __init__(self, spec: EdgeSpec, frm: NodeSpec, to: NodeSpec):
         super().__init__()
         self.spec = spec
+        self.edge_tuple = (spec.from_node, spec.from_port, spec.to_node, spec.to_port)
+        self.setFlags(QGraphicsPathItem.ItemIsSelectable)
         # 找对应端口坐标
         fi = frm.out_ports.index(spec.from_port) if spec.from_port in frm.out_ports else 0
         ti = to.in_ports.index(spec.to_port) if spec.to_port in to.in_ports else 0
@@ -324,17 +373,169 @@ class CanvasEdgeItem(QGraphicsPathItem):
 
 
 class CanvasScene(QGraphicsScene):
-    def build(self, plan: ScenePlan):
+    """画布场景：渲染节点/连线，并承载阶段 A 的编辑交互（拖拽写回 + 端口连线）。"""
+
+    def __init__(self, graph=None, undo_stack=None, parent=None):
+        super().__init__(parent)
+        self.graph = graph
+        self.undo_stack = undo_stack
+        self._link_src = None          # 发起连线的输出 PortItem
+        self._temp_link = None         # 临时连线 QGraphicsPathItem
+
+    def build(self, plan: ScenePlan, graph=None):
+        if graph is not None:
+            self.graph = graph
         self.clear()
         node_map = {n.id: n for n in plan.nodes}
+        g_nodes = self.graph.nodes if self.graph else {}
         for n in plan.nodes:
-            self.addItem(CanvasNodeItem(n))
+            self.addItem(CanvasNodeItem(n, g_nodes.get(n.id)))
         for e in plan.edges:
             frm = node_map.get(e.from_id)
             to = node_map.get(e.to_id)
             if frm and to:
                 self.addItem(CanvasEdgeItem(e, frm, to))
         self.setSceneRect(0, 0, plan.width, plan.height)
+
+    # ---- 连线交互（输出端口拖到输入端口）----
+    def begin_link(self, port_item: PortItem):
+        if port_item.side != "R":
+            return
+        self._link_src = port_item
+        self._temp_link = QGraphicsPathItem()
+        self._temp_link.setPen(QPen(QColor("#1A73E8"), 2, Qt.DashLine))
+        self.addItem(self._temp_link)
+
+    def _clear_link(self):
+        if self._temp_link is not None:
+            self.removeItem(self._temp_link)
+            self._temp_link = None
+        self._link_src = None
+
+    def mouseMoveEvent(self, ev):
+        if self._link_src is not None and self._temp_link is not None:
+            p0 = self._link_src.scenePos() + QPointF(PORT_R, PORT_R)
+            p1 = ev.scenePos()
+            path = QPainterPath()
+            path.moveTo(p0)
+            cx = (p0.x() + p1.x()) / 2
+            path.cubicTo(QPointF(cx, p0.y()), QPointF(cx, p1.y()), p1)
+            self._temp_link.setPath(path)
+            ev.accept()
+            return
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if self._link_src is not None:
+            self._finish_link(ev)
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
+
+    def _finish_link(self, ev):
+        src = self._link_src
+        self._clear_link()
+        if src is None or self.graph is None:
+            return
+        # 找鼠标下的输入端口
+        target = None
+        for it in self.items(ev.scenePos()):
+            if isinstance(it, PortItem) and it.side == "L":
+                target = it
+                break
+        if target is None:
+            return
+        f = (src.node_id, src.port, target.node_id, target.port)
+        # 预校验（不实际留下边）：connect_data 内部做端口存在 + 类型兼容校验
+        try:
+            self.graph.connect_data(*f)
+        except ValueError:
+            return
+        self.graph.remove_data_edge(*f)   # 回滚试探
+        cmd = ConnectCommand(self.graph, self.undo_stack, *f)
+        if self.undo_stack is not None:
+            self.undo_stack.push(cmd)
+        else:
+            cmd.redo()
+
+    # ---- 节点拖动写回 ----
+    def on_node_moved(self, item, start: QPointF, end: QPointF):
+        if self.graph is None:
+            return
+        old = (start.x(), start.y())
+        new = (end.x(), end.y())
+        cmd = MoveNodeCommand(self.graph, self.undo_stack, item.spec.id, old, new, item)
+        if self.undo_stack is not None:
+            self.undo_stack.push(cmd)
+        else:
+            cmd.redo()
+
+
+# --------------------------------------------------------------------------
+# 撤销 / 重做命令（QUndoCommand 包裹编辑操作；item 为可选，判据可传 None 纯测数据层）
+# --------------------------------------------------------------------------
+class MoveNodeCommand(QUndoCommand):
+    def __init__(self, graph, undo_stack, node_id, old_pos, new_pos, item=None):
+        super().__init__("移动节点 %s" % node_id)
+        self.graph = graph
+        self.node_id = node_id
+        self.old_pos = old_pos
+        self.new_pos = new_pos
+        self.item = item
+
+    def _apply(self, pos):
+        self.graph.set_node_pos(self.node_id, pos[0], pos[1])
+        if self.item is not None:
+            self.item.setPos(QPointF(pos[0], pos[1]))
+
+    def redo(self):
+        self._apply(self.new_pos)
+
+    def undo(self):
+        self._apply(self.old_pos)
+
+
+class EditConfigCommand(QUndoCommand):
+    def __init__(self, graph, undo_stack, node_id, old_cfg, new_cfg):
+        super().__init__("编辑配置 %s" % node_id)
+        self.graph = graph
+        self.node_id = node_id
+        self.old_cfg = old_cfg
+        self.new_cfg = new_cfg
+
+    def redo(self):
+        self.graph.set_node_config(self.node_id, self.new_cfg)
+
+    def undo(self):
+        self.graph.set_node_config(self.node_id, self.old_cfg)
+
+
+class ConnectCommand(QUndoCommand):
+    def __init__(self, graph, undo_stack, from_node, from_port, to_node, to_port):
+        super().__init__("连接 %s.%s -> %s.%s" %
+                         (from_node, from_port, to_node, to_port))
+        self.graph = graph
+        self.f = (from_node, from_port, to_node, to_port)
+
+    def redo(self):
+        self.graph.connect_data(*self.f)
+
+    def undo(self):
+        self.graph.remove_data_edge(*self.f)
+
+
+class RemoveEdgeCommand(QUndoCommand):
+    def __init__(self, graph, undo_stack, from_node, from_port, to_node, to_port):
+        super().__init__("删除连线 %s.%s -> %s.%s" %
+                         (from_node, from_port, to_node, to_port))
+        self.graph = graph
+        self.f = (from_node, from_port, to_node, to_port)
+
+    def redo(self):
+        self.graph.remove_data_edge(*self.f)
+
+    def undo(self):
+        self.graph.connect_data(*self.f)
 
 
 class CanvasView(QGraphicsView):
@@ -359,20 +560,89 @@ class CanvasView(QGraphicsView):
         return ok
 
 
+class PropertyPanel(QWidget):
+    """右侧属性面板：绑定选中节点的 config，可编辑后写回（带撤销）。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.graph = None
+        self.node = None
+        self.undo_stack = None
+        lay = QVBoxLayout(self)
+        self.lbl = QLabel("（未选中节点）")
+        self.lbl.setWordWrap(True)
+        lay.addWidget(self.lbl)
+        form = QFormLayout()
+        self.edit_prompt = QLineEdit()
+        form.addRow("提示词(prompt)", self.edit_prompt)
+        lay.addLayout(form)
+        self.edit_config = QTextEdit()
+        self.edit_config.setPlaceholderText("节点 config（JSON）")
+        lay.addWidget(self.edit_config)
+        self.btn_apply = QPushButton("应用更改")
+        self.btn_apply.clicked.connect(self.apply)
+        lay.addWidget(self.btn_apply)
+        lay.addStretch(1)
+
+    def bind(self, graph, node, undo_stack):
+        self.graph = graph
+        self.node = node
+        self.undo_stack = undo_stack
+        if node is None:
+            self.lbl.setText("（未选中节点）")
+            self.edit_prompt.clear()
+            self.edit_config.clear()
+            return
+        self.lbl.setText("节点: %s\n类型: %s\n状态: %s" % (
+            node.id, NODE_TYPES.get(node.node_type, node.node_type), node.status))
+        self.edit_prompt.setText(str(node.config.get("prompt", "")))
+        self.edit_config.setPlainText(
+            json.dumps(node.config, ensure_ascii=False, indent=1))
+
+    def apply(self):
+        if self.node is None or self.graph is None:
+            return
+        try:
+            new_cfg = json.loads(self.edit_config.toPlainText() or "{}")
+        except Exception:
+            new_cfg = dict(self.node.config)
+        if self.edit_prompt.text().strip():
+            new_cfg["prompt"] = self.edit_prompt.text().strip()
+        old = dict(self.node.config)
+        if new_cfg == old:
+            return
+        cmd = EditConfigCommand(self.graph, self.undo_stack, self.node.id, old, new_cfg)
+        if self.undo_stack is not None:
+            self.undo_stack.push(cmd)
+        else:
+            cmd.redo()
+
+
 class CanvasPanel(QWidget):
-    """独立画布面板：工具栏 + 视图 + 选中详情。自带预览入口（__main__）。"""
+    """独立画布面板（阶段 A：可编辑 + 撤销/重做 + 属性面板 + 端口连线）。"""
 
     def __init__(self, graph: Optional["cg.CanvasGraph"] = None, parent=None):
         super().__init__(parent)
         self.graph = graph
-        self.scene = CanvasScene(self)
+        self.undo_stack = QUndoStack(self)
+        self.scene = CanvasScene(graph, self.undo_stack, self)
         self.view = CanvasView(self)
+        self.property_panel = PropertyPanel(self)
 
         # 工具栏
         bar = QHBoxLayout()
         btn_fit = QPushButton("适配视图")
         btn_fit.clicked.connect(self._fit)
+        btn_undo = QPushButton("撤销")
+        btn_undo.clicked.connect(self.undo_stack.undo)
+        btn_redo = QPushButton("重做")
+        btn_redo.clicked.connect(self.undo_stack.redo)
+        btn_del = QPushButton("删除选中连线")
+        btn_del.clicked.connect(self._delete_selected)
         bar.addWidget(btn_fit)
+        bar.addWidget(btn_undo)
+        bar.addWidget(btn_redo)
+        bar.addWidget(btn_del)
         bar.addStretch(1)
         legend = QLabel("● 完成  ● 进行  ● 失败  ● 待办 蓝色实线=数据 灰色虚线=顺序")
         bar.addWidget(legend)
@@ -381,22 +651,49 @@ class CanvasPanel(QWidget):
         self.detail = QListWidget()
         self.detail.setMaximumHeight(120)
 
-        lay = QVBoxLayout(self)
-        lay.addLayout(bar)
-        lay.addWidget(self.view, 1)
-        lay.addWidget(self.detail)
+        left = QVBoxLayout()
+        left.addLayout(bar)
+        left.addWidget(self.view, 1)
+        left.addWidget(self.detail)
+        lay = QHBoxLayout(self)
+        lay.addLayout(left, 1)
+        lay.addWidget(self.property_panel, 0)
         self.setLayout(lay)
+
+        # 选中变化 → 刷新属性面板
+        self.scene.selectionChanged.connect(self._on_selection_changed)
 
         if graph is not None:
             self.render_graph(graph)
 
     def render_graph(self, graph: "cg.CanvasGraph"):
         self.graph = graph
+        self.scene.graph = graph
         self.plan = layout_graph(graph)
-        self.scene.build(self.plan)
+        self.scene.build(self.plan, graph)
         self.view.setScene(self.scene)
         self._fit()
         self._refresh_detail(None)
+
+    def _on_selection_changed(self):
+        items = self.scene.selectedItems()
+        node_item = next((it for it in items
+                          if isinstance(it, CanvasNodeItem)), None)
+        if node_item is not None and node_item.node is not None:
+            self.property_panel.bind(self.graph, node_item.node, self.undo_stack)
+            self._refresh_detail(node_item.spec.id)
+        else:
+            self.property_panel.bind(self.graph, None, self.undo_stack)
+
+    def _delete_selected(self):
+        for it in self.scene.selectedItems():
+            if isinstance(it, CanvasEdgeItem):
+                cmd = RemoveEdgeCommand(self.graph, self.undo_stack, *it.edge_tuple)
+                if self.undo_stack is not None:
+                    self.undo_stack.push(cmd)
+                else:
+                    cmd.redo()
+                break
 
     def _fit(self):
         if getattr(self, "plan", None) is not None:

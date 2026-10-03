@@ -390,6 +390,84 @@ class CanvasGraph:
             self._order_seen.add(key)
         return self
 
+    # ---- 编辑（阶段 A：可编辑设计画布）----
+    # 这些方法都是「纯数据写回」，返回值可用于 QUndoCommand 的 undo（重做/撤销共轭）。
+    # 约定：成功返回被替换/删除的旧值；找不到目标抛 ValueError（调用方据此提示）。
+    def set_node_pos(self, node_id: str, x, y):
+        """写回节点手动位置（拖拽松手后调用）。返回旧 pos（None 或 (x,y)）。"""
+        n = self.nodes.get(node_id)
+        if not n:
+            raise ValueError(f"节点不存在: {node_id}")
+        old = n.pos
+        n.pos = (float(x), float(y))
+        return old
+
+    def set_node_config(self, node_id: str, config: dict):
+        """写回节点 config（属性面板编辑后调用）。返回旧 config（dict）。"""
+        n = self.nodes.get(node_id)
+        if not n:
+            raise ValueError(f"节点不存在: {node_id}")
+        old = dict(n.config)
+        n.config = dict(config)
+        return old
+
+    def _edge_pair_still_present(self, from_node: str, to_node: str) -> bool:
+        """(from_node,to_node) 这对节点之间是否仍有任何数据边或顺序边残留。"""
+        if any(e.from_node == from_node and e.to_node == to_node
+               for e in self.data_edges):
+            return True
+        if any(e.from_node == from_node and e.to_node == to_node
+               for e in self.order_edges):
+            return True
+        return False
+
+    def remove_data_edge(self, from_node, from_port, to_node, to_port):
+        """删除**一条**数据边（撤销单条连线）。返回被删的 DataEdge，找不到返回 None。
+
+        只删除第一条四元组匹配的边（同键值重复边保留），符合「撤销一次连线操作」语义，
+        不会误删图中已存在的其它同键值边。
+        同步清理 _order_seen：若 (from_node,to_node) 这对不再有任何数据/顺序边，
+        则移除去重键，使未来重连能重新 depend。
+        注意：底层 TaskGraph 的 depend 是「只增不减」（task_graph 无 undepend），
+        删除数据边不会回退 _tg 的依赖——冗余依赖对 run() 无害（只是顺序约束更紧），
+        保留可避免误伤其它仍依赖该前驱的节点。待 task_graph 支持 undepend 后，
+        这里可调用自管重算。
+        """
+        target = None
+        kept = []
+        for e in self.data_edges:
+            if (e.from_node == from_node and e.from_port == from_port
+                    and e.to_node == to_node and e.to_port == to_port):
+                if target is None:
+                    target = e          # 仅删第一条匹配
+                else:
+                    kept.append(e)      # 其余同键值边保留
+            else:
+                kept.append(e)
+        if target is None:
+            return None
+        self.data_edges = kept
+        if not self._edge_pair_still_present(from_node, to_node):
+            self._order_seen.discard((from_node, to_node))
+        return target
+
+    def remove_order_edge(self, from_node, to_node, reason=""):
+        """删除一条顺序边（撤销顺序约束）。返回被删的 OrderEdge，找不到返回 None。"""
+        target = None
+        kept = []
+        for e in self.order_edges:
+            if (e.from_node == from_node and e.to_node == to_node
+                    and (not reason or e.reason == reason)):
+                target = e
+            else:
+                kept.append(e)
+        if target is None:
+            return None
+        self.order_edges = kept
+        if not self._edge_pair_still_present(from_node, to_node):
+            self._order_seen.discard((from_node, to_node))
+        return target
+
     # ---- 查询 ----
     def topo(self) -> List[str]:
         """返回节点拓扑顺序（依赖先后）。"""
