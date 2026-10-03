@@ -82,6 +82,11 @@ print("\nui.py 已恢复：%s  md5=%s" % (_h0 == _h1, _h0))
 if _h0 != _h1:
     print("**源码未按原样恢复，请检查！**")
     sys.exit(2)
+# 统一输出契约（2026-10-03）：run_all --with-perturb 用 PASS=/FAIL= 汇总扰动结果，
+# 与 tests/ 下的判据套件同格式（见 run_all.py 头部约定第 3 条）。
+# 语义：PASS=命中（判据确实转红）的 case 数，FAIL=哑弹数。放在 md5 还原校验之后，
+# 因为「源码没还原」是事故（exit 2），不该再报出好看的 PASS。
+print("PERTURB PASS=%d FAIL=%d" % (len(CASES) - len(BAD), len(BAD)))
 if BAD:
     print("\n失效用例（%d 条）：%s" % (len(BAD), "、".join(BAD)))
     sys.exit(1)

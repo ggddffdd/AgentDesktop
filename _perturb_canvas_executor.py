@@ -46,9 +46,13 @@ def _run(check=None):
 
 
 FAILS = []
+# 检查点计数（每个 _pg case + 末尾反向基线各 +1）—— 供统一输出契约报 PASS 总数。
+# 不硬编码 case 数：以后增删 case 忘了改常量就报不出准数（这正是跨版本哑弹的成因之一）。
+CHECKS = [0]
 
 
 def _pg(desc, check, filepath, old, new):
+    CHECKS[0] += 1
     # 先确认基线（未变异）该判据是绿的
     base = _run(check)
     if base.returncode != 0:
@@ -178,6 +182,7 @@ def main():
         "                placeholder=True,\n", "")
 
     # 反向基线：所有文件已还原，全量判据应全绿
+    CHECKS[0] += 1
     final = _run()
     if final.returncode != 0:
         print("ERR 反向基线非绿（可能未完全还原）")
@@ -193,6 +198,8 @@ if __name__ == "__main__":
         # 无论如何还原三份原始文件
         for fp, content in _BACKUP.items():
             open(fp, "w", encoding="utf-8").write(content)
+    # 统一输出契约（2026-10-03）：run_all --with-perturb 用 PASS=/FAIL= 汇总。
+    print("PERTURB PASS=%d FAIL=%d" % (CHECKS[0] - len(FAILS), len(FAILS)))
     if FAILS:
         print("\n扰动失败项: %s" % ", ".join(FAILS))
         sys.exit(1)

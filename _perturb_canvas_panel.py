@@ -168,6 +168,10 @@ def main():
     _total = len(MUTATIONS) + len(TEST_MUTATIONS)
     print("\n扰动总数: %d  有效: %d  基线: %s" %
           (_total, sum(1 for _, h in results if h), "OK" if base_ok else "FAIL"))
+    # 统一输出契约（2026-10-03）：run_all --with-perturb 用 PASS=/FAIL= 汇总。
+    _ok_n = sum(1 for _, h in results if h)
+    print("PERTURB PASS=%d FAIL=%d"
+          % (_ok_n, _total - _ok_n + (0 if base_ok else 1)))
     if ok_all:
         print("ALL PERTURB OK: 判据非空转")
         sys.exit(0)

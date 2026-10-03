@@ -52,6 +52,7 @@ test_outcome_honesty_195.py
 test_p0p1_runcmd_fix_186.py
 test_p2_210.py
 test_permission_gates.py
+test_perturb_harness.py
 test_popup_clamp.py
 test_postref_fix_186.py
 test_probe_graphics.py

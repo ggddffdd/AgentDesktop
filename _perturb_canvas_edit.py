@@ -97,6 +97,10 @@ def main():
     # 还原后再次确认全绿
     _, final_green = run_test()
     print("还原后 ALL GREEN=%s" % final_green)
+    # 统一输出契约（2026-10-03）：run_all --with-perturb 用 PASS=/FAIL= 汇总。
+    # 基线 / 还原后基线非绿也各算一项失败 —— 否则 hits 全中却 exit=1，成绩单自相矛盾。
+    _fail_n = (len(cases) - hits) + (0 if base_green else 1) + (0 if final_green else 1)
+    print("PERTURB PASS=%d FAIL=%d" % (hits, _fail_n))
     sys.exit(0 if (hits == len(cases) and base_green and final_green) else 1)
 
 

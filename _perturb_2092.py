@@ -262,13 +262,20 @@ def main():
             print(f"[命中] {name}\n         红在 {reds[:6]}")
         finally:
             if created:
+                # 用带重试的删除：Windows 上刚写完的 .py 可能被 Defender/索引短暂占用，
+                # 裸 os.remove 会抛 PermissionError 穿透 finally —— 把「清理失败」变成
+                # 「脚本崩溃」（rc≠0 → run_all 报 FAILED），而真正的问题只是删晚了。
+                # 另外本文件已在 _perturb_guard 的 scratch 约定内（tests/test_zz_*.py），
+                # 即使这里失败，下次跑扰动时的 sweep_scratch() 也会兜底清掉。
                 if os.path.exists(path):
-                    os.remove(path)
+                    _guard._remove_retry(path)
             elif orig is not None:
                 write_raw(path, orig, crlf)
 
     print("\n" + "=" * 60)
     print(f"扰动 {hit}/{len(CASES)} 命中（含期望比对）")
+    # 统一输出契约（2026-10-03）：run_all --with-perturb 用 PASS=/FAIL= 汇总。
+    print("PERTURB PASS=%d FAIL=%d" % (hit, len(misses)))
     if misses:
         print("\n未命中：")
         for n, d in misses:

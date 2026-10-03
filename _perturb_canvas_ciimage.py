@@ -123,6 +123,9 @@ def main():
     print("\n===== 横幅 =====")
     print("扰动: %d  命中红名: %d  反向基线: %s" % (total, hit, "GREEN" if base_ok else "RED"))
     print("RESULT: %s" % ("ALL GREEN" if (hit == total and base_ok) else "HAS FAIL"))
+    # 统一输出契约（2026-10-03）：run_all --with-perturb 用 PASS=/FAIL= 汇总。
+    # 反向基线非绿也算失败项（否则 hits 全中却 exit=1，成绩单看着自相矛盾）。
+    print("PERTURB PASS=%d FAIL=%d" % (hit, total - hit + (0 if base_ok else 1)))
     raise SystemExit(0 if (hit == total and base_ok) else 1)
 
 

@@ -188,6 +188,9 @@ def main():
     print("\n" + "=" * 56)
     print(f"  导出扰动：{passed}/{total} 命中翻红；反向基线 {'OK' if base_ok else 'FAIL'}")
     print("=" * 56)
+    # 统一输出契约（2026-10-03）：run_all --with-perturb 用 PASS=/FAIL= 汇总。
+    print("PERTURB PASS=%d FAIL=%d"
+          % (passed, total - passed + (0 if base_ok else 1)))
     sys.exit(0 if (passed == total and base_ok) else 1)
 
 

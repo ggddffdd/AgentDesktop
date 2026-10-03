@@ -160,7 +160,7 @@ else:
           % len(re.findall(r"\[OK  \] A", _out0)))
     PASS_N += 1
 
-print("\nPASS=%d FAIL=%d" % (PASS_N, FAIL_N))
+print("\nPERTURB PASS=%d FAIL=%d" % (PASS_N, FAIL_N))
 if FAILED_CASES:
     print("失效 case：")
     for c in FAILED_CASES:

@@ -158,6 +158,8 @@ finally:
     print("  （已恢复原文件，行尾保持原样）")
 
 print(f"\n=== 扰动汇总：命中 {len(HIT)}/{len(CASES)} ===")
+# 统一输出契约（2026-10-03）：run_all --with-perturb 用 PASS=/FAIL= 汇总。
+print("PERTURB PASS=%d FAIL=%d" % (len(HIT), len(MISS)))
 for m in MISS:
     print("   ✗", m)
 sys.exit(1 if MISS else 0)

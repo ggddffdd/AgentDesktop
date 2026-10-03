@@ -85,4 +85,6 @@ n = sum(1 for _, ok, _ in results if ok)
 print(f"\n=== 扰动结果：{n}/{len(results)} 命中 ===")
 same = open(TARGET, encoding="utf-8", newline="").read()
 print("源码已恢复" if same == orig else "**源码未恢复，请检查！**")
+# 统一输出契约（2026-10-03）：run_all --with-perturb 用 PASS=/FAIL= 汇总。
+print("PERTURB PASS=%d FAIL=%d" % (n, len(results) - n))
 sys.exit(0 if n == len(results) else 1)

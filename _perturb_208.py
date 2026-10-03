@@ -203,6 +203,8 @@ def main():
 
     print("\n" + "=" * 60)
     print(f"扰动 {hit}/{len(CASES)} 命中")
+    # 统一输出契约（2026-10-03）：run_all --with-perturb 用 PASS=/FAIL= 汇总。
+    print("PERTURB PASS=%d FAIL=%d" % (hit, len(misses)))
     if misses:
         print("\n未命中：")
         for n, d in misses:

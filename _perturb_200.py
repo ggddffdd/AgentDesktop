@@ -199,6 +199,9 @@ def main():
     print(f"\n=== 扰动结果：{sum(bool(r) for r in results)}/{len(results)} 命中 ===")
     print(f"源码完整性: ui.py {'OK' if md5(os.path.join(ROOT, 'ui.py')) == base_ui else '**被改坏**'}"
           f" / theme_qss.py {'OK' if md5(os.path.join(ROOT, 'theme_qss.py')) == base_tq else '**被改坏**'}")
+    # 统一输出契约（2026-10-03）：run_all --with-perturb 用 PASS=/FAIL= 汇总。
+    _hit = sum(1 for r in results if r)
+    print("PERTURB PASS=%d FAIL=%d" % (_hit, len(results) - _hit))
     sys.exit(0 if all(results) else 1)
 
 
