@@ -76,8 +76,9 @@
 |---|---|---|
 | model | **58**（原 41） | A17–A22 静态 + B15–B21 行为（含「成环→报死锁→删边→重跑全 completed」） |
 | edit | **40**（原 38） | B6d/B6e：连线命令的 undo/redo 必须同步增删底层依赖 |
-| agnes / assetstore / ciimage / executor / export / localedit / panel | 31 / 24 / 25 / 40 / 18 / 46 / 30 | — |
-| **合计** | **312** | |
+| export | **19**（原 18） | B10：**导入后底层依赖与导出前完全一致**（只还原边、不重建依赖的话，`run()` 会把该串行的流水线当散点跑 —— 画布上看不出差别，纯 `completed` 断言也抓不到） |
+| agnes / assetstore / ciimage / executor / localedit / panel | 31 / 24 / 25 / 40 / 46 / 30 | — |
+| **合计** | **313** | |
 
 扰动：`_perturb_canvas_model.py` **11 → 18 条**（新增 `TG_PATH` 变异源，可打在 `task_graph.py` 上）。
 
@@ -91,7 +92,7 @@
 
 | 项 | 结果 |
 |---|---|
-| 9 套画布判据 | **312 项全绿** |
+| 9 套画布判据 | **313 项全绿** |
 | 9 个扰动脚本 | **全部命中期望红项 + 反向基线绿** |
 | 非画布下游（`task_graph` 被 `agent.py` / `legion*` 共用） | `test_task_graph_cancel` 36/36、`test_task_graph_incomplete` 36/36、`test_frozen_smoke` 143/143 |
 | 残留预检 `_perturb_guard.py` | 干净（无 `canvas_mut_*` / `taskgraph_mut_*`） |

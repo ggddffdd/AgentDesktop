@@ -91,6 +91,17 @@ def main():
     check("B4 导入图可重跑至 completed",
           all(n.status == "completed" for n in g2.nodes.values()))
 
+    # B10（Wave B #2）：导入必须把**底层依赖**一并重建。
+    # 只还原边、不重建依赖的话，run() 会把「该串行的流水线」当成可并行的散点 ——
+    # 画布上完全看不出差别，但调度已经错了（B4 只看「都 completed」，抓不到这个）。
+    def _pairs(gg):
+        return {(b, td["id"]) for td in gg._tg.task_list()
+                for b in td.get("blockedBy", [])}
+
+    check("B10 导入后底层依赖与示例图完全一致（边集即事实源）",
+          _pairs(g2) == _pairs(cg.build_sample_graph()),
+          "%s vs %s" % (sorted(_pairs(g2)), sorted(_pairs(cg.build_sample_graph()))))
+
     # 手动位置经 导出→导入 持久化（可编辑画布的关键）
     g.nodes["img"].pos = (500.0, 300.0)
     tmp2 = os.path.join(tempfile.gettempdir(), "canvas_export_pos.json")
