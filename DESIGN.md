@@ -135,8 +135,20 @@
 
 - **Web 渲染区（QWebEngine 聊天）实际栈**：
   `-apple-system, "Segoe UI Variable", "Segoe UI", "Microsoft YaHei", system-ui, sans-serif`
-- **原生 Qt 控件（规定收口）**：统一 `"Microsoft YaHei", system-ui, sans-serif`。
-  - ⚠️ 现状：原生控件未强制 font-family，靠系统默认。所有新增/改造控件**必须**显式设 QFont 为该栈，避免中英混排字体不一致。
+- **原生 Qt 控件（v4.210.2 已收口，说一不二）**：统一 `"Microsoft YaHei", system-ui, sans-serif`。
+  - **唯一真源**：`theme_qss.FONT_FAMILY`（族名）/ `theme_qss.FONT_STACK`（QSS 用整串）。
+    代码里**禁止**再写裸的 `QFont("Microsoft YaHei", N)` —— 一律 `QFont(FONT_FAMILY, N)`。
+  - **落地方式**：`main.py` 在 `QApplication` 之后、建主窗口之前调
+    `theme_qss.apply_native_font(app)`，对 `app.font()` 设
+    `setFamilies([FONT_FAMILY, "Segoe UI", "sans-serif"])`。**新控件自动继承**，
+    不必逐个 `setFont` —— 「靠每个人记得逐个设」正是这条长期停留在「规定」而非「事实」的原因。
+  - **为什么这是「零视觉变化」**：本机系统默认族就是 `Microsoft YaHei UI`，它与
+    `Microsoft YaHei` 在 12/13/15/20px 下**逐像素相同**（QImage md5 全等、
+    `horizontalAdvance` 全等）。收口做的不是换字体，是把「本来就一样」从
+    **靠系统默认**变成**我们说了算** —— 换台没装雅黑 UI 的机器，以前会静默回退到别的族。
+  - ⚠️ offscreen 平台解析不出这个族名（`exactMatch()` 为 False，两族一起回退到同一兜底字体
+    → 像素比对必然「相同」= 假绿）。守卫必须跑**真实平台子进程**，见下方机器守卫。
+  - 机器守卫：`tests/test_ui_a11y_2102.py` A 组（A1~A7，含真实平台子进程逐像素比对）。
 
 ### 3.2 字号层级（基于现有 setStyleSheet 实测）
 

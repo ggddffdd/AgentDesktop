@@ -40,6 +40,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import ui_motion as motion   # 系统「减弱动效」偏好（v4.210.2）
+
 _log = logging.getLogger(__name__)
 
 # ---- 行为常量（DESIGN.md §11.2 / §11.4 / §11.5）----
@@ -133,7 +135,8 @@ class _ToastCard(QFrame):
         bl.addWidget(self._close_btn, 0, Qt.AlignTop)
         root.addWidget(body, 1)
 
-        # 淡入淡出：项目无 QPropertyAnimation（0 处），用 QTimer 分步改 opacity
+        # 淡入淡出：项目无 QPropertyAnimation（0 处），用 QTimer 分步改 opacity。
+        # v4.210.2：时长先过 ui_motion.scale_ms —— 系统关了动画就归零、瞬间到位。
         self._eff = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self._eff)
         self._anim_timer = QTimer(self)
@@ -149,6 +152,22 @@ class _ToastCard(QFrame):
 
     # ---- 动效 ----
     def _fade(self, a, b, ms, done=None):
+        """淡入/淡出。系统要求「减弱动效」时 ms 归零 → 直接落到终值，不逐帧渐变。
+
+        归零分支**必须异步回调**（QTimer.singleShot(0)）而不能同步调 done：
+        dismiss() 是从计时器 timeout 或关闭按钮 clicked 里进来的，
+        同步回调会变成「在自己的信号处理里把卡片 setParent(None)+deleteLater()」，
+        调用顺序与渐变动画那条路径（回调发生在计时器 tick 里）不一致。
+        0ms 只是「下一轮事件循环」，观感同样是瞬间，但时序与原路径完全同构。
+        """
+        ms = motion.scale_ms(ms)
+        if ms <= 0:
+            self._anim_timer.stop()
+            self._anim = None
+            self._eff.setOpacity(b)
+            if done:
+                QTimer.singleShot(0, done)
+            return
         steps = max(1, ms // 20)
         self._anim = {"i": 0, "n": steps, "a": a, "b": b, "done": done}
         self._eff.setOpacity(a)

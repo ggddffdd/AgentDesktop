@@ -427,6 +427,11 @@ def main():
         pass
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    # v4.210.2：原生 Qt 控件字体族收口（DESIGN.md §3.1「规定收口」）。
+    # 全应用唯一落点 —— 此前 9 处 `QFont("Microsoft YaHei", N)` 各写各的、
+    # 没写的就吃系统默认，同一面板里两种族。只改族不动字号，实测逐像素零变化。
+    from theme_qss import apply_native_font
+    apply_native_font(app)
     # v4.186.0（P1-11）：单实例锁保活——挂到 app 上防 GC 析构导致提前解锁
     if _single_lock is not None:
         app._single_instance_lock = _single_lock

@@ -31,6 +31,7 @@ from pathlib import Path
 import config
 from skill_loader import scan_skills
 from ui import THEME
+from theme_qss import FONT_FAMILY
 
 log = logging.getLogger(__name__)
 
@@ -109,7 +110,7 @@ class SkillManagerWindow(QMainWindow):
         # 标题栏
         title_layout = QHBoxLayout()
         title = QLabel("🔌 技能管理器")
-        title.setFont(QFont("Microsoft YaHei", 18, QFont.Bold))
+        title.setFont(QFont(FONT_FAMILY, 18, QFont.Bold))
         title_layout.addWidget(title)
         title_layout.addStretch()
 
@@ -166,7 +167,7 @@ class SkillManagerWindow(QMainWindow):
         right_layout = QVBoxLayout(right_panel)
 
         self.detail_name = QLabel("未选择技能")
-        self.detail_name.setFont(QFont("Microsoft YaHei", 12, QFont.Bold))
+        self.detail_name.setFont(QFont(FONT_FAMILY, 12, QFont.Bold))
         right_layout.addWidget(self.detail_name)
 
         self.detail_desc = QLabel("")

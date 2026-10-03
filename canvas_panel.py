@@ -31,6 +31,7 @@ from typing import Dict, List, Optional
 import canvas_graph as cg
 from canvas_graph import NODE_TYPES
 from ui import THEME
+from theme_qss import FONT_FAMILY
 # 阶段 C：图片局部编辑的可用 transform 操作（供对话框下拉 + 引擎共用）
 from image_local_edit import VALID_TRANSFORM_OPS as VALID_TRANSFORM_OPS_C
 
@@ -378,12 +379,12 @@ class CanvasNodeItem(QGraphicsRectItem):
 
         # 标题
         title = QGraphicsTextItem(spec.label, self)
-        title.setFont(QFont("Microsoft YaHei", 11, QFont.Bold))
+        title.setFont(QFont(FONT_FAMILY, 11, QFont.Bold))
         title.setPos(spec.x + 8, spec.y + 6)
         # 状态文字（占位节点显式标出来：completed 只说「流程跑通了」）
         st = QGraphicsTextItem(
             spec.status + (" · 占位" if spec.placeholder else ""), self)
-        st.setFont(QFont("Microsoft YaHei", 9))
+        st.setFont(QFont(FONT_FAMILY, 9))
         st.setPos(spec.x + 8, spec.y + 28)
         # 资产标记（右下角小圆）三态，不能混：
         #   实心绿 = 真产出且已登记；空心橙圈 = 占位物（登记了但不是真出片）；

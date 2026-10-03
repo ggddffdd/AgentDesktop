@@ -5075,11 +5075,12 @@ class ChatWindow(QMainWindow):
         # （_verify_ui_model_v41490 读 self.agnes_text_combo）→ 幂等是必需的。
         from theme_qss import scroll_transparent
         from theme_qss import label_body, label_second, label_title, label_title_xl
+        from theme_qss import FONT_FAMILY
         if getattr(self, "_settings_built", False):
             return
         self._settings_built = True
         page = self.settings_page
-        page.setFont(QFont("Microsoft YaHei", 13))
+        page.setFont(QFont(FONT_FAMILY, 13))
         # v4.152.3：设置页内容总高超过可视区，但此前**没有滚动容器** ——
         # QVBoxLayout 会把 4 张卡片**平均压缩**（实测每张只剩 117px，卡片内每个控件
         # 被压到 5~6px、互相重叠；而 QComboBox 是 v=Fixed(32px) 不参与压缩，会溢出到

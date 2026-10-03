@@ -34,6 +34,7 @@ from PySide6.QtGui import QFont, QColor, QDesktopServices
 
 import config
 from ui import THEME
+from theme_qss import FONT_FAMILY
 from skill_loader import scan_skills, normalize_skill_name
 
 log = logging.getLogger(__name__)
@@ -105,7 +106,7 @@ class SkillMarketWindow(QMainWindow):
         # 标题栏
         title_row = QHBoxLayout()
         title = QLabel("技能市场")
-        title.setFont(QFont("Microsoft YaHei", 18, QFont.Bold))
+        title.setFont(QFont(FONT_FAMILY, 18, QFont.Bold))
         title_row.addWidget(title)
         title_row.addStretch(1)
 
@@ -318,7 +319,7 @@ class SkillMarketWindow(QMainWindow):
 
         top = QHBoxLayout()
         name_lbl = QLabel(f"{e.get('emoji','📦')} {e['name']}")
-        name_lbl.setFont(QFont("Microsoft YaHei", 13, QFont.Bold))
+        name_lbl.setFont(QFont(FONT_FAMILY, 13, QFont.Bold))
         top.addWidget(name_lbl, 1)
 
         badge = QLabel(e.get("category", "未分类"))

@@ -33,6 +33,7 @@ import logging
 
 import config
 from ui import THEME
+from theme_qss import FONT_FAMILY
 
 log = logging.getLogger(__name__)
 
@@ -105,7 +106,7 @@ class ToolManagerWindow(QMainWindow):
         main = QVBoxLayout(central)
 
         title = QLabel("工具管理器")
-        title.setFont(QFont("Microsoft YaHei", 18, QFont.Bold))
+        title.setFont(QFont(FONT_FAMILY, 18, QFont.Bold))
         main.addWidget(title)
 
         tip = QLabel("关闭的工具不会被注入给模型 = 模型看不见它，也就不会调用。"
@@ -167,7 +168,7 @@ class ToolManagerWindow(QMainWindow):
         right = QGroupBox("工具详情")
         rl = QVBoxLayout(right)
         self.detail_name = QLabel("未选择工具")
-        self.detail_name.setFont(QFont("Microsoft YaHei", 12, QFont.Bold))
+        self.detail_name.setFont(QFont(FONT_FAMILY, 12, QFont.Bold))
         rl.addWidget(self.detail_name)
 
         self.detail_meta = QLabel("")

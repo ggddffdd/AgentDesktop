@@ -61,15 +61,28 @@
 
 ## 3. 焦点可见（focus 态）—— Qt 实现
 
-Web 的 `:focus-visible` 在 Qt 用伪状态 + 焦点策略落地：
+Web 的 `:focus-visible` 在 Qt 用伪状态 + 焦点策略落地。
+**v4.210.2 实测修正过配方 —— 以下是唯一有效落点，照旧版抄会做出「看起来写了、实际没生效」。**
 
-- [ ] 每个可交互控件 `setFocusPolicy(Qt.StrongFocus)`（默认多数已是，但自定义 QWidget 容易漏）。
-- [ ] 键盘 Tab 切换时**必须有可见焦点框**：QSS 写
+- [ ] **焦点环只能写进控件自己的 QSS**（即 `theme_qss` 的模式函数里）。
+  ⚠️ **应用级 `app.setStyleSheet` 的 `:focus` 规则在本项目里一行都不会生效** ——
+  控件自身的 QSS 会把整条规则盖掉（连基础态 `border` 都盖）。本项目有 106 处
+  `setStyleSheet` 走 `theme_qss` 家族，几乎每个按钮都有各自的 QSS，
+  所以「统一挪到 app 级更干净」的实际效果 = **焦点提示全部消失**。
+  反证：`tests/test_ui_a11y_2102.py` C7（同一份 QSS 加/不加应用级规则，渲染结果一致）。
+- [ ] 写法用**内描边** `border`（不是 `outline`，也不必叠 offset）：
   ```css
-  QWidget:focus { border: 2px solid #1A73E8; }
-  QPushButton:focus { outline: 2px solid #1A73E8; outline-offset: 2px; }
+  QPushButton:focus { border: 2px solid #1A73E8; }        /* 环色见下 */
+  QComboBox:focus   { border: 2px solid #1A73E8; }
+  QCheckBox::indicator:focus { border: 2px solid #1A73E8; }
   ```
-  或用 `THEME["focus_glow"]`（`0 0 0 3px rgba(26,115,232,0.15)`）做柔和光晕。
+  - `border` 在此处是**内描边**，不改变控件尺寸 → 不会挤出布局位移。守卫 C4 钉住这点。
+  - ⚠️ 复选框必须写 `::indicator:focus`；**`:focus::indicator` 在 Qt 里匹配不到**（实测，守卫 C6 覆盖）。
+- [ ] **环色规则**：`accent` 蓝色实底上画**白环**（蓝底画蓝环 = 等于没画），其余底色画 `accent` 环。
+  统一走 `theme_qss._focus_ring(bg)`，不要在各面板手写颜色。
+- [ ] ❌ **不要用 `THEME["focus_glow"]` 做焦点提示**：它是 `0 0 0 3px rgba(...)` 的
+  box-shadow 写法，而 **Qt QSS 不支持 box-shadow**，写进去等于没写（旧版清单这条是错的）。
+- [ ] 每个可交互控件 `setFocusPolicy(Qt.StrongFocus)`（默认多数已是，但自定义 QWidget 容易漏）。
 - [ ] 不要用 `setFocusPolicy(Qt.NoFocus)` 偷偷关掉焦点，除非该控件确实不可聚焦（纯展示）。
 - [ ] 手测：全程只用键盘 Tab / Shift+Tab / 空格 / 回车走一遍新面板，确认每个可点元素都有高亮。
 
@@ -77,16 +90,27 @@ Web 的 `:focus-visible` 在 Qt 用伪状态 + 焦点策略落地：
 
 ## 4. 动画减弱偏好（reduced motion）—— Qt 实现
 
-尊重系统"减弱动效"设置，不强制用户看动画：
+尊重系统"减弱动效"设置，不强制用户看动画。
 
-- [ ] 取系统偏好：
+⚠️ **v4.210.2 修正：本清单原先给的 API 在 PySide6 6.11.1 上根本不存在。**
+`QGuiApplication.styleHints().animate()` / `.animationDuration()` 实测 `AttributeError`
+（`styleHints().accessibility()` 只暴露 `contrastPreference`）——
+照抄会当场崩，所以这个开关此前实际是「写着但没生效」的状态。
+**唯一可用通道是 Win32 系统参数**：
+
+- [ ] 取系统偏好统一走 `ui_motion`（本项目唯一入口，禁止各处自读）：
   ```python
-  from PySide6.QtGui import QGuiApplication
-  animate = QGuiApplication.styleHints().animate()   # True=允许动画
-  duration = QGuiApplication.styleHints().animationDuration()  # ms
+  import ui_motion
+  ui_motion.motion_allowed()   # True=允许动画；读 SPI_GETCLIENTAREAANIMATION (0x1042)
+  ui_motion.scale_ms(160)      # 允许→160；减弱→0；非正值恒为 0
   ```
-- [ ] 所有 `QPropertyAnimation` / `QVariantAnimation` 的 `duration` 在 `animate()==False` 时**置 0**（瞬间切换，不渐变）。
+  - 非 Windows / 调用异常一律 **fail-open 返回 True**（宁可多给动画，不可让功能消失）。
+- [ ] 所有 `QPropertyAnimation` / `QVariantAnimation` 的 `duration` 必须过 `scale_ms`；
+  结果为 `0` 时**直接跳到终态**，且回调必须**异步**（同步会在「计时器 timeout /
+  按钮 clicked」这类调用栈里重入，卡在半途）。守卫 B5 覆盖。
 - [ ] 面板进出场、tooltip 淡入、气泡弹出等任何 >150ms 的过渡都要走这个开关。
+- [ ] **停留时长不跟这个开关走**：`DEFAULT_MS`（toast 停留）属于信息可读性，
+  不是动效 —— 关动画 ≠ 让提示一闪而过。守卫 B3 钉住这条边界。
 - [ ] 不依赖 `QSS transition`（Qt 样式表不支持），动画一律用 `QPropertyAnimation` 以便可被开关切断。
 - [ ] 手测：Windows「设置 → 辅助功能 → 视觉效果 → 动画」关掉后，新面板不再有渐变/滑动。
 
@@ -149,6 +173,20 @@ grep -nE "#[0-9a-fA-F]{6}" <改动文件.py>
 - [ ] 可点击元素（按钮、列表项、标签页、图标按钮）最小高 **40px**（参考 Android 48dp / 桌面 40px 实际下限）。
 - [ ] 相邻可点元素间距 ≥ 8px，避免误触。
 - [ ] 图标按钮也要有 `toolTip`，且命中区不小于 40×40，不能只是 16px 图标。
+
+> **v4.210.2 存量复核（静态扫描口径：`setFixedHeight` / `setFixedSize(_,h)` /
+> `setMinimumHeight` 或 QSS `min-height` 的固定值 <40px 且变量名像可点控件；
+> 已剔除纯展示的 `*_lbl` / `logo_icon`）：**
+> **83 处 <40px，其中 13 处 <32px** —— 最该修的一批：
+> `toast.py:129` 关闭按钮 16px、`ui.py:2401/2412` 重试/清空 18px、
+> `ui.py:5758` 删除 22px、`director_chat.py:149` 展开 24px、
+> `automation_panel.py:416/423` 编辑/删除 26px、`ui.py:1644` 删除 26px、
+> `director_panel.py:2497` 删除 28px、`ui.py:3402` 模型下拉 28px、
+> `ui.py:7343` 折叠 28px、`skill_market_ui.py:364` 安装 30px、
+> `ui.py:8040` API Key 显隐 30px。
+>
+> ⚠️ 这些改的是**实际视觉尺寸**，按项目约定属「改样式」范畴，**需单独拍板**后再动，
+> 不随可访问性收口一起改（收口本身是零视觉变化的）。
 
 ---
 

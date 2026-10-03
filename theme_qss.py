@@ -97,8 +97,69 @@ W = {
 
 
 # ============================================================
+# 字体族 token（DESIGN.md §3.1「原生 Qt 控件（规定收口）」）
+# ============================================================
+# 真源只有这一份。此前全项目散着 9 处 `QFont("Microsoft YaHei", N)` 字面量，
+# 有的控件设、有的控件不设（不设的吃系统默认）—— 同一面板里两种字体族，
+# 正是 §3.1 点名要消灭的「中英混排字体不一致」。
+FONT_FAMILY = "Microsoft YaHei"
+# 完整栈（含兜底），与 DESIGN §3.1 逐字一致；Web 渲染区（QWebEngine）另有自己的栈，不在此列。
+FONT_STACK = '"Microsoft YaHei", system-ui, sans-serif'
+
+
+def font_family_qss() -> str:
+    """取 QSS 形式的 font-family 片段：font_family_qss() → 'font-family:"Microsoft YaHei", system-ui, sans-serif;'"""
+    return f"font-family:{FONT_STACK};"
+
+
+def apply_native_font(app) -> None:
+    """把原生 Qt 控件的字体族收口到 FONT_STACK —— **全应用唯一落点**。
+
+    为什么用 app.setFont 而不是 app.setStyleSheet("*.{font-family:...}")：
+      ① QSS 的通用选择子要在每个 widget polish 时参与匹配，启动期是净成本
+         （config.py v4.152.2 那段实测过「简化 QSS 不省总时间」）；
+      ② setFont 只改一次 QFont，所有未显式设族的控件自动继承。
+    **只改族、不动字号**：拿现成的 app.font() 改 families，pointSize 原样保留。
+
+    ⚠️ 为什么这是「视觉零变化」而不是一次换肤：本机（Win11 中文）系统默认族
+    就是 `Microsoft YaHei UI`，与本 token 的 `Microsoft YaHei` 在 12/13/15/20px
+    下**逐像素相同**（QImage+QPainter 渲染 md5 全等，见 test_ui_a11y_2102 A5）。
+    换句话说，这一步不是"换字体"，是把"本来就一样的字体"从"靠系统默认"变成
+    "我们说了算" —— 换台默认族不是雅黑的机器才不会悄悄跑偏。
+
+    非 Windows / 取不到 font() 时静默跳过（不抛异常，不阻断启动）。
+    """
+    try:
+        f = app.font()
+        f.setFamilies([FONT_FAMILY, "Segoe UI", "sans-serif"])
+        app.setFont(f)
+    except Exception:
+        pass
+
+
+# ============================================================
 # 模式函数：按钮族
 # ============================================================
+def _focus_ring(bg: str) -> str:
+    """焦点环的 QSS 片段（v4.210.2）。DESIGN §2.6 的 `focus_glow` 落地形态。
+
+    为什么不是 `focus_glow` 原样：Qt QSS **不支持 box-shadow**，那种「向外扩
+    3px 的半透明辉光」画不出来，能画的只有 border。所以取等价语义：
+    `border:2px solid accent`（DESIGN §4.2 给输入框的焦点写法就是 accent 描边）。
+
+    为什么底色要说进来：**蓝底上画蓝环等于没画**。accent 实底按钮
+    （btn_primary / btn_dialog(accent)）改用白环 —— 它在蓝底上对比度最高，
+    也与「主按钮 = 蓝底白字」这套语言一致。
+
+    放在本层（而不是 `QApplication.setStyleSheet` 的全局规则）是因为实测：
+    **应用级 QSS 会被控件自身的 QSS 整个盖掉**（连基础态 border 都盖得掉），
+    全局 `QPushButton:focus{...}` 在本项目里一行都不会生效 —— 项目里几乎每个
+    按钮都有自己的 setStyleSheet。唯一有效落点就是这几行模式函数。
+    """
+    ring = THEME["white"] if bg == THEME["accent"] else THEME["accent"]
+    return f"border:2px solid {ring};"
+
+
 def btn_primary(font_size: str = "13px", weight: int = 600,
                 disabled_color: str = None) -> str:
     """主按钮（accent 底白字）。
@@ -112,6 +173,7 @@ def btn_primary(font_size: str = "13px", weight: int = 600,
     return (
         f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
         f"border-radius:8px;padding:0 16px;font-size:{font_size};font-weight:{weight};}}"
+        f"QPushButton:focus{{{_focus_ring(THEME['accent'])}}}"
         f"QPushButton:hover{{background:{THEME['accent_hover']};}}"
         f"QPushButton:disabled{{background:{dis};color:white;}}"
     )
@@ -127,6 +189,7 @@ def btn_outline() -> str:
     return (
         f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
         f"border:1px solid {THEME['border']};border-radius:8px;padding:0 12px;font-size:13px;}}"
+        f"QPushButton:focus{{{_focus_ring(THEME['card'])}}}"
         f"QPushButton:hover{{background:{THEME['blue_hover']};}}"
         f"QPushButton:disabled{{color:{THEME['dim']};}}"
     )
@@ -142,6 +205,7 @@ def btn_secondary() -> str:
     return (
         f"QPushButton{{background:{THEME['card']};border:1px solid {THEME['border']};"
         f"border-radius:8px;padding:0 16px;font-size:13px;font-weight:500;color:{THEME['dim']};}}"
+        f"QPushButton:focus{{{_focus_ring(THEME['card'])}}}"
         f"QPushButton:hover{{background:{THEME['panel2']};color:{THEME['text']};"
         f"border-color:{THEME['border_highlight']};}}"
     )
@@ -152,6 +216,7 @@ def btn_danger() -> str:
     return (
         f"QPushButton{{background:{THEME['card']};color:{THEME['danger_text']};"
         f"border:1px solid {THEME['border']};border-radius:8px;padding:0 12px;font-size:12px;}}"
+        f"QPushButton:focus{{{_focus_ring(THEME['card'])}}}"
         f"QPushButton:hover{{background:{THEME['danger_hover_dark']};}}"
     )
 
@@ -161,6 +226,7 @@ def btn_small() -> str:
     return (
         f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
         f"border:1px solid {THEME['border']};border-radius:6px;padding:0 12px;font-size:12px;}}"
+        f"QPushButton:focus{{{_focus_ring(THEME['card'])}}}"
         f"QPushButton:hover{{background:{THEME['blue_hover']};}}"
         f"QPushButton:disabled{{color:{THEME['dim']};}}"
     )
@@ -180,6 +246,7 @@ def btn_dialog(bg: str = None, fg: str = None) -> str:
     return (
         f"QPushButton{{background:{bg};color:{fg};border:none;border-radius:10px;"
         f"padding:8px 20px;font-size:13px;font-weight:600;}}"
+        f"QPushButton:focus{{{_focus_ring(bg)}}}"
         f"QPushButton:hover{{background:{hover};}}"
         f"QPushButton:pressed{{background:{pressed};}}"
     )
@@ -217,6 +284,7 @@ def combo_style() -> str:
         f"QComboBox{{background:{THEME['card']};border:1px solid {THEME['border']};"
         f"border-radius:8px;padding:0 12px;font-size:13px;color:{THEME['text']};}}"
         f"QComboBox::drop-down{{border:none;}}"
+        f"QComboBox:focus{{{_focus_ring(THEME['card'])}}}"
         f"QComboBox:disabled{{color:{THEME['dim']};}}"
     )
 
@@ -231,10 +299,17 @@ def scroll_transparent() -> str:
 
 
 def chk_style() -> str:
-    """复选框。源自 director_panel.py `_chk_style`（L220）。"""
+    """复选框。源自 director_panel.py `_chk_style`（L220）。
+
+    焦点环上在 **indicator 子控件**（16px 方框）而不是整个 QCheckBox：
+    后者会在「方框 + 文字」外面套一个大框，看着像文本框而不是勾选框。
+    ⚠️ 写法是 `::indicator:focus` 而不是 `:focus::indicator` —— 后者在
+    Qt 6.11 上**匹配不到、不会画任何东西**（实测像素比对无差异）。
+    """
     return (
         f"QCheckBox{{color:{THEME['text']};font-size:13px;spacing:6px;}}"
         f"QCheckBox::indicator{{width:16px;height:16px;}}"
+        f"QCheckBox::indicator:focus{{border:2px solid {THEME['accent']};}}"
     )
 
 
