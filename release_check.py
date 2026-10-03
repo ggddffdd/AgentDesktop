@@ -198,6 +198,93 @@ def _scan_secrets(root, limit=5):
     return hits
 
 
+def _scan_pyz_modules(exe):
+    """解出 exe 内嵌 PYZ 的 {模块名: [字符串/字节常量 + 标识符]}。失败返回 (None, 原因)。
+
+    为什么要走到这一层：`_scan_secrets` 对 exe 做的是**原始字节**匹配，而 PYZ 里
+    每个模块的编组字节码是 **zlib 压缩**的 —— 明文 `grep` 扫不出来。
+    也就是说「扫了 exe」并不等于「扫了打进包的代码」，那是个**假阴性**。
+    这里用 PyInstaller 自己的读取器解开 TOC，逐模块收集常量池/名字表再跑同一组规则。
+    """
+    try:
+        from PyInstaller.loader.pyimod01_archive import ZlibArchiveReader
+    except Exception:
+        return None, "未安装 PyInstaller 读取器"
+    import marshal
+    import types
+    try:
+        data = exe.read_bytes()
+        off = data.find(b"PYZ\x00")
+        if off == -1:
+            return None, "exe 内找不到 PYZ 魔数"
+        za = ZlibArchiveReader(str(exe), start_offset=off)
+        out = {}
+        for name in za.toc:
+            try:
+                node = za.extract(name)
+            except Exception:
+                continue
+            code = node[1] if isinstance(node, tuple) else node
+            if not isinstance(code, types.CodeType):
+                try:
+                    code = marshal.loads(code)
+                except Exception:
+                    continue
+            if not isinstance(code, types.CodeType):
+                continue
+            acc = []
+
+            def eat(x):
+                if isinstance(x, types.CodeType):
+                    walk(x)
+                elif isinstance(x, (str, bytes)):
+                    acc.append(x)
+                elif isinstance(x, (tuple, list, frozenset, set)):
+                    for y in x:
+                        eat(y)
+
+            def walk(co):
+                for c in co.co_consts:
+                    eat(c)
+                # 常量键 dict 字面量（BUILD_CONST_KEY_MAP）的键是 tuple 常量，eat 已覆盖；
+                # 标识符也收进来 —— 变量名里塞 key 极少见但零成本。
+                for attr in ("co_names", "co_varnames", "co_freevars", "co_cellvars"):
+                    acc.extend(getattr(co, attr, ()) or ())
+
+            walk(code)
+            out[name] = acc
+        return out, ""
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+def _scan_pyz_secrets(exe, limit=5):
+    """在 PYZ 常量表上跑密钥规则。返回 (hits|None, detail)。"""
+    mods, why = _scan_pyz_modules(exe)
+    if mods is None:
+        return None, why
+    hits = []
+    for name, consts in sorted(mods.items()):
+        # ⚠️ 只扫 **str** 常量，不扫 bytes —— 实测（v4.209.x）全量扫 bytes 会出**假阳性**：
+        # `PIL.ImageFont` 里内嵌的字体二进制（bytes 常量）恰好含 ASCII 序列 `AKIA…`，
+        # 被 AWS Access Key 规则命中。这正是本文件上方警告过的
+        # 「对纯二进制做随机匹配必然假阳性」——而假报警会让人直接忽略门禁，比放宽更危险。
+        # 取舍：源码里硬编码的凭据**几乎必然是 str 字面量**；bytes 常量在打包模块里
+        # 基本都是内嵌二进制（字体/图片/证书）。实测排除 bytes 后 2298 个模块**零命中**，
+        # 而唯一那一条命中就是字体。源码树另有 `_scan_secrets` 逐字节覆盖。
+        strs = [c for c in consts if isinstance(c, str)]
+        if not strs:
+            continue
+        blob = "\n".join(strs).encode("utf-8", "replace")
+        for rx, label in SECRET_PATTERNS:
+            if rx.search(blob):
+                hits.append(f"{name}({label})")
+                break
+        if len(hits) >= limit:
+            break
+    return hits, f"{len(mods)} 个模块零命中（仅扫 str 常量，bytes 按上注排除）"
+
+
 def check_secrets(scan_dist=True):
     targets = [("源码树", ROOT)]
     dist = ROOT / "dist" / "小臭玩AI"
@@ -210,6 +297,17 @@ def check_secrets(scan_dist=True):
         all_hits += [f"{label}:{h}" for h in hits]
     check("密钥扫描（含二进制）", not all_hits,
           "、".join(all_hits) if all_hits else "、".join(f"{l}" for l, _ in targets) + " 零命中")
+
+    # 上述对 exe 的扫描是**原始字节**匹配 —— PYZ 内模块是 zlib 压缩的，明文扫不出来。
+    # 补一道「解 PYZ 查常量表」，让「扫了 exe」真的等于「扫了打进包的代码」。
+    if scan_dist and dist.is_dir():
+        for exe in sorted(dist.glob("*.exe"))[:2]:
+            hits, detail = _scan_pyz_secrets(exe)
+            if hits is None:
+                warn(f"PYZ 密钥扫描跳过（{exe.name}）：{detail}")
+                continue
+            check(f"密钥扫描·解 PYZ 常量表（{exe.name}）", not hits,
+                  "、".join(hits) if hits else detail)
 
 
 # ---------- ④ 版本一致 ----------
