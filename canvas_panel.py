@@ -430,7 +430,10 @@ class CanvasEdgeItem(QGraphicsPathItem):
     def __init__(self, spec: EdgeSpec, frm: NodeSpec, to: NodeSpec):
         super().__init__()
         self.spec = spec
-        self.edge_tuple = (spec.from_node, spec.from_port, spec.to_node, spec.to_port)
+        # ⚠️ 字段名与 panel 版 EdgeSpec 对齐（from_id/to_id，不是模型层的 from_node/to_node）：
+        # 本类的 spec 形参永远收 canvas_panel.EdgeSpec，写成 from_node 会 AttributeError
+        # → CanvasPanel(graph) 构造即崩 → **画布页永远打不开**。已由 C-P17 判据钉死。
+        self.edge_tuple = (spec.from_id, spec.from_port, spec.to_id, spec.to_port)
         self.setFlags(QGraphicsPathItem.ItemIsSelectable)
         # 找对应端口坐标
         fi = frm.out_ports.index(spec.from_port) if spec.from_port in frm.out_ports else 0

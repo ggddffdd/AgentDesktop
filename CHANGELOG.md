@@ -9,6 +9,51 @@
 
 ---
 
+## v4.210.1 — 2026-10-03
+
+**修复：节点画布页打不开（100% 复现）。** 同时堵住这次暴露出的判据盲区。
+
+### 一、画布页点不开：字段名漂移（canvas_panel.py）
+
+`CanvasEdgeItem.__init__` 读 `spec.from_node / spec.to_node`，但画布面板自己的
+`EdgeSpec` 字段叫 `from_id / to_id`（只有模型层的 `canvas_graph.EdgeSpec` 才用
+`from_node / to_node`）→ `CanvasPanel(graph)` 构造时就 `AttributeError`，
+**切到「画布」页永远打不开**（源码版与 exe 同样复现）。
+
+改名的提交在前（c53fda9 定下 `from_id/to_id`）、漏改在后（9e2c988 写阶段 A
+编辑交互层时用了模型层的字段名），且**同一个文件里两种写法并存** ——
+478-479 行早已是 `e.from_id`，只有第 433 行落下了。
+
+### 二、9 套画布判据 394 项全绿，为什么没抓到
+
+因为旧判据 docstring 明确把 QGraphicsView 渲染**排除**在判据之外、改由
+`__main__` 预览入口人工验证：A/B/C 三组最多验到 `ScenePlan` 的 edges **数据**
+（纯 dataclass），而 bug 恰在「数据 → QGraphicsItem」的实例化那一行上。
+**判据边界就是故障边界。**
+
+而「无显示所以测不了 Qt 渲染」是**错误前提** —— offscreen 平台足以实例化
+QGraphicsItem 并断言渲染结果。故新增 **D 真实渲染组**（5 项）：真造
+`CanvasPanel`、断言渲染出的节点/连线项数与计划一致，并给两个同名 `EdgeSpec`
+的字段名立契约。
+
+### 三、顺带查出：打包清单两处漏登记（小臭玩AI.spec）
+
+`canvas_export`（`canvas_panel._export_local_edited_images` 内延迟导入）与
+`asset_store`（`canvas_graph.make_real_asset_store` 内延迟导入）都不在
+`hiddenimports` 里，打包后「导出局部编辑图 / 接真实资产库」会
+`ModuleNotFoundError`。与切页无关，但一样是静默功能缺失，一并补上。
+
+### 验证
+
+- 画布判据 9 套 **PASS=399 FAIL=0**（面板套件 39 → 44）；
+- 扰动 17/17 命中，其中新增两条正是本次事故的形状（改调用方 → D1 红；
+  改定义方 → D4 红），证明新判据非空转；
+- 端到端：构造 → 渲染 6 节点 / 7 连线 → 点「运行」6 个节点全产出 →
+  导出 SVG / PNG / 项目 JSON 均落盘；
+- 全量回归 **89 套件全部通过**。
+
+---
+
 ## v4.210.0 — 2026-10-03
 
 **BUG 审核的 P2 四项全部补完。** 设计见 DESIGN.md §12.8 / §13.5。

@@ -8,10 +8,15 @@
   B 行为组 —— 真 import canvas_panel，对示例图跑 layout_graph，核对节点/边数量、
               分层展开、节点不重叠、状态色映射、run 终态、资产登记与落地标记；
   C 结构组 —— ScenePlan 往返序列化一致、边 kind 合法、画布尺寸为正。
+  D 真实渲染组 —— offscreen 下真造 CanvasPanel，断言 QGraphicsItem 渲染数量与
+              字段名契约（2026-10-03 补：见 _d() 上方长注释）。
 
 为什么 B 用进程内 import 而不是 subprocess 起 GUI：layout_graph 是纯逻辑层、无 Qt
-依赖，进程内 import 已经能验证「图→画布几何」映射正确；QGraphicsView 的真实渲染
-由 canvas_panel.py 的 __main__ 预览入口人工/集成验证，不在这个无显示的判据里。
+依赖，进程内 import 已经能验证「图→画布几何」映射正确。
+
+⚠️ 但「无显示的判据测不了真实渲染」是**错误前提**（曾据此刻意把 QGraphicsView
+排除在判据外，直接导致 2026-10-03 的画布页打不开事故）：offscreen 平台足以实例化
+QGraphicsItem 并断言渲染结果。D 组因此存在。判据边界就是故障边界。
 """
 
 import importlib.util
@@ -215,11 +220,74 @@ def _c():
           "%.0f x %.0f" % (plan.width, plan.height))
 
 
+# =========================================================================
+# D 真实渲染组（offscreen）—— 堵住「数据 → QGraphicsItem」这一层的盲区
+#
+# 起因（2026-10-03）：本套件原 docstring 把 QGraphicsView 的真实渲染**明确排除**
+# 在判据外，改由「canvas_panel.py 的 __main__ 预览入口人工/集成验证」。结果
+# canvas_panel.CanvasEdgeItem.__init__ 里把 panel 版 EdgeSpec 的字段写成模型层的
+# from_node/to_node（panel 版实际字段是 from_id/to_id）→ CanvasPanel(graph)
+# 构造即抛 AttributeError → **画布页 100% 打不开**，而 9 套画布判据 394 项全绿。
+#
+# 教训：**判据边界就是故障边界**。A/B/C 三组最多验到 ScenePlan 的 edges 数据
+# （纯 dataclass），而 bug 恰在「数据 → QGraphicsItem」的实例化那一行上。
+# 而「无显示所以测不了 Qt 渲染」是错误前提 —— offscreen 平台足以实例化
+# QGraphicsItem 并断言渲染结果，本组即为此而设。
+# =========================================================================
+def _d():
+    print("== D 真实渲染组（offscreen）==")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PySide6.QtWidgets import QApplication
+    except Exception as e:                                  # pragma: no cover
+        check("D0 PySide6 可用（画布渲染的前提）", False,
+              "%s: %s" % (type(e).__name__, e))
+        return
+    QApplication.instance() or QApplication([])
+    import canvas_panel as cp
+
+    # D4 是静态哨兵（字段名契约），不依赖构造成功，先测
+    spec_fields = set(getattr(cp.EdgeSpec, "__dataclass_fields__", {}) or {})
+    check("D4 panel 版 EdgeSpec 字段是 from_id/to_id（模型层的 from_node/to_node 不可混用）",
+          {"from_id", "to_id"} <= spec_fields and "from_node" not in spec_fields,
+          str(sorted(spec_fields)))
+
+    g = cp.build_demo()
+    plan = cp.layout_graph(g)
+
+    # D1 与 ui._build_canvas_page 的核心两行同构：这在真实入口里是「切到画布页」的全部内容
+    try:
+        panel = cp.CanvasPanel(g)
+    except Exception as e:
+        check("D1 CanvasPanel(build_demo()) 构造成功（画布页点得开的前提）", False,
+              "%s: %s" % (type(e).__name__, e))
+        return                                              # 后续项都依赖它
+    check("D1 CanvasPanel(build_demo()) 构造成功（画布页点得开的前提）", True)
+
+    items = panel.scene.items()
+    node_items = [it for it in items if isinstance(it, cp.CanvasNodeItem)]
+    edge_items = [it for it in items if isinstance(it, cp.CanvasEdgeItem)]
+    check("D2 渲染出节点项数 == 计划节点数（%d）" % len(plan.nodes),
+          len(node_items) == len(plan.nodes), "实得 %d" % len(node_items))
+    check("D3 渲染出连线项数 == 计划边数（%d）且非空" % len(plan.edges),
+          len(edge_items) == len(plan.edges) and len(edge_items) > 0,
+          "实得 %d" % len(edge_items))
+
+    # D5 语义哨兵：edge_tuple 必须取自 panel 版字段。若将来两个 EdgeSpec 出现
+    # 同名字段而 CanvasEdgeItem 取错了那个，D1 不会再报错，靠这条兜住。
+    check("D5 连线项 edge_tuple 取自 spec 的 from_id/from_port/to_id/to_port",
+          all(it.edge_tuple == (it.spec.from_id, it.spec.from_port,
+                                it.spec.to_id, it.spec.to_port)
+              for it in edge_items),
+          "%d 条" % len(edge_items))
+
+
 if __name__ == "__main__":
     _a()
     if not STATIC_ONLY:
         _b()
         _c()
+        _d()
     print("\nPASS=%d FAIL=%d" % (CHECKED - len(FAIL), len(FAIL)))
     if FAIL:
         print("FAIL 项: " + "; ".join(FAIL))

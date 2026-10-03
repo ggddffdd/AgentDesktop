@@ -67,6 +67,16 @@ MUTATIONS = [
     # PN：详情面板不再单列占位条数 → A14 静态红
     ("PN_ph_detail", "A14", '"占位产出: %d 个（未接真生成，仅流程占位）" % n_ph',
      '"占位产出: %s" % n_ph', True),
+    # ---- 2026-10-03 画布页打不开事故：D 真实渲染组的自证 ----
+    # PO：调用方把 panel 版字段写回模型层的 from_node/to_node（**事故原形**）。
+    #     A/B/C 三组全绿，只有真造 CanvasPanel 的 D1 会红 —— 这正是 D 组存在的理由。
+    ("PO_edge_field_call", "D1",
+     "spec.from_id, spec.from_port, spec.to_id, spec.to_port",
+     "spec.from_node, spec.from_port, spec.to_node, spec.to_port", False),
+    # PP：定义方把 EdgeSpec 字段改名为 from_node/to_node（改名漏改的另一半）→ D4 哨兵红
+    ("PP_edge_field_def", "D4",
+     "    from_id: str\n    to_id: str",
+     "    from_node: str\n    to_node: str", False),
 ]
 
 # 打在 **测试脚本自身** 上的变异（不是 canvas_panel.py）：
