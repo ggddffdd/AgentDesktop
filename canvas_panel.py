@@ -241,16 +241,81 @@ def layout_graph(g: "cg.CanvasGraph") -> ScenePlan:
 
 
 # --------------------------------------------------------------------------
+# 阶段 B 纯辅助：图片局部编辑的「是否可编辑」判断 + 遮罩区域几何（无 Qt 依赖）
+# --------------------------------------------------------------------------
+# 支持局部编辑的输出端口类型（与 canvas_graph._PORT_ACCEPTS["image"] 对齐）
+_IMAGE_PORT_TYPES = {"image", "scene", "character_views", "keyframe"}
+
+
+def node_supports_local_edit(node: "cg.CanvasNode") -> bool:
+    """节点是否可对其图片类产出做局部编辑（生图/场景图/参考图等）。"""
+    if node is None:
+        return False
+    if node.node_type == "gen_image":
+        return True
+    return any(p.port_type in _IMAGE_PORT_TYPES for p in node.outputs.values())
+
+
+def norm_rect(region: Optional[dict], iw: float, ih: float):
+    """把归一化 region 转成像素矩形 (x, y, w, h)。
+
+    region=None → 整图；rect → 直接用 x/y/w/h；polygon → 取点集包围盒。
+    iw/ih 为原图像素尺寸。结果用于 QPainter 裁剪 / inpaint 掩码对齐。
+    """
+    iw, ih = float(iw), float(ih)
+    if not region:
+        return (0.0, 0.0, iw, ih)
+    if region.get("type") == "rect":
+        return (region["x"] * iw, region["y"] * ih,
+                region["w"] * iw, region["h"] * ih)
+    pts = region.get("points", [])
+    if pts:
+        xs = [p[0] * iw for p in pts]
+        ys = [p[1] * ih for p in pts]
+        x0, y0 = min(xs), min(ys)
+        return (x0, y0, max(xs) - x0, max(ys) - y0)
+    return (0.0, 0.0, iw, ih)
+
+
+def region_svg_overlay(region: Optional[dict], ox: float, oy: float,
+                       ow: float, oh: float) -> str:
+    """在节点矩形 (ox,oy,ow,oh) 内，把归一化 region 画成 SVG 叠加（红色虚线）。
+
+    供 export_svg 标记「已局部编辑」节点：整图→节点内框；rect→对应区域；
+    polygon→闭合路径。返回 SVG 片段字符串（可能为空）。
+    """
+    if not region:
+        return (f'<rect x="{ox+4:.1f}" y="{oy+4:.1f}" width="{ow-8:.1f}" '
+                f'height="{oh-8:.1f}" fill="none" stroke="#D93025" '
+                f'stroke-width="2" stroke-dasharray="5 3"/>')
+    if region.get("type") == "rect":
+        rx = ox + region["x"] * ow
+        ry = oy + region["y"] * oh
+        rw = region["w"] * ow
+        rh = region["h"] * oh
+        return (f'<rect x="{rx:.1f}" y="{ry:.1f}" width="{rw:.1f}" height="{rh:.1f}" '
+                f'fill="rgba(217,48,37,0.15)" stroke="#D93025" stroke-width="2" '
+                f'stroke-dasharray="5 3"/>')
+    pts = region.get("points", [])
+    if pts:
+        d = "M " + " L ".join("%.1f %.1f" % (ox + p[0] * ow, oy + p[1] * oh)
+                              for p in pts) + " Z"
+        return (f'<path d="{d}" fill="rgba(217,48,37,0.15)" stroke="#D93025" '
+                f'stroke-width="2" stroke-dasharray="5 3"/>')
+    return ""
+
+
+# --------------------------------------------------------------------------
 # 视图层（Qt）：把 ScenePlan 画成可见画布（复用第 0 步三坑保护法）
 # --------------------------------------------------------------------------
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal  # noqa: E402
 from PySide6.QtGui import (QBrush, QColor, QFont, QPainter, QPainterPath,  # noqa: E402
-                           QPen, QUndoCommand, QUndoStack)
-from PySide6.QtWidgets import (QApplication, QFormLayout, QFrame,  # noqa: E402
-                               QGraphicsEllipseItem, QGraphicsPathItem,
-                               QGraphicsRectItem, QGraphicsScene, QGraphicsSceneMouseEvent,
-                               QGraphicsTextItem, QGraphicsView, QHBoxLayout,
-                               QLabel, QLineEdit, QListWidget, QPushButton,
+                           QPen, QPolygonF, QUndoCommand, QUndoStack)
+from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFormLayout,  # noqa: E402
+                               QFrame, QGraphicsEllipseItem, QGraphicsPathItem,
+                               QGraphicsPolygonItem, QGraphicsRectItem, QGraphicsScene,
+                               QGraphicsSceneMouseEvent, QGraphicsTextItem, QGraphicsView,
+                               QHBoxLayout, QLabel, QLineEdit, QListWidget, QPushButton,
                                QTextEdit, QVBoxLayout, QWidget)
 
 
@@ -538,6 +603,64 @@ class RemoveEdgeCommand(QUndoCommand):
         self.graph.connect_data(*self.f)
 
 
+# --------------------------------------------------------------------------
+# 阶段 B：图片局部编辑的撤销命令（整份快照 set_local_edits，idempotent）
+# --------------------------------------------------------------------------
+class AddLocalEditCommand(QUndoCommand):
+    def __init__(self, graph, undo_stack, node_id, edit):
+        super().__init__("添加局部编辑 %s" % node_id)
+        self.graph = graph
+        self.node_id = node_id
+        self.old_list = graph.get_local_edits(node_id)
+        rec = graph._make_edit_record(edit)
+        rec["id"] = "le%04d" % (len(self.old_list) + 1)
+        self.new_list = self.old_list + [rec]
+        self.record = rec
+
+    def redo(self):
+        self.graph.set_local_edits(self.node_id, self.new_list)
+
+    def undo(self):
+        self.graph.set_local_edits(self.node_id, self.old_list)
+
+
+class RemoveLocalEditCommand(QUndoCommand):
+    def __init__(self, graph, undo_stack, node_id, idx):
+        super().__init__("删除局部编辑 %s#%d" % (node_id, idx))
+        self.graph = graph
+        self.node_id = node_id
+        self.idx = idx
+        self.old_list = graph.get_local_edits(node_id)
+        self.removed = dict(self.old_list[idx]) if 0 <= idx < len(self.old_list) else {}
+        self.new_list = [e for i, e in enumerate(self.old_list) if i != idx]
+
+    def redo(self):
+        self.graph.set_local_edits(self.node_id, self.new_list)
+
+    def undo(self):
+        self.graph.set_local_edits(self.node_id, self.old_list)
+
+
+class EditLocalEditCommand(QUndoCommand):
+    def __init__(self, graph, undo_stack, node_id, idx, edit):
+        super().__init__("修改局部编辑 %s#%d" % (node_id, idx))
+        self.graph = graph
+        self.node_id = node_id
+        self.idx = idx
+        self.old_list = graph.get_local_edits(node_id)
+        self.old_record = dict(self.old_list[idx]) if 0 <= idx < len(self.old_list) else {}
+        rec = graph._make_edit_record(edit)
+        rec["id"] = self.old_record.get("id") or ("le%04d" % (idx + 1))
+        self.new_list = list(self.old_list)
+        self.new_list[idx] = rec
+
+    def redo(self):
+        self.graph.set_local_edits(self.node_id, self.new_list)
+
+    def undo(self):
+        self.graph.set_local_edits(self.node_id, self.old_list)
+
+
 class CanvasView(QGraphicsView):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -560,14 +683,222 @@ class CanvasView(QGraphicsView):
         return ok
 
 
+class MaskEditorWidget(QGraphicsView):
+    """轻量遮罩编辑器：在归一化 0..1 的预览区上画矩形 / 多边形选区。
+
+    不依赖真实图像（stub 不产真图）；以占位背景表示图像区，所有坐标归一化
+    存于 region dict（rect / polygon / None=整图），供指令持久化与后续执行器使用。
+    """
+
+    def __init__(self, parent=None, size=300):
+        super().__init__(parent)
+        self._size = size
+        self._scene = QGraphicsScene(0, 0, size, size, self)
+        self.setScene(self._scene)
+        self.setFixedSize(size + 10, size + 10)
+        self.setRenderHint(QPainter.Antialiasing)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setCursor(Qt.CrossCursor)
+        bg = QGraphicsRectItem(0, 0, size, size)
+        bg.setBrush(QBrush(QColor("#ECEFF1")))
+        bg.setPen(QPen(QColor("#9AA4B2")))
+        bg.setFlag(QGraphicsRectItem.ItemIsSelectable, False)
+        bg.setFlag(QGraphicsRectItem.ItemIsMovable, False)
+        self._scene.addItem(bg)
+        self._overlay = None
+        self._region = None
+        self._mode = "rect"
+        self._drag = None
+        self._poly = []            # 归一化点列表 [[x,y],...]
+
+    def set_mode(self, mode):
+        self._mode = mode
+        self._poly = []
+        self._drag = None
+        self._redraw()
+
+    def get_region(self):
+        return self._region
+
+    def set_region(self, region):
+        self._region = region
+        self._poly = []
+        if region and region.get("type") == "polygon":
+            self._poly = [list(p) for p in region.get("points", [])]
+        self._redraw()
+
+    def _to_norm(self, scene_pos):
+        s = float(self._size)
+        return (max(0.0, min(1.0, scene_pos.x() / s)),
+                max(0.0, min(1.0, scene_pos.y() / s)))
+
+    def _redraw(self):
+        if self._overlay is not None:
+            self._scene.removeItem(self._overlay)
+            self._overlay = None
+        s = float(self._size)
+        reg = self._region
+        if self._mode == "polygon" and self._poly:
+            poly = QPolygonF([QPointF(p[0] * s, p[1] * s) for p in self._poly])
+            item = QGraphicsPolygonItem(poly)
+            item.setBrush(QBrush(QColor(217, 48, 37, 60)))
+            item.setPen(QPen(QColor("#D93025"), 2))
+            self._scene.addItem(item)
+            self._overlay = item
+            return
+        if reg:
+            if reg.get("type") == "rect":
+                rx = reg["x"] * s
+                ry = reg["y"] * s
+                rw = reg["w"] * s
+                rh = reg["h"] * s
+                item = QGraphicsRectItem(rx, ry, rw, rh)
+                item.setBrush(QBrush(QColor(217, 48, 37, 60)))
+                item.setPen(QPen(QColor("#D93025"), 2, Qt.DashLine))
+                self._scene.addItem(item)
+                self._overlay = item
+            elif reg.get("type") == "polygon":
+                poly = QPolygonF([QPointF(p[0] * s, p[1] * s)
+                                  for p in reg.get("points", [])])
+                item = QGraphicsPolygonItem(poly)
+                item.setBrush(QBrush(QColor(217, 48, 37, 60)))
+                item.setPen(QPen(QColor("#D93025"), 2))
+                self._scene.addItem(item)
+                self._overlay = item
+
+    def mousePressEvent(self, ev):
+        sp = self.mapToScene(ev.pos())
+        if self._mode == "rect":
+            self._drag = self._to_norm(sp)
+            ev.accept()
+        else:  # polygon：点选加顶点
+            self._poly.append(list(self._to_norm(sp)))
+            self._redraw()
+            ev.accept()
+
+    def mouseMoveEvent(self, ev):
+        if self._mode == "rect" and self._drag is not None:
+            cur = self._to_norm(self.mapToScene(ev.pos()))
+            x = min(self._drag[0], cur[0])
+            y = min(self._drag[1], cur[1])
+            w = abs(cur[0] - self._drag[0])
+            h = abs(cur[1] - self._drag[1])
+            self._region = {"type": "rect", "x": x, "y": y, "w": w, "h": h}
+            self._redraw()
+            ev.accept()
+        else:
+            super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if self._mode == "rect" and self._drag is not None:
+            self._drag = None
+            ev.accept()
+        else:
+            super().mouseReleaseEvent(ev)
+
+    def mouseDoubleClickEvent(self, ev):
+        if self._mode == "polygon" and self._poly:
+            self._region = {"type": "polygon",
+                            "points": [list(p) for p in self._poly]}
+            self._poly = []
+            self._redraw()
+            ev.accept()
+        else:
+            super().mouseDoubleClickEvent(ev)
+
+
+class LocalEditDialog(QDialog):
+    """图片局部编辑对话框：选目标资产 + 模式 + 指令 + 参数 + 遮罩编辑器。"""
+
+    def __init__(self, node, parent=None):
+        super().__init__(parent)
+        self.node = node
+        self.setWindowTitle("局部编辑 · %s" % node.id)
+        self.resize(360, 540)
+        lay = QVBoxLayout(self)
+
+        hl = QHBoxLayout()
+        hl.addWidget(QLabel("作用资产:"))
+        self.cmb_target = QComboBox()
+        self.cmb_target.addItems(list(node.outputs.keys()))
+        hl.addWidget(self.cmb_target)
+        hl.addStretch(1)
+        lay.addLayout(hl)
+
+        lay.addWidget(QLabel("遮罩（拖拽矩形 / 多点后双击闭合多边形）:"))
+        self.mask = MaskEditorWidget(self)
+        lay.addWidget(self.mask)
+
+        hl2 = QHBoxLayout()
+        hl2.addWidget(QLabel("模式:"))
+        self.cmb_mode = QComboBox()
+        self.cmb_mode.addItems(["transform", "inpaint"])
+        self.cmb_mode.currentTextChanged.connect(
+            lambda m: self.mask.set_mode("polygon" if m == "inpaint" else "rect"))
+        hl2.addWidget(self.cmb_mode)
+        self.btn_rect = QPushButton("矩形")
+        self.btn_poly = QPushButton("多边形")
+        self.btn_rect.clicked.connect(lambda: self.mask.set_mode("rect"))
+        self.btn_poly.clicked.connect(lambda: self.mask.set_mode("polygon"))
+        hl2.addWidget(self.btn_rect)
+        hl2.addWidget(self.btn_poly)
+        hl2.addStretch(1)
+        lay.addLayout(hl2)
+
+        lay.addWidget(QLabel("编辑指令:"))
+        self.edit_instr = QLineEdit()
+        self.edit_instr.setPlaceholderText("例：去掉右下角水印 / 背景换成蓝天 / 换发型")
+        lay.addWidget(self.edit_instr)
+
+        lay.addWidget(QLabel("参数(JSON,可选):"))
+        self.edit_params = QLineEdit()
+        self.edit_params.setPlaceholderText('{"strength":0.5}')
+        lay.addWidget(self.edit_params)
+
+        bl = QHBoxLayout()
+        self.btn_ok = QPushButton("添加")
+        self.btn_cancel = QPushButton("取消")
+        self.btn_ok.clicked.connect(self.accept)
+        self.btn_cancel.clicked.connect(self.reject)
+        bl.addStretch(1)
+        bl.addWidget(self.btn_ok)
+        bl.addWidget(self.btn_cancel)
+        lay.addLayout(bl)
+        self._result = None
+
+    def build_edit(self) -> dict:
+        mode = self.cmb_mode.currentText()
+        region = self.mask.get_region()
+        params = {}
+        ptxt = self.edit_params.text().strip()
+        if ptxt:
+            try:
+                params = json.loads(ptxt)
+            except Exception:
+                params = {}
+        return {
+            "target": self.cmb_target.currentText(),
+            "mode": mode,
+            "region": region,
+            "instruction": self.edit_instr.text().strip(),
+            "params": params,
+        }
+
+
 class PropertyPanel(QWidget):
-    """右侧属性面板：绑定选中节点的 config，可编辑后写回（带撤销）。"""
+    """右侧属性面板：绑定选中节点的 config，可编辑后写回（带撤销）。
+
+    阶段 B：若选中节点是图片类（生图/场景图等），额外显示「局部编辑」按钮，
+    点击经 local_edit_callback 打开遮罩编辑器对话框。
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.graph = None
         self.node = None
         self.undo_stack = None
+        self.local_edit_callback = None
         lay = QVBoxLayout(self)
         self.lbl = QLabel("（未选中节点）")
         self.lbl.setWordWrap(True)
@@ -582,6 +913,10 @@ class PropertyPanel(QWidget):
         self.btn_apply = QPushButton("应用更改")
         self.btn_apply.clicked.connect(self.apply)
         lay.addWidget(self.btn_apply)
+        # 阶段 B：局部编辑入口（仅图片类节点可见）
+        self.btn_local = QPushButton("局部编辑")
+        self.btn_local.clicked.connect(self._on_local)
+        lay.addWidget(self.btn_local)
         lay.addStretch(1)
 
     def bind(self, graph, node, undo_stack):
@@ -592,12 +927,22 @@ class PropertyPanel(QWidget):
             self.lbl.setText("（未选中节点）")
             self.edit_prompt.clear()
             self.edit_config.clear()
+            self.btn_local.setVisible(False)
             return
         self.lbl.setText("节点: %s\n类型: %s\n状态: %s" % (
             node.id, NODE_TYPES.get(node.node_type, node.node_type), node.status))
         self.edit_prompt.setText(str(node.config.get("prompt", "")))
         self.edit_config.setPlainText(
             json.dumps(node.config, ensure_ascii=False, indent=1))
+        # 阶段 B：局部编辑按钮按节点类型显隐 + 显示已有编辑数
+        le = node.config.get("local_edits")
+        le = le if isinstance(le, list) else []
+        self.btn_local.setVisible(node_supports_local_edit(node))
+        self.btn_local.setText("局部编辑(%d)" % len(le))
+
+    def _on_local(self):
+        if self.node is not None and self.local_edit_callback is not None:
+            self.local_edit_callback(self.node)
 
     def apply(self):
         if self.node is None or self.graph is None:
@@ -628,6 +973,8 @@ class CanvasPanel(QWidget):
         self.scene = CanvasScene(graph, self.undo_stack, self)
         self.view = CanvasView(self)
         self.property_panel = PropertyPanel(self)
+        # 阶段 B：属性面板「局部编辑」按钮 → 打开遮罩编辑器
+        self.property_panel.local_edit_callback = self._open_local_edit_for
 
         # 工具栏
         bar = QHBoxLayout()
@@ -639,10 +986,13 @@ class CanvasPanel(QWidget):
         btn_redo.clicked.connect(self.undo_stack.redo)
         btn_del = QPushButton("删除选中连线")
         btn_del.clicked.connect(self._delete_selected)
+        btn_local = QPushButton("局部编辑")
+        btn_local.clicked.connect(self._open_local_edit)
         bar.addWidget(btn_fit)
         bar.addWidget(btn_undo)
         bar.addWidget(btn_redo)
         bar.addWidget(btn_del)
+        bar.addWidget(btn_local)
         bar.addStretch(1)
         legend = QLabel("● 完成  ● 进行  ● 失败  ● 待办 蓝色实线=数据 灰色虚线=顺序")
         bar.addWidget(legend)
@@ -695,6 +1045,37 @@ class CanvasPanel(QWidget):
                     cmd.redo()
                 break
 
+    # ---- 阶段 B：图片局部编辑入口 ----
+    def _selected_node(self):
+        for it in self.scene.selectedItems():
+            if isinstance(it, CanvasNodeItem) and it.node is not None:
+                return it.node
+        return None
+
+    def _open_local_edit(self):
+        """工具栏「局部编辑」：对当前选中节点打开遮罩编辑器对话框。"""
+        node = self._selected_node()
+        if node is None or not node_supports_local_edit(node):
+            self.detail.addItem("请先选中一个图片类节点（如「生图」）再局部编辑")
+            return
+        self._open_local_edit_for(node)
+
+    def _open_local_edit_for(self, node):
+        """对指定图片类节点打开遮罩编辑器，确认后压入 AddLocalEditCommand。"""
+        if self.graph is None or not node_supports_local_edit(node):
+            return
+        dlg = LocalEditDialog(node, self)
+        if dlg.exec() == QDialog.Accepted:
+            edit = dlg.build_edit()
+            if not edit.get("instruction"):
+                return
+            cmd = AddLocalEditCommand(self.graph, self.undo_stack, node.id, edit)
+            if self.undo_stack is not None:
+                self.undo_stack.push(cmd)
+            else:
+                cmd.redo()
+            self._on_selection_changed()      # 刷新属性面板（按钮计数）
+
     def _fit(self):
         if getattr(self, "plan", None) is not None:
             self.view.fit_plan(self.plan)
@@ -712,6 +1093,13 @@ class CanvasPanel(QWidget):
         self.detail.addItem("状态: %s" % n.status)
         self.detail.addItem("产出资产: %d 个，已落地 %d 个" % (
             len(regs), sum(1 for r in regs if r.get("registered"))))
+        le = n.config.get("local_edits")
+        le = le if isinstance(le, list) else []
+        if le:
+            self.detail.addItem("局部编辑: %d 条" % len(le))
+            for r in le:
+                self.detail.addItem("  · [%s] %s: %s" % (
+                    r.get("mode"), r.get("id"), r.get("instruction")))
 
 
 def build_demo(asset_store=None) -> "cg.CanvasGraph":

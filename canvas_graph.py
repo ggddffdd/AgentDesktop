@@ -468,6 +468,96 @@ class CanvasGraph:
             self._order_seen.discard((from_node, to_node))
         return target
 
+    # ---- 编辑（阶段 B：图片局部编辑）----
+    # local_edits 存于 node.config["local_edits"]（list[dict]）。第 4 步
+    # export/import_project_json 已整份序列化 node.config，故 local_edits 自动随
+    # 工程文件持久化，导出层无需单独处理。
+    #
+    # 一条局部编辑记录字段：
+    #   id          局部唯一 id（le0001...）
+    #   target      作用于哪个输出资产（端口名，默认 "out"/"image"）
+    #   mode        "transform"（非AI区域变换） | "inpaint"（AI 局部重绘）
+    #   region      遮罩区域（归一化 dict）：None=整图；
+    #               rect     -> {"type":"rect","x":0..1,"y":0..1,"w":0..1,"h":0..1}
+    #               polygon  -> {"type":"polygon","points":[[x,y],...]}（归一化）
+    #   instruction 编辑指令文本（去水印 / 背景变蓝 / 换发型 ...）
+    #   params      可选参数（inpaint 常用 strength 等）
+    VALID_LOCAL_EDIT_MODES = ("transform", "inpaint")
+
+    def get_local_edits(self, node_id: str) -> List[dict]:
+        """返回该节点 local_edits 列表（复制，非引用；非 list 自动视为空）。"""
+        n = self.nodes.get(node_id)
+        if not n:
+            raise ValueError(f"节点不存在: {node_id}")
+        le = n.config.get("local_edits")
+        return list(le) if isinstance(le, list) else []
+
+    def set_local_edits(self, node_id: str, edits: list) -> list:
+        """底层写回：整份替换 local_edits 列表，返回旧列表（供 undo 还原）。"""
+        n = self.nodes.get(node_id)
+        if not n:
+            raise ValueError(f"节点不存在: {node_id}")
+        old = list(n.config.get("local_edits") or [])
+        cfg = dict(n.config)
+        cfg["local_edits"] = list(edits)
+        n.config = cfg
+        return old
+
+    def _make_edit_record(self, edit: dict) -> dict:
+        """把调用方给的 edit(dict) 校验并规范成一条记录（不写库）。"""
+        if not isinstance(edit, dict):
+            raise ValueError("edit 必须是 dict")
+        instruction = (edit.get("instruction") or "").strip()
+        if not instruction:
+            raise ValueError("局部编辑指令 instruction 不能为空")
+        mode = edit.get("mode", "transform")
+        if mode not in self.VALID_LOCAL_EDIT_MODES:
+            raise ValueError(
+                f"mode 必须是 {self.VALID_LOCAL_EDIT_MODES}，收到 {mode!r}")
+        region = edit.get("region")
+        if region is not None and not isinstance(region, dict):
+            raise ValueError("region 必须是 dict 或 None")
+        return {
+            "id": "",                       # 由调用方/命令填充
+            "target": edit.get("target", "out"),
+            "mode": mode,
+            "region": region,
+            "instruction": instruction,
+            "params": edit.get("params") or {},
+        }
+
+    def add_local_edit(self, node_id: str, edit: dict):
+        """追加一条局部编辑指令。返回 (idx, eid)。"""
+        le = self.get_local_edits(node_id)
+        idx = len(le)
+        rec = self._make_edit_record(edit)
+        rec["id"] = "le%04d" % (idx + 1)
+        self.set_local_edits(node_id, le + [rec])
+        return idx, rec["id"]
+
+    def update_local_edit(self, node_id: str, idx: int, edit: dict):
+        """更新第 idx 条局部编辑（保留原 id）。返回 (old_record, new_record)。"""
+        le = self.get_local_edits(node_id)
+        if idx < 0 or idx >= len(le):
+            raise IndexError(f"local_edit 索引越界: {idx}（共 {len(le)} 条）")
+        old = dict(le[idx])
+        rec = self._make_edit_record(edit)
+        rec["id"] = old.get("id") or ("le%04d" % (idx + 1))
+        new_list = list(le)
+        new_list[idx] = rec
+        self.set_local_edits(node_id, new_list)
+        return old, rec
+
+    def remove_local_edit(self, node_id: str, idx: int):
+        """删除第 idx 条局部编辑。返回被删记录（dict）。"""
+        le = self.get_local_edits(node_id)
+        if idx < 0 or idx >= len(le):
+            raise IndexError(f"local_edit 索引越界: {idx}（共 {len(le)} 条）")
+        removed = le[idx]
+        new_list = [e for i, e in enumerate(le) if i != idx]
+        self.set_local_edits(node_id, new_list)
+        return dict(removed)
+
     # ---- 查询 ----
     def topo(self) -> List[str]:
         """返回节点拓扑顺序（依赖先后）。"""

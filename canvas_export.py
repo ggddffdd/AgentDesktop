@@ -26,7 +26,7 @@ from typing import Optional
 
 import canvas_graph as cg
 # 几何复用第 3 步渲染层（layout_graph 为纯逻辑、无 Qt 依赖）
-from canvas_panel import layout_graph
+from canvas_panel import layout_graph, region_svg_overlay
 
 
 # --------------------------------------------------------------------------
@@ -149,6 +149,15 @@ def export_svg(g: "cg.CanvasGraph", path: str) -> dict:
             parts.append(
                 f'<circle cx="{n.x + n.w - 12:.1f}" cy="{n.y + n.h - 12:.1f}" '
                 f'r="4" fill="#1E8E3E"/>')
+        # 阶段 B：标记已局部编辑的节点（红色虚线遮罩 + 角标）
+        raw = g.nodes.get(n.id)
+        le = raw.config.get("local_edits") if raw is not None else None
+        le = le if isinstance(le, list) else []
+        if le:
+            parts.append(region_svg_overlay(le[0].get("region"), n.x, n.y, n.w, n.h))
+            parts.append(
+                f'<text x="{n.x + 8:.1f}" y="{n.y + n.h - 6:.1f}" font-size="9" '
+                f'fill="#D93025">局部编辑 {len(le)}</text>')
     parts.append("</svg>")
 
     parent = os.path.dirname(path)
