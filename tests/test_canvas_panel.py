@@ -53,24 +53,30 @@ STATIC_ONLY = os.environ.get("CANVAS_STATIC") == "1"
 
 
 def _slice_func(name):
-    r"""取某个 def/class 的源码切片（切到「缩进宽度 ≤ 本函数」的下一个 def/class）。
+    r"""取某个 def/class 的源码切片（切到「缩进宽度 ≤ 本定义」的下一个 def/class）。
 
-    结束边界用「缩进宽度」判定，而不是简单的「下一个顶层 class/def」——
-    否则 layout_graph 的切片会被一直拉到文件末尾，把同级的 build_demo 一起包进来，
-    导致 A6/A7 看的字符串永远存在、删了也不红（假绿）。
+    结束边界必须用「缩进宽度」判定，而不是简单的「下一个 class/def」——
+    后者在目标本身是 **class** 时会切在类体第一个 def（如 __init__）处，
+    切片里根本没有类体内容，判据会静默失真（2026-10-03 修）。
 
-    做法：匹配行的前导空格数记为 indent，向后找第一个缩进宽度 <= indent
+    做法：目标定义行的前导空格数记为 indent，向后找第一个缩进宽度 <= indent
     的 class/def 作为终点——也就是「同层或外层」的下一个定义，刚好切到
     本函数的下个兄弟定义为止。
     """
-    m = re.search(r"^\s*(?:class|def)\s+%s\b" % re.escape(name), SRC, re.M)
+    # 起始正则用 [ \t]* 而非 \s*：\s 含换行，会把前导空行也算进 m.group(0)，
+    # 让 indent 偏大（顶层 def 算出 2、方法算出 5），边界语义跟着飘。
+    m = re.search(r"^[ \t]*(?:class|def)\s+%s\b" % re.escape(name), SRC, re.M)
     if not m:
         return ""
     start = m.start()
-    line_start = SRC.rfind("\n", 0, start) + 1
-    indent = len(SRC[line_start:start]) - len(SRC[line_start:start].lstrip())
+    indent = len(m.group(0)) - len(m.group(0).lstrip())
     rest = SRC[m.end():]
-    nxt = re.search(r"\n[ \t]*(?:class|def)\s+\w+\b", rest)
+    nxt = None
+    for nm in re.finditer(r"^[ \t]*(?:class|def)\s+\w+\b", rest, re.M):
+        ind = len(nm.group(0)) - len(nm.group(0).lstrip())
+        if ind <= indent:
+            nxt = nm
+            break
     end = m.end() + (nxt.start() if nxt else len(rest))
     return SRC[start:end]
 
@@ -108,11 +114,9 @@ def _a():
           "不透传的话「跑通了 stub」和「真出片了」在界面上长得一模一样")
     check("A11 layout_graph 把节点占位标记透传给 NodeSpec",
           'placeholder=bool(getattr(n, "placeholder", False))' in lay)
-    # 注：不能用 _slice_func("CanvasNodeItem") —— 它切到「下一个 def/class」就停，
-    # 而类体里第一个 def 就是 __init__，会把真正要看的渲染代码切掉（假红/假绿）。
-    # 这里按「下一个顶层 class」切，拿到整个类体。
-    _cs = SRC.find("class CanvasNodeItem")
-    _item = SRC[_cs:SRC.find("\nclass ", _cs)] if _cs >= 0 else ""
+    # 用 _slice_func 切整个类（2026-10-03 已修：结束边界按缩进判定，不再切在 __init__）。
+    # 紧邻的 A15 就是「切类必须覆盖整个类体」的自证判据 —— 切片器回退会被它抓住。
+    _item = _slice_func("CanvasNodeItem")
     # 断言「条件行 + 紧邻动作行」的组合，而不是分别搜两个串：
     # `spec.placeholder` 在状态文字那行也出现，只搜它会漏掉「圆点分支被摘掉」这种变异
     # （_perturb_canvas_panel.py 的 PL 就是这么把它打出来的）。
@@ -124,6 +128,12 @@ def _a():
           "只靠颜色的话，色弱用户 / 截图里根本看不出这是占位")
     check("A14 详情面板单独报出占位产出条数（不与「已落地」混为一谈）",
           "占位产出: %d 个" in SRC)
+    # 切片器自证（2026-10-03 残留④）：切 class 必须含类头 + 类体末尾的方法。
+    # 回退到「找到下一个 def/class 就停」的旧写法会切在 __init__ 处 —— A12/A13 会静默失真。
+    check("A15 _slice_func 切 class 时覆盖整个类体（不切在第一个 def）",
+          "class CanvasNodeItem" in _item
+          and "__init__" in _item and "mouseReleaseEvent" in _item,
+          "切片器回退会让 A12/A13 看的切片缩水，判据形同虚设")
 
 
 # =========================================================================

@@ -16,6 +16,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "canvas_export.py")
 GRAPH = os.path.join(HERE, "canvas_graph.py")
+UIHG = os.path.join(HERE, "ui_hex_guard.py")
 TEST = os.path.join(HERE, "tests", "test_canvas_export.py")
 PY = "C:/Users/xyb/AppData/Local/Programs/Python/Python312/python.exe"
 
@@ -63,15 +64,24 @@ GRAPH_MUTATIONS = [
      "    if False:  # 扰动：端口只认裸字符串 spec"),
 ]
 
+# 打在 ui_hex_guard.py 上的变异（护栏扫描边界），经 UIHG_PATH 注入给判据。
+# A12 断言「扫描集合不由注释决定」——回退到按原文（含注释）判定就会把它打红。
+UIHG_MUTATIONS = [
+    ("U1", "A12", "'THEME' in probe",
+     "'THEME' in txt  # 扰动：回退到按原文（含注释）判定扫描范围"),
+]
 
-def run_with(check_name, cx_path=None, cg_path=None):
-    """CX_PATH / CG_PATH 指向变异副本、CX_CHECK 只验目标判据，返回 exit code。"""
+
+def run_with(check_name, cx_path=None, cg_path=None, uihg_path=None):
+    """CX_PATH / CG_PATH / UIHG_PATH 指向变异副本、CX_CHECK 只验目标判据，返回 exit code。"""
     env = dict(os.environ)
     env["CX_CHECK"] = check_name
     if cx_path:
         env["CX_PATH"] = cx_path
     if cg_path:
         env["CG_PATH"] = cg_path
+    if uihg_path:
+        env["UIHG_PATH"] = uihg_path
     p = subprocess.run([PY, TEST], env=env,
                        capture_output=True, text=True)
     return p.returncode
@@ -91,6 +101,8 @@ def main():
         base = f.read()
     with open(GRAPH, "r", encoding="utf-8") as f:
         graph_base = f.read()
+    with open(UIHG, "r", encoding="utf-8") as f:
+        uihg_base = f.read()
 
     passed = 0
     total = 0
@@ -135,8 +147,25 @@ def main():
         if ok:
             passed += 1
 
+    # ---- ui_hex_guard.py 变异（UIHG_PATH 注入，验「扫描边界不由注释决定」）----
+    for mname, target, old, new in UIHG_MUTATIONS:
+        total += 1
+        mut = uihg_base.replace(old, new, 1)
+        if mut == uihg_base:
+            print(f"  [SKIP] {mname}: 未命中锚点 {old!r}")
+            continue
+        tf = _write_tmp(mut, ".py")
+        rc = run_with(target, uihg_path=tf)
+        ok = rc != 0
+        print(f"  [{'OK ' if ok else 'FAIL'}] {mname} -> {target}: 变异后 exit={rc} "
+              f"(期望 !=0)")
+        if ok:
+            passed += 1
+        os.unlink(tf)
+
     # ---- 反向基线：原文件 + 同判据应绿（exit=0）----
     base_file = _write_tmp(base, ".py")
+    uihg_file = _write_tmp(uihg_base, ".py")
     graph_file = os.path.join(HERE, "canvas_mut_graph_base.py")
     with open(graph_file, "w", encoding="utf-8") as f:
         f.write(graph_base)
@@ -144,15 +173,17 @@ def main():
         rc_a1 = run_with("A1", cx_path=base_file)
         rc_b2 = run_with("B2", cx_path=base_file)
         rc_c3 = run_with("C3", cx_path=base_file, cg_path=graph_file)
+        rc_a12 = run_with("A12", uihg_path=uihg_file)
     finally:
         os.unlink(base_file)
+        os.unlink(uihg_file)
         try:
             os.remove(graph_file)
         except OSError:
             pass
-    base_ok = (rc_a1 == 0 and rc_b2 == 0 and rc_c3 == 0)
+    base_ok = (rc_a1 == 0 and rc_b2 == 0 and rc_c3 == 0 and rc_a12 == 0)
     print(f"  [{'OK ' if base_ok else 'FAIL'}] 反向基线: 原文件 A1 exit={rc_a1} "
-          f"B2 exit={rc_b2} C3(oracle) exit={rc_c3} (期望均=0)")
+          f"B2 exit={rc_b2} C3(oracle) exit={rc_c3} A12 exit={rc_a12} (期望均=0)")
 
     print("\n" + "=" * 56)
     print(f"  导出扰动：{passed}/{total} 命中翻红；反向基线 {'OK' if base_ok else 'FAIL'}")

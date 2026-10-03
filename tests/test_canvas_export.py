@@ -40,6 +40,15 @@ else:
 
 import canvas_graph as cg
 
+# ---- 可选：从扰动拷贝路径加载 ui_hex_guard（UIHG_PATH，供「护栏扫描边界」判据变异用）----
+# 同 CG_PATH 套路：先塞 sys.modules，判据里 `import ui_hex_guard` 才会拿到变异副本。
+_uihg_path = os.environ.get("UIHG_PATH")
+if _uihg_path and os.path.exists(_uihg_path):
+    _u_spec = importlib.util.spec_from_file_location("ui_hex_guard", _uihg_path)
+    _u_mod = importlib.util.module_from_spec(_u_spec)
+    sys.modules["ui_hex_guard"] = _u_mod
+    _u_spec.loader.exec_module(_u_mod)
+
 
 def _write_json(path, obj):
     with open(path, "w", encoding="utf-8") as f:
@@ -150,6 +159,25 @@ def main():
           '"multi": bool(self.multi)' in _graph_src
           and "def port_from_spec" in _graph_src,
           "v1 只存端口类型字符串 → multi 在多入端口上静默丢失")
+
+    # ---- 2026-10-03 残留③：护栏扫描边界必须显式、不由注释决定 ----
+    import ui_hex_guard as guard
+    _probe_dir = tempfile.mkdtemp(prefix="hexprobe_")
+    with open(os.path.join(_probe_dir, "zz_probe_comment_only.py"),
+              "w", encoding="utf-8") as f:
+        f.write("# 注释里提到 THEME 这个词，但没真的用它\nX = 1\n")
+    with open(os.path.join(_probe_dir, "zz_probe_real.py"),
+              "w", encoding="utf-8") as f:
+        f.write("from ui import THEME\nY = THEME['accent']\n")
+    _scanned = [os.path.basename(p) for p in guard._find_ui_files(_probe_dir)]
+    check("A12 护栏扫描边界不由注释决定（注释里的 THEME 不算数）",
+          "zz_probe_comment_only.py" not in _scanned
+          and "zz_probe_real.py" in _scanned,
+          "扫描集合被注释左右 —— 写一句说明就能悄悄改变护栏覆盖范围")
+    _ui_files = [os.path.basename(p) for p in guard._find_ui_files(_ROOT)]
+    check("A13 canvas_export.py 在护栏扫描范围内（SVG 里同样是 UI 颜色）",
+          "canvas_export.py" in _ui_files,
+          "掉出扫描范围 = 它里面的裸 hex 再没人管")
 
     # ---------------- B 行为：导出-导入闭环真可用 ----------------
     g = cg.build_sample_graph()

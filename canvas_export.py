@@ -12,7 +12,8 @@
   * import_project_json(path)     —— 反序列化回 CanvasGraph（结构 + 默认 stub 执行器，
                                       可重渲染 / 再编辑 / 再导出）。
   * export_svg(g, path)           —— 把 layout_graph 几何渲染成 SVG（纯逻辑、无 Qt 依赖，可判据）。
-  * export_png(g, path)           —— 基于 Qt 视图快照（GUI 渲染；Qt 懒加载，import 本模块不触发 PySide6）。
+  * export_png(g, path)           —— 基于 Qt 视图快照（GUI 渲染）。Qt 是 canvas_panel → ui 间接引入的，
+                                      本模块自身不新增 PySide6 依赖；快照调用留在函数内（延迟执行）。
 
 复用：layout_graph（canvas_panel）做几何；AssetRef 引用原样写入（画布只持引用，不建文件）。
 导出是「可编辑设计画布」的前置：能存盘 / 读回 = 有编辑闭环。图片局部编辑（第 4 步
@@ -27,6 +28,9 @@ from typing import Optional
 import canvas_graph as cg
 # 几何复用第 3 步渲染层（layout_graph 为纯逻辑、无 Qt 依赖）
 from canvas_panel import layout_graph, region_svg_overlay
+# 颜色单一事实源：SVG 里的 fill/stroke 同样是 UI 呈现，不该写裸 hex
+# （ui_hex_guard 构建期会拦；canvas_panel 也早已 from ui import THEME，不新增依赖层次）
+from ui import THEME
 
 
 # --------------------------------------------------------------------------
@@ -253,14 +257,14 @@ def export_svg(g: "cg.CanvasGraph", path: str) -> dict:
             cx = (x0 + x1) / 2
             d = (f"M {x0:.1f} {y0:.1f} C {cx:.1f} {y0:.1f} "
                  f"{cx:.1f} {y1:.1f} {x1:.1f} {y1:.1f}")
-            color, dash = "#1A73E8", ""
+            color, dash = THEME["accent"], ""
         else:
             x0 = frm.x + frm.w
             y0 = frm.y + frm.h / 2
             x1 = to.x
             y1 = to.y + to.h / 2
             d = f"M {x0:.1f} {y0:.1f} L {x1:.1f} {y1:.1f}"
-            color, dash = "#9AA4B2", ' stroke-dasharray="6 4"'
+            color, dash = THEME["canvas_pending"], ' stroke-dasharray="6 4"'
         parts.append(
             f'<path d="{d}" stroke="{color}" stroke-width="2" fill="none"{dash}/>')
     # 节点
@@ -274,20 +278,20 @@ def export_svg(g: "cg.CanvasGraph", path: str) -> dict:
             f'{_esc(n.label)}</text>')
         parts.append(
             f'<text x="{n.x + 8:.1f}" y="{n.y + 40:.1f}" font-size="11" '
-            f'fill="#666666">{_esc(n.status)}</text>')
+            f'fill="{THEME["canvas_status_text"]}">{_esc(n.status)}</text>')
         if n.placeholder:
-            # 占位产出：空心橙圈（= ui.THEME["canvas_incomplete"]），与「真出片」的
-            # 实心绿点区分开。占位物同样 registered，画实心绿点会被读成真出片。
+            # 占位产出：空心橙圈（THEME canvas_incomplete），与「真出片」的实心绿点区分开。
+            # 占位物同样 registered，画实心绿点会被读成真出片。
             parts.append(
                 f'<circle cx="{n.x + n.w - 12:.1f}" cy="{n.y + n.h - 12:.1f}" '
-                f'r="4" fill="none" stroke="#E37400" stroke-width="2"/>')
+                f'r="4" fill="none" stroke="{THEME["canvas_incomplete"]}" stroke-width="2"/>')
             parts.append(
                 f'<text x="{n.x + 8:.1f}" y="{n.y + n.h - 22:.1f}" font-size="9" '
-                f'fill="#E37400">占位</text>')
+                f'fill="{THEME["canvas_incomplete"]}">占位</text>')
         elif n.registered:
             parts.append(
                 f'<circle cx="{n.x + n.w - 12:.1f}" cy="{n.y + n.h - 12:.1f}" '
-                f'r="4" fill="#1E8E3E"/>')
+                f'r="4" fill="{THEME["canvas_completed"]}"/>')
         # 阶段 B：标记已局部编辑的节点（红色虚线遮罩 + 角标）
         raw = g.nodes.get(n.id)
         le = raw.config.get("local_edits") if raw is not None else None
@@ -296,7 +300,7 @@ def export_svg(g: "cg.CanvasGraph", path: str) -> dict:
             parts.append(region_svg_overlay(le[0].get("region"), n.x, n.y, n.w, n.h))
             parts.append(
                 f'<text x="{n.x + 8:.1f}" y="{n.y + n.h - 6:.1f}" font-size="9" '
-                f'fill="#D93025">局部编辑 {len(le)}</text>')
+                f'fill="{THEME["canvas_failed"]}">局部编辑 {len(le)}</text>')
     parts.append("</svg>")
 
     parent = os.path.dirname(path)

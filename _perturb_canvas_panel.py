@@ -69,6 +69,16 @@ MUTATIONS = [
      '"占位产出: %s" % n_ph', True),
 ]
 
+# 打在 **测试脚本自身** 上的变异（不是 canvas_panel.py）：
+# A15 断言「切片器切 class 要覆盖整个类体」，只有让 _slice_func 回退到
+# 「找到下一个 def/class 就停」的旧写法（2026-10-03 残留④ 的原始 bug）才打得红。
+TEST_MUTATIONS = [
+    ("PT_slice_class_stops_early", "A15",
+     "        if ind <= indent:\n            nxt = nm\n            break",
+     "        if True:  # 扰动：回退到「找到下一个 def/class 就停」\n"
+     "            nxt = nm\n            break"),
+]
+
 
 def run_test(static):
     env = dict(os.environ)
@@ -96,10 +106,13 @@ def main():
     print("反向基线（无变异，全跑）: %s" % ("OK ALL GREEN" if base_ok else "FAIL"))
     ok_all = ok_all and base_ok
 
-    # 备份原文件
+    # 备份原文件（被测源码 + 测试脚本自身 —— 后者也要被打变异）
     bak = tempfile.NamedTemporaryFile(delete=False, suffix=".bak")
     bak.close()
     shutil.copy(ORIG, bak.name)
+    tb = tempfile.NamedTemporaryFile(delete=False, suffix=".tbak")
+    tb.close()
+    shutil.copy(TEST, tb.name)
 
     results = []
     try:
@@ -126,15 +139,35 @@ def main():
             results.append((name, hit))
             ok_all = ok_all and hit
             shutil.copy(bak.name, ORIG)  # 恢复
+
+        # ---- 打在测试脚本自身的变异：切片器回退（A15 的自证判据）----
+        for name, target, old, new in TEST_MUTATIONS:
+            content = open(TEST, encoding="utf-8").read()
+            if old not in content:
+                print("  [SKIP] %s — 锚点缺失: %r" % (name, old[:40]))
+                results.append((name, False))
+                ok_all = False
+                continue
+            open(TEST, "w", encoding="utf-8").write(content.replace(old, new, 1))
+            rc, out = run_test(True)        # 切片器属静态层，只跑 A 组
+            hit = target_failed(target, rc, out)
+            print("  [%s] %s 目标%s红 %s" %
+                  ("OK " if hit else "BAD", name, target, "✓" if hit else "✗"))
+            results.append((name, hit))
+            ok_all = ok_all and hit
+            shutil.copy(tb.name, TEST)      # 恢复
     finally:
         shutil.copy(bak.name, ORIG)
-        try:
-            os.remove(bak.name)
-        except Exception:
-            pass
+        shutil.copy(tb.name, TEST)
+        for _f in (bak.name, tb.name):
+            try:
+                os.remove(_f)
+            except Exception:
+                pass
 
+    _total = len(MUTATIONS) + len(TEST_MUTATIONS)
     print("\n扰动总数: %d  有效: %d  基线: %s" %
-          (len(MUTATIONS), sum(1 for _, h in results if h), "OK" if base_ok else "FAIL"))
+          (_total, sum(1 for _, h in results if h), "OK" if base_ok else "FAIL"))
     if ok_all:
         print("ALL PERTURB OK: 判据非空转")
         sys.exit(0)

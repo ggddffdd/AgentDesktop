@@ -100,7 +100,12 @@ def _find_ui_files(root):
                 txt = open(fp, encoding='utf-8', errors='replace').read()
             except Exception:
                 continue
-            if ('setStyleSheet' in txt) or re.search(r'(panel|ui|widget|style|_view)\.py', fn, re.I) or 'THEME' in txt:
+            probe = _strip_comments_keep_lines(txt)
+            # 判定必须用「剥注释后的源码」：注释里出现 THEME / setStyleSheet 不该改变
+            # 扫描集合。2026-10-03 之前用原文判定 —— 在 canvas_export.py 里写一句含
+            # THEME 字样的说明注释，就把它拉进了扫描范围（扫描边界由注释决定，太脆）。
+            # 改为剥注释后，canvas_export.py 靠真实的 `from ui import THEME` 入选。
+            if ('setStyleSheet' in probe) or re.search(r'(panel|ui|widget|style|_view)\.py', fn, re.I) or 'THEME' in probe:
                 ui_files.append(fp)
     return ui_files
 

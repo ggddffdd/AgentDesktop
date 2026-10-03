@@ -64,9 +64,10 @@ def _slice_func(name):
     结束边界用缩进宽度判定，而非简单的「下一个顶层 class/def」，否则会把同类
     兄弟方法的同名调用一起包进来，导致判据该红不红（假绿）。
     """
-    m = re.search(r"^\s*(?:class|def)\s+%s\b" % re.escape(name), SRC, re.M)
+    m = re.search(r"^[ \t]*(?:class|def)\s+%s\b" % re.escape(name), SRC, re.M)
     if not m:
         return ""
+    # 缩进用 [ \t]* 而非 \s*：\s 含换行会把前导空行算进 group(0)，indent 偏大。
     indent = len(m.group(0)) - len(m.group(0).lstrip())
     nxt = None
     for nm in re.finditer(r"^[ \t]*(?:class|def)\s+\w+", SRC[m.end():], re.M):

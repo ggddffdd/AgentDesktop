@@ -234,6 +234,7 @@ THEME = {
     "canvas_twin_bg": "#F3E8FD",     # 数字分身节点底（浅紫）
     "canvas_promo_bg": "#FEF7E0",    # 促销动效节点底（浅琥珀）
     "canvas_final_bg": "#ECEFF1",    # 终态输出节点底（浅灰）
+    "canvas_status_text": "#666666",  # 节点下方状态文字（灰；SVG 导出用）
 
     # ---- 数据/特征色（批3 从裸 hex 收编；带前缀命名，表明是特征局部语义，非全局通用色）----
     "role_green": "#2E7D32",         # 角色色：大哥（绿）

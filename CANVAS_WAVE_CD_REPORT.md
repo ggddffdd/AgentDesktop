@@ -116,19 +116,20 @@ B20e–B20h 用 `gb7._tg.depend("x","y")` **绕过画布**造环，验证「run(
 | 套件 | 判据数 | 本轮新增 |
 |---|---|---|
 | model | **89**（58 → 89） | A23–A31 静态 + B20 系列（成环即拒/无残留/报错含环/顺序边也拦/绕过画布的兜底恢复）+ B21 系列（can_connect 零副作用）+ B22（edge_path/would_cycle）+ B23（占位语义 + 重算 + 异常不残留）+ B24（端口 schema 往返 + v1 兼容 + 非法 spec） |
-| export | **32**（19 → 32） | A8–A11 静态 + B11–B17（非法 port_type / 幽灵节点 / 缺 `节点.端口` / nodes 非对象 / 非 JSON / 边引不存在节点 / v1 兼容）+ C3/C4（multi 往返、version==2） |
+| export | **34**（19 → 34） | A8–A13 静态（含 A12/A13 护栏扫描边界，见 §十）+ B11–B17（非法 port_type / 幽灵节点 / 缺 `节点.端口` / nodes 非对象 / 非 JSON / 边引不存在节点 / v1 兼容）+ C3/C4（multi 往返、version==2） |
 | executor | **57**（40 → 57） | A14–A17 静态 + B11 系列（stub 占位但仍 registered）+ B12/B12b + B13/B13b（端口声明顺序 vs 连线顺序）+ B14 系列（ref_source / ref_port 生效与指不到抛错）+ B15（`src_from`） |
-| panel | **38**（30 → 38） | A10–A14 静态（含**组合串**断言）+ B13（6 节点全占位）+ B14/B14b（NodeSpec 往返保留 placeholder） |
+| panel | **39**（30 → 39） | A10–A15 静态（含**组合串**断言、A15 切片器自证）+ B13（6 节点全占位）+ B14/B14b（NodeSpec 往返保留 placeholder） |
 | assetstore / ciimage / edit / localedit / agnes | 24 / 25 / 40 / 46 / 40 | — |
-| **画布合计** | **391** | |
+| **画布合计** | **394** | |
 
-扰动：`_perturb_canvas_model.py` **18 → 32**、`_perturb_canvas_export.py` **8 → 14**、
-`_perturb_canvas_executor.py` **12 → 17**、`_perturb_canvas_panel.py` **8 → 14**；另 5 个未改动脚本照样全绿。
+扰动：`_perturb_canvas_model.py` **18 → 32**、`_perturb_canvas_export.py` **8 → 15**、
+`_perturb_canvas_executor.py` **12 → 17**、`_perturb_canvas_panel.py` **8 → 15**；另 5 个未改动脚本照样全绿。
+（收尾轮 export/panel 各 +1：U1 护栏扫描边界回退、PT 切片器回退，见 §十）
 
 ### 同波修掉的判据/扰动自身缺陷
 1. **A25 误红**：`_check_connect` 定型后 `_reject_cycle` 的调用点挪了，原锚点失配 → 改断言 `CC`。
 2. **A12 误红**：`_slice_func("CanvasNodeItem")` 对**类**会切在类体第一个 `def __init__` 处（切片不含类头）→
-   改用 `SRC.find("class CanvasNodeItem")` 到下一个 `"\nclass "`。**这是 `_slice_func` 的通用坑**。
+   当时用 `SRC.find("class CanvasNodeItem")` 绕开。**根因已在收尾轮修掉**（§十.4），A12 已改回用 `_slice_func`。
 3. **P23/P24/P31 假绿**：B 组 `import canvas_graph` 拿的是仓库真文件，`CANVAS_PATH` 变异副本**只影响 A 组切片** →
    给 `tests/test_canvas_model.py` 加「若设 `CANVAS_PATH` 则 `spec_from_file_location` 加载并写 `sys.modules`」，
    并给 `run_judge` 加 `static=False` 以便跑 B 组。
@@ -141,30 +142,104 @@ B20e–B20h 用 `gb7._tg.depend("x","y")` **绕过画布**造环，验证「run(
 
 | 项 | 结果 |
 |---|---|
-| 9 套画布判据 | **391 项全绿** |
-| 9 个扰动脚本 | **全部命中期望红项 + 反向基线绿** |
+| 9 套画布判据 | **394 项全绿**（收尾轮 +3） |
+| 9 个扰动脚本 | **全部命中期望红项 + 反向基线绿**（32 / 10 / 15 / 15 / 8 / 7 / 6 / 17 / 8） |
 | 非画布下游（`task_graph` 被 `agent.py` / `legion*` 共用） | `test_task_graph_cancel` 36/36、`test_task_graph_incomplete` 36/36、`test_frozen_smoke` 143/143 |
 | 残留预检 `_perturb_guard.py` | 干净（未发现残留变异标记） |
-| 配色门禁 `ui_hex_guard.py` | **RESULT = True**（新增违规 0 / 存量 1 处已基线豁免） |
+| 配色门禁 `ui_hex_guard.py` | **RESULT = True**（扫描 50 文件 / 新增违规 0 / **存量 0** —— 收尾轮把导出层 7 处裸 hex 收编 THEME 后，基线回到全空） |
 
 ---
 
-## 九、残留发现（**未修**，等大哥点头）
+## 九、残留发现（6 条）—— 收尾轮已全部处理
 
-1. **`canvas_export.py:#666666` 建议改走 `THEME[key]`**。
-   本轮我写的一句注释里含 `THEME` 字样，把 `canvas_export.py` **首次拉进 `ui_hex_guard` 扫描范围**
-   （`_find_ui_files` 判据是 `'THEME' in txt`），于是暴露出一批 HEAD 既有颜色。
-   其中 `#666666`（节点状态文字 `fill`）不在 THEME 里 → HARD 拦构建。
-   THEME 最近的等价色是 `faint / placeholder / weak = #6B7280`。
-   **改它会动实际色值**（102,102,102 → 107,114,128），按铁律必须大哥批准 —— 本轮先登记进 `ui_hex_baseline.txt`，零视觉变化。
-2. **同批暴露的 6 处「THEME 内却写死」（SOFT，不阻塞）**：
-   `#1A73E8`（数据边）、`#9AA4B2`（顺序边）、`#1E8E3E`（真出片点）、`#D93025`（局部编辑角标）、`#E37400`×2（占位圈/文字）。
-   建议下一轮统一 `THEME[key]`，但要先打通 `canvas_export` 取 THEME 而不破「import 不触发 PySide6」的契约。
-3. **护栏扫描范围靠子串隐式判定**：`_find_ui_files` 里 `'THEME' in txt` 决定文件是否被扫 ——
-   **我加一句注释就改变了扫描集合**，这判据本身是脆的。建议改成显式白名单/黑名单。
-4. **`_slice_func` 对 class 不可用**（见 §七.2）：它按 `def ` 切函数，类体会被切在第一个 `__init__`。测试工具里应加防护或改名说明。
-5. **已知脆弱性（当前未触发）**：A30/P29 用 `_slice_func("asset_registrations")` 切片，结束边界是缩进 `<= 4` 的 `class`，
-   而 `_make_edit_record`（缩进 8）落在切片内，其中也含字符串 `"target"`。将来若 `asset_registrations` 里出现同名串会误判。
-6. **项目记忆与实际不符**：记忆写「本仓生产源码全 CRLF、tests 全 LF」，
-   实测 `core.autocrlf=true`、**blob 全部 LF 存储**、工作区混杂（未改动源码 CRLF 36 / LF 105）。
-   → 影响所有「按行尾做字节匹配」的脚本前提，已同步修正项目记忆。
+| # | 原发现 | 处置 |
+|---|---|---|
+| 1 | `#666666` 不在 THEME → HARD 拦构建 | **已修**：THEME 新增 `canvas_status_text`，**取精确值 `#666666`** → 零视觉变化 |
+| 2 | 6 处「THEME 内却写死」（SOFT，不阻塞） | **已修**：全部改走 `THEME[key]`（值相同，零视觉变化） |
+| 3 | 护栏扫描范围靠子串隐式判定 | **已修**：判定改用**剥注释后的源码**（+ 2 条判据 + 1 个扰动） |
+| 4 | `_slice_func` 切 class 会在第一个 `def` 截断 | **已修**：结束边界按缩进判定（+ 1 条判据 + 1 个扰动） |
+| 5 | A30 切片含 `_make_edit_record` 的 `"target"` | **原判断有误，实测不存在**（见 §十.5） |
+| 6 | 项目记忆的行尾说法与实际不符 | **已修**：项目记忆已同步实测结论 |
+
+---
+
+## 十、收尾轮：6 条残留全部处理（大哥「残留问题处理掉然后重新打包」）
+
+### 10.1 导出层 7 处裸 hex 收编 THEME（残留①②，**零视觉变化**）
+
+`canvas_export.py` 顶层加 `from ui import THEME` —— **不新增依赖层次**：
+它本就 `from canvas_panel import layout_graph, region_svg_overlay`，而 `canvas_panel` 顶层已 `from ui import THEME`。
+
+| 位置 | 原裸 hex | 改为 | 视觉 |
+|---|---|---|---|
+| 数据边描边 | `#1A73E8` | `THEME["accent"]` | 同值 |
+| 顺序边描边 | `#9AA4B2` | `THEME["canvas_pending"]` | 同值 |
+| 节点状态文字 | `#666666` | `THEME["canvas_status_text"]`（**THEME 新增键，取精确值**） | 同值 |
+| 占位空心圈 ×2 | `#E37400` | `THEME["canvas_incomplete"]` | 同值 |
+| 真出片实心点 | `#1E8E3E` | `THEME["canvas_completed"]` | 同值 |
+| 局部编辑角标 | `#D93025` | `THEME["canvas_failed"]` | 同值 |
+
+> ⚠️ 这里**没有**把 `#666666` 改成最近的 THEME 灰 `#6B7280`（那会动实际色值 102,102,102 → 107,114,128）。
+> 做法是**在 THEME 里新增一个取精确值的键** —— 既满足「颜色必须走 THEME」的纪律，又做到零视觉变化。
+> 这与之前画布 10 个语义色键的处理方式一致。
+
+**硬证据（"零视觉变化"不是嘴上说的）**：用 `git show HEAD:canvas_export.py` 取改动前版本，
+让**新旧两版对同一张图各导出一次 SVG，逐字节比对 → 3089 B vs 3089 B，完全一致**。
+
+顺手修正一处**早就过时的 docstring**：`export_png` 原写「Qt 懒加载，import 本模块不触发 PySide6」——
+实测 `import canvas_export` 已加载 **23 个 PySide6 模块**（经 canvas_panel → ui），该说法从来就不成立，已改准。
+
+### 10.2 护栏扫描范围改由源码决定，不由注释（残留③）
+
+`_find_ui_files` 的启发式判定从 `'THEME' in txt`（原文，含注释）改为 `'THEME' in probe`（**剥注释后的源码**）。
+
+- **改动前先做对比实验**：原版扫描 51 文件 → 剥注释版 50 文件，**只掉出 `release_check.py`**
+  （它仅在注释里提到这些词；且它当前 **0 处裸 hex 命中** → 零影响）。
+- `canvas_export.py` 靠**真实的 `from ui import THEME`** 入选，不再依赖注释巧合。
+- **新增判据 A12**：用探针文件断言「注释里的 THEME 不算数、真实 import 才算数」；
+  **A13**：断言 `canvas_export.py` 必在扫描集合内（防止将来把顶层 import 改成函数内延迟 import 而静默掉出）。
+- **新增扰动 U1**：把判定回退成按原文 → A12 翻红 ✓
+
+### 10.3 基线条目清空
+
+`#666666` 已走 THEME → 从 `ui_hex_baseline.txt` 移除该条目，基线**回到全空**（护栏：新增 0 / 存量 0）。
+
+### 10.4 切片器切 class 的根因修复（残留④）
+
+`tests/test_canvas_panel.py` 的 `_slice_func` 结束边界**只找「下一个 class/def」，没做缩进比较**
+（`indent` 算出来完全是死代码）→ 目标本身是 class 时就切在类体第一个 `def __init__`。
+
+修：结束边界改为「第一个缩进 ≤ 目标缩进的 class/def」。
+
+> 顺带修掉一个**隐蔽偏差**：起始正则 `^\s*` 里的 `\s` **含换行** ——
+> `m.group(0)` 会把前导空行也算进缩进，导致 indent 偏大（顶层 def 算出 2、方法算出 5，而非 0 / 4）。
+> 当前恰好等价（Python 缩进只有 0/4/8），但**空行数一变就可能改切片边界**，属"埋着的雷"。
+> 同一偏差在 `test_canvas_model.py` / `test_canvas_assetstore.py` 里也存在，已一并改成 `^[ \t]*`。
+
+- A12 改回用 `_slice_func("CanvasNodeItem")`（不再绕道 `SRC.find`）；
+- **新增判据 A15**：切 class 必须含类头 + 类体末尾方法（`mouseReleaseEvent`）；
+- **新增扰动 PT**：把缩进判定回退成「找到就停」→ A15 翻红 ✓
+- `_perturb_canvas_panel.py` 因此扩出「**变异测试脚本自身**」这一路（原来只能变异 `canvas_panel.py`），
+  并顺带修了它统计口径（`扰动总数` 只算 `MUTATIONS`，漏了新加的 `TEST_MUTATIONS`）。
+
+### 10.5 ⚠️ 更正：残留⑤ 是我**报错了**（实测不存在）
+
+原报告写「A30/P29 的 `asset_registrations` 切片含缩进 8 的 `_make_edit_record`，其中也有 `"target"` 字符串」。
+
+**实测**：`_make_edit_record` 在 **684 行**、`asset_registrations` 在 **756 行** ——
+前者在**切片起点之前**，根本不在切片内；切片长度 719、**不含 `"target"`**、切片内无其它 def。
+**前提搞反了**（把「文件里存在这个函数」当成了「它在切片内」）。该条**作废，无需修**。
+
+> 教训与 §七.2 同源：**判据/结论必须用切片的实际内容验证**，
+> 不能从「文件里有这个函数」倒推「它会落在切片里」。
+
+### 10.6 收尾轮验证
+
+| 项 | 结果 |
+|---|---|
+| 9 套画布判据 | **394 项全绿**（+3：panel A15、export A12/A13） |
+| 9 个扰动脚本 | 全部命中 + 反向基线绿（panel 14→15、export 14→15） |
+| 非画布下游 | `test_task_graph_cancel` 36/36、`test_task_graph_incomplete` 36/36、`test_frozen_smoke` 143/143 |
+| 残留预检 `_perturb_guard.py` | 干净 |
+| 配色门禁 `ui_hex_guard.py` | **RESULT = True**（扫描 50 文件 / 新增 0 / 存量 0） |
+| SVG 产物比对 | 与改动前**逐字节一致**（3089 B） |

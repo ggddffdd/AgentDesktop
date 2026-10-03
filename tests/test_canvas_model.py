@@ -74,11 +74,12 @@ def _slice_src(name, text):
 
     text 可换成 task_graph.py 的源码（Wave B 的 undepend / depend 判据用它）。
     """
-    m = re.search(r"^\s*(?:class|def)\s+%s\b" % re.escape(name), text, re.M)
+    m = re.search(r"^[ \t]*(?:class|def)\s+%s\b" % re.escape(name), text, re.M)
     if not m:
         return ""
-    # 起始正则把前导缩进也吃进了 m.group(0)，故缩进宽度直接由 group(0) 的前导空白算，
-    # 不能再用 text[line_start:m.start()]（那里 m.start() 已落到行首空格，算出来恒为 0）。
+    # 缩进宽度只能由 group(0) 的前导空白算：起始正则若用 \s*（\s 含换行），
+    # 会把前导空行也吃进 group(0)，indent 偏大（顶层 def 算出 2、方法算出 5），
+    # 边界语义跟着飘。改为 [ \t]* 后 m.start() 落在定义那一行的行首。
     indent = len(m.group(0)) - len(m.group(0).lstrip())
     nxt = None
     for nm in re.finditer(r"^[ \t]*(?:class|def)\s+\w+", text[m.end():], re.M):
