@@ -1027,12 +1027,15 @@ class CanvasPanel(QWidget):
         btn_local.clicked.connect(self._open_local_edit)
         btn_export = QPushButton("导出局部编辑图")
         btn_export.clicked.connect(self._export_local_edited_images)
+        btn_run = QPushButton("运行")
+        btn_run.clicked.connect(self._run_graph)
         bar.addWidget(btn_fit)
         bar.addWidget(btn_undo)
         bar.addWidget(btn_redo)
         bar.addWidget(btn_del)
         bar.addWidget(btn_local)
         bar.addWidget(btn_export)
+        bar.addWidget(btn_run)
         bar.addStretch(1)
         legend = QLabel("● 完成  ● 进行  ● 失败  ● 待办 蓝色实线=数据 灰色虚线=顺序")
         bar.addWidget(legend)
@@ -1139,6 +1142,27 @@ class CanvasPanel(QWidget):
             else:
                 self.detail.addItem("  - %s: 已应用 %d 条 → %s" % (
                     r.get("node_id"), r.get("applied"), r.get("out_path")))
+
+    # ---- 第 5 步：运行（真正落盘执行器）----
+    def _run_graph(self):
+        """工具栏「运行」：给所有节点装上真实执行器并跑图，详情区列出落地文件。"""
+        if self.graph is None:
+            self.detail.addItem("（没有可运行的画布）")
+            return
+        import os
+        asset_root = os.path.join(os.getcwd(), "canvas_runtime")
+        os.makedirs(asset_root, exist_ok=True)
+        try:
+            self.graph.use_real_executors(asset_root)
+            self.graph.run({})
+        except Exception as e:  # noqa: BLE001
+            self.detail.addItem("运行失败: %s" % e)
+            return
+        self.detail.addItem("运行完成，产物落在: %s" % asset_root)
+        for nid, n in self.graph.nodes.items():
+            for p, a in n.out_assets.items():
+                if isinstance(a, cg.AssetRef) and a.path:
+                    self.detail.addItem("  - %s.%s → %s" % (nid, p, a.path))
 
     def _fit(self):
         if getattr(self, "plan", None) is not None:

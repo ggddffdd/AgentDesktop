@@ -588,6 +588,25 @@ class CanvasGraph:
                     })
         return out
 
+    # ---- 执行器（第 5 步：真正落盘）----
+    def set_executor(self, node_id: str, executor: Callable) -> None:
+        """替换某个节点的执行器（如挂上 gen_image 真实执行器）。"""
+        n = self.nodes.get(node_id)
+        if not n:
+            raise ValueError(f"节点不存在: {node_id}")
+        n.executor = executor
+
+    def use_real_executors(self, asset_root: str, inpaint_fn=None) -> List[str]:
+        """第 5 步：给所有节点装上真正落盘的执行器（run 前调用即可生效）。
+
+        `_wrap` 在 run 时实时调 `node.executor`，故 run 前替换 executor 即生效，
+        无需重建 TaskGraph。asset_root 为真实落盘根目录；inpaint_fn 透传给
+        局部编辑引擎（未注入时 inpaint 模式诚实抛 UnsupportedEditMode）。
+        返回被替换执行器的节点 id 列表。
+        """
+        from executors import apply_real_executors
+        return apply_real_executors(self, asset_root, inpaint_fn)
+
     # ---- 执行 ----
     def run(self, state: Optional[dict] = None, token=None) -> dict:
         state = self._tg.run(state or {}, token)
