@@ -162,27 +162,132 @@ def passthrough_executor(node, asset_root):
 
 
 # --------------------------------------------------------------------------
+# 上游资产收集（供 gen_video / promo_fx 取参考图 / 动效帧）
+# --------------------------------------------------------------------------
+def _upstream_asset_paths(graph, node, want_port_type, _seen=None):
+    """递归收集 node 上游所有 kind==want_port_type 的资产路径。
+
+    依赖 task_graph 的拓扑序（上游先 completed、out_assets 先落盘），因此运行时稳定。
+    """
+    if graph is None or node is None:
+        return []
+    _seen = _seen if _seen is not None else set()
+    found = []
+    for e in getattr(graph, "data_edges", []) or []:
+        if getattr(e, "to_node", None) != node.id:
+            continue
+        up = graph.nodes.get(e.from_node)
+        if up is None:
+            continue
+        ref = (up.out_assets or {}).get(e.from_port)
+        if ref is not None and getattr(ref, "kind", "") == want_port_type \
+                and getattr(ref, "path", ""):
+            if ref.path not in found:
+                found.append(ref.path)
+        if e.from_node not in _seen:
+            _seen.add(e.from_node)
+            found.extend(_upstream_asset_paths(graph, up, want_port_type, _seen))
+    return found
+
+
+# --------------------------------------------------------------------------
+# gen_video 真实执行器（接 Agnes 视频，或注入的 video_fn）
+# --------------------------------------------------------------------------
+def gen_video_executor(node, asset_root, inpaint_fn=None, video_fn=None, graph=None):
+    """gen_video 节点的真实执行器：取上游 image 作参考首帧，调 video_fn 生成 clip。"""
+    out_ports = [p for p, pt in node.outputs.items() if pt.port_type == "clip"]
+
+    def _exec(state):
+        src_paths = _upstream_asset_paths(graph, node, "image")
+        src_path = src_paths[0] if src_paths else None
+        prompt = (node.config or {}).get("prompt") or "动态展示画面内容"
+        if video_fn is None:
+            raise UnsupportedEditMode("gen_video 需 video_fn（未注入 Agnes 视频回调）")
+        out_path = video_fn(node, asset_root, src_path, prompt)
+        produced = None
+        for p in out_ports:
+            ref = AssetRef(
+                kind="clip",
+                name="%s:%s" % (NODE_TYPES.get(node.node_type, node.node_type), node.id),
+                path=out_path,
+                meta={"tags": [node.node_type, "clip"],
+                      "project": "canvas_runtime",
+                      "task": "节点 %s 生视频（第5步执行器）" % node.id},
+            )
+            node.out_assets[p] = ref
+            produced = ref
+        return {"node": node.id, "type": node.node_type, "out_kind": "clip",
+                "out_path": out_path, "src_image": src_path,
+                "produced": produced.to_dict() if produced else None}
+    return _exec
+
+
+# --------------------------------------------------------------------------
+# promo_fx 真实执行器（促销动效：接注入的 motion_fn，默认本地 PIL GIF）
+# --------------------------------------------------------------------------
+def promo_fx_executor(node, asset_root, inpaint_fn=None, video_fn=None, graph=None,
+                      motion_fn=None):
+    """promo_fx 节点的真实执行器：取上游 image 资产帧，调 motion_fn 生成促销动效。
+
+    motion_fn(src_image_paths, out_path, params) -> out_path；未注入时回落本地
+    PIL 实现（零网络、零 ffmpeg），保证「促销动效」随时可跑通。
+    """
+    if motion_fn is None:
+        from agnes_bridge import pil_promo_motion  # 本地零网络降级
+        motion_fn = pil_promo_motion
+    out_ports = [p for p, pt in node.outputs.items() if pt.port_type == "video"]
+
+    def _exec(state):
+        img_paths = _upstream_asset_paths(graph, node, "image")
+        out_path = os.path.join(asset_root, "video", "%s_promo" % node.id)  # 后缀由 motion_fn 决定
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        params = (node.config or {}).get("motion_params") or {}
+        res = motion_fn(img_paths, out_path, params)
+        produced = None
+        for p in out_ports:
+            ref = AssetRef(
+                kind="video",
+                name="%s:%s:%s" % (NODE_TYPES.get(node.node_type, node.node_type),
+                                    node.id, p),
+                path=res,
+                meta={"tags": [node.node_type, "video", "promo"],
+                      "project": "canvas_runtime",
+                      "task": "节点 %s 促销动效（第6步）" % node.id},
+            )
+            node.out_assets[p] = ref
+            produced = ref
+        return {"node": node.id, "type": node.node_type, "out_kind": "video",
+                "out_path": res, "frame_count": len(img_paths),
+                "produced": produced.to_dict() if produced else None}
+    return _exec
+
+
+# --------------------------------------------------------------------------
 # 注册表 + 装配
 # --------------------------------------------------------------------------
-# node_type -> factory(node, asset_root, inpaint_fn=None)
+# node_type -> factory(node, asset_root, inpaint_fn=None, video_fn=None, graph=None)
 DEFAULT_EXECUTORS = {
-    "gen_image": lambda node, asset_root, inpaint_fn=None:
+    "gen_image": lambda node, asset_root, inpaint_fn=None, video_fn=None, graph=None, motion_fn=None:
         gen_image_executor(node, asset_root, inpaint_fn),
+    "gen_video": lambda node, asset_root, inpaint_fn=None, video_fn=None, graph=None, motion_fn=None:
+        gen_video_executor(node, asset_root, inpaint_fn, video_fn, graph),
+    "promo_fx": lambda node, asset_root, inpaint_fn=None, video_fn=None, graph=None, motion_fn=None:
+        promo_fx_executor(node, asset_root, inpaint_fn, video_fn, graph, motion_fn),
 }
 
 
-def build_executor(node, asset_root, inpaint_fn=None):
+def build_executor(node, asset_root, inpaint_fn=None, video_fn=None, graph=None, motion_fn=None):
     """按 node_type 选真实执行器工厂；未知类型回落 passthrough。"""
     factory = DEFAULT_EXECUTORS.get(node.node_type)
     if factory is not None:
-        return factory(node, asset_root, inpaint_fn)
+        return factory(node, asset_root, inpaint_fn, video_fn, graph, motion_fn)
     return passthrough_executor(node, asset_root)
 
 
-def apply_real_executors(graph, asset_root, inpaint_fn=None):
+def apply_real_executors(graph, asset_root, inpaint_fn=None, video_fn=None, motion_fn=None):
     """给整张图的所有节点装上真实执行器（run 前调用）。返回被替换的节点 id 列表。"""
     replaced = []
     for nid, node in graph.nodes.items():
-        node.executor = build_executor(node, asset_root, inpaint_fn)
+        node.executor = build_executor(node, asset_root, inpaint_fn, video_fn, graph, motion_fn)
         replaced.append(nid)
     return replaced

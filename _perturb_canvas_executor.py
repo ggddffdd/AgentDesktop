@@ -75,7 +75,7 @@ def main():
 
     # PG3 use_real_executors 不替换 executor → B1 红
     _pg("use_real_executors 不替换 executor", "B1", EXEC,
-        "        node.executor = build_executor(node, asset_root, inpaint_fn)",
+        "        node.executor = build_executor(node, asset_root, inpaint_fn, video_fn, graph, motion_fn)",
         "        node.executor = node.executor  # 扰动：不替换")
 
     # PG4 有 edits 也不写编辑图 → B2 红

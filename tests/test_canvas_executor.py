@@ -218,9 +218,21 @@ run("B6 inpaint_fn 被调用且结果被应用（像素减半）",
     called["n"] == 1 and np.allclose(out_b6, src_b6 * 0.5, atol=3))
 
 # B7 passthrough：其余节点落盘占位 + 全部 completed + 资产登记
+# 注：样本图含 gen_video / promo_fx 节点，需注入回调方能跑通全图
+# （gen_video 未注入 video_fn 时会诚实抛 UnsupportedEditMode，阻塞 final）
 root_b7 = tempfile.mkdtemp()
 g_b7 = cg.build_sample_graph()
-g_b7.use_real_executors(root_b7)
+
+
+def _b7_video(node, asset_root, src_image_path, prompt):
+    return os.path.join(asset_root, "video", "%s_clip.mp4" % node.id)
+
+
+def _b7_motion(src_paths, out_path, params):
+    return out_path + ".gif"
+
+
+g_b7.use_real_executors(root_b7, video_fn=_b7_video, motion_fn=_b7_motion)
 g_b7.run({})
 final_ref = list(g_b7.nodes["final"].out_assets.values())[0] if \
     g_b7.nodes["final"].out_assets else None
@@ -241,8 +253,8 @@ run("C1 切片 gen_image_executor 含真实写盘（_array_to_png 调用）",
     "_array_to_png(out_arr, out_path)" in EXEC_SRC)
 run("C2 切片 apply_real_executors 含 node.executor 赋值",
     "node.executor = build_executor" in EXEC_SRC)
-run("C3 切片 use_real_executors 调用 executors 模块",
-    "apply_real_executors(self, asset_root, inpaint_fn)" in GRAPH_SRC)
+run("C3 切片 use_real_executors 调用 executors 模块（透传 inpaint_fn/video_fn/motion_fn）",
+    "apply_real_executors(self, asset_root, inpaint_fn, video_fn, motion_fn)" in GRAPH_SRC)
 
 
 # --------------------------------------------------------------------------

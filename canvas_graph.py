@@ -596,16 +596,19 @@ class CanvasGraph:
             raise ValueError(f"节点不存在: {node_id}")
         n.executor = executor
 
-    def use_real_executors(self, asset_root: str, inpaint_fn=None) -> List[str]:
+    def use_real_executors(self, asset_root: str, inpaint_fn=None, video_fn=None,
+                           motion_fn=None) -> List[str]:
         """第 5 步：给所有节点装上真正落盘的执行器（run 前调用即可生效）。
 
         `_wrap` 在 run 时实时调 `node.executor`，故 run 前替换 executor 即生效，
         无需重建 TaskGraph。asset_root 为真实落盘根目录；inpaint_fn 透传给
-        局部编辑引擎（未注入时 inpaint 模式诚实抛 UnsupportedEditMode）。
-        返回被替换执行器的节点 id 列表。
+        局部编辑引擎（未注入时 inpaint 模式诚实抛 UnsupportedEditMode）；
+        video_fn 透传给 gen_video 真实视频生成（未注入时 gen_video 诚实抛
+        UnsupportedEditMode）；motion_fn 透传给 promo_fx 促销动效（未注入时
+        promo_fx 回落本地 PIL，零网络）。返回被替换执行器的节点 id 列表。
         """
         from executors import apply_real_executors
-        return apply_real_executors(self, asset_root, inpaint_fn)
+        return apply_real_executors(self, asset_root, inpaint_fn, video_fn, motion_fn)
 
     # ---- 执行 ----
     def run(self, state: Optional[dict] = None, token=None) -> dict:

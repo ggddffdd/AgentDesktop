@@ -1029,6 +1029,8 @@ class CanvasPanel(QWidget):
         btn_export.clicked.connect(self._export_local_edited_images)
         btn_run = QPushButton("运行")
         btn_run.clicked.connect(self._run_graph)
+        btn_promo = QPushButton("促销动效预览")
+        btn_promo.clicked.connect(self._make_promo_motion)
         bar.addWidget(btn_fit)
         bar.addWidget(btn_undo)
         bar.addWidget(btn_redo)
@@ -1036,6 +1038,7 @@ class CanvasPanel(QWidget):
         bar.addWidget(btn_local)
         bar.addWidget(btn_export)
         bar.addWidget(btn_run)
+        bar.addWidget(btn_promo)
         bar.addStretch(1)
         legend = QLabel("● 完成  ● 进行  ● 失败  ● 待办 蓝色实线=数据 灰色虚线=顺序")
         bar.addWidget(legend)
@@ -1152,8 +1155,19 @@ class CanvasPanel(QWidget):
         import os
         asset_root = os.path.join(os.getcwd(), "canvas_runtime")
         os.makedirs(asset_root, exist_ok=True)
+        # 默认注入 Agnes 真实现：inpaint（图生图重绘）+ video（视频生成）。
+        # 调用时才需 key/网络；import 失败则退回诚实的 None（运行时缺回调会抛明确错误）。
+        inpaint_fn = None
+        video_fn = None
         try:
-            self.graph.use_real_executors(asset_root)
+            from agnes_bridge import get_agnes_inpaint_fn, get_agnes_video_fn
+            inpaint_fn = get_agnes_inpaint_fn()
+            video_fn = get_agnes_video_fn()
+        except Exception:  # noqa: BLE001
+            inpaint_fn = None
+            video_fn = None
+        try:
+            self.graph.use_real_executors(asset_root, inpaint_fn=inpaint_fn, video_fn=video_fn)
             self.graph.run({})
         except Exception as e:  # noqa: BLE001
             self.detail.addItem("运行失败: %s" % e)
@@ -1163,6 +1177,23 @@ class CanvasPanel(QWidget):
             for p, a in n.out_assets.items():
                 if isinstance(a, cg.AssetRef) and a.path:
                     self.detail.addItem("  - %s.%s → %s" % (nid, p, a.path))
+
+    # ---- 第 6 步：促销动效预览（纯本地，零网络、零 ffmpeg）----
+    def _make_promo_motion(self):
+        """工具栏「促销动效预览」：收集画布 image 资产帧 → 纯本地生成促销动效 GIF。"""
+        if self.graph is None:
+            self.detail.addItem("（没有可预览的画布）")
+            return
+        import os
+        asset_root = os.path.join(os.getcwd(), "canvas_runtime")
+        os.makedirs(asset_root, exist_ok=True)
+        out_gif = os.path.join(asset_root, "promo_preview.gif")
+        try:
+            from agnes_bridge import make_promo_motion_preview
+            path = make_promo_motion_preview(self.graph, asset_root, out_gif)
+            self.detail.addItem("促销动效预览已生成 → %s" % path)
+        except Exception as e:  # noqa: BLE001
+            self.detail.addItem("促销动效预览失败: %s" % e)
 
     def _fit(self):
         if getattr(self, "plan", None) is not None:
