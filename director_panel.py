@@ -2494,7 +2494,9 @@ def _build_shot_rows(app, shots):
             line = None
         # 删除
         delb = QPushButton("✕")
-        delb.setFixedSize(28, 28)
+        # v4.210.3：28→32 命中区（UI_QA §8）。注意样式来自共享的 btn_danger()，
+        # 只调这一处调用点尺寸，不动共享样式函数本体。
+        delb.setFixedSize(32, 32)
         delb.setCursor(Qt.PointingHandCursor)
         delb.setStyleSheet(_btn_danger_style())
         delb.clicked.connect(lambda _, r=row: _del_shot_row(app, r))

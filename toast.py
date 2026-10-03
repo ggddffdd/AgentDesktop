@@ -126,7 +126,9 @@ class _ToastCard(QFrame):
         bl.addWidget(texts, 1)
 
         self._close_btn = QPushButton("✕")
-        self._close_btn.setFixedSize(16, 16)
+        # v4.210.3：16→32。关按钮是「✕」方图标，16px 命中区连鼠标都难点；
+        # 底透明、字号 token 不变，故放大只增点击面积、不改观感（UI_QA §8）。
+        self._close_btn.setFixedSize(32, 32)
         self._close_btn.setCursor(Qt.PointingHandCursor)
         self._close_btn.setStyleSheet(tq.toast_close_btn())
         self._close_btn.clicked.connect(self.dismiss)

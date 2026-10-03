@@ -1602,12 +1602,16 @@ class SessionManagerDialog(QDialog):
         rl.setSpacing(8)
 
         chk = QCheckBox()
-        chk.setFixedSize(18, 18)
+        # v4.210.3：18→32 命中区。实测（fusion，subElementRect）无论控件多大，
+        # 指标恒为 14×14、只在控件内垂直居中 —— 故放大只增点击面积，
+        # 勾选框本身的尺寸与视觉位置不变。18px 同时破了 UI_QA §8 的 24px 硬底线。
+        chk.setFixedSize(32, 32)
         rl.addWidget(chk)
         self._checks.append(chk)
 
         pin = QPushButton("⚑" if s.pinned else "☆")
-        pin.setFixedSize(30, 30)
+        # v4.210.3：30→32 命中区（UI_QA §8；透明底 + 16px 字形 → 观感不变）。
+        pin.setFixedSize(32, 32)
         pin.setToolTip("置顶" if not s.pinned else "取消置顶")
         pin.setStyleSheet(
             f"QPushButton{{background:transparent;border:none;font-size:16px;"
@@ -1641,7 +1645,8 @@ class SessionManagerDialog(QDialog):
         rl.addWidget(fcombo)
 
         delb = QPushButton("×")
-        delb.setFixedSize(26, 26)
+        # v4.210.3：26→32 命中区（UI_QA §8）。
+        delb.setFixedSize(32, 32)
         delb.setStyleSheet(
             f"QPushButton{{background:transparent;color:{THEME['placeholder']};"
             f"border:none;font-size:16px;font-weight:600;border-radius:6px;}}"
@@ -2398,7 +2403,8 @@ class TaskStatusStrip(QWidget):
         lay.addWidget(self.text)
 
         self.retry_btn = QPushButton("重试")
-        self.retry_btn.setFixedHeight(18)
+        # v4.210.3：18→32 命中区（UI_QA §8 硬底线 24px）。文字/字号不变，只抬高。
+        self.retry_btn.setFixedHeight(32)
         self.retry_btn.setCursor(Qt.PointingHandCursor)
         self.retry_btn.setStyleSheet(
             f"QPushButton{{background:transparent;border:none;padding:0 4px;"
@@ -2409,7 +2415,8 @@ class TaskStatusStrip(QWidget):
         lay.addWidget(self.retry_btn)
 
         self.clear_btn = QPushButton("清除")
-        self.clear_btn.setFixedHeight(18)
+        # v4.210.3：18→32 命中区（同 retry_btn，UI_QA §8）。
+        self.clear_btn.setFixedHeight(32)
         self.clear_btn.setCursor(Qt.PointingHandCursor)
         self.clear_btn.setStyleSheet(
             f"QPushButton{{background:transparent;border:none;padding:0 4px;"
@@ -5755,7 +5762,8 @@ class ChatWindow(QMainWindow):
 
             # 悬停删除按钮
             del_btn = QPushButton("×")
-            del_btn.setFixedSize(22, 22)
+            # v4.210.3：22→32 命中区（UI_QA §8）。透明底 + 图标居中 → 观感不变。
+            del_btn.setFixedSize(32, 32)
             del_btn.setCursor(Qt.PointingHandCursor)
             del_btn.setStyleSheet(
                 f"QPushButton{{background:transparent;color:{THEME['placeholder']};"
@@ -8037,7 +8045,8 @@ class ChatWindow(QMainWindow):
         api_row.addWidget(self.api_key_edit, 1)
 
         self.api_key_toggle = QPushButton("◉")
-        self.api_key_toggle.setFixedSize(30, 30)
+        # v4.210.3：30→32 命中区（UI_QA §8）。
+        self.api_key_toggle.setFixedSize(32, 32)
         self.api_key_toggle.setToolTip("显示/隐藏")
         self.api_key_toggle.setStyleSheet(
             f"QPushButton{{background:transparent;border:none;color:{THEME['dim']};"

@@ -34,6 +34,7 @@ test_frozen_smoke.py
 test_guardrail_conflicts.py
 test_high_risk_guard.py
 test_history_budget.py
+test_hitarea_2103.py
 test_hotfix15.py
 test_image_payload_guard.py
 test_intent_guard_negation.py

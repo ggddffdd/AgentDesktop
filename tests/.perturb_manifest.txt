@@ -17,6 +17,7 @@ _perturb_canvas_export.py
 _perturb_canvas_localedit.py
 _perturb_canvas_model.py
 _perturb_canvas_panel.py
+_perturb_hitarea_2103.py
 _perturb_probe_graphics.py
 _perturb_toast_204.py
 _perturb_ui_a11y.py
