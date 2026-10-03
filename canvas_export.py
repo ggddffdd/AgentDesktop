@@ -185,3 +185,94 @@ def export_png(g: "cg.CanvasGraph", path: str) -> bool:
     panel.render_graph(g)
     ok = panel.view.snapshot(path)
     return ok
+
+
+# --------------------------------------------------------------------------
+# 阶段 C：图片局部编辑「结果图」导出（依赖 image_local_edit 引擎 + PIL）
+# --------------------------------------------------------------------------
+import numpy as np  # noqa: E402
+import image_local_edit as il  # noqa: E402
+from canvas_panel import node_supports_local_edit  # noqa: E402
+try:
+    from PIL import Image  # noqa: E402
+    _HAS_PIL = True
+except Exception:  # pragma: no cover - PIL 缺失仅降级文件 IO
+    Image = None
+    _HAS_PIL = False
+
+
+def _load_arr(path: str) -> np.ndarray:
+    """读图像文件为 RGB numpy 数组（uint8）。"""
+    if not _HAS_PIL:
+        raise RuntimeError("未安装 Pillow，无法读写图像文件")
+    with Image.open(path) as im:
+        return np.asarray(im.convert("RGB"), dtype=np.uint8)
+
+
+def _save_arr(arr: np.ndarray, path: str) -> None:
+    """把 float 0..1 / uint8 0..255 的 RGB 数组写成 PNG。"""
+    if not _HAS_PIL:
+        raise RuntimeError("未安装 Pillow，无法读写图像文件")
+    a = np.asarray(arr, dtype=np.float64)
+    if a.max() > 1.0:
+        a = a / 255.0
+    a = (np.clip(a, 0, 1) * 255.0).round().astype("uint8")
+    parent = os.path.dirname(path)
+    if parent and not os.path.isdir(parent):
+        os.makedirs(parent, exist_ok=True)
+    Image.fromarray(a).save(path)
+
+
+def export_node_local_edit_image(g: "cg.CanvasGraph", node_id: str,
+                                 src_path: str, out_path: str,
+                                 inpaint_fn=None) -> dict:
+    """把某图片类节点上记录的 local_edits 应用到 src_path 原图，写出结果图。
+
+    返回摘要 dict：{node_id, applied(编辑条数), out_path, size[H,W], skipped}。
+    节点无 local_edits 或 src 不存在时跳过（skipped=True）。
+    需要 Pillow；inpaint 模式需注入 inpaint_fn（外部模型），否则诚实抛错。
+    """
+    n = g.nodes.get(node_id)
+    if n is None:
+        raise ValueError(f"节点不存在: {node_id}")
+    edits = g.get_local_edits(node_id)
+    if not edits:
+        return {"node_id": node_id, "applied": 0, "skipped": True,
+                "out_path": out_path}
+    if not (src_path and os.path.isfile(src_path)):
+        return {"node_id": node_id, "applied": 0, "skipped": True,
+                "out_path": out_path, "error": "source image not found"}
+    arr = _load_arr(src_path)
+    res = il.apply_local_edits(arr, edits, inpaint_fn=inpaint_fn)
+    _save_arr(res, out_path)
+    return {"node_id": node_id, "applied": len(edits),
+            "out_path": out_path, "size": list(res.shape[:2]), "skipped": False}
+
+
+def export_all_local_edit_images(g: "cg.CanvasGraph", base_dir: str,
+                                 src_resolver=None, inpaint_fn=None) -> list:
+    """批量导出所有「图片类 + 含 local_edits」节点的结果图。
+
+    src_resolver(node) -> 原图路径（默认取 node.config.get("image_path")）。
+    每个节点导出为 base_dir/{node_id}_edited.png。返回各节点摘要 list。
+    """
+    if src_resolver is None:
+        def src_resolver(node):
+            return (node.config or {}).get("image_path")
+    os.makedirs(base_dir, exist_ok=True)
+    results = []
+    for nid, n in g.nodes.items():
+        if not node_supports_local_edit(n):
+            continue
+        if not g.get_local_edits(nid):
+            continue
+        src = src_resolver(n)
+        if not src or not os.path.isfile(src):
+            results.append({"node_id": nid, "applied": 0, "skipped": True,
+                            "out_path": None, "error": "source image not found"})
+            continue
+        out = os.path.join(base_dir, "%s_edited.png" % nid)
+        info = export_node_local_edit_image(
+            g, nid, src, out, inpaint_fn=inpaint_fn)
+        results.append(info)
+    return results

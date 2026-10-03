@@ -30,6 +30,8 @@ from typing import Dict, List, Optional
 
 import canvas_graph as cg
 from canvas_graph import NODE_TYPES
+# 阶段 C：图片局部编辑的可用 transform 操作（供对话框下拉 + 引擎共用）
+from image_local_edit import VALID_TRANSFORM_OPS as VALID_TRANSFORM_OPS_C
 
 _log = logging.getLogger("canvas_panel")
 
@@ -311,11 +313,12 @@ def region_svg_overlay(region: Optional[dict], ox: float, oy: float,
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal  # noqa: E402
 from PySide6.QtGui import (QBrush, QColor, QFont, QPainter, QPainterPath,  # noqa: E402
                            QPen, QPolygonF, QUndoCommand, QUndoStack)
-from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFormLayout,  # noqa: E402
-                               QFrame, QGraphicsEllipseItem, QGraphicsPathItem,
-                               QGraphicsPolygonItem, QGraphicsRectItem, QGraphicsScene,
-                               QGraphicsSceneMouseEvent, QGraphicsTextItem, QGraphicsView,
-                               QHBoxLayout, QLabel, QLineEdit, QListWidget, QPushButton,
+from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog,  # noqa: E402
+                               QFormLayout, QFrame, QGraphicsEllipseItem,
+                               QGraphicsPathItem, QGraphicsPolygonItem,
+                               QGraphicsRectItem, QGraphicsScene, QGraphicsSceneMouseEvent,
+                               QGraphicsTextItem, QGraphicsView, QHBoxLayout,
+                               QLabel, QLineEdit, QListWidget, QPushButton,
                                QTextEdit, QVBoxLayout, QWidget)
 
 
@@ -846,6 +849,20 @@ class LocalEditDialog(QDialog):
         hl2.addStretch(1)
         lay.addLayout(hl2)
 
+        # 阶段 C：transform 操作选择（决定 apply_local_edits 实际执行的像素变换）
+        hl3 = QHBoxLayout()
+        hl3.addWidget(QLabel("操作(op):"))
+        self.cmb_op = QComboBox()
+        self.cmb_op.addItems(list(VALID_TRANSFORM_OPS_C))
+        hl3.addWidget(self.cmb_op)
+        hl3.addWidget(QLabel("参数:"))
+        self.edit_factor = QLineEdit()
+        self.edit_factor.setPlaceholderText("factor/sigma/amount，如 1.3")
+        hl3.addWidget(self.edit_factor)
+        hl3.addStretch(1)
+        lay.addLayout(hl3)
+        self._sync_op_enabled()
+
         lay.addWidget(QLabel("编辑指令:"))
         self.edit_instr = QLineEdit()
         self.edit_instr.setPlaceholderText("例：去掉右下角水印 / 背景换成蓝天 / 换发型")
@@ -867,16 +884,36 @@ class LocalEditDialog(QDialog):
         lay.addLayout(bl)
         self._result = None
 
+    def _sync_op_enabled(self):
+        """inpaint 模式交给外部模型，不需要本地 op，禁用 op 选择与参数输入。"""
+        is_t = self.cmb_mode.currentText() == "transform"
+        self.cmb_op.setEnabled(is_t)
+        self.edit_factor.setEnabled(is_t)
+
     def build_edit(self) -> dict:
         mode = self.cmb_mode.currentText()
         region = self.mask.get_region()
         params = {}
+        # 阶段 C：transform 模式下，把下拉的操作 + 参数值组装进 params（供引擎解析）
+        if mode == "transform":
+            op = self.cmb_op.currentText()
+            if op:
+                params["op"] = op
+            val = self.edit_factor.text().strip()
+            if val:
+                try:
+                    num = float(val)
+                    key = "sigma" if op == "blur" else "factor"
+                    params[key] = num
+                except Exception:
+                    pass
+        # 若用户手填 JSON，则合并（JSON 优先，便于高级用法覆盖）
         ptxt = self.edit_params.text().strip()
         if ptxt:
             try:
-                params = json.loads(ptxt)
+                params.update(json.loads(ptxt))
             except Exception:
-                params = {}
+                pass
         return {
             "target": self.cmb_target.currentText(),
             "mode": mode,
@@ -988,11 +1025,14 @@ class CanvasPanel(QWidget):
         btn_del.clicked.connect(self._delete_selected)
         btn_local = QPushButton("局部编辑")
         btn_local.clicked.connect(self._open_local_edit)
+        btn_export = QPushButton("导出局部编辑图")
+        btn_export.clicked.connect(self._export_local_edited_images)
         bar.addWidget(btn_fit)
         bar.addWidget(btn_undo)
         bar.addWidget(btn_redo)
         bar.addWidget(btn_del)
         bar.addWidget(btn_local)
+        bar.addWidget(btn_export)
         bar.addStretch(1)
         legend = QLabel("● 完成  ● 进行  ● 失败  ● 待办 蓝色实线=数据 灰色虚线=顺序")
         bar.addWidget(legend)
@@ -1075,6 +1115,30 @@ class CanvasPanel(QWidget):
             else:
                 cmd.redo()
             self._on_selection_changed()      # 刷新属性面板（按钮计数）
+
+    def _export_local_edited_images(self):
+        """工具栏「导出局部编辑图」：选目录 → 把各图片类节点的 local_edits 应用到原图导出。"""
+        if self.graph is None:
+            return
+        d = QFileDialog.getExistingDirectory(self, "选择导出目录")
+        if not d:
+            return
+        import canvas_export as ce  # 函数内导入，避免与 canvas_export 顶层互引成环
+        def _resolve(node):
+            return (node.config or {}).get("image_path")
+        try:
+            results = ce.export_all_local_edit_images(
+                self.graph, d, src_resolver=_resolve)
+        except Exception as e:  # noqa: BLE001
+            self.detail.addItem("导出失败: %s" % e)
+            return
+        self.detail.addItem("导出局部编辑图 → %s" % d)
+        for r in results:
+            if r.get("skipped"):
+                self.detail.addItem("  - %s: 跳过（无编辑/无原图）" % r.get("node_id"))
+            else:
+                self.detail.addItem("  - %s: 已应用 %d 条 → %s" % (
+                    r.get("node_id"), r.get("applied"), r.get("out_path")))
 
     def _fit(self):
         if getattr(self, "plan", None) is not None:
