@@ -3,7 +3,8 @@
 
 定义 Node / Port / AssetRef / Edge（数据边 + 顺序边）schema，并在底层
 复用现有 `task_graph.TaskGraph` 做依赖调度 —— 数据边自动隐含一条顺序边
-（connect_data 时内部调 task_graph.depend），所以 `TaskGraph.run()` 不用改。
+（边集一变就由 `_sync_order_deps` 全量重算、写进 task_graph），
+所以 `TaskGraph.run()` 不用改。
 
 节点状态沿用 `task_graph.Task.status` 枚举
 （pending / in_progress / completed / failed / cancelled / incomplete），不自创。
@@ -261,9 +262,12 @@ class CanvasGraph:
     """画布图：维护 Node / Edge，底层复用 TaskGraph 做调度。
 
     设计要点（§4.0）：
-      - 数据边 connect_data：先校验端口存在 + 类型兼容，再建边，并自动
-        隐含一条顺序边（内部调 task_graph.depend），去重避免重复依赖。
+      - 数据边 connect_data：先校验端口存在 + 类型兼容 + 非自依赖，再建边。
       - 顺序边 connect_order：只规定先后，不传资产。
+      - **依赖由边集唯一决定**（Wave B，审查 #2）：`data_edges ∪ order_edges`
+        是唯一事实源，边集一变就调 `_sync_order_deps` 全量重算 TaskGraph 的
+        依赖（该撤的 undepend、该加的 depend）。连线、删边、撤销、工程导入
+        走的都是同一条路，不会出现「边删了依赖还在」的幽灵依赖。
       - 调度仍只靠 TaskGraph 一套依赖推进逻辑，run() 不用改。
     """
 
@@ -272,7 +276,8 @@ class CanvasGraph:
         self.data_edges: List[DataEdge] = []
         self.order_edges: List[OrderEdge] = []
         self._tg = TaskGraph()
-        # 隐含/显式顺序边去重键集合，避免对同一对节点重复 depend
+        # 已登记到 TaskGraph 的依赖对 (from, to) 集合，即当前边集期望值的镜像。
+        # _sync_order_deps 用它做差集；不要在别处直接增删它。
         self._order_seen = set()
         # 第 2 步：资产库 sink。None → 内存记录（不落盘、不污染真实库）；
         # 生产接真实库时显式传 make_real_asset_store()（register_asset）。
@@ -364,6 +369,11 @@ class CanvasGraph:
         tn = self.nodes.get(to_node)
         if not fn or not tn:
             raise ValueError(f"节点不存在: {from_node} 或 {to_node}")
+        # 自依赖：节点等自己 = 永远等不到就绪（run 时死锁）。必须在这里拒，
+        # 因为它是**类型兼容**的（如 promo.video→promo.video），端口校验拦不住。
+        if from_node == to_node:
+            raise ValueError(
+                f"{from_node} 不能连到自己：自依赖会永远等不到就绪（run 时死锁）")
         fp = fn.outputs.get(from_port)
         tp = tn.inputs.get(to_port)
         if fp is None:
@@ -392,23 +402,53 @@ class CanvasGraph:
                     f"如需多入请把该端口标为 multi=True（拒绝静默覆盖）")
         edge = DataEdge(from_node, from_port, to_node, to_port, label, asset)
         self.data_edges.append(edge)
-        # 数据边自动隐含顺序边：上游先完成（同一对节点只 depend 一次）
-        key = (from_node, to_node)
-        if key not in self._order_seen:
-            self._tg.depend(to_node, from_node)
-            self._order_seen.add(key)
+        # 数据边自动隐含顺序边：上游先完成。去重与撤销统一交给重算
+        # （同一对节点只 depend 一次；这条边被删掉时依赖也会同步撤销）
+        self._sync_order_deps()
         return self
 
     def connect_order(self, from_node, to_node, reason=""):
         """顺序边：只规定先后，不传资产。"""
         if from_node not in self.nodes or to_node not in self.nodes:
             raise ValueError(f"节点不存在: {from_node} 或 {to_node}")
+        if from_node == to_node:
+            raise ValueError(
+                f"{from_node} 不能连到自己：自依赖会永远等不到就绪（run 时死锁）")
         edge = OrderEdge(from_node, to_node, reason)
         self.order_edges.append(edge)
-        key = (from_node, to_node)
-        if key not in self._order_seen:
+        self._sync_order_deps()
+        return self
+
+    def _sync_order_deps(self):
+        """把 TaskGraph 的依赖**重算**成与当前边集完全一致（Wave B，审查 #2）。
+
+        为什么不是「连线时 depend 一次、删边时不管」：
+
+          1. 删边 / 撤销连线 / 连线预校验回滚都会留下**幽灵依赖** —— 边没了、
+             依赖还在，本不该等的节点在等；更糟的是一旦误连成环，run() 抛
+             「任务图死锁」之后再怎么删边都解不开，只能重启程序。
+          2. 同一对节点被反复 depend（画布 `_finish_link` 会「先连一次探路 →
+             删掉 → 再正式连」）→ task_list() 里出现 `blockedBy: [x, x]`。
+
+        做法：**本图自己就是唯一事实源**（data_edges ∪ order_edges 的
+        (from,to) 去重集合），每次边集变化后全量重算差集 —— 多余的 undepend 掉、
+        新出现的 depend 上，再把 `_order_seen` 对齐成当前集合。
+
+        全量重算天然幂等、与调用顺序无关，也不需要给每条回滚路径单独补一次反向
+        操作（漏一处就是残留依赖）。节点/边都在画布量级（几十），成本可忽略。
+        """
+        desired = set()
+        for e in self.data_edges:
+            desired.add((e.from_node, e.to_node))
+        for e in self.order_edges:
+            desired.add((e.from_node, e.to_node))
+        # 撤掉不再需要的依赖（删边 / 撤销连线 / 预校验回滚）
+        for from_node, to_node in sorted(self._order_seen - desired):
+            self._tg.undepend(to_node, from_node)
+        # 补上新增的依赖（新连线 / 重做）
+        for from_node, to_node in sorted(desired - self._order_seen):
             self._tg.depend(to_node, from_node)
-            self._order_seen.add(key)
+        self._order_seen = desired
         return self
 
     # ---- 编辑（阶段 A：可编辑设计画布）----
@@ -432,27 +472,16 @@ class CanvasGraph:
         n.config = dict(config)
         return old
 
-    def _edge_pair_still_present(self, from_node: str, to_node: str) -> bool:
-        """(from_node,to_node) 这对节点之间是否仍有任何数据边或顺序边残留。"""
-        if any(e.from_node == from_node and e.to_node == to_node
-               for e in self.data_edges):
-            return True
-        if any(e.from_node == from_node and e.to_node == to_node
-               for e in self.order_edges):
-            return True
-        return False
-
     def remove_data_edge(self, from_node, from_port, to_node, to_port):
         """删除**一条**数据边（撤销单条连线）。返回被删的 DataEdge，找不到返回 None。
 
         只删除第一条四元组匹配的边（同键值重复边保留），符合「撤销一次连线操作」语义，
         不会误删图中已存在的其它同键值边。
-        同步清理 _order_seen：若 (from_node,to_node) 这对不再有任何数据/顺序边，
-        则移除去重键，使未来重连能重新 depend。
-        注意：底层 TaskGraph 的 depend 是「只增不减」（task_graph 无 undepend），
-        删除数据边不会回退 _tg 的依赖——冗余依赖对 run() 无害（只是顺序约束更紧），
-        保留可避免误伤其它仍依赖该前驱的节点。待 task_graph 支持 undepend 后，
-        这里可调用自管重算。
+
+        删完调 `_sync_order_deps` 把底层依赖重算回与边集一致：这对节点若不再有
+        任何数据边/顺序边，其顺序依赖会被**撤销**（Wave B：task_graph.undepend）。
+        注意是「按当前边集重算」而不是「无条件撤这对依赖」—— 该对节点之间若还挂着
+        别的边（例如同时还有一条顺序边），依赖原样保留。
         """
         target = None
         kept = []
@@ -468,12 +497,15 @@ class CanvasGraph:
         if target is None:
             return None
         self.data_edges = kept
-        if not self._edge_pair_still_present(from_node, to_node):
-            self._order_seen.discard((from_node, to_node))
+        self._sync_order_deps()
         return target
 
     def remove_order_edge(self, from_node, to_node, reason=""):
-        """删除一条顺序边（撤销顺序约束）。返回被删的 OrderEdge，找不到返回 None。"""
+        """删除一条顺序边（撤销顺序约束）。返回被删的 OrderEdge，找不到返回 None。
+
+        与 remove_data_edge 同理，删完重算依赖：这对节点若不再有别的边（数据边或
+        顺序边），这条顺序依赖随之撤销。
+        """
         target = None
         kept = []
         for e in self.order_edges:
@@ -485,8 +517,7 @@ class CanvasGraph:
         if target is None:
             return None
         self.order_edges = kept
-        if not self._edge_pair_still_present(from_node, to_node):
-            self._order_seen.discard((from_node, to_node))
+        self._sync_order_deps()
         return target
 
     # ---- 编辑（阶段 B：图片局部编辑）----

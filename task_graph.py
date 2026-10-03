@@ -90,16 +90,62 @@ class TaskGraph:
         return self
 
     def depend(self, task_id: str, blocked_by_id: str):
-        """addBlockedBy = 定义依赖。task_id 依赖 blocked_by_id 先完成。"""
+        """addBlockedBy = 定义依赖。task_id 依赖 blocked_by_id 先完成。
+
+        Wave B（审查 #2）：**幂等 + 拒绝自依赖**。
+
+        - 幂等：同一对节点重复 depend 不再追加第二份。节点画布的连线是
+          「先连一次探路 → 删掉 → 再正式连」，旧实现每次都 append，于是
+          task_list() 里出现 `blockedBy: [x, x]`——下游看着像依赖了两次。
+        - 自依赖：节点依赖自己永远等不到就绪（run() 直接死锁），而它在画布上
+          是**画得出来的**（promo/twin 这类「video 进、video 出」的节点自连
+          类型是兼容的），所以必须在这一层拒掉，不能等 run 才炸。
+        """
         t = self._tasks.get(task_id)
         dep = self._tasks.get(blocked_by_id)
         if not t or not dep:
             raise ValueError(f"任务不存在: {task_id} 或 {blocked_by_id}")
+        if task_id == blocked_by_id:
+            raise ValueError(f"任务不能依赖自己: {task_id}（自依赖永远等不到就绪）")
+        if blocked_by_id in t.blocked_by:
+            return self
         t.blocked_by.append(blocked_by_id)
         dep.blocks.append(task_id)
         # 有依赖的任务不再是入口
         if task_id in self._entry_ids:
             self._entry_ids.remove(task_id)
+        return self
+
+    def undepend(self, task_id: str, blocked_by_id: str):
+        """depend 的逆操作 = 撤销一条依赖（Wave B，审查 #2「depend 只增不减」）。
+
+        为什么必须要有逆操作：依赖过去只能加、不能撤，于是
+
+          1. 删掉连线 / 撤销连线 / 连线预校验回滚 **都会留下幽灵依赖** ——
+             边没了依赖还在，本不该等的节点在等；
+          2. 一旦误连成环，run() 抛「任务图死锁」之后再怎么删边**也解不开**，
+             只能重启程序。有了 undepend，画布把边删掉就能把环拆开重跑。
+
+        幂等：本就没有这条依赖时静默返回（依赖重算是按「差集」驱动的，
+        不该因为「这条本来就不在」而炸）；但任务不存在仍抛 ValueError ——
+        那说明调用方自身状态已经错了，不能吞。
+
+        清理必须**双向**（blocked_by 与 dep.blocks 一起改），否则 Task.blocks
+        会留下指不回来源的脏数据。
+        """
+        t = self._tasks.get(task_id)
+        dep = self._tasks.get(blocked_by_id)
+        if not t or not dep:
+            raise ValueError(f"任务不存在: {task_id} 或 {blocked_by_id}")
+        if blocked_by_id not in t.blocked_by:
+            return self
+        # 整份过滤而不是 remove 一次：旧版本幂等缺位时留下的重复项一并清干净
+        t.blocked_by = [b for b in t.blocked_by if b != blocked_by_id]
+        dep.blocks = [x for x in dep.blocks if x != task_id]
+        # 依赖清空 → 重新成为入口。少了这一步，「唯一无依赖节点」被撤销依赖后
+        # _entry_ids 会空掉，run() 会误报「任务图没有入口节点（循环依赖？）」。
+        if not t.blocked_by and task_id not in self._entry_ids:
+            self._entry_ids.append(task_id)
         return self
 
     def task_list(self) -> List[dict]:

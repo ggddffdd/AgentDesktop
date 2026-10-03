@@ -181,6 +181,21 @@ def section_b():
     cc.undo()
     check("B6b .undo 删边", len(g6.data_edges) == n0)
 
+    # B6d/B6e（Wave B #2）：连线命令的 redo/undo 必须把**底层依赖**一起增删。
+    # 只删边不撤依赖 = 幽灵依赖 —— 节点被一条已不存在的连线绑住，画布上看不出来。
+    def _deps_of(g, nid):
+        for td in g._tg.task_list():
+            if td["id"] == nid:
+                return list(td.get("blockedBy", []))
+        return []
+
+    check("B6d 撤销连线后底层依赖同步撤销（不留幽灵依赖）",
+          _deps_of(g6, "t") == [], str(_deps_of(g6, "t")))
+    cc.redo()
+    check("B6e 重做后依赖恢复且只有一条（无重复项）",
+          _deps_of(g6, "t") == ["s"], str(_deps_of(g6, "t")))
+    cc.undo()
+
     # B7 EditConfigCommand redo/undo
     ecmd = cp.EditConfigCommand(g, None, "src", {}, {"prompt": "X"})
     ecmd.redo()

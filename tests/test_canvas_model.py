@@ -51,12 +51,17 @@ sys.excepthook = _hook
 SRC_PATH = os.environ.get("CANVAS_PATH") or os.path.join(ROOT, "canvas_graph.py")
 SRC = open(SRC_PATH, encoding="utf-8").read()
 
+# Wave B（审查 #2）：依赖的逆操作（undepend）/ 幂等 depend 住在 task_graph.py，
+# 静态判据要单独切它的源码。扰动脚本用 TG_PATH 指向变异副本（与 CANVAS_PATH 同一套路）。
+TG_PATH = os.environ.get("TG_PATH") or os.path.join(ROOT, "task_graph.py")
+TASK_SRC = open(TG_PATH, encoding="utf-8").read()
+
 # 扰动脚本（_perturb_canvas_model.py）只验 A 组静态判据，用 CANVAS_STATIC=1 跳过 B/C。
 STATIC_ONLY = os.environ.get("CANVAS_STATIC") == "1"
 
 
-def _slice_func(name):
-    r"""取某个 def/class 的源码切片（切到「缩进宽度 ≤ 本函数」的下一个 def/class）。
+def _slice_src(name, text):
+    r"""从 text 里取某个 def/class 的源码切片（切到「缩进宽度 ≤ 本函数」的下一个 def/class）。
 
     结束边界用「缩进宽度」判定，而不是简单的「下一个顶层 class/def」——
     否则 connect_data 的切片会被一直拉到文件末尾的 build_sample_graph，
@@ -66,20 +71,27 @@ def _slice_func(name):
     做法：匹配行的前导空格数记为 indent，向后找第一个缩进宽度 <= indent
     的 class/def 作为终点——也就是「同层或外层」的下一个定义，刚好切到
     本方法的下个兄弟方法为止。
+
+    text 可换成 task_graph.py 的源码（Wave B 的 undepend / depend 判据用它）。
     """
-    m = re.search(r"^\s*(?:class|def)\s+%s\b" % re.escape(name), SRC, re.M)
+    m = re.search(r"^\s*(?:class|def)\s+%s\b" % re.escape(name), text, re.M)
     if not m:
         return ""
     # 起始正则把前导缩进也吃进了 m.group(0)，故缩进宽度直接由 group(0) 的前导空白算，
-    # 不能再用 SRC[line_start:m.start()]（那里 m.start() 已落到行首空格，算出来恒为 0）。
+    # 不能再用 text[line_start:m.start()]（那里 m.start() 已落到行首空格，算出来恒为 0）。
     indent = len(m.group(0)) - len(m.group(0).lstrip())
     nxt = None
-    for nm in re.finditer(r"^[ \t]*(?:class|def)\s+\w+", SRC[m.end():], re.M):
+    for nm in re.finditer(r"^[ \t]*(?:class|def)\s+\w+", text[m.end():], re.M):
         ind = len(nm.group(0)) - len(nm.group(0).lstrip())
         if ind <= indent:
             nxt = nm
             break
-    return SRC[m.end(): m.end() + nxt.start()] if nxt else SRC[m.end():]
+    return text[m.end(): m.end() + nxt.start()] if nxt else text[m.end():]
+
+
+def _slice_func(name):
+    """canvas_graph.py 里取某个 def/class 的切片（= _slice_src(name, SRC)）。"""
+    return _slice_src(name, SRC)
 
 
 
@@ -100,6 +112,10 @@ check("A2 CanvasNode 拦截未知 node_type", "node_type not in NODE_TYPES" in C
 
 # connect_data 校验端口存在（from_port / to_port 必须存在）
 CD = _slice_func("connect_data")
+# Wave B（审查 #2）：依赖重算函数 + task_graph 的两个依赖原语，各自切片判定
+SYNC = _slice_func("_sync_order_deps")
+TGDEP = _slice_src("depend", TASK_SRC)
+TGUNDEP = _slice_src("undepend", TASK_SRC)
 check("A3 connect_data 校验上游输出端口存在",
       'fn.outputs.get(from_port)' in CD and "不存在输出端口" in CD)
 check("A4 connect_data 校验下游输入端口存在",
@@ -110,15 +126,17 @@ check("A5 connect_data 做类型兼容校验",
       "fp.port_type not in _PORT_ACCEPTS[tp.port_type]" in CD,
       "clip→image 这类错接必须连线时就报错")
 
-# 数据边自动隐含顺序边：connect_data 内部调 self._tg.depend
-check("A6 数据边自动隐含顺序边（内部调 _tg.depend）",
-      "self._tg.depend(to_node, from_node)" in CD,
+# 数据边自动隐含顺序边：connect_data → _sync_order_deps → self._tg.depend
+check("A6 数据边自动隐含顺序边（connect_data 调 _sync_order_deps → _tg.depend）",
+      "self._sync_order_deps()" in CD
+      and "self._tg.depend(to_node, from_node)" in SYNC,
       "否则 TaskGraph.run 不认数据边、调度断链")
 
-# 去重：同一对节点只 depend 一次（_order_seen）
-check("A7 隐含顺序边按 (from,to) 去重（_order_seen）",
-      "self._order_seen" in CD and "if key not in self._order_seen" in CD,
-      "否则同一对节点被 depend 两次")
+# 去重：同一对节点只 depend 一次（边集差集重算 + depend 幂等）
+check("A7 隐含顺序边按 (from,to) 去重（全量重算差集）",
+      "self._order_seen - desired" in SYNC and "desired - self._order_seen" in SYNC
+      and "if blocked_by_id in t.blocked_by" in TGDEP,
+      "否则同一对节点被 depend 两次（画布「探路连线 + 正式连线」会调两遍）")
 
 # 节点状态枚举沿用 Task.status（不自创）
 check("A8 节点 status 初值用 pending（沿用 Task.status 枚举）",
@@ -150,6 +168,34 @@ check("A16 _incoming_assets 对 multi 端口收成列表（不覆盖）",
       'getattr(port, "multi", False)' in _slice_func("_incoming_assets")
       and ".append(a)" in _slice_func("_incoming_assets"),
       "multi=True 端口必须累积成 list，否则多入等于白标")
+
+# ---- Wave B（审查 #2）：依赖必须能撤销、且与边集保持一致 ----
+# 注：_slice_src 返回的是**函数体**（从 def 行之后开始），所以「有没有这个函数」
+# 要对全文 TASK_SRC 判，函数体内判它的实现要点。
+check("A17 task_graph 提供 depend 的逆操作 undepend（依赖不再只增不减）",
+      "def undepend" in TASK_SRC and "blocked_by_id not in t.blocked_by" in TGUNDEP,
+      "没有逆操作 → 删边/撤销/连线预校验回滚都留下幽灵依赖，误连成环后删边也解不开")
+check("A18 undepend 清空依赖后把任务恢复为入口（_entry_ids）",
+      "not t.blocked_by" in TGUNDEP and "_entry_ids.append" in TGUNDEP,
+      "少了它，唯一无依赖节点被撤销依赖后 run() 会误报「任务图没有入口节点」")
+# 幂等必须**命中即提前 return**：只匹配条件行会漏掉「条件还在、return 被删」这种变异
+# （_perturb_canvas_model.py 的 P14 就是这么把这个弱判据打出来的）。
+_IDEMPOTENT_GUARD = "if blocked_by_id in t.blocked_by:\n            return self"
+check("A19 depend 幂等（同一对不重复登记，命中即提前 return）+ 拒绝自依赖",
+      _IDEMPOTENT_GUARD in TGDEP and "不能依赖自己" in TGDEP,
+      "旧实现每次 append：画布探路连一次、正式再连一次 → blockedBy 出现重复项")
+check("A20 边集变化后全量重算依赖（撤多余 + 补新增 + 回写 _order_seen）",
+      "self._tg.undepend(to_node, from_node)" in SYNC
+      and "self._tg.depend(to_node, from_node)" in SYNC
+      and "self._order_seen = desired" in SYNC,
+      "只加不减的依赖重算不回来，删掉的连线仍会把节点绑死")
+check("A21 connect_data 拒绝自依赖（同一节点连自己必死锁）",
+      "if from_node == to_node:" in CD and "不能连到自己" in CD,
+      "promo/twin 这类「video 进、video 出」的节点自连类型是兼容的，端口校验拦不住")
+check("A22 删数据边/顺序边后都触发依赖重算",
+      "self._sync_order_deps()" in _slice_func("remove_data_edge")
+      and "self._sync_order_deps()" in _slice_func("remove_order_edge"),
+      "漏掉任一处 → 该路径下删边仍留幽灵依赖")
 
 
 # ==========================================================================
@@ -306,6 +352,118 @@ else:
               and [r.path for r in got] == ["P1", "P2"], str(got))
     except Exception as e:  # noqa: BLE001
         check("B13-B14 multi 端口收成列表", False, f"{type(e).__name__}: {e}")
+
+    # ---------------- Wave B #2：依赖可撤销、与边集一致 ----------------
+    def _tg_pairs(g):
+        """当前 TaskGraph 里真实存在的依赖对 (上游, 下游)。"""
+        return {(b, td["id"]) for td in g._tg.task_list()
+                for b in td.get("blockedBy", [])}
+
+    def _tg_deps(g, nid):
+        """某个节点当前登记的上游依赖列表（可能有重复项——正是要盯的）。"""
+        for td in g._tg.task_list():
+            if td["id"] == nid:
+                return list(td.get("blockedBy", []))
+        return []
+
+    try:
+        gb = cg.build_sample_graph()
+        check("B15 建图后依赖对数 == 7（6 条数据边 + 1 条顺序边，无遗漏）",
+              len(_tg_pairs(gb)) == 7, str(sorted(_tg_pairs(gb))))
+        # 删一条数据边 → 其隐含依赖必须同时撤销（旧实现「只增不减」，删了还绑着）
+        gb.remove_data_edge("img", "image", "vid", "image")
+        check("B15b 删数据边后其隐含依赖同步撤销（无幽灵依赖）",
+              ("img", "vid") not in _tg_pairs(gb),
+              "vid 仍被 img 绑住 = 依赖只增不减")
+        check("B15c 重算只撤该撤的（无关依赖原样保留）",
+              ("src", "img") in _tg_pairs(gb) and ("vid", "twin") in _tg_pairs(gb),
+              str(sorted(_tg_pairs(gb))))
+    except Exception as e:  # noqa: BLE001
+        check("B15 删边后依赖回退", False, f"{type(e).__name__}: {e}")
+
+    try:
+        # 画布真实连线路径（_finish_link 的做法）：先探路连一次 → 删掉 → 再正式连
+        gb2 = cg.build_sample_graph()
+        for _ in range(2):                       # 探路 + 回滚，各一次（往返一轮）
+            gb2.connect_data("vid", "clip", "promo", "video")
+            gb2.remove_data_edge("vid", "clip", "promo", "video")
+        check("B16 探路连线 + 回滚后依赖归零（不留幽灵依赖）",
+              ("vid", "promo") not in _tg_pairs(gb2), str(sorted(_tg_pairs(gb2))))
+        gb2.connect_data("vid", "clip", "promo", "video")   # 正式连
+        deps2 = _tg_deps(gb2, "promo")
+        check("B16b 回滚后重连仍是单条依赖（无重复项）",
+              sorted(deps2) == ["src", "vid"] and len(deps2) == len(set(deps2)),
+              str(deps2))
+    except Exception as e:  # noqa: BLE001
+        check("B16 探路回滚不留依赖", False, f"{type(e).__name__}: {e}")
+
+    try:
+        # 幂等：同一四元组反复连，底层不得出现重复依赖项
+        gb3 = cg.build_sample_graph()
+        for _ in range(3):
+            gb3.connect_data("vid", "clip", "twin", "video")
+        deps3 = _tg_deps(gb3, "twin")
+        check("B17 重复连同一对不产生重复依赖项（depend 幂等）",
+              deps3 == ["vid"], str(deps3))
+    except Exception as e:  # noqa: BLE001
+        check("B17 depend 幂等", False, f"{type(e).__name__}: {e}")
+
+    try:
+        # 顺序边撤销：示例图里 src→promo 只由这条顺序边提供
+        gb4 = cg.build_sample_graph()
+        gb4.remove_order_edge("src", "promo")
+        check("B18 撤顺序边后其依赖撤销，且 promo 的 vid 数据依赖保留",
+              ("src", "promo") not in _tg_pairs(gb4)
+              and ("vid", "promo") in _tg_pairs(gb4),
+              str(sorted(_tg_pairs(gb4))))
+    except Exception as e:  # noqa: BLE001
+        check("B18 顺序边撤销", False, f"{type(e).__name__}: {e}")
+
+    try:
+        # 自依赖：promo.video → promo.video 类型是兼容的，只有自依赖检查能拦
+        gb5 = cg.CanvasGraph()
+        pn = cg.CanvasNode("p", "promo_fx",
+                           inputs={"video": cg.Port("video", "video")},
+                           outputs={"video": cg.Port("video", "video")})
+        gb5.add_node(pn)
+        raised_self = False
+        try:
+            gb5.connect_data("p", "video", "p", "video")
+        except ValueError:
+            raised_self = True
+        check("B19 自依赖连线被拒（类型兼容但必拒，且不留半条边）",
+              raised_self and len(gb5.data_edges) == 0,
+              f"raised={raised_self} edges={len(gb5.data_edges)}")
+    except Exception as e:  # noqa: BLE001
+        check("B19 自依赖拒绝", False, f"{type(e).__name__}: {e}")
+
+    try:
+        # 成环：run 诚实报死锁；删掉环上一条边后必须能解开重跑
+        # （旧实现 depend 只增不减 → 删边也解不开，只能重启程序）
+        gb6 = cg.CanvasGraph()
+        for nid in ("x", "y"):
+            gb6.add_node(cg.CanvasNode(
+                nid, "gen_image",
+                inputs={"i": cg.Port("i", "image")},
+                outputs={"o": cg.Port("o", "image")}))
+        gb6.add_node(cg.CanvasNode("z", "gen_image"))   # 无关入口，保证图非空入口
+        gb6.connect_data("x", "o", "y", "i")
+        gb6.connect_data("y", "o", "x", "i")
+        deadlocked = False
+        try:
+            gb6.run({})
+        except RuntimeError:
+            deadlocked = True
+        check("B20 误连成环时 run 诚实报死锁（不当成跑通）", deadlocked)
+        gb6.remove_data_edge("y", "o", "x", "i")
+        check("B20b 删边后 x 恢复为入口（undepend 重建 _entry_ids）",
+              "x" in gb6._tg._entry_ids, str(gb6._tg._entry_ids))
+        gb6.run({})
+        st6 = {nid: n.status for nid, n in gb6.nodes.items()}
+        check("B20c 删边后重跑不再死锁且全 completed（旧实现解不开）",
+              all(s == "completed" for s in st6.values()), str(st6))
+    except Exception as e:  # noqa: BLE001
+        check("B20 成环→删边→解开", False, f"{type(e).__name__}: {e}")
 
     # ---------------- C 组：结构 ----------------
     print("\n[C] 结构：示例图断言")
