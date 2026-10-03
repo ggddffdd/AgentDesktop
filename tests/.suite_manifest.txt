@@ -9,6 +9,7 @@ test_cancel_token.py
 test_canvas_model.py
 test_canvas_assetstore.py
 test_canvas_panel.py
+test_canvas_export.py
 test_cdp_profile_path.py
 test_claim_evidence_195.py
 test_cmd_robustness_2a.py

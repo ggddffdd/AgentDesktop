@@ -195,7 +195,8 @@ class CanvasNode:
                  inputs: Optional[Dict[str, Port]] = None,
                  outputs: Optional[Dict[str, Port]] = None,
                  config: Optional[dict] = None,
-                 executor: Optional[Callable] = None):
+                 executor: Optional[Callable] = None,
+                 pos: Optional[tuple] = None):
         if node_type not in NODE_TYPES:
             raise ValueError(
                 f"未知节点类型: {node_type!r}，必须是 {sorted(NODE_TYPES)} 之一")
@@ -204,6 +205,9 @@ class CanvasNode:
         self.inputs: Dict[str, Port] = dict(inputs or {})
         self.outputs: Dict[str, Port] = dict(outputs or {})
         self.config: dict = dict(config or {})
+        # 第 4 步：可编辑画布的位置（x, y）。None = 交给 layout_graph 自动布局；
+        # 一旦用户在画布上拖拽/手动定位，这里就记下坐标，导出/重渲染都尊重它。
+        self.pos: Optional[tuple] = (float(pos[0]), float(pos[1])) if pos else None
         # 未显式给 outputs 时，按节点类型给一个默认主输出端口
         if not self.outputs:
             self.outputs = {"out": Port("out", self._default_out_type())}
@@ -249,6 +253,7 @@ class CanvasNode:
             "inputs": {p: pt.port_type for p, pt in self.inputs.items()},
             "outputs": {p: pt.port_type for p, pt in self.outputs.items()},
             "config": self.config,
+            "pos": [self.pos[0], self.pos[1]] if self.pos else None,
         }
 
 

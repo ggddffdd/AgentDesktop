@@ -210,10 +210,15 @@ def layout_graph(g: "cg.CanvasGraph") -> ScenePlan:
         for i, nid in enumerate(ids):
             n = g.nodes[nid]
             rc = reg_by_node.get(nid, {"n": 0, "ok": 0})
+            # 第 4 步：节点若被用户拖到手动位置（n.pos），优先用；否则自动布局
+            if n.pos:
+                nx, ny = float(n.pos[0]), float(n.pos[1])
+            else:
+                nx, ny = x, y0 + i * row_gap
             nodes.append(NodeSpec(
                 id=nid, node_type=n.node_type,
                 label=NODE_TYPES.get(n.node_type, n.node_type),
-                x=x, y=y0 + i * row_gap, w=NODE_W, h=NODE_H,
+                x=nx, y=ny, w=NODE_W, h=NODE_H,
                 status=n.status,
                 fill=NODE_FILL.get(n.node_type, "#ECEFF1"),
                 border=status_color(n.status),
