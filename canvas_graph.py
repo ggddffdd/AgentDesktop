@@ -9,11 +9,13 @@
 （pending / in_progress / completed / failed / cancelled / incomplete），不自创。
 
 本模块是**纯数据层**：无 Qt 依赖、无 UI，可在 CLI 里直接建图跑通
-（验证目标见 §9 第 1 步）。第 2 步才接 asset_store 真实写入；第 5 步才接
-真实执行器（本模块默认用 stub executor 只搬运/合成 AssetRef，验证调度与数据流）。
+（验证目标见 §9 第 1 步）。第 2 步已接 asset_store：节点跑完把产出的
+AssetRef 通过 `register_asset` 落地（id/path 回填），下游按引用读取；
+第 5 步才接真实执行器（本模块默认用 stub executor 只搬运/合成 AssetRef）。
 """
 
 from typing import Any, Callable, Dict, List, Optional
+import os
 from dataclasses import dataclass, field
 
 import task_graph
@@ -69,16 +71,74 @@ _NODE_DEFAULT_OUT = {
 }
 
 
+# ----- 资产库 sink（第 2 步：节点产出 AssetRef 落地）-----
+# sink 形如 fn(name, kind, path, tags=(), project="", task="", meta=None) -> (ok, asset_id)
+# 默认 _MemStore（不落盘，避免污染真实 legion_assets.json）；生产接真实库用
+# make_real_asset_store() 包裹 asset_store.register_asset。
+
+_STUB_EXT = {
+    "prompt": ".txt", "image": ".png", "clip": ".mp4", "video": ".mp4",
+    "final": ".mp4", "script": ".txt", "audio": ".mp3", "data": ".json",
+}
+
+
+def _stub_stage_path(kind: str, node_id: str, port: str) -> str:
+    """stub 产出的「阶段路径」——只作引用登记用，不真建文件
+    （画布不直接管文件；真实文件由第 5 步执行器产出）。"""
+    ext = _STUB_EXT.get(kind, ".bin")
+    return os.path.join("canvas_stage", kind, f"{node_id}_{port}{ext}")
+
+
+class _MemStore:
+    """内存资产库（默认 sink）：记录每次登记，便于判据真验「写库 + 回填 id」。"""
+    def __init__(self):
+        self.records: list = []
+        self._seq = 0
+
+    def __call__(self, name, kind, path, tags=(), project="", task="", meta=None):
+        self._seq += 1
+        aid = "mem%06d" % self._seq
+        self.records.append({
+            "id": aid, "name": name, "kind": kind, "path": path,
+            "tags": list(tags), "project": project, "task": task,
+            "meta": dict(meta or {}),
+        })
+        return True, aid
+
+
+def _resolve_store(asset_store):
+    """None → 内存记录（安全默认，不污染真实库）；callable → 直接用。"""
+    if asset_store is None:
+        return _MemStore()
+    if callable(asset_store):
+        return asset_store
+    raise TypeError("asset_store 必须是 callable 或 None")
+
+
+def make_real_asset_store():
+    """接真实 asset_store.register_asset（会真正写 legion_assets.json）。
+
+    验证时用临时 XC_LEGION_DIR 指向隔离目录，避免污染大哥真实资产库。
+    """
+    import asset_store as _as
+    def _real(name, kind, path, tags=(), project="", task="", meta=None):
+        return _as.register_asset(name, kind, path, tags=tags,
+                                  project=project, task=task, meta=meta)
+    return _real
+
+
 @dataclass
 class AssetRef:
-    """对一条资产的引用（第 2 步才真正写进 asset_store）。
+    """对一条资产的引用（第 2 步已写进 asset_store）。
 
-    第 1 步只持引用 + kind，不强制落地文件。run 时由上游节点产出填入。
+    run 时由上游节点 executor 产出，并经 `CanvasGraph._register_asset`
+    写库：asset_id 回填、registered 置 True。画布只持引用，不建真实文件。
     """
     kind: str                      # 对齐 asset_store kind：clip/image/scene/...
     asset_id: str = ""             # asset_store 的 8 位 id（写库后回填）
-    path: str = ""                 # 绝对路径（写库后回填）
+    path: str = ""                 # 阶段路径 / 绝对路径（写库后回填）
     name: str = ""                 # 人读名
+    registered: bool = False       # 是否已成功写库落地
     meta: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -87,6 +147,7 @@ class AssetRef:
             "asset_id": self.asset_id,
             "path": self.path,
             "name": self.name,
+            "registered": self.registered,
             "meta": self.meta,
         }
 
@@ -158,13 +219,19 @@ class CanvasNode:
 
     def _default_executor(self) -> Callable:
         """第 1 步 stub：不接真实生成，仅产出该节点类型的默认 AssetRef，
-        验证「调度 + 数据流」跑通（真实执行器第 5 步再接）。"""
+        验证「调度 + 数据流」跑通（真实执行器第 5 步再接）。
+        第 2 步起：产出的 AssetRef 带阶段路径 + 元数据，供 _register_asset 写库。"""
         ntype = self.node_type
 
         def _stub(state: dict) -> dict:
             out_kind = self._default_out_type()
-            produced = AssetRef(kind=out_kind,
-                                name=f"{NODE_TYPES[ntype]}:{self.id}")
+            produced = AssetRef(
+                kind=out_kind,
+                name=f"{NODE_TYPES[ntype]}:{self.id}",
+                path=_stub_stage_path(out_kind, self.id, "out"),
+                meta={"tags": [ntype, out_kind], "project": "canvas_stage",
+                      "task": f"节点 {self.id} 产出 {out_kind}（第1步 stub）"},
+            )
             self.out_assets = {p: produced for p in self.outputs}
             return {
                 "node": self.id,
@@ -195,13 +262,16 @@ class CanvasGraph:
       - 调度仍只靠 TaskGraph 一套依赖推进逻辑，run() 不用改。
     """
 
-    def __init__(self):
+    def __init__(self, asset_store=None):
         self.nodes: Dict[str, CanvasNode] = {}
         self.data_edges: List[DataEdge] = []
         self.order_edges: List[OrderEdge] = []
         self._tg = TaskGraph()
         # 隐含/显式顺序边去重键集合，避免对同一对节点重复 depend
         self._order_seen = set()
+        # 第 2 步：资产库 sink。None → 内存记录（不落盘、不污染真实库）；
+        # 生产接真实库时显式传 make_real_asset_store()（register_asset）。
+        self._asset_store = _resolve_store(asset_store)
 
     # ---- 节点 ----
     def add_node(self, node: CanvasNode):
@@ -218,6 +288,10 @@ class CanvasGraph:
             for p, a in self._incoming_assets(node.id).items():
                 node.in_assets[p] = a
             r = node.executor(state)
+            # 第 2 步：节点产出 AssetRef 落地到资产库，回填 asset_id
+            for p, a in node.out_assets.items():
+                if isinstance(a, AssetRef):
+                    self._register_asset(a)
             return r
         return _exec
 
@@ -235,6 +309,39 @@ class CanvasGraph:
                 if up is not None:
                     out[e.to_port] = up.out_assets.get(e.from_port)
         return out
+
+    # ---- 资产库（第 2 步）----
+    def _register_asset(self, ref: AssetRef) -> str:
+        """把一条 AssetRef 落地到资产库 sink，回填 asset_id / registered。
+
+        画布只持引用：这里调用 asset_store.register_asset 做登记，
+        不创建/管理真实文件（文件由第 5 步执行器产出）。
+        缺 name/path 与真实库一致地拒收（registered=False）。
+        """
+        if not isinstance(ref, AssetRef) or not ref.kind:
+            return ""
+        name = (ref.name or "").strip()
+        path = (ref.path or "").strip()
+        if not name or not path:
+            ref.registered = False
+            return ""
+        meta = ref.meta if isinstance(ref.meta, dict) else {}
+        tags = tuple(meta.get("tags", ()) or ())
+        project = str(meta.get("project", "") or "canvas_stage")
+        task = str(meta.get("task", "") or "")
+        ameta = {k: v for k, v in meta.items() if k not in ("tags", "project", "task")}
+        try:
+            ok, aid = self._asset_store(name, ref.kind, path,
+                                        tags=tags, project=project,
+                                        task=task, meta=ameta)
+        except Exception:
+            ok, aid = False, ""
+        if ok and aid:
+            ref.asset_id = aid
+            ref.registered = True
+            return aid
+        ref.registered = False
+        return ""
 
     # ---- 连线 ----
     def connect_data(self, from_node, from_port, to_node, to_port,
@@ -295,6 +402,19 @@ class CanvasGraph:
                 for e in self.order_edges],
         }
 
+    def asset_registrations(self) -> List[dict]:
+        """汇总各节点产出的 AssetRef 落地情况（供报告 / 判据使用）。"""
+        out = []
+        for nid, n in self.nodes.items():
+            for p, a in n.out_assets.items():
+                if isinstance(a, AssetRef):
+                    out.append({
+                        "node": nid, "port": p, "kind": a.kind,
+                        "name": a.name, "asset_id": a.asset_id,
+                        "path": a.path, "registered": a.registered,
+                    })
+        return out
+
     # ---- 执行 ----
     def run(self, state: Optional[dict] = None, token=None) -> dict:
         state = self._tg.run(state or {}, token)
@@ -311,15 +431,16 @@ class CanvasGraph:
         pass
 
 
-def build_sample_graph() -> CanvasGraph:
+def build_sample_graph(asset_store=None) -> CanvasGraph:
     """建一张设计稿 §2 的示例流（无 UI、无真实生成，仅验证数据模型与调度）：
 
     源·Prompt → 生图 → 生视频 →（分叉）数字人口播 / 促销动效 → 成片输出
 
     覆盖：多入多出（成片并合）、一出多（生视频喂两个下游）、
     标签（主轨 / 分场接力）、数据边隐含顺序边、纯顺序边演示。
+    asset_store 透传给 CanvasGraph（第 2 步接资产库；None → 内存 sink）。
     """
-    g = CanvasGraph()
+    g = CanvasGraph(asset_store=asset_store)
 
     src = CanvasNode("src", "source_prompt",
                      outputs={"prompt": Port("prompt", "prompt")})

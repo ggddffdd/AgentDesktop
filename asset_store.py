@@ -58,6 +58,12 @@ KIND_LABELS = {
     "image": "图片",
     "script": "剧本脚本",
     "data": "数据清单",
+    # 节点画布（设计稿 §9 第 2 步「接资产库」）补进的 kind：
+    # 画布端口类型本就是资产 kind 的一个子集（§9 第 1 步注释），
+    # 此前 asset_store 缺这三项，导致 prompt/视频 被归一化成 other 丢信息。
+    "prompt": "Prompt 提示词",
+    "video": "视频",
+    "audio": "音频",
     "other": "其他",
 }
 

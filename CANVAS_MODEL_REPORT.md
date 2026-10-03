@@ -47,4 +47,7 @@
 
 ## 下一步（设计稿 §9 第 2 步）
 
-**第 2 步 · 接资产库**：让 `AssetRef` 在第 2 步真正写进 `asset_store.py`（`register_asset` + `legion_assets.json`），节点跑完把产出 `AssetRef` 落地，下游按引用读取。画布不直接管文件，只持引用。
+**第 2 步 · 接资产库 —— 已完成**，详见 `CANVAS_ASSETSTORE_REPORT.md`：
+让 `AssetRef` 通过 `asset_store.register_asset` 落地（`asset_id` 回填），下游按引用读取；
+默认内存 sink 不污染真实库，生产接真实库显式传 `make_real_asset_store()`。
+（第 2 步顺带在 `asset_store.py` 补了 `prompt/video/audio` 三个 kind，修掉 "prompt/视频 被归一化成 other" 的集成缺陷。）
