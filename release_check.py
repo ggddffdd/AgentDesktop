@@ -176,6 +176,31 @@ def _iter_files(root):
                 yield Path(dirpath) / fn
 
 
+# 合成/占位标记：判据夹具会**故意**写「形似密钥」的字符串来验证防回潮逻辑
+# （典型：`_perturb_canvas_agnes.py` 的 PG7 故意把 `sk-fake…` 塞回 agnes_bridge，
+#  用来证明 A8 会翻红；而 `!_perturb_*.py` 在 .gitignore 里是**明确解禁入库**的）。
+# 这类字符串不是凭据，却会被「sk- + 长随机串」形态规则命中 —— 而**假报警会让人直接
+# 忽略这个卡口，比放宽更危险**（本文件上方已写明这条取舍）。
+# 做法：命中后**逐条**看匹配文本里有没有肉眼可辨的合成标记；真实密钥是随机串，
+# 含这些词的概率可忽略（"test" 不列入 —— `sk-test-…` 可能是真凭据，不该被豁免）。
+# ⚠️ 只豁免**匹配文本本身**，不是整份文件 —— 同一文件里另有真实密钥照样会被抓。
+SYNTHETIC_MARKERS = ("fake", "dummy", "example", "placeholder", "redacted",
+                     "sample", "notreal", "not-a-real", "not_a_real", "xxxx")
+
+
+def _first_secret_hit(blob):
+    """返回 (label, matched) 或 None；命中合成标记的条目跳过（逐条判定，不整文件放行）。"""
+    for rx, label in SECRET_PATTERNS:
+        for m in rx.finditer(blob):
+            txt = m.group(0)
+            low = (txt.decode("utf-8", "replace") if isinstance(txt, bytes)
+                   else str(txt)).lower()
+            if any(mk in low for mk in SYNTHETIC_MARKERS):
+                continue
+            return label, txt
+    return None
+
+
 def _scan_secrets(root, limit=5):
     hits = []
     for p in _iter_files(root):
@@ -185,14 +210,13 @@ def _scan_secrets(root, limit=5):
             data = p.read_bytes()
         except Exception:
             continue
-        for rx, label in SECRET_PATTERNS:
-            if rx.search(data):
-                try:
-                    rel = p.relative_to(ROOT)
-                except Exception:
-                    rel = p
-                hits.append(f"{rel}({label})")
-                break
+        found = _first_secret_hit(data)
+        if found:
+            try:
+                rel = p.relative_to(ROOT)
+            except Exception:
+                rel = p
+            hits.append(f"{rel}({found[0]})")
         if len(hits) >= limit:
             break
     return hits
@@ -276,10 +300,9 @@ def _scan_pyz_secrets(exe, limit=5):
         if not strs:
             continue
         blob = "\n".join(strs).encode("utf-8", "replace")
-        for rx, label in SECRET_PATTERNS:
-            if rx.search(blob):
-                hits.append(f"{name}({label})")
-                break
+        found = _first_secret_hit(blob)
+        if found:
+            hits.append(f"{name}({found[0]})")
         if len(hits) >= limit:
             break
     return hits, f"{len(mods)} 个模块零命中（仅扫 str 常量，bytes 按上注排除）"

@@ -241,5 +241,7 @@ if __name__ == "__main__":
     failed = sum(1 for _, ok in results if not ok)
     print("\n===== 横幅 =====")
     print("判据: %d  通过: %d  失败: %d" % (len(results), passed, failed))
+    # run_all 统计约定第 3 条：自定义汇总行认不出来会被判 EMPTY（判据对门禁隐形）
+    print("PASS=%d FAIL=%d" % (passed, failed))
     print("RESULT: %s" % ("ALL GREEN" if failed == 0 else "HAS FAIL"))
     raise SystemExit(1 if failed else 0)

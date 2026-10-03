@@ -497,6 +497,9 @@ if _ONLY:
           (",".join(_ONLY), total, len(_FAILED)))
 else:
     print("\n=== 判据: 共 %d 项, 失败 %d ===" % (total, len(_FAILED)))
+# run_all 统计约定第 3 条：自定义汇总行（"共 N 项, 失败 M"）认不出来会被判 EMPTY
+# → 判据对发布门禁隐形。这里补一行纯数字统计。
+print("PASS=%d FAIL=%d" % (total - len(_FAILED), len(_FAILED)))
 if _FAILED:
     for n in _FAILED:
         print("  FAIL: %s" % n)

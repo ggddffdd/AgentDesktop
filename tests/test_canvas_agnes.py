@@ -297,5 +297,10 @@ for st, name, detail in _log:
     print("  %s %s%s" % (flag, name, extra))
 print("-" * 64)
 print("通过 %d / 失败 %d / 共 %d" % (_passed, _failed, _passed + _failed))
+# run_all 统计约定第 3 条：必须给出**可解析**的 PASS=/FAIL= 数字。
+# 中英混排的自定义汇总行（"通过 N / 失败 M"）run_all 认不出来 → 本套件被判 EMPTY
+# —— 判据看着全绿，却**一条都不计入回归总数**，对发布门禁完全是隐形的。
+# 6 个画布套件一直这样：394 条判据长期没进过 `release_check` 的回归总数。
+print("PASS=%d FAIL=%d" % (_passed, _failed))
 print("=" * 64)
 sys.exit(1 if _failed else 0)

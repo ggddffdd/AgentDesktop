@@ -76,6 +76,17 @@ def perturb(desc, edits, expect_match):
 
 
 def main():
+    # 2026-10-03 实测事故：本脚本被超时强杀（SIGTERM）时，Python 默认处理器直接终止进程
+    # —— 不抛异常、不走下面的 try/finally，于是 automation_panel.py 里被注入的
+    # `scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")`
+    # 留在磁盘上，成了「看起来像业务代码坏了」的变异残留（还差点进构建）。
+    # 本仓早有专用护栏 _perturb_guard（快照 + SIGTERM/SIGINT/atexit 三重还原 + 残留预检），
+    # 画布那批扰动脚本都走它，这里补上 —— 注释约定见该模块 docstring。
+    # arm(None) 会快照 ROOT 顶层 .py 与 tests/*.py 并在被强杀时还原；
+    # ⑥ 那个夹具（tests/fixtures/*.json）不在其快照范围，由脚本自身的内存快照兜着。
+    import _perturb_guard
+    _perturb_guard.arm()
+
     base_ui = md5(os.path.join(ROOT, "ui.py"))
     base_tq = md5(os.path.join(ROOT, "theme_qss.py"))
     results = []

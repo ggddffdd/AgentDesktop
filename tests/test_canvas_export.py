@@ -346,6 +346,9 @@ if __name__ == "__main__":
     failed = [n for n, ok in _results if not ok]
     total = len(_results)
     print("\n" + "=" * 56)
+    # run_all 统计约定第 3 条：下面那行失败时带的是 `FAIL=[...]`（列表形态），
+    # 正则取不到数字 → 整条统计被判 EMPTY、判据对门禁隐形。故先补纯数字统计行。
+    print(f"PASS={total - len(failed)} FAIL={len(failed)}")
     print(f"  导出判据套件：{total - len(failed)}/{total} 通过"
           + ("  ALL GREEN" if not failed else f"  FAIL={failed}"))
     print("=" * 56)

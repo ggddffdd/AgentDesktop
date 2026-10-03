@@ -236,6 +236,9 @@ if __name__ == "__main__":
     failed = len(results) - passed
     print("\n===== 判据汇总 =====")
     print("总计 %d 项，通过 %d，失败 %d" % (len(results), passed, failed))
+    # run_all 统计约定第 3 条：必须是**纯数字** PASS=/FAIL= 行，且要排在下方的
+    # `FAIL=<名字列表>` 之前 —— 那种列表形态正则取不到数字，整条统计会被判 EMPTY。
+    print("PASS=%d FAIL=%d" % (passed, failed))
     if failed:
         print("FAIL=" + ",".join(n for n, ok in results if not ok))
         sys.exit(1)

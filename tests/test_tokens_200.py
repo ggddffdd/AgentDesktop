@@ -145,6 +145,26 @@ if os.path.isfile(FIXTURE):
         }),
     }
 
+    # 与上面两条**不同性质**的一类登记：不是「旧样式迁走了」，而是
+    # **同一个已知属性多了一个实例** —— 新加了一个页面外壳。
+    #
+    # 背景（2026-10-03）：节点画布集成步 dfd1fd8 把「画布」作为第 3 页挂进主窗口。
+    # 本文件里**每一页**都按既有约定写同一句
+    # `X_page.setStyleSheet(f"background:{THEME['bg']};")`
+    # （welcome / chat / orchestrate / legion / image / video 全如此），
+    # 画布页只是照办。B1 用**多重集**比较，同一 (sel, props) 由 6 份变 7 份也会红。
+    # 但这不是样式词条变更 —— 词条早就在，配色没动过一丝；多的是「一个页面实例」。
+    # 若为此去删掉画布页那一句，反而会让它成为唯一不遵守约定的页面（更糟）。
+    # 所以按既有登记制显式登记，并配 B1b 同款反向判据（登记条目必须真被消耗），
+    # 既保住 v4.200 历史锚点，也留下可审计的清单。
+    # ⚠️ 注意边界：**全新 (sel, props) 词条仍然一律红、没有登记机制** —— 那才是样式走样。
+    #    这里只吸收「已存在词条的 +1 实例」，且写死条数（多来一份照样红）。
+    KNOWN_ADDITIONS = {
+        "ui.py": collections.Counter({
+            ("", '{"background": "#F7F8FC"}'): 1,   # 画布页外壳（第 3 页），同页 0/1/2/4/5…
+        }),
+    }
+
     files = sorted(set(before) | set(after))
     for fn in files:
         cb = collections.Counter(before.get(fn, []))
@@ -152,10 +172,13 @@ if os.path.isfile(FIXTURE):
         # 两批登记合并：v4.206 的 8 条 + v4.207 的 1 条
         known = (KNOWN_MIGRATIONS_206.get(fn, collections.Counter())
                  + KNOWN_MIGRATIONS_207.get(fn, collections.Counter()))
+        known_add = KNOWN_ADDITIONS.get(fn, collections.Counter())
         # 扣掉已登记的有意迁移后，剩下的差异必须为零
         rest_before = cb - ca - known
-        rest_after = ca - cb          # 任何"新增"属性一律红（没有登记机制）
-        check(f"B1[{fn}] 属性多重集等价（已扣除登记的 {sum(known.values())} 条迁移）",
+        # 扣掉已登记的「同词条 +1 实例」后，剩下的**新增**一律红
+        rest_after = ca - cb - known_add
+        check(f"B1[{fn}] 属性多重集等价（已扣除登记的 {sum(known.values())} 条迁移"
+              f" + {sum(known_add.values())} 条新增实例）",
               (not rest_before) and (not rest_after),
               f"未登记改前差异 {len(rest_before)} / 改后差异 {len(rest_after)}"
               + (f" | 例 {list(rest_before)[:2]}" if rest_before else ""))
@@ -163,6 +186,11 @@ if os.path.isfile(FIXTURE):
         unused = known - (cb - ca)
         check(f"B1b[{fn}] 登记的迁移条目都被真正消耗（不许塞空条目）",
               not unused, f"未被消耗 {len(unused)} 条：{list(unused)[:1]}")
+        # 反向判据（新增实例同理）：登记了却没多出来 → 说明这行登记已经过期/写错，
+        # 会悄悄放宽后续的判断（拉高阈值后真实走样就溜过去了）。
+        unused_add = known_add - (ca - cb)
+        check(f"B1c[{fn}] 登记的新增实例都被真正消耗（不许塞空条目）",
+              not unused_add, f"未被消耗 {len(unused_add)} 条：{list(unused_add)[:1]}")
     check("B2 快照非空（防止负负得正的空比对）",
           sum(len(v) for v in before.values()) > 400,
           f"before 仅 {sum(len(v) for v in before.values())} 条")
