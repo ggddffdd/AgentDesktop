@@ -310,6 +310,26 @@ from pathlib import Path
 
 # ---------- 内部工具 ----------
 
+def _aborted(should_stop=None, stop_event=None):
+    """用户请求停止（agent 的 should_stop 回调或 stop_event）。用于系统控制工具可中断判定。
+
+    与 software_control_tools._aborted 同款语义（此前系统控制整条线**没有**这一层：
+    14 个工具签名清一色 (cfg, app_dir, args)，tools.py 的 _w 包装器只给声明了对应
+    参数的 handler 透传停止信号 → 点了「停止」键鼠/进程操作照样跑完）。
+    P2-3：回调本身抛异常时按 fail-closed 处理——视为『已请求停止』并留痕，
+    与原 except pass 的 fail-open 行为相反：不可读的停止信号绝不该被当成「继续干」。
+    """
+    try:
+        if should_stop and callable(should_stop) and should_stop():
+            return True
+        if stop_event and stop_event.is_set():
+            return True
+    except Exception as _e:
+        logger.warning("停止信号读取异常，按已停止处理（fail-closed）: %r", _e)
+        return True
+    return False
+
+
 def _split_win_args(s):
     """审计修复 C1：把 LLM 传入的参数字符串按 Windows 习惯切成 argv 列表。
 
@@ -414,7 +434,9 @@ def _screen_at_local(app, x, y):
 
 # ---------- 截图 ----------
 
-def tool_screenshot(cfg, app_dir, args):
+def tool_screenshot(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     region = args.get("region")
     window_title = args.get("window_title")
     save_path = _resolve_save_path(args.get("save_path"), app_dir=app_dir)
@@ -476,7 +498,9 @@ def _init_pyautogui():
     return pyautogui
 
 
-def tool_mouse_move(cfg, app_dir, args):
+def tool_mouse_move(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     x, y = args["x"], args["y"]
     duration = args.get("duration", 0)
     try:
@@ -489,7 +513,9 @@ def tool_mouse_move(cfg, app_dir, args):
         return (f"鼠标移动失败：{e}", [], None)
 
 
-def tool_mouse_click(cfg, app_dir, args):
+def tool_mouse_click(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     button = args.get("button", "left")
     clicks = args.get("clicks", 1)
     x = args.get("x")
@@ -509,7 +535,9 @@ def tool_mouse_click(cfg, app_dir, args):
         return (f"鼠标点击失败：{e}", [], None)
 
 
-def tool_mouse_scroll(cfg, app_dir, args):
+def tool_mouse_scroll(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     clicks = args.get("clicks", 3)
     x = args.get("x")
     y = args.get("y")
@@ -528,7 +556,9 @@ def tool_mouse_scroll(cfg, app_dir, args):
 
 # ---------- 键盘 ----------
 
-def tool_keyboard_type(cfg, app_dir, args):
+def tool_keyboard_type(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     text = args["text"]
     interval = args.get("interval", 0)
     try:
@@ -541,7 +571,9 @@ def tool_keyboard_type(cfg, app_dir, args):
         return (f"键盘输入失败：{e}", [], None)
 
 
-def tool_keyboard_press(cfg, app_dir, args):
+def tool_keyboard_press(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     keys = args["keys"]
     try:
         pag = _init_pyautogui()
@@ -555,7 +587,9 @@ def tool_keyboard_press(cfg, app_dir, args):
 
 # ---------- 剪贴板 ----------
 
-def tool_clipboard_read(cfg, app_dir, args):
+def tool_clipboard_read(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     try:
         import pyperclip
         text = pyperclip.paste()
@@ -568,7 +602,9 @@ def tool_clipboard_read(cfg, app_dir, args):
         return (f"读取剪贴板失败：{e}", [], None)
 
 
-def tool_clipboard_write(cfg, app_dir, args):
+def tool_clipboard_write(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     text = args["text"]
     try:
         import pyperclip
@@ -582,7 +618,9 @@ def tool_clipboard_write(cfg, app_dir, args):
 
 # ---------- 窗口管理 ----------
 
-def tool_window_list(cfg, app_dir, args):
+def tool_window_list(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     filt = args.get("filter", "")
     try:
         import pygetwindow as gw
@@ -604,7 +642,9 @@ def tool_window_list(cfg, app_dir, args):
         return (f"列出窗口失败：{e}", [], None)
 
 
-def tool_window_focus(cfg, app_dir, args):
+def tool_window_focus(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     title = args["title"]
     try:
         import pygetwindow as gw
@@ -622,7 +662,9 @@ def tool_window_focus(cfg, app_dir, args):
         return (f"切换窗口失败：{e}", [], None)
 
 
-def tool_window_get_info(cfg, app_dir, args):
+def tool_window_get_info(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     title = args["title"]
     try:
         import pygetwindow as gw
@@ -647,7 +689,9 @@ def tool_window_get_info(cfg, app_dir, args):
 
 # ---------- 进程控制 ----------
 
-def tool_process_list(cfg, app_dir, args):
+def tool_process_list(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     filt = args.get("filter", "")
     try:
         # tasklist 输出稳定，不依赖 psutil
@@ -679,7 +723,9 @@ def tool_process_list(cfg, app_dir, args):
         return (f"列出进程失败：{e}", [], None)
 
 
-def tool_process_kill(cfg, app_dir, args):
+def tool_process_kill(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     name = args["name"]
     force = args.get("force", False)
     try:
@@ -697,7 +743,9 @@ def tool_process_kill(cfg, app_dir, args):
         return (f"终止进程失败: {e}", [], None)
 
 
-def tool_process_start(cfg, app_dir, args):
+def tool_process_start(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
     target = args["target"]
     shell_args = args.get("args", "")
     working_dir = args.get("working_dir", "")

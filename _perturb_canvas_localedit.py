@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import sys
 
-ROOT = r"D:/小臭玩AI/deepseek-desktop"
+ROOT = os.path.dirname(os.path.abspath(__file__))
 GRAPH = os.path.join(ROOT, "canvas_graph.py")
 PANEL = os.path.join(ROOT, "canvas_panel.py")
 EXPORT = os.path.join(ROOT, "canvas_export.py")

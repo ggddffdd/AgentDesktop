@@ -404,11 +404,38 @@ def _connect_or_launch(target, title=None, timeout=10):
         raise RuntimeError(f"无法启动或连接 {target}: {e}")
 
 
+MAX_CONTROL_CANDIDATES = 20
+
+
+def _list_candidates(window, control_type, limit=MAX_CONTROL_CANDIDATES):
+    """枚举窗口内某类控件的**可读名字**（去重、保序、带上限）。A 批 G3 用。
+
+    只负责「把候选报出来」，**不替调用方选一个** —— 选错控件的代价（误点/误填）
+    远高于让模型多问一轮。
+    """
+    out = []
+    try:
+        items = window.descendants(control_type=control_type) or []
+    except Exception:
+        items = []
+    for c in items:
+        if len(out) >= limit:
+            break
+        try:
+            t = (c.window_text() or "").strip()
+        except Exception:
+            t = ""
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
 def _find_control(window, target, control_type=None):
     """
     在 window 中按 target 查找控件。
-    查找优先级：automation_id → name → title（模糊）→ control_type
-    返回第一个匹配的 wrapper。
+    查找优先级：automation_id → name → title（模糊）
+    **没有第 4 级「按类型随便选一个」** —— 见下方注释。
+    返回第一个匹配的 wrapper；全部落空时抛 RuntimeError（带同类候选清单）。
     """
     # 1) 精确 automation_id
     try:
@@ -434,14 +461,26 @@ def _find_control(window, target, control_type=None):
     except Exception:
         pass
 
-    # 4) 仅按 control_type 找第一个
+    # 4) 只给了 control_type —— **不再自动挑第一个**（A 批 G3，此行原为静默误点根源）。
+    #
+    # 原实现：`window.child_window(control_type=...)` 返回「第一个同类控件」。
+    # 问题：target 名字**一个都没匹配上**时，第一个同类控件极可能不是目标
+    # （同一窗口常有多个 Button/Edit），调用方却照点，并以
+    # 「已点击 '<实际控件名>'」报**成功** —— 误点静默，且模型看到"成功"就往下走。
+    # 改为「只枚举、不选中」：把同类候选名交回给调用方（最终呈现给模型），
+    # 让它拿准确的名字重试；宁可失败一次，也不要错点一次。
     if control_type:
-        try:
-            ctrl = window.child_window(control_type=control_type)
-            ctrl.wait("exists", timeout=0.5)
-            return ctrl
-        except Exception:
-            pass
+        cands = _list_candidates(window, control_type)
+        if cands:
+            names = "、".join(f"'{c}'" for c in cands)
+            _only = (f"（同类控件仅 1 个：{names}；若确认就是它，"
+                     f"请把 target 改成该名字重试）" if len(cands) == 1 else "")
+            raise RuntimeError(
+                f"未找到控件: target='{target}'。按类型 '{control_type}' 找到 "
+                f"{len(cands)} 个候选但无一匹配{_only}：{names}")
+        raise RuntimeError(
+            f"未找到控件: target='{target}'，且窗口内没有 '{control_type}' 类控件。"
+            f"可先用 app_list_controls 查看当前窗口有哪些控件。")
 
     raise RuntimeError(f"未找到控件: target='{target}', control_type='{control_type}'")
 

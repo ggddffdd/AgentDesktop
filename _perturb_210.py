@@ -11,6 +11,7 @@
 3. 保留行尾（L186/L187）；崩了红 ≠ 判据生效（L191），必须解析出 FAIL 名。
 """
 import os
+import re
 import subprocess
 import sys
 
@@ -23,6 +24,17 @@ CASES = []
 
 def case(name, fname, old, new, expect):
     CASES.append(("replace", name, fname, old, new, expect))
+
+
+def case_re(name, fname, pattern, new, expect):
+    """同 case()，但 `old` 是**正则**。
+
+    为什么必须有这条：锚点若写死版本号（如 `**v4.210.0**`），版本一 bump 就
+    MISS-CONTEXT 成**哑弹** —— 判据没被真正测到，却照报「全绿」。实测本文件里
+    README 那条从 v4.211.0 起就一直是哑的（E7 白守了两个版本）。凡是会随发布
+    漂移的锚点，一律走这条。
+    """
+    CASES.append(("resub", name, fname, pattern, new, expect))
 
 
 # ============================================================
@@ -154,11 +166,13 @@ case("CHANGELOG 抹掉 v4.210.0 条目",
      "## v4.209.x — 2026-10-03",
      ["E5"])
 
-case("README 版本与 config 不一致",
-     "README.md",
-     "**v4.210.0**",
-     "**v4.209.1**",
-     ["E7"])
+# 锚点必须**版本无关**：原写法 `"**v4.210.0**"` 在 bump 到 v4.211.x 后就
+# MISS-CONTEXT 成哑弹（E7「README 与 config 版本一致」实际没被扰动测过）。
+case_re("README 版本与 config 不一致",
+        "README.md",
+        r"当前版本 \*\*v[\d.]+\*\*",
+        "当前版本 **v4.209.1**",
+        ["E7"])
 
 
 def is_crlf(p):
@@ -216,11 +230,19 @@ def main():
                 continue
             crlf = is_crlf(path)
             orig = read_raw(path)
-            if a not in orig:
-                print(f"[MISS-CONTEXT] {name} —— {fname} 里找不到待扰动片段")
-                misses.append((name, "扰动片段没匹配上，判据没被真正测到"))
-                continue
-            write_raw(path, orig.replace(a, b, 1), crlf)
+            if kind == "resub":
+                mutated, n = re.subn(a, b, orig, count=1)
+                if n == 0:
+                    print(f"[MISS-CONTEXT] {name} —— {fname} 里正则 {a!r} 没匹配上")
+                    misses.append((name, "扰动片段没匹配上，判据没被真正测到"))
+                    continue
+            else:
+                if a not in orig:
+                    print(f"[MISS-CONTEXT] {name} —— {fname} 里找不到待扰动片段")
+                    misses.append((name, "扰动片段没匹配上，判据没被真正测到"))
+                    continue
+                mutated = orig.replace(a, b, 1)
+            write_raw(path, mutated, crlf)
 
             rc, out = run_suite()
             reds = failed_checks(out)
