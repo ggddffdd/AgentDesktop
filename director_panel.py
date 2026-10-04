@@ -1955,7 +1955,7 @@ def _show_understand_card(app, topic_raw, info, on_ok):
     head = QLabel(f"你的主题：{topic_raw}")
     head.setWordWrap(True)
     head.setStyleSheet(
-        label_body(weight="semibold") + "background:#FFFFFF;border:1px solid #E5E7EB;border-radius:8px;padding:12px 12px;")
+        label_body(weight="semibold") + f"background:{THEME['card']};border:1px solid {THEME['border']};border-radius:8px;padding:12px 12px;")
     v.addWidget(head)
 
     tip = QLabel("下面是它对你这句主题的理解。**不对就直接改**，改完点「确认并开写」——"

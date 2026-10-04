@@ -1,32 +1,27 @@
 # -*- coding: utf-8 -*-
-"""v4.211.4 进包核验：主对话链决策审计落盘（盘点 G1 / 宪法第二章第 ③ 条）。
+"""v4.211.5 进包核验：工程卫生（⑧ 回归期日志改道 / ⑨ UI 裸 hex 护栏存量归零）。
 
-本轮改的是**授权层本体**（`permissions.decide()` 从纯内存决策变成"每条 return
-路径都落一笔审计"）+ 抽出一个公共审计件（`tool_audit`，军团与主对话共用）。
-这一类的典型失效是"源码改了、判据绿了、装上 exe 还是旧行为" —— 审计少写一笔，
-界面上完全看不出任何区别。所以核验落在**字节码**上：当前源码 compile() 出来的
-code object 必须与 PYZ 里抽出来的逐字节一致，再补几根钉子钉住本轮能力本身。
+本轮进包的改动只有一类：4 个 UI 源码里的颜色**字面量**换成等值的 `THEME[key]`
+（`director_panel` / `skill_manager_ui` / `skill_market_ui` / `tool_manager_ui`），
+另两个改动（`ui_hex_guard.py` 的兜底豁免、`tests/run_all.py` 的日志改道）都**不进包**。
+所以核验重点：① 这几个 UI 模块的字节码指纹必须与当前源码一致（改对了得真进包）；
+② 版本号 v4.211.5；③ **`ui_hex_guard` 不得进包**（构建期脚本混进分发物 = 白带一份
+未脱敏的扫描逻辑）；④ 前几轮钉子复验。
 
 核验策略：
   · **主判据 = 字节码树指纹**：把当前源码 compile() 出来的 code object 与 PYZ 里抽出来
-    的逐字节比 sha256。相等 ⇒ 打进包的就是这份源码（本轮新增 1 个模块 + 3 个改动文件
-    + 上一轮的关键文件）。
-  · **回归钉子（本轮）**：
-    permissions：`_audited` / `_audit_decision` / `default_audit_dir` 三个符号必须在，
-    顶层必须 import 了 `tool_audit`；`PermissionEngine.__init__` 必须留 `audit_dir` 形参；
-    **`decide` 的函数体不许引用 `tool_audit`** —— 审计必须留在函数体之外，否则
-    `tests/test_permission_gates.py` G 组的 AST 抽取契约会被破坏。
-    tool_audit：五个公开函数 + 两个账本文件名 + `args_preview`（只剩不可逆哈希就等于
-    查不出"干了啥"）+ `origin`（两账本可区分通道）+ `AUDIT_LOCK` + 脱敏标记。
-    legion_permissions：必须复用公共件（`tool_audit` 在 co_names 里），且保留
-    `_digest` / `_redact` 名字（既有判据直接调它们）。
-  · **回归钉子（前几轮）**：system_control 的 `_require` 与 8 处调用、`csv.reader`、
-    可中断形参、软件控制候选枚举、画布四态与统一入口 —— 一并复验，防本轮改授权层
-    时顺带塌掉。
-  · **版本一致性**：PYZ 里 `config` 的常量表必须含 v4.211.4，且不含 v4.211.3。
+    的逐字节比 sha256。相等 ⇒ 打进包的就是这份源码（本轮 4 个 UI 模块 + 前几轮关键文件）。
+  · **回归钉子（本轮）**：3 个 UI 模块在 PYZ 里且指纹一致；`ui_hex_guard` **不在** PYZ；
+    `legion_status_widget`（兜底字典的宿主）仍在包里且指纹一致 —— 护栏让它静默，
+    但那个兜底字典本身是**产品代码**，必须还在。
+  · **回归钉子（前几轮）**：permissions 的 `_audited` / `_audit_decision` / 顶层 `tool_audit`
+    与「`decide` 函数体不引用 `tool_audit`」；system_control 的 `_require` 与 8 处调用、
+    `csv.reader`、可中断形参；软件控制候选枚举；画布四态与统一入口 —— 一并复验，
+    防本轮改 UI 时顺带塌掉。
+  · **版本一致性**：PYZ 里 `config` 的常量表必须含 v4.211.5，且不含 v4.211.4。
   · **不漏测试**：`tests/` 下的判据套件与根目录扰动脚本绝不能被收进包。
 
-用法：python _verify_pyz_v42114.py
+用法：python _verify_pyz_v42115.py
 """
 import hashlib
 import marshal
@@ -41,10 +36,14 @@ EXE = ROOT / "dist" / "小臭玩AI" / "小臭玩AI.exe"
 MODULES = ["config", "canvas_graph", "canvas_export", "executors",
            "canvas_panel", "task_graph", "digital_twin_panel",
            "director_panel", "ui",
+           # 本轮改动（⑨：颜色字面量 → 等值 THEME[key]，零视觉变化）
+           "skill_manager_ui", "skill_market_ui", "tool_manager_ui",
            # 上一轮改动（系统控制补可中断 / 软件控制控件查找改造）—— 本轮必须仍在包里
            "system_control_tools", "software_control_tools",
-           # 本轮改动（主对话决策审计落盘 + 抽公共审计件 + 军团改为复用）
+           # 上轮改动（主对话决策审计落盘 + 抽公共审计件 + 军团改为复用）
            "permissions", "legion_permissions", "tool_audit",
+           # 兜底字典的宿主：护栏让它静默，但它本身是产品代码，必须仍在包里
+           "legion_status_widget", "legion_ui",
            # 仍在包里即核对指纹
            "agnes_bridge", "risk",
            # 上上轮改动、本轮必须仍在包里（指纹一并核对）
@@ -164,7 +163,7 @@ def _load_entry_script(exe: Path, name: str = "main"):
 
 
 def main():
-    print("v4.211.4 进包核验（主对话链决策审计落盘 + 公共审计件）")
+    print("v4.211.5 进包核验（工程卫生：回归期日志改道 + UI 裸 hex 护栏存量归零）")
     print("-" * 62)
     if not EXE.is_file():
         print(f"未找到产物：{EXE}")
@@ -208,10 +207,10 @@ def main():
     if "config" in names:
         consts = _str_consts(_load(za, "config"))
         old = sorted(s for s in consts if s.startswith("v4.210.") or s.startswith("v4.211."))
-        check("PYZ 内 config 的版本常量 == v4.211.4",
-              "v4.211.4" in consts, f"包内出现的版本串={old}")
-        check("PYZ 内不含上一版旧版本常量 v4.211.3",
-              "v4.211.3" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
+        check("PYZ 内 config 的版本常量 == v4.211.5",
+              "v4.211.5" in consts, f"包内出现的版本串={old}")
+        check("PYZ 内不含上一版旧版本常量 v4.211.4",
+              "v4.211.4" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
 
     print("\n-- 3) 本轮能力的回归钉子（防重启打包时被丢掉）--")
     if "system_control_tools" in names:
@@ -391,6 +390,25 @@ def main():
 
     co_main = _load_entry_script(EXE, "main")
     check("main 从 CArchive 取到（入口脚本不在 PYZ 是正常结构）", co_main is not None)
+
+    print("\n-- 3d) 本轮钉子：UI 颜色等值化真进包 / 构建期脚本不得进包 --")
+    for _m in ("skill_manager_ui", "skill_market_ui", "tool_manager_ui"):
+        if _m not in names:
+            check(f"{_m} 在 PYZ 里", False, "缺失 → 对应管理面板打不开")
+            continue
+        _src = (ROOT / f"{_m}.py").read_bytes()
+        _co_src = compile(_src.decode("utf-8-sig"), f"{_m}.py", "exec")
+        check(f"★ {_m} 字节码指纹一致（⑨ 的颜色改动真进包了）",
+              _fingerprint(_co_src) == _fingerprint(_load(za, _m)),
+              "包内还是旧字面量版本 → 改了个寂寞")
+    check("★ ui_hex_guard 不得进包（构建期脚本不进分发物）",
+          "ui_hex_guard" not in names,
+          "构建期扫描逻辑混进分发物")
+    if "legion_status_widget" in names:
+        _src = (ROOT / "legion_status_widget.py").read_bytes()
+        _co_src = compile(_src.decode("utf-8-sig"), "legion_status_widget.py", "exec")
+        check("★ legion_status_widget 指纹一致（护栏让它静默，但它本身是产品代码）",
+              _fingerprint(_co_src) == _fingerprint(_load(za, "legion_status_widget")))
 
     print("\n-- 4) 不漏测试 / 不漏扰动脚本 --")
     leaked = sorted(n for n in names

@@ -35,6 +35,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -48,6 +49,17 @@ PERTURB_TIMEOUT = 600  # 单扰动脚本超时（秒）；最重的 _perturb_can
 # 基线清单里也不许留它的名字 —— 否则被强杀残留一次，之后每轮都多出一个 EMPTY
 # 套件、并把污染固化进基线。清理职责在 _perturb_guard.sweep_scratch()。
 FIXTURE_PREFIX = "test_zz_"
+
+# 回归期的日志改道（v4.211.5）——
+# 套件子进程里 config.app_log_path() 缺省落 WORKSPACE_DIR/debug.log，而那**是用户的
+# 真实诊断日志**。实测 2026-10-04：该文件单日 1032 条 WARNING 里 828 条（80%）出自
+# 判据套件（empty_state 的桩按钮 / permissions 的白名单用例 / system_control 的模拟
+# RuntimeError / tool_audit 的失败用例 / legion_chat 的 Temp\lc_probe_* 路径），
+# 且全部集中在回归窗口。测试噪音灌进真实日志 = 把线索池搅浑、让「今天有多少告警」
+# 这类读数失真。config 早就支持 XC_LOG_DIR 改道，这里统一注入。
+# 用 setdefault：尊重套件自设（如 test_agent_node_failure 已硬设 _SBX/logs）。
+# ⚠️ 要验「**默认**路由」的套件（test_workspace_routing）须自行 pop 本变量，见其文件头。
+TEST_LOG_DIR = os.path.join(tempfile.gettempdir(), "dsb_test_logs")
 
 
 def is_real_suite(p):
@@ -182,6 +194,7 @@ def run_one(path, timeout=None):
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
     env["QT_QPA_PLATFORM"] = "offscreen"   # 需要 Qt 的套件不弹窗
+    env.setdefault("XC_LOG_DIR", TEST_LOG_DIR)   # 套件日志→临时目录，不污染用户真实 debug.log
 
     t0 = time.time()
     try:

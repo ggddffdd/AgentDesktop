@@ -30,6 +30,11 @@ HERE = Path(__file__).resolve().parent.parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
+# 本套件要验的是「**默认**路由」—— app_log_path() 在没有任何 XC_* 改道时落 WORKSPACE_DIR。
+# 而回归入口 run_all 会给子进程注入 XC_LOG_DIR（防套件日志污染用户真实 debug.log，
+# 见 run_all 顶部注释）。不 pop 掉的话，下面那条断言测的就成了「改道后」而非「默认」。
+os.environ.pop("XC_LOG_DIR", None)
+
 import config
 import tools
 

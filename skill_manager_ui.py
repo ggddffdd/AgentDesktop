@@ -202,7 +202,7 @@ class SkillManagerWindow(QMainWindow):
 
         # 状态栏
         self.status_bar = QLabel("就绪")
-        self.status_bar.setStyleSheet("color: #6B7280; font-size: 12px; border-top: 1px solid #eee; padding:8px;")
+        self.status_bar.setStyleSheet(f"color: {THEME['faint']}; font-size: 12px; border-top: 1px solid #eee; padding:8px;")
         main_layout.addWidget(self.status_bar)
 
     # ---------- 加载 ----------

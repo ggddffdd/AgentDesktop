@@ -47,6 +47,7 @@ test_legion_audit.py
 test_legion_permissions.py
 test_legion_resume_fill.py
 test_legion_status.py
+test_log_redirect_hyg.py
 test_memory_gate_196.py
 test_nav_ia_198.py
 test_no_stall_186.py
@@ -82,6 +83,7 @@ test_tokens_200.py
 test_tool_audit_c.py
 test_twin_seg_resilience.py
 test_ui_a11y_2102.py
+test_ui_hex_guard_fallback.py
 test_uidecision_fix_186.py
 test_uncertainty_gate_196.py
 test_v4102_1021_twin_bg.py

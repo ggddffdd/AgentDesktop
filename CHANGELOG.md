@@ -9,6 +9,46 @@
 
 ---
 
+## v4.211.5 — 2026-10-04
+
+**工程卫生（⑧⑨）**：回归不再污染你的真实日志；UI 颜色护栏的存量与误报一起归零。
+
+### ⑧ 回归期日志改道（**原计划被实测推翻，改做了真修复**）
+- **实测数据**：`agent_log.db` 跨 2.4 个月的 level 分布是 INFO 7482 / ERROR 6 / **WARNING 0**；
+  而 `debug.log` 单日 1032 条 WARNING 里 **828 条（80%）**集中在该日回归窗口 14:00–17:10，
+  来源全是判据套件造的桩（`empty_state` 桩按钮 414 / `permissions` 白名单用例 372 /
+  `system_control` 模拟 RuntimeError 116 / `tool_audit` 失败用例 99 / `legion_chat` 的 Temp 探针 22）。
+  → 原计划的「把 WARNING 桥接进 agent_log.db」等于**把测试噪音灌进正式库**，负收益，**不做**。
+- **真问题**：`tests/run_all.py` 构造子进程 env 时未注入 `XC_LOG_DIR`，而 `config.app_log_path()`
+  缺省落 `WORKSPACE_DIR/debug.log` = **用户的真实诊断日志**（与上一版那个「审计落盘污染真实账本」
+  同类病）。改道机制早就存在，只是测试没用上 —— 95 个套件里仅 2 个自设。
+- **修复**：`run_one` 注入 `XC_LOG_DIR=%TEMP%/dsb_test_logs`（用 `setdefault`，尊重套件自设）；
+  `test_workspace_routing` 显式 `pop` 该变量 —— 它要验的正是「**默认**路由」，不 pop 会让那条
+  断言失去意义（乃至翻红）。
+- 实测：真实 `debug.log` 的**字节数与 mtime 零变化**，噪音全落临时目录。
+- 判据 `tests/test_log_redirect_hyg.py`（20 项）+ 扰动 `_perturb_log_redirect_hyg.py`（5 项全命中）。
+
+### ⑨ UI 裸 hex 护栏：存量归零 + 兜底误报修正
+- 存量清点：`ui_hex_baseline.txt` 早已清空（130 处历史存量在此前已清完，任务板记录已过时）。
+- 修掉 8 处可改的 SOFT（`director_panel` / `skill_manager_ui` / `skill_market_ui` / `tool_manager_ui`），
+  全部**等值替换**为 `THEME[key]`（`#FFFFFF`→`card`、`#E5E7EB`→`border`、`#202124`→`text`、
+  `#5F6368`→`dim`、`#6B7280`→`faint`）→ **零视觉变化**。
+- 护栏新增 `_theme_fallback_spans()`（AST）识别 **THEME 兜底副本**：
+  `try: return THEME / except: return {…字面量…}` —— 那是「THEME 取不到时顶上」的备份，
+  **必须**写死（改成 `THEME[key]` 会成自引用、兜底失效）。原来把 `legion_status_widget`
+  的 12 处报成「建议改 THEME[key]」是**结构性误报**。豁免数会打进结果行（可见、不隐形放宽）。
+- 判据 `tests/test_ui_hex_guard_fallback.py`（15 项，含「豁免不过宽」）+ 扰动
+  `_perturb_ui_hex_guard_fallback.py`（4 项全命中）。
+
+### 仓库卫生
+- 清掉仓库根 57 个开发期临时日志（`_build_*` / `_release_*` / `_runall_*` 等，合计 2.2 MB，
+  全部在 `.gitignore` 内、不入库）。
+- `nul` 这个保留名残留文件**在本环境无法删除**（删除与改名均被拒 `ACCESS_DENIED`，
+  而属性可写 —— 说明是拦截层而非权限问题），已记录在案；它被 `.gitignore` 覆盖、不入库，
+  仅影响目录的递归复制/删除（可用排除绕开）。
+
+**回归**：套件阶段 97 套件 / 3984 项 / FAIL=0；扰动阶段 29 脚本 / 375 项 / FAIL=0。
+
 ## v4.211.4 — 2026-10-04
 
 **主对话链的每一次工具决策现在都留痕了（盘点 G1 / 宪法第二章第 ③ 条）**

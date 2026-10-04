@@ -111,7 +111,7 @@ class ToolManagerWindow(QMainWindow):
 
         tip = QLabel("关闭的工具不会被注入给模型 = 模型看不见它，也就不会调用。"
                      "只是不注入、不是删除，勾回来即可恢复。")
-        tip.setStyleSheet("color: #6B7280; font-size: 12px;")
+        tip.setStyleSheet(f"color: {THEME['faint']}; font-size: 12px;")
         tip.setWordWrap(True)
         main.addWidget(tip)
 
@@ -172,12 +172,12 @@ class ToolManagerWindow(QMainWindow):
         rl.addWidget(self.detail_name)
 
         self.detail_meta = QLabel("")
-        self.detail_meta.setStyleSheet("font-size: 12px; color: #5F6368;")
+        self.detail_meta.setStyleSheet(f"font-size: 12px; color: {THEME['dim']};")
         self.detail_meta.setWordWrap(True)
         rl.addWidget(self.detail_meta)
 
         self.detail_desc = QLabel("")
-        self.detail_desc.setStyleSheet("font-size: 12px; color: #202124;")
+        self.detail_desc.setStyleSheet(f"font-size: 12px; color: {THEME['text']};")
         self.detail_desc.setWordWrap(True)
         rl.addWidget(self.detail_desc)
         rl.addStretch()
@@ -187,7 +187,7 @@ class ToolManagerWindow(QMainWindow):
 
         self.status_bar = QLabel("就绪")
         self.status_bar.setStyleSheet(
-            "color: #6B7280; font-size: 12px; border-top: 1px solid #eee; padding:8px;")
+            f"color: {THEME['faint']}; font-size: 12px; border-top: 1px solid #eee; padding:8px;")
         main.addWidget(self.status_bar)
 
     # ---------- 加载 ----------

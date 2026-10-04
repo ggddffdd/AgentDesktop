@@ -9,7 +9,10 @@
 只对「新引入」的裸 hex 开火：
   - 基线内（存量）：静默，不阻塞；
   - 基线外 + THEME 之外的新颜色（真正新增漂移）：HARD → False（构建失败）；
-  - 基线外 + THEME 内却写死：SOFT（警告，不阻塞）。
+  - 基线外 + THEME 内却写死：SOFT（警告，不阻塞）；
+  - THEME 兜底副本（见 `_theme_fallback_spans`）：静默 —— 那是 `except` 分支里
+    「THEME 取不到时顶上」的字面量，**必须**写死（改成 THEME[key] 会成自引用、
+    兜底失效）。豁免数会打进结果行，不做隐形放宽。
 
 清理存量后，重新生成基线（`python ui_hex_guard.py --write-baseline`）即可逐步收紧。
 
@@ -20,6 +23,7 @@
   ui_hex_guard.ui_hex_guard(root)             # 被 build_safe 调用
   python ui_hex_guard.py --write-baseline     # 重新生成 ui_hex_baseline.txt
 """
+import ast
 import io
 import os
 import re
@@ -50,6 +54,41 @@ def _strip_comments_keep_lines(src):
     except Exception:
         return src
     return ''.join(lines)
+
+
+def _theme_fallback_spans(src):
+    """返回「THEME 兜底副本」占用的行号集合（1-based）。
+
+    模式：`try:` 体里有 `return THEME`，且某个 `except` 分支里 `return {…字面量…}`。
+    那份字面量是「THEME 取不到时顶上」的备份（离线/测试场景），**必须**写死 ——
+    若改成 `THEME[key]` 就成了自引用，正是它要兜的场景失效。
+    护栏对本集合内的行静默（豁免数会打进结果行，可见、不隐形）。
+
+    解析失败一律返回空集（护栏是旁路，绝不因解析问题改变扫描结果）。
+    """
+    spans = set()
+    try:
+        tree = ast.parse(src)
+    except Exception:
+        return spans
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        has_theme = False
+        for st in node.body:
+            for sub in ast.walk(st):
+                if (isinstance(sub, ast.Return) and isinstance(sub.value, ast.Name)
+                        and sub.value.id == 'THEME'):
+                    has_theme = True
+        if not has_theme:
+            continue
+        for h in node.handlers:
+            for st in h.body:
+                if isinstance(st, ast.Return) and isinstance(st.value, ast.Dict):
+                    lo = st.lineno
+                    hi = getattr(st, 'end_lineno', lo) or lo
+                    spans.update(range(lo, hi + 1))
+    return spans
 
 
 def _collect_approved_palette(root):
@@ -127,16 +166,22 @@ def _load_baseline(root):
 
 
 def _scan(root):
-    """返回 (approved, ui_files, hits)。hits = list of (rel, line_no, hex_lower)。"""
+    """返回 (approved, ui_files, hits, fallback_hits)。
+
+    hits = list of (rel, line_no, hex_lower)；
+    fallback_hits = 被「THEME 兜底」豁免掉的命中数（只报数，供结果行显示）。
+    """
     approved = _collect_approved_palette(root)
     ui_files = _find_ui_files(root)
     hits = []
+    fallback_hits = 0
     for fp in sorted(set(ui_files)):
         try:
             raw = open(fp, encoding='utf-8', errors='replace').read()
         except Exception:
             continue
         src = _strip_comments_keep_lines(raw)
+        fallback = _theme_fallback_spans(src)
         in_theme = False
         for i, line in enumerate(src.splitlines(), 1):
             if THEME_START.match(line):
@@ -147,15 +192,18 @@ def _scan(root):
                 continue
             if RGBA.search(line):
                 continue
+            if i in fallback:
+                fallback_hits += len(HEX.findall(line))
+                continue
             for m in HEX.finditer(line):
                 rel = os.path.relpath(fp, root)
                 hits.append((rel, i, m.group(0).lower()))
-    return approved, ui_files, hits
+    return approved, ui_files, hits, fallback_hits
 
 
 def ui_hex_guard(root):
     """扫描 root 下 UI 源文件，返回是否通过（True=无「基线外」HARD 违规）。"""
-    approved, ui_files, hits = _scan(root)
+    approved, ui_files, hits, fallback_hits = _scan(root)
     baseline = _load_baseline(root)
     hard_new, soft_new, baselined = [], [], []
     for rel, ln, h in hits:
@@ -184,13 +232,13 @@ def ui_hex_guard(root):
         for rel, ln, h in hard_new[:50]:
             print('[build_safe]   %s:%d  %s' % (rel, ln, h))
         return False
-    print('[build_safe] ✅ UI 裸 hex 护栏通过（扫描 %d 个 UI 源文件，新增违规 0 / 存量 %d 处已基线豁免）'
-          % (len(ui_files), len(baselined)))
+    print('[build_safe] ✅ UI 裸 hex 护栏通过（扫描 %d 个 UI 源文件，新增违规 0 / 存量 %d 处已基线豁免 / %d 处 THEME 兜底豁免）'
+          % (len(ui_files), len(baselined), fallback_hits))
     return True
 
 
 def _write_baseline(root):
-    _, _, hits = _scan(root)
+    _, _, hits, _ = _scan(root)
     bp = os.path.join(root, BASELINE_NAME)
     lines = ['# 已知存量裸 hex 基线（file:#hex，小写）。护栏对基线内静默、只拦新增。',
              '# 清理一部分存量后，运行 `python ui_hex_guard.py --write-baseline` 重新生成。', '']
