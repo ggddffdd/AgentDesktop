@@ -8,6 +8,7 @@ test_bugfix_2092.py
 test_cancel_token.py
 test_canvas_agnes.py
 test_canvas_assetstore.py
+test_canvas_assetvalid.py
 test_canvas_ciimage.py
 test_canvas_edit.py
 test_canvas_executor.py

@@ -1148,7 +1148,7 @@ def _step_style(active, done=False):
         return (f"QLabel{{background:{THEME['accent']};color:white;border-radius:14px;"
                 f"font-size:13px;font-weight:600;padding:0 12px;}}")
     if done:
-        return (f"QLabel{{background:{THEME['card']};color:{THEME["live_green"]};border:1px solid {THEME['border']};"
+        return (f"QLabel{{background:{THEME['card']};color:{THEME['live_green']};border:1px solid {THEME['border']};"
                 f"border-radius:14px;font-size:13px;padding:0 12px;}}")
     return (f"QLabel{{background:transparent;color:{THEME['dim']};border:1px solid {THEME['border']};"
             f"border-radius:14px;font-size:13px;padding:0 12px;}}")
@@ -2952,8 +2952,8 @@ def _view_prompt(app, idx):
     if err:
         el = QLabel(f"⚠️ 上次失败原因：\n{err}")
         el.setWordWrap(True)
-        el.setStyleSheet(f"color:{THEME["danger_text"]};font-size:12px;background:{THEME['card']};"
-                         f"border:1px solid {THEME["danger_text"]};border-radius:6px;padding:8px 12px;")
+        el.setStyleSheet(f"color:{THEME['danger_text']};font-size:12px;background:{THEME['card']};"
+                         f"border:1px solid {THEME['danger_text']};border-radius:6px;padding:8px 12px;")
         v.addWidget(el)
     tl = QLabel("本次发给模型（Agnes）的实际提示词：")
     tl.setStyleSheet(label_second(color_key="text", weight="semibold"))
@@ -2996,8 +2996,8 @@ def _modify_clip(app, idx):
     if err:
         el = QLabel(f"⚠️ 上次失败原因：\n{err}")
         el.setWordWrap(True)
-        el.setStyleSheet(f"color:{THEME["danger_text"]};font-size:12px;background:{THEME['card']};"
-                         f"border:1px solid {THEME["danger_text"]};border-radius:6px;padding:8px 12px;")
+        el.setStyleSheet(f"color:{THEME['danger_text']};font-size:12px;background:{THEME['card']};"
+                         f"border:1px solid {THEME['danger_text']};border-radius:6px;padding:8px 12px;")
         v.addWidget(el)
     tl = QLabel("本次已发给模型的提示词（可照抄其中想保留的设定）：")
     tl.setStyleSheet(label_second(color_key="text", weight="semibold"))

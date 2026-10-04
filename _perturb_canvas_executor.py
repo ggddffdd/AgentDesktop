@@ -46,6 +46,8 @@ def _run(check=None):
 
 
 FAILS = []
+# 首跑绿、复跑红（疑似文件系统瞬时占用）—— 计入命中但单列出来，不静默吞。
+FLAKY = []
 # 检查点计数（每个 _pg case + 末尾反向基线各 +1）—— 供统一输出契约报 PASS 总数。
 # 不硬编码 case 数：以后增删 case 忘了改常量就报不出准数（这正是跨版本哑弹的成因之一）。
 CHECKS = [0]
@@ -67,12 +69,69 @@ def _pg(desc, check, filepath, old, new):
     open(filepath, "w", encoding="utf-8").write(src.replace(old, new, 1))
     mut = _run(check)
     if mut.returncode == 0:
-        print("ERR 未变红: %s -> %s" % (desc, check))
-        FAILS.append(desc)
+        # 复跑一次再判：Windows 下「刚写回的 .py 被子进程读到旧内容」偶发出现过
+        # （2026-10-04 实测 PG13/B14 一次假哑弹，连跑三次均稳定通过）。
+        # 两次都绿才算真哑弹；首跑绿复跑红的如实标成 FLAKY 并单列，不静默吞掉。
+        again = _run(check)
+        if again.returncode != 0:
+            print("PG FLAKY: %s -> %s 首跑绿、复跑红（疑似文件系统瞬时占用）"
+                  % (desc, check))
+            FLAKY.append(desc)
+        else:
+            print("ERR 未变红: %s -> %s" % (desc, check))
+            FAILS.append(desc)
     else:
         print("PG OK: %s -> %s 变红" % (desc, check))
     # 还原
     open(filepath, "w", encoding="utf-8").write(src)
+
+
+def _pg_multi(desc, check, edits):
+    """**多点同时变异**：edits = [(filepath, old, new), ...]。
+
+    为什么需要它（2026-10-04 实测）：同一个缺陷可能有多道**相互独立、各自充分**的
+    防线。典型的如「假路径冒充成功」——执行器内的 `validate_output` 和统一入口
+    `assess_asset` 任一道在都能拦住，于是**单点变异永远翻不红**。这不是判据失效，
+    但如果不做处理，脚本只能报哑弹，真正的风险是「判据其实已经空转、断言写错了」
+    会被淹没在哑弹堆里看不出来。
+
+    故：把两道都拆掉再断言。判据此时必须翻红 —— 证明它真的在测「有没有防线」，
+    而不是测了一个恒真式。全部锚点先算好再落盘，任一未命中就整体放弃，
+    绝不留半截变异。
+    """
+    CHECKS[0] += 1
+    base = _run(check)
+    if base.returncode != 0:
+        print("ERR 基线已红: %s [%s]" % (desc, check))
+        FAILS.append(desc)
+        return
+    plan = []
+    for filepath, old, new in edits:
+        src = open(filepath, encoding="utf-8").read()
+        if old not in src:
+            print("ERR 锚点未命中: %s (%s)" % (desc, os.path.basename(filepath)))
+            FAILS.append(desc)
+            return
+        plan.append((filepath, src, src.replace(old, new, 1)))
+    for filepath, _src, text in plan:
+        open(filepath, "w", encoding="utf-8").write(text)
+    try:
+        mut = _run(check)
+        if mut.returncode == 0:
+            again = _run(check)      # 同 _pg：复跑一次防文件系统瞬时占用
+            if again.returncode != 0:
+                print("PG FLAKY: %s -> %s 首跑绿、复跑红（疑似文件系统瞬时占用）"
+                      % (desc, check))
+                FLAKY.append(desc)
+            else:
+                print("ERR 未变红: %s -> %s（多道防线全拆仍绿 = 判据可能空转）"
+                      % (desc, check))
+                FAILS.append(desc)
+        else:
+            print("PG OK: %s -> %s 变红" % (desc, check))
+    finally:
+        for filepath, src, _text in plan:
+            open(filepath, "w", encoding="utf-8").write(src)
 
 
 def main():
@@ -134,15 +193,41 @@ def main():
         "    if asset_root:",
         "    if False:  # 扰动：不查越目录")
 
-    # PG11 gen_video_executor 不接 validate_output → B9 红（假路径冒充成功）
-    _pg("gen_video 不校验产出", "B9", EXEC,
-        "        out_path = validate_output(out_path, \"clip\", asset_root)",
-        "        pass  # 扰动：不校验产出")
+    # PG11 「假路径冒充成功」这个缺陷现有**两道相互独立、各自充分**的防线：
+    #   ① 执行器内 validate_output（第一道，尽早报错；自定义执行器没有它）
+    #   ② 统一入口 canvas_graph.assess_asset（第二道，登记时兜底）
+    # 任一道在都能让 B9 绿 —— 所以单点变异必然哑弹（实测：只删① 绿、只删② 也绿）。
+    # 这不是判据失效，但必须证明「两道全拆时 B9 确实翻红」，否则无法排除
+    # 「B9 断言已空转」。故用 _pg_multi 同时拆两道。
+    _pg_multi("假路径冒充成功（执行器自查 + 统一入口双双关闭）", "B9", [
+        (EXEC, "        out_path = validate_output(out_path, \"clip\", asset_root)",
+         "        pass  # 扰动：执行器自查关闭\n"),
+        (GRAPH,
+         "    if not os.path.isfile(path):\n"
+         '        return ASSET_INVALID, "文件不存在: %s" % path\n'
+         "    try:\n"
+         "        if os.path.getsize(path) <= 0:\n"
+         '            return ASSET_INVALID, "文件为空: %s" % path\n'
+         "    except OSError as e:\n"
+         '        return ASSET_INVALID, "文件无法读取: %s (%s)" % (path, e)\n',
+         "    pass  # 扰动：统一入口不再判「文件是否存在/非空」\n"),
+    ])
 
-    # PG12 promo_fx 不接 validate_output → B10 红（越目录产出冒充成功）
-    _pg("promo_fx 不校验产出", "B10", EXEC,
-        "        res = validate_output(res, \"video\", asset_root)",
-        "        pass  # 扰动：不校验产出")
+    # PG12 同理（越目录产出）：改「执行器自查 + 统一入口目录围栏」两道一起拆。
+    _pg_multi("越目录产出冒充成功（执行器自查 + 统一入口双双关闭）", "B10", [
+        (EXEC, "        res = validate_output(res, \"video\", asset_root)",
+         "        pass  # 扰动：执行器自查关闭\n"),
+        (GRAPH,
+         "    if asset_root:\n"
+         "        try:\n"
+         "            root = os.path.abspath(asset_root)\n"
+         "            if os.path.commonpath([os.path.abspath(path), root]) != root:\n"
+         '                return ASSET_INVALID, "越出资产目录: %s" % path\n'
+         "        except ValueError:\n"
+         '            return ASSET_INVALID, "越出资产目录: %s" % path\n'
+         '    return ASSET_REAL, ""\n',
+         '    return ASSET_REAL, ""  # 扰动：统一入口不查越目录\n'),
+    ])
 
     # ---- Wave D #8：上游选择语义 ----
     # PG13 忽略 config.ref_source（显式指定失效）→ B14 红
@@ -200,6 +285,9 @@ if __name__ == "__main__":
             open(fp, "w", encoding="utf-8").write(content)
     # 统一输出契约（2026-10-03）：run_all --with-perturb 用 PASS=/FAIL= 汇总。
     print("PERTURB PASS=%d FAIL=%d" % (CHECKS[0] - len(FAILS), len(FAILS)))
+    if FLAKY:
+        # 计命中但单独列出：该 case 的「变异写回→子进程读取」时序不稳，值得盯住。
+        print("\n扰动首跑不稳定（复跑通过）: %s" % ", ".join(FLAKY))
     if FAILS:
         print("\n扰动失败项: %s" % ", ".join(FAILS))
         sys.exit(1)

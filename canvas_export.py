@@ -26,6 +26,9 @@ import os
 from typing import Optional
 
 import canvas_graph as cg
+# 状态枚举的唯一事实源在 task_graph（画布节点状态沿用 Task.status）——
+# 导入校验要用它判「status 是否合法」，不许在这里另抄一份白名单。
+import task_graph as tg
 # 几何复用第 3 步渲染层（layout_graph 为纯逻辑、无 Qt 依赖）
 from canvas_panel import layout_graph, region_svg_overlay
 # 颜色单一事实源：SVG 里的 fill/stroke 同样是 UI 呈现，不该写裸 hex
@@ -81,7 +84,72 @@ def _require_nodes(nodes: dict, from_id: str, to_id: str, where: str,
                 f"（文件里的节点: {sorted(nodes)[:8]}）")
 
 
-def _validate_project(gd, path: str) -> None:
+# 本读写器支持的工程文件版本。**缺 version 字段按 v1 处理** —— v1 与 v2 的节点/边
+# 结构相同，差别只在端口写法（v1 裸字符串、v2 {"type","multi"}），而端口解析本来就
+# 两种都认。**未知版本必须报错**：未来版本若新增字段，本版会静默丢掉它，用户看到的
+# 是「文件能打开、内容却少了一截」—— 这比干脆打不开更糟。
+SUPPORTED_VERSIONS = (1, 2)
+
+
+def _validate_local_edits(le, where: str, nid: str) -> None:
+    """校验 config.local_edits 的结构（list[dict]，字段与 image_local_edit 对齐）。
+
+    只做**结构**校验（类型 / 取值域），不做语义完备性校验 —— 例如 inpaint 条目缺
+    instruction 要到执行期才知道有没有意义，导入期替它下结论会误伤手工编写的工程文件。
+    """
+    if le is None:
+        return
+    if not isinstance(le, list):
+        raise CanvasImportError(
+            f"{where}: 节点 {nid}.config.local_edits 必须是数组，"
+            f"收到 {type(le).__name__}")
+    for i, e in enumerate(le):
+        p = f"{where}: 节点 {nid}.config.local_edits[{i}]"
+        if not isinstance(e, dict):
+            raise CanvasImportError(f"{p} 必须是对象，收到 {type(e).__name__}")
+        mode = e.get("mode", "transform")
+        if mode not in ("transform", "inpaint"):
+            raise CanvasImportError(
+                f"{p}.mode={mode!r} 非法（可选: transform / inpaint）")
+        for k, want in (("params", dict), ("instruction", str), ("region", dict)):
+            if k in e and e[k] is not None and not isinstance(e[k], want):
+                raise CanvasImportError(
+                    f"{p}.{k} 必须是 {want.__name__} 或 null，"
+                    f"收到 {type(e[k]).__name__}")
+
+
+def _validate_data_edges(nodes: dict, gd, where: str) -> None:
+    """数据边的两项结构校验：**不许重复** + **单入端口不许被多条边连**。
+
+    这两件在 `connect_data` 里本来也会拒，但那是运行时、且已经建了一半图。导入是
+    「要么整份能用、要么明确报错」的场合，必须在建图前就指出是第几条边出的问题。
+    """
+    edges = gd.get("data_edges", []) or []
+    seen = set()
+    single_in_owner = {}
+    for i, e in enumerate(edges):
+        frm, to = _split_endpoint(e, "data_edges", i, where)
+        key = (frm[0], frm[1], to[0], to[1])
+        if key in seen:
+            raise CanvasImportError(
+                f"{where}: data_edges[{i}] 与前面某条边完全重复："
+                f"{frm[0]}.{frm[1]} -> {to[0]}.{to[1]}")
+        seen.add(key)
+        spec = ((nodes.get(to[0]) or {}).get("inputs", {}) or {}).get(to[1])
+        # v2 端口是 {"type","multi"}；v1 是裸字符串（没有 multi 概念 → 一律按单入）
+        multi = spec.get("multi", False) if isinstance(spec, dict) else False
+        if multi:
+            continue
+        prev = single_in_owner.get(to)
+        if prev is not None:
+            raise CanvasImportError(
+                f"{where}: 端口 {to[0]}.{to[1]} 是单入端口，却被 data_edges[{prev}] "
+                f"与 data_edges[{i}] 连了两条边"
+                f'（确需多入请把该端口写成 {{"type": ..., "multi": true}}）')
+        single_in_owner[to] = i
+
+
+def _validate_project(gd, path: str, version=None) -> None:
     """导入前的结构预检：错误必须能定位到「哪个文件的哪个节点/哪条边」。
 
     为什么先校验再建图：`CanvasNode` / `Port` / `connect_data` 的异常是「就事论事」
@@ -89,6 +157,16 @@ def _validate_project(gd, path: str) -> None:
     端口。工程文件是给人改的，报错不指路等于没报。
     """
     where = os.path.basename(path or "工程文件")
+    # ① 版本：只放行明确支持的版本。缺字段按 v1（历史文件本来就没写 version）。
+    if version is not None:
+        if isinstance(version, bool) or not isinstance(version, int):
+            raise CanvasImportError(
+                f"{where}: version 必须是整数，收到 {version!r}")
+        if version not in SUPPORTED_VERSIONS:
+            raise CanvasImportError(
+                f"{where}: 工程文件 version={version} 不受支持"
+                f"（本版支持 {sorted(SUPPORTED_VERSIONS)}）—— "
+                f"请改用更新版本的程序打开，不要用旧版读取后另存")
     if not isinstance(gd, dict):
         raise CanvasImportError(
             f"{where}: 顶层必须是对象，收到 {type(gd).__name__}")
@@ -121,12 +199,34 @@ def _validate_project(gd, path: str) -> None:
                     raise CanvasImportError(
                         f"{where}: 节点 {nid}.{side} 端口 {pname!r} 的 multi "
                         f"必须是布尔，收到 {spec['multi']!r}")
+        # ② status：只认 task_graph.VALID_STATUSES。拼错的状态不会报错、只会静默
+        #    落到「未知颜色」，画布上看不出异常但状态语义已经丢了。
+        st = nd.get("status")
+        if st is not None and st not in tg.VALID_STATUSES:
+            raise CanvasImportError(
+                f"{where}: 节点 {nid}.status={st!r} 不是合法状态"
+                f"（可选: {list(tg.VALID_STATUSES)}）")
+        # ③ placeholder：必须是布尔 —— 读回时 bool("false") == True，会静默反转语义
+        ph = nd.get("placeholder")
+        if ph is not None and not isinstance(ph, bool):
+            raise CanvasImportError(
+                f"{where}: 节点 {nid}.placeholder 必须是布尔，收到 {ph!r}")
         if "config" in nd and not isinstance(nd["config"], dict):
             raise CanvasImportError(f"{where}: 节点 {nid}.config 必须是对象")
+        # ④ config.local_edits 结构（局部编辑记录的字段类型）
+        if isinstance(nd.get("config"), dict) and "local_edits" in nd["config"]:
+            _validate_local_edits(nd["config"]["local_edits"], where, nid)
         pos = nd.get("pos")
         if pos is not None and (not isinstance(pos, (list, tuple)) or len(pos) != 2):
             raise CanvasImportError(
                 f"{where}: 节点 {nid}.pos 必须是 [x, y] 或 null，收到 {pos!r}")
+        # ⑤ pos 两个值都必须是数字：字符串 "10" 会在布局层被当数字参与运算，
+        #    结果是「能打开、但节点位置莫名其妙」。
+        if pos is not None:
+            for i, v in enumerate(pos):
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    raise CanvasImportError(
+                        f"{where}: 节点 {nid}.pos[{i}] 必须是数字，收到 {v!r}")
     for key in ("data_edges", "order_edges"):
         if not isinstance(gd.get(key, []), list):
             raise CanvasImportError(f"{where}: {key} 必须是数组")
@@ -136,6 +236,8 @@ def _validate_project(gd, path: str) -> None:
     for i, e in enumerate(gd.get("order_edges", []) or []):
         frm, to = _split_endpoint(e, "order_edges", i, where)
         _require_nodes(nodes, frm[0], to[0], where, "order_edges", i)
+    # ⑥⑦ 数据边重复 + 单入端口被多条边连（要等节点都确认存在之后才判）
+    _validate_data_edges(nodes, gd, where)
 
 
 def export_project_json(g: "cg.CanvasGraph", path: str) -> dict:
@@ -176,8 +278,11 @@ def import_project_json(path: str) -> "cg.CanvasGraph":
             data = json.load(f)
         except json.JSONDecodeError as e:
             raise CanvasImportError(f"{where}: 不是合法 JSON（{e}）")
+    # 版本在外层包装里（不在 graph 内层），必须在这里取出并交给校验：未知版本若被
+    # 静默按旧结构读取，它新增的字段会在导入时无声消失（"能打开、内容少一截"）。
+    version = data.get("version") if isinstance(data, dict) else None
     gd = data.get("graph", data) if isinstance(data, dict) else data
-    _validate_project(gd, path)
+    _validate_project(gd, path, version)
 
     g = cg.CanvasGraph()
     for nid, nd in gd.get("nodes", {}).items():

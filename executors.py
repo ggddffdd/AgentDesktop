@@ -34,12 +34,23 @@ _EXT = {
 }
 
 
-def stage_path(asset_root, kind, node_id, port):
-    """真实落盘路径：{asset_root}/{kind}/{node_id}_{port}.{ext}（目录自动创建）。"""
+def stage_path(asset_root, kind, node_id, port, ext=None):
+    """真实落盘路径：{asset_root}/{kind}/{node_id}_{port}.{ext}（目录自动创建）。
+
+    `ext` 显式传入时用它 —— 占位物走 `.node-placeholder`（见 passthrough_executor）：
+    它的内容只是一段文本 manifest，若起名成 .mp4/.png，系统与外部播放器/预览器
+    会把它当真媒体打开，然后报一个与真实问题毫无关系的解码错误。
+    """
     d = os.path.join(asset_root, kind)
     os.makedirs(d, exist_ok=True)
-    ext = _EXT.get(kind, ".bin")
+    ext = ext or _EXT.get(kind, ".bin")
     return os.path.join(d, f"{node_id}_{port}{ext}")
+
+
+# 占位物专用扩展名：不是任何媒体类型，一眼能看出「这不是成品」
+PLACEHOLDER_EXT = ".node-placeholder"
+# meta 里的内容类型标记（程序判定用；扩展名是给人看的）
+PLACEHOLDER_CONTENT_TYPE = "placeholder"
 
 
 # 执行器产出校验：kind → 允许的扩展名（比 stage_path 的 _EXT 宽松 —— 例如 video 允许 .gif）
@@ -183,7 +194,7 @@ def passthrough_executor(node, asset_root):
             kind = pt.port_type
             if kind not in _EXT:
                 kind = "data"
-            path = stage_path(asset_root, kind, node.id, p)
+            path = stage_path(asset_root, kind, node.id, p, ext=PLACEHOLDER_EXT)
             with open(path, "w", encoding="utf-8") as f:
                 f.write("# canvas runtime placeholder\nnode=%s\nport=%s\nkind=%s\n"
                         % (node.id, p, kind))
@@ -193,12 +204,15 @@ def passthrough_executor(node, asset_root):
                                     node.id, p),
                 path=path,
                 # Wave D（复审 #7）：passthrough 写的是一个「流程占位物」——
-                # 内容只是几行 manifest，扩展名却按端口类型起成 .mp4/.png。
-                # 它会被登记（调度链要完整），但必须标记为占位，别让下游/UI
-                # 把「有个文件」读成「真出片」。
+                # 内容只是几行 manifest。
+                # 复审第 3 条：扩展名不再借真实媒体后缀（.mp4/.png），
+                # 改为 .node-placeholder，避免外部程序/媒体预览器尝试打开它；
+                # 同时在 meta 里给出 content_type 供程序判定（扩展名是给人看的，
+                # 元数据才是给下游代码看的）。
                 placeholder=True,
                 meta={"tags": [node.node_type, kind],
                       "project": "canvas_runtime",
+                      "content_type": PLACEHOLDER_CONTENT_TYPE,
                       "task": "节点 %s 产出 %s（第5步 passthrough）" % (node.id, kind)},
             )
             node.out_assets[p] = ref

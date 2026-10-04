@@ -29,6 +29,14 @@ INCOMPLETE_FLAG = "__incomplete__"
 # 保留键（不写进 state，避免污染下游上下文）
 _RESERVED_KEYS = (INCOMPLETE_FLAG,)
 
+# 状态枚举的**唯一事实源**：Task.status 的全部合法取值。
+# 为什么单列成常量：这套取值此前只散在注释与各处字符串比较里（canvas_panel 的
+# STATUS_COLOR 又是第三份），加一处漏一处 —— 例如工程文件导入校验根本无从知道
+# 「什么算合法状态」。凡要判「状态是否合法」的地方（导入校验 / UI 配色表 /
+# 漂移守卫）一律引用这里，不许再抄一遍。
+VALID_STATUSES = ("pending", "in_progress", "completed", "failed",
+                  "cancelled", "incomplete")
+
 
 class Task:
     """一个可执行节点：有 subject、有 executor、有依赖、有状态。"""

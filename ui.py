@@ -7168,7 +7168,7 @@ class ChatWindow(QMainWindow):
                         '<div class="tool-wrap">'
                         f'<img src="file:///{img_abs.replace(os.sep, "/")}" '
                         f'style="max-width:320px;border-radius:10px;"/>'
-                        f'<div style="font-size:{THEME['font_micro']};color:{THEME["faint"]};margin-top:4px;">'
+                        f'<div style="font-size:{THEME["font_micro"]};color:{THEME["faint"]};margin-top:4px;">'
                         f'{html_mod.escape(result)}</div></div>'
                     )
                     return self._wrap_msg(bubble, idx)

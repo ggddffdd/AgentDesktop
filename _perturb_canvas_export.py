@@ -38,18 +38,24 @@ MUTATIONS = [
     # ---- Wave C（复审 #4 / #5）：导入校验 ----
     ("M9", "A8", "class CanvasImportError(ValueError):",
      "class _NoImportError(ValueError):  # 扰动：去掉专用导入异常"),
-    # 锚点必须带上上一行：函数定义行 `def _validate_project(gd, path) -> None:` 里
-    # 也含 `_validate_project(gd, path)`，只匹配调用串会先打到定义行上（源码直接语法坏掉）。
+    # 锚点必须带上上一行：函数定义行 `def _validate_project(gd, path, version=None):`
+    # 里也含 `_validate_project(gd, path`，只匹配调用串会先打到定义行上（源码直接语法坏掉）。
+    # 注：调用串现在带 version 参数（安全加固：未知版本不得静默按旧结构读），
+    # 锚点跟着改；A9 判据自身已用 `_validate_project\(gd,\s*path` 前缀正则，不受影响。
     ("M10", "A9",
      '    gd = data.get("graph", data) if isinstance(data, dict) else data\n'
-     "    _validate_project(gd, path)",
+     "    _validate_project(gd, path, version)",
      '    gd = data.get("graph", data) if isinstance(data, dict) else data\n'
      "    pass  # 扰动：不做结构预检"),
+    # M11 打「where」这一行（报错里的文件名来源）。它在本文件出现两次
+    # （_validate_project 与 import_project_json 各一），必须带上下文去歧义；
+    # 而 _validate_project 里 where 的下一行现在是 version 预检块（不是 gd 判定），
+    # 故锚点用紧跟其后的那行注释 —— 注释若被改写，脚本会 [SKIP] 大声报出来，不会静默打哑弹。
     ("M11", "B11",
      '    where = os.path.basename(path or "工程文件")\n'
-     "    if not isinstance(gd, dict):",
+     "    # ① 版本：只放行明确支持的版本。缺字段按 v1（历史文件本来就没写 version）。",
      '    where = ""  # 扰动：报错不带文件名\n'
-     "    if not isinstance(gd, dict):"),
+     "    # ① 版本：只放行明确支持的版本。缺字段按 v1（历史文件本来就没写 version）。"),
     ("M12", "B13", "            if not sep or not node or not port:",
      "            if False:  # 扰动：不校验「节点.端口」格式"),
 ]

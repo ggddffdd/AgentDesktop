@@ -625,11 +625,18 @@ else:
               all(a.registered for n in gph.nodes.values()
                   for a in n.out_assets.values() if isinstance(a, cg.AssetRef)))
 
-        # 换成「真产出」的执行器后，占位标记必须按实际产出重算
+        # 换成「真产出」的执行器后，占位标记必须按实际产出重算。
+        # path 必须指向**磁盘上真实存在**的文件：统一资产校验（assess_asset）会把
+        # 「非空却不存在的路径」判成 invalid 并让节点 failed —— 那是另一条判据
+        # 在守的事。这里要测的是「占位标记是否按产出重算」，所以先造个真文件。
+        _realdir = tempfile.mkdtemp(prefix="test_canvas_real_")
+        _realpng = os.path.join(_realdir, "real.png")
+        with open(_realpng, "wb") as _f:
+            _f.write(b"\x89PNG\r\n\x1a\n")
         gph2 = cg.build_sample_graph()
         gph2.set_executor("img", lambda st: (
             gph2.nodes["img"].out_assets.update(
-                {"image": cg.AssetRef(kind="image", name="真图", path="real.png")}),
+                {"image": cg.AssetRef(kind="image", name="真图", path=_realpng)}),
             {"ok": True})[1])
         gph2.run({})
         check("B23c 产出换成真物后不再算占位（标记按产出算，不写死）",

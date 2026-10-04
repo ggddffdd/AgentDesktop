@@ -169,9 +169,9 @@ def build_twin_panel(app):
     del_btn.setFixedHeight(32)
     del_btn.setCursor(Qt.PointingHandCursor)
     del_btn.setStyleSheet(
-        f"QPushButton{{background:{THEME["danger_bg2"]};color:{THEME["danger_text_dark"]};border:1px solid {THEME["danger_border"]};"
+        f"QPushButton{{background:{THEME['danger_bg2']};color:{THEME['danger_text_dark']};border:1px solid {THEME['danger_border']};"
         f"border-radius:8px;padding:0 12px;font-size:13px;}}"
-        f"QPushButton:hover{{background:{THEME["danger_hover_bg"]};}}")
+        f"QPushButton:hover{{background:{THEME['danger_hover_bg']};}}")
     del_btn.clicked.connect(lambda: _twin_delete_portrait(app))
     btn_row.addWidget(del_btn)
     right_col.addLayout(btn_row)

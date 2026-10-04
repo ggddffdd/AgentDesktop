@@ -8,6 +8,7 @@
 """
 
 import os
+import re
 import sys
 import json
 import tempfile
@@ -147,7 +148,15 @@ def main():
           "跟「自己代码 bug」混成同一个 ValueError，UI 只能一律说「导入失败请重试」")
     check("A9 导入前先做结构预检 _validate_project（错误带文件+节点/边定位）",
           hasattr(cx, "_validate_project")
-          and "_validate_project(gd, path)" in src
+          # 用正则匹配调用**前缀**：签名后续还会长参数（如 version），
+          # 写死整串会让「给校验加一项」这种正当改动误伤这条判据。
+          # 但「前缀」必须限定成**调用语句**（行首缩进 + 函数名）：
+          # 定义行 `def _validate_project(gd, path: str, version=None)` 里同样含
+          # `_validate_project(gd, path`，原正则 `_validate_project\(gd,\s*path`
+          # 会命中它 —— 于是把调用整行删掉，这条判据照样绿（**谓词空转**）。
+          # 2026-10-04 由扰动 M10 抓出（删调用后 A9 未翻红）。definition 行首是
+          # `def`，故要求「行首空白 + 函数名」即可把定义行排除在外。
+          and re.search(r"^\s+_validate_project\(gd,\s*path", src, re.M)
           and "def _split_endpoint" in src and "def _require_nodes" in src,
           "不预检的话，非法 port_type 会以「非法端口类型: 'imgae'」直接炸，说不出是哪个文件哪个节点")
     check("A10 导入失败不返回半成品图（构建过程包成 CanvasImportError）",

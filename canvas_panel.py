@@ -294,9 +294,12 @@ def region_svg_overlay(region: Optional[dict], ox: float, oy: float,
     供 export_svg 标记「已局部编辑」节点：整图→节点内框；rect→对应区域；
     polygon→闭合路径。返回 SVG 片段字符串（可能为空）。
     """
+    # 失败色提前取出：**单引号 f-string 内再嵌单引号**属于 PEP 701（Python 3.12+），
+    # 而项目声明支持 3.10+（README），在 3.11 及以前是 SyntaxError。
+    stroke_c = THEME["canvas_failed"]
     if not region:
         return (f'<rect x="{ox+4:.1f}" y="{oy+4:.1f}" width="{ow-8:.1f}" '
-                f'height="{oh-8:.1f}" fill="none" stroke="{THEME['canvas_failed']}" '
+                f'height="{oh-8:.1f}" fill="none" stroke="{stroke_c}" '
                 f'stroke-width="2" stroke-dasharray="5 3"/>')
     if region.get("type") == "rect":
         rx = ox + region["x"] * ow
@@ -304,13 +307,13 @@ def region_svg_overlay(region: Optional[dict], ox: float, oy: float,
         rw = region["w"] * ow
         rh = region["h"] * oh
         return (f'<rect x="{rx:.1f}" y="{ry:.1f}" width="{rw:.1f}" height="{rh:.1f}" '
-                f'fill="rgba(217,48,37,0.15)" stroke="{THEME['canvas_failed']}" stroke-width="2" '
+                f'fill="rgba(217,48,37,0.15)" stroke="{stroke_c}" stroke-width="2" '
                 f'stroke-dasharray="5 3"/>')
     pts = region.get("points", [])
     if pts:
         d = "M " + " L ".join("%.1f %.1f" % (ox + p[0] * ow, oy + p[1] * oh)
                               for p in pts) + " Z"
-        return (f'<path d="{d}" fill="rgba(217,48,37,0.15)" stroke="{THEME['canvas_failed']}" '
+        return (f'<path d="{d}" fill="rgba(217,48,37,0.15)" stroke="{stroke_c}" '
                 f'stroke-width="2" stroke-dasharray="5 3"/>')
     return ""
 

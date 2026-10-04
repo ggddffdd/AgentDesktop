@@ -15,7 +15,7 @@ AssetRef 通过 `register_asset` 落地（id/path 回填），下游按引用读
 第 5 步才接真实执行器（本模块默认用 stub executor 只搬运/合成 AssetRef）。
 """
 
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 import os
 from dataclasses import dataclass, field
 
@@ -128,6 +128,74 @@ def make_real_asset_store():
     return _real
 
 
+# --------------------------------------------------------------------------
+# 资产有效性：统一判定入口
+# （复审意见：执行器可以被外部替换，不能只靠执行器内部自查）
+# --------------------------------------------------------------------------
+class CanvasAssetError(RuntimeError):
+    """执行器声称产出了资产，但产物不可用（不存在 / 为空 / 越出资产目录）。
+
+    单独一个类型，是为了让「节点业务失败」与「产物根本没落地」在调用方能分开：
+    前者是流程问题，后者是执行器/配置问题。task_graph 对两者都标 failed，
+    但报告与 UI 需要说清是哪一种。
+    """
+
+
+# 资产有效性四态。UI 的「绿点」只该在 real 这一档给 ——
+# `registered`（登记动作成功）与 `validity`（产物到底算不算数）是两件事：
+# 占位物同样会被登记（否则调度链断），但它绝不该显示成「真出片了」。
+ASSET_REAL = "real"                  # 真产物：文件在、非空、在资产目录内
+ASSET_PLACEHOLDER = "placeholder"    # 占位物：流程占位，不承诺真实文件
+ASSET_STALE = "stale"                # 历史产物：文件在，但属于上一轮
+ASSET_INVALID = "invalid"            # 失效产物：不可用
+
+ASSET_VALIDITIES = (ASSET_REAL, ASSET_PLACEHOLDER, ASSET_STALE, ASSET_INVALID)
+
+
+def assess_asset(ref, asset_root=None):
+    """**资产有效性的唯一判定入口** → (validity, reason)。
+
+    为什么要有这一层：内置执行器（gen_image / gen_video / promo_fx）确实各自调了
+    `validate_output()`，但执行器是可以被外部替换的（`CanvasGraph.set_executor`）——
+    自定义执行器完全可能返回不存在的路径、空文件、或越出 `asset_root` 的路径，
+    那时代码里就没有第二道防线了。所以判定放在**登记这一层**统一做，执行器内部的
+    自查只当「尽早报错」的辅助。
+
+    判定顺序（先问「这是什么」再问「文件在不在」）：
+      1. 不是 AssetRef / 路径为空              → invalid
+      2. `placeholder=True`                    → placeholder
+         （**不参与 invalid 判定**：stub 的路径本来就是编出来的、磁盘上没有，
+          若按「文件必须存在」判，纯 stub 的图会集体 failed）
+      3. `stale=True`                          → stale（上一轮产物，本轮未重新产出）
+      4. 不存在 / 为空 / 读不了 / 越出资产目录  → invalid
+      5. 其余                                  → real
+    """
+    if not isinstance(ref, AssetRef):
+        return ASSET_INVALID, "不是 AssetRef: %s" % type(ref).__name__
+    if not (getattr(ref, "path", "") or "").strip():
+        return ASSET_INVALID, "资产路径为空"
+    if getattr(ref, "placeholder", False):
+        return ASSET_PLACEHOLDER, ""
+    if getattr(ref, "stale", False):
+        return ASSET_STALE, "上一轮产物：本轮未重新产出"
+    path = ref.path.strip()
+    if not os.path.isfile(path):
+        return ASSET_INVALID, "文件不存在: %s" % path
+    try:
+        if os.path.getsize(path) <= 0:
+            return ASSET_INVALID, "文件为空: %s" % path
+    except OSError as e:
+        return ASSET_INVALID, "文件无法读取: %s (%s)" % (path, e)
+    if asset_root:
+        try:
+            root = os.path.abspath(asset_root)
+            if os.path.commonpath([os.path.abspath(path), root]) != root:
+                return ASSET_INVALID, "越出资产目录: %s" % path
+        except ValueError:
+            return ASSET_INVALID, "越出资产目录: %s" % path
+    return ASSET_REAL, ""
+
+
 @dataclass
 class AssetRef:
     """对一条资产的引用（第 2 步已写进 asset_store）。
@@ -144,6 +212,16 @@ class AssetRef:
     # 流程占位物（没有接真生成）。registered 只说「登记动作成功了」，占位物同样会被
     # 登记（否则调度链断）；两个字段合起来才能回答「到底有没有真出片」。
     placeholder: bool = False
+    # 统一资产校验（复审）：这条产物**到底算不算数**。由 CanvasGraph._register_asset
+    # 统一调 assess_asset() 写入，取值见 ASSET_VALIDITIES。
+    # 与 registered 的分工：registered 只说「写库这个动作成功了」，validity 才回答
+    # 「这条资产能不能用」—— invalid 的产物**照样登记**（留证据便于排查），
+    # 但 UI 不能给它绿点、下游不能拿它当素材。
+    validity: str = ""
+    invalid_reason: str = ""
+    # 是否属于「上一轮运行留下的产出」：CanvasGraph.run 开跑前统一打标，
+    # 本轮重新产出的对象是新建的（不带这个标），跑完仍带标的就是历史产物。
+    stale: bool = False
     meta: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -154,6 +232,9 @@ class AssetRef:
             "name": self.name,
             "registered": self.registered,
             "placeholder": self.placeholder,
+            "validity": self.validity,
+            "invalid_reason": self.invalid_reason,
+            "stale": self.stale,
             "meta": self.meta,
         }
 
@@ -323,6 +404,10 @@ class CanvasGraph:
         # 第 2 步：资产库 sink。None → 内存记录（不落盘、不污染真实库）；
         # 生产接真实库时显式传 make_real_asset_store()（register_asset）。
         self._asset_store = _resolve_store(asset_store)
+        # 资产落盘根目录（由 use_real_executors(asset_root) 记下）。
+        # _register_asset 用它做「越出资产目录」的围栏判定；None = 没接真实落盘，
+        # 只做「文件存在 / 非空」校验，不做目录围栏。
+        self.asset_root: Optional[str] = None
 
     # ---- 节点 ----
     def add_node(self, node: CanvasNode):
@@ -335,29 +420,64 @@ class CanvasGraph:
 
     def _wrap(self, node: CanvasNode) -> Callable:
         def _exec(state: dict) -> dict:
+            # 本轮要重产了：先把该节点**上一轮的**产出标成「历史产物」（stale 档）。
+            # 为什么标在这里而不是 run() 开头：只有真跑的节点才该被标 —— 任务图跑过
+            # 一次后节点都是终态，再 run 不会重跑任何任务；若在 run 开头无脑标记，
+            # 那些「根本没重跑」的产出会被错报成历史产物。
+            # 本轮执行器给出的新对象不带这个标；若执行器没重建 out_assets（保留了
+            # 旧引用），那它确实仍是上一轮的东西 → 保持 stale 是对的。
+            for a in (node.out_assets or {}).values():
+                if isinstance(a, AssetRef):
+                    a.stale = True
             # 把上游通过数据边传来的 AssetRef 注入节点 in_assets
             for p, a in self._incoming_assets(node.id).items():
                 node.in_assets[p] = a
             node.placeholder = False          # 每次重跑都重算，不沿用上一轮结论
             r = node.executor(state)
-            # 第 2 步：节点产出 AssetRef 落地到资产库，回填 asset_id
+            # 第 2 步：节点产出 AssetRef 落地到资产库，回填 asset_id；
+            # 同时在这一层统一判有效性 —— 执行器可能被外部替换（set_executor），
+            # 不能只靠它自己的 validate_output 自查。
+            bad = []
             for p, a in node.out_assets.items():
                 if isinstance(a, AssetRef):
                     self._register_asset(a)
+                    # 只有「给了路径、却不可用」才算假完成 —— 这个区分是刻意的：
+                    #   * path **非空** + invalid → 执行器声称产出了、东西却不在
+                    #     （不存在 / 空文件 / 越出 asset_root）→ 节点诚实 failed
+                    #   * path **为空** + invalid → 执行器压根没给引用，更接近
+                    #     「这一轮该端口没产出」→ 不登记、也不 failed，
+                    #     让执行器自己的 incomplete 机制去表达
+                    if a.validity == ASSET_INVALID and (a.path or "").strip():
+                        bad.append((p, a.invalid_reason or "产物不可用"))
             # Wave D（复审 #7）：本节点这轮产出里只要有占位物，节点就是「占位节点」。
             # 记在节点上而不是让调用方自己去翻 out_assets —— UI / 报告都要问这个问题。
             node.placeholder = any(
                 getattr(a, "placeholder", False)
                 for a in node.out_assets.values() if isinstance(a, AssetRef))
+            # 统一资产校验（复审）：**所有**产出都体检完再报错（不能第一条就 break，
+            # 否则 UI 只看得到第一个问题）。有不可用产物 → 节点诚实 failed。
+            # 只兜「执行器声称产出了、东西却不在」这一种；一个产物都没产出的情况，
+            # 由执行器自己的 incomplete 机制表达，这里不替它编造失败。
+            if bad:
+                raise CanvasAssetError(
+                    "节点 %s 产出的资产不可用: %s"
+                    % (node.id, "; ".join("端口 %s: %s" % (p, w) for p, w in bad)))
             return r
         return _exec
 
-    def _incoming_assets(self, node_id: str) -> Dict[str, Optional[AssetRef]]:
+    def _incoming_assets(self, node_id: str) -> Dict[str, Union[AssetRef, List[AssetRef], None]]:
         """上游产出的资产放在上游节点的 out_assets[port] 上，
 
         数据边只是连线关系，不持有资产本身。故这里从上游节点的
         out_assets 读回（上游已先跑完，见 connect_data 隐含的顺序边），
         下游 _wrap 在跑自己的 executor 前注入 in_assets。
+
+        **返回值的类型随端口而变**（写在这里是因为自定义执行器最容易踩）：
+          * 单入端口（multi=False）→ `AssetRef` 或 `None`（该上游还没产出）
+          * 多入端口（multi=True） → `list[AssetRef]`（按边顺序收集，**可能含 None**，
+            因为某条上游边可能还没产出资产）
+        自定义执行器若按「上游是单个资产」处理，遇到 multi 端口会拿到 list ——
+        取用前先判端口 spec 的 multi，别假定类型。
         """
         out = {}
         tn = self.nodes.get(node_id)
@@ -377,14 +497,22 @@ class CanvasGraph:
 
     # ---- 资产库（第 2 步）----
     def _register_asset(self, ref: AssetRef) -> str:
-        """把一条 AssetRef 落地到资产库 sink，回填 asset_id / registered。
+        """把一条 AssetRef 落地到资产库 sink，回填 asset_id / registered / validity。
 
         画布只持引用：这里调用 asset_store.register_asset 做登记，
         不创建/管理真实文件（文件由第 5 步执行器产出）。
         缺 name/path 与真实库一致地拒收（registered=False）。
+
+        **有效性判定统一在这一层做**（复审要求）：执行器可以被外部替换
+        （set_executor），它返回的路径不一定真的落盘 —— 只靠执行器内部自查会漏。
+        invalid 的产物**照样登记**：资产库里留得下证据，便于事后查「这个节点当时
+        为什么红」；但 validity 会写明它不可用，`_wrap` 据此把节点判 failed，
+        UI 也不给它绿点。
         """
         if not isinstance(ref, AssetRef) or not ref.kind:
             return ""
+        # 统一有效性入口（不依赖任何执行器内部校验）
+        ref.validity, ref.invalid_reason = assess_asset(ref, self.asset_root)
         name = (ref.name or "").strip()
         path = (ref.path or "").strip()
         if not name or not path:
@@ -395,6 +523,10 @@ class CanvasGraph:
         project = str(meta.get("project", "") or "canvas_stage")
         task = str(meta.get("task", "") or "")
         ameta = {k: v for k, v in meta.items() if k not in ("tags", "project", "task")}
+        # 有效性随登记一起留痕：事后翻资产库能看出这条当时是不是本来就坏的
+        ameta["validity"] = ref.validity
+        if ref.invalid_reason:
+            ameta["invalid_reason"] = ref.invalid_reason
         try:
             ok, aid = self._asset_store(name, ref.kind, path,
                                         tags=tags, project=project,
@@ -766,8 +898,35 @@ class CanvasGraph:
                         # Wave D #7：registered = 「登记动作成功」，placeholder = 「是占位物」。
                         # 两个都要报出来，否则「占位流程跑通」会被读成「真出片」。
                         "placeholder": bool(a.placeholder),
+                        # 统一资产校验：registered 只说「写库成功了」，validity 才说
+                        # 「这条能不能用」—— 占位流程跑通 ≠ 真出片，
+                        # 登记成功的坏路径也 ≠ 可用素材。两者都要报出来。
+                        "validity": a.validity,
+                        "invalid_reason": a.invalid_reason,
+                        "stale": bool(a.stale),
                     })
         return out
+
+    def audit_assets(self) -> dict:
+        """资产体检报告：按四态汇总全图产出（供 UI / 报告 / 判据消费）。
+
+        与 `asset_registrations()` 的分工：那个是**逐条明细**，这个是**分档计数** ——
+        画布状态条只需要知道「几条真产物、几条占位、几条失效」。
+
+        `unassessed` 是第五档：没走过 `_register_asset` 的 AssetRef（例如手工塞进
+        out_assets、还没跑过 run）→ validity 为空。**不能把它算进 real**，
+        但也不该冒充 invalid —— 它只是"还没体检"。
+        """
+        counts = {v: 0 for v in ASSET_VALIDITIES}
+        counts["unassessed"] = 0
+        by_validity = {v: [] for v in counts}
+        for r in self.asset_registrations():
+            v = r.get("validity") or "unassessed"
+            if v not in counts:
+                v = "unassessed"
+            counts[v] += 1
+            by_validity[v].append("%s.%s" % (r["node"], r["port"]))
+        return {"counts": counts, "by_validity": by_validity}
 
     # ---- 执行器（第 5 步：真正落盘）----
     def set_executor(self, node_id: str, executor: Callable) -> None:
@@ -789,6 +948,8 @@ class CanvasGraph:
         promo_fx 回落本地 PIL，零网络）。返回被替换执行器的节点 id 列表。
         """
         from executors import apply_real_executors
+        # 记下资产根目录：_register_asset 的统一校验要用它做「越出资产目录」围栏
+        self.asset_root = asset_root
         return apply_real_executors(self, asset_root, inpaint_fn, video_fn, motion_fn)
 
     # ---- 执行 ----

@@ -10,6 +10,7 @@ _perturb_2092.py
 _perturb_210.py
 _perturb_canvas_agnes.py
 _perturb_canvas_assetstore.py
+_perturb_canvas_assetvalid.py
 _perturb_canvas_ciimage.py
 _perturb_canvas_edit.py
 _perturb_canvas_executor.py
