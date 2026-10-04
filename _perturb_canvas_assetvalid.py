@@ -85,7 +85,7 @@ MUTATIONS = [
 ]
 
 # 反向基线：这些判据在**原文件**上应保持绿（exit=0）
-BASELINE = ("A1", "B2", "B9", "B10", "C2", "C9", "D1", "E1")
+BASELINE = ("A1", "A6", "B2", "B9", "B10", "C2", "C9", "D1", "E1")
 
 
 def run_with(check_name, variant=None, env_extra=None):
@@ -149,6 +149,34 @@ def main():
         passed += 1 if ok else 0
     finally:
         shutil.rmtree(fake, ignore_errors=True)
+
+    # ---- M18：A6 外部解释器体检的非空转验证 ----
+    # 这条走不了「改源码」那条路：A6 验的正是「源码能不能被 3.10/3.11 编译」，
+    # 改坏源文件会连 A6 的**扫描清单**一起搅乱（而且真去改生产源码太危险）。
+    # 做法：造一份含 PEP701 的假源码 + 清单，用 EXT_CHECK_ROOT/LIST 指过去 ——
+    # 体检必须因此翻红，否则它就是一条「永远绿」的空判据。
+    total += 1
+    fake_ext = tempfile.mkdtemp(prefix="av_ext_")
+    with open(os.path.join(fake_ext, "fake_pep701.py"), "w", encoding="utf-8") as f:
+        # '\x27' 写出来才是单引号：假源码的内容是 `print(f'a {d['k']}')`（3.12-only），
+        # 而**本行自身**不含该字面写法 —— 否则这个扰动脚本自己就会被 A6 扫红。
+        f.write("d = {'k': 1}\nprint(f'a {d[\x27k\x27]}')\n")
+    _lst = os.path.join(fake_ext, "list.txt")
+    with open(_lst, "w", encoding="utf-8") as f:
+        f.write("fake_pep701.py")
+    try:
+        rc18 = run_with("A6", env_extra={"EXT_CHECK_ROOT": fake_ext,
+                                         "EXT_CHECK_LIST": _lst})
+    finally:
+        shutil.rmtree(fake_ext, ignore_errors=True)
+    if rc18 == 2:
+        total -= 1  # 无外部解释器 → A6 没跑，目标判据不存在；环境相关，不计入
+        print("  [SKIP] M18 -> A6: 本机无外部解释器（3.10/3.11），该变异无法验证")
+    elif rc18 == 1:
+        passed += 1
+        print("  [OK ] M18 -> A6: 假源码含 PEP701 时体检确实翻红")
+    else:
+        print("  [FAIL] M18 -> A6: 假源码含 PEP701 但体检仍绿（判据空转）")
 
     # ---- 反向基线：原文件 + 同判据应绿 ----
     base_bad = []

@@ -241,7 +241,12 @@ def _validate_project(gd, path: str, version=None) -> None:
 
 
 def export_project_json(g: "cg.CanvasGraph", path: str) -> dict:
-    """把可编辑画布状态序列化为工程 JSON（含节点位置/参数/资产引用 + 连线）。
+    """把可编辑画布状态序列化为工程 JSON（含节点位置/参数/连线）。
+
+    **产物引用（`out_assets`）有意不写进工程文件**：它是运行期状态，跨会话、换机器
+    后路径基本失效，存进去只会让下次打开时看到一片指向不存在文件的「假产物」。
+    工程文件只承载「画布结构 + 编辑意图」。这**不是兼容缺口**，别去补 ——
+    2026-10-04 已核实导出（`CanvasNode.to_dict` 无此字段）与导入两侧都不碰 out_assets。
 
     返回写入的 dict（便于判据断言）。父目录不存在时自动创建。
 
@@ -268,6 +273,8 @@ def import_project_json(path: str) -> "cg.CanvasGraph":
     节点重建时恢复 id / 类型 / 端口(含 multi) / config / 位置 / status / placeholder；
     连线（数据边 + 顺序边）原样重建，由 `connect_data` 再走一遍端口存在 + 类型兼容
     + 不成环校验。
+    **不恢复 `out_assets`**（与导出侧对称）：产物引用是运行期状态、不进工程文件，
+    所以「节点上的产物路径」在存盘-读回后一律为空，需要重跑才有产出。
     执行器用默认 stub（第 5 步接真执行器时再替换为真实实现）。
 
     失败一律抛 CanvasImportError（带文件名 + 具体节点/边定位），不返回半成品图。

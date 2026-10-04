@@ -19,6 +19,7 @@
 import os
 import sys
 import json
+import subprocess
 import tempfile
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -117,6 +118,95 @@ def main():
             _prod[fn] = hits
     check("A5 生产源码零 PEP 701（README 声明 3.10+，3.11 及以前会 SyntaxError）",
           not _prod, str(_prod))
+
+    # ---- A6~A8：外部解释器兼容体检 ----
+    # 与 A1~A5 的分工：A5 用自研词法检测器扫**已知形态**（同类引号嵌套 / 表达式内
+    # 反斜杠），这里用真 3.10 / 3.11 解释器 `compile()` 全库兜底 —— 未知写法只有真
+    # 解释器认得出来。两者互补，都不能省（`ast.parse(feature_version=...)` 抓不到
+    # PEP 701，已实测，所以别拿它当替代）。
+    #
+    # 解释器来自临时下载的官方 embeddable 包（不在仓库里、别的机器上也没有），
+    # 故**缺失即 SKIP、不算失败**；存在则必须零语法错。
+    _CHECK_SRC = (
+        "import sys, pathlib\n"
+        "root = pathlib.Path(sys.argv[1])\n"
+        "names = pathlib.Path(sys.argv[2]).read_text(encoding='utf-8').split('\\n')\n"
+        "bad = []\n"
+        "for n in names:\n"
+        "    n = n.strip()\n"
+        "    if not n:\n"
+        "        continue\n"
+        "    p = root / n\n"
+        "    try:\n"
+        "        compile(p.read_bytes(), str(p), 'exec')\n"
+        "    except SyntaxError as e:\n"
+        "        bad.append('%s:%s %s' % (n, e.lineno, e.msg))\n"
+        "    except OSError as e:\n"
+        "        bad.append('%s: 读不到 (%s)' % (n, e))\n"
+        "print('BAD=%d' % len(bad))\n"
+        "for b in bad[:10]:\n"
+        "    print('  ' + b)\n"
+    )
+
+    # 扫描范围＝**随仓库交付的 .py**（git 跟踪），不是「目录里所有 .py」。
+    # 顶层那些 `_cur_*` / `_bak_*` / `_ui_199_keep.py` 是上一轮的**未跟踪备份副本**
+    # （`git ls-files` 为空、打包 spec 也不收编），里面残留旧写法是预期内的 ——
+    # 2026-10-04 已核实并报告过。把它们算进来只会造一条永远红的判据。
+    def _tracked_py():
+        try:
+            _r = subprocess.run(["git", "ls-files", "*.py"], cwd=_ROOT,
+                                capture_output=True, text=True)
+            if _r.returncode == 0 and _r.stdout.strip():
+                return [p for p in _r.stdout.split() if p.endswith(".py")]
+        except Exception:  # noqa: BLE001 - 无 git 时退回前缀约定
+            pass
+        return sorted(n for n in os.listdir(_ROOT)
+                      if n.endswith(".py") and not n.startswith("_"))
+
+    _py_list = _tracked_py()
+    # 注入点（供扰动脚本自证「改坏必红」，与 A5 的 PEP701_ROOT 同一思路）：
+    #   EXT_CHECK_ROOT → 换扫描根（造一份含违规写法的假源码树）
+    #   EXT_CHECK_LIST → 换清单文件（只扫那份假源码）
+    _ext_root = os.environ.get("EXT_CHECK_ROOT") or _ROOT
+    _env_list = os.environ.get("EXT_CHECK_LIST")
+    if _env_list and os.path.exists(_env_list):
+        with open(_env_list, encoding="utf-8") as _f:
+            _py_list = [x.strip() for x in _f if x.strip()]
+    _list_file = os.path.join(tmp, "pyfiles_for_ext_check.txt")
+    with open(_list_file, "w", encoding="utf-8") as _f:
+        _f.write("\n".join(_py_list))
+
+    _ext_py = [
+        ("3.10", os.environ.get("PY310_EXE")
+         or os.path.join(tempfile.gettempdir(), "py310", "python.exe")),
+        ("3.11", os.environ.get("PY311_EXE")
+         or os.path.join(tempfile.gettempdir(), "py311", "python.exe")),
+    ]
+    for _ver, _exe in _ext_py:
+        if not os.path.exists(_exe):
+            print("  [SKIP] 外部 Python %s 不在（%s）—— 缺失即跳过，不算失败"
+                  % (_ver, _exe))
+            continue
+        _r = subprocess.run([_exe, "-c", _CHECK_SRC, _ext_root, _list_file],
+                            capture_output=True, text=True)
+        _out = (_r.stdout or "") + (_r.stderr or "")
+        check("A6 %s 全库 compile() 零语法错（真解释器兜底，%d 个交付文件）"
+              % (_ver, len(_py_list)),
+              _r.returncode == 0 and "BAD=0" in (_r.stdout or ""),
+              _out.strip()[:200])
+
+    # A8：**真导入** canvas_panel（本机解释器）。语法错、以及导入期的名称错误
+    # （`from x import nope`、模块顶层 AttributeError）只有真导入才暴露 ——
+    # 纯静态扫描看不见这些。
+    _r_panel = subprocess.run(
+        [sys.executable, "-c", "import canvas_panel; print('PANEL_OK')"],
+        cwd=_ROOT, capture_output=True, text=True,
+        env=dict(os.environ, QT_QPA_PLATFORM="offscreen"))
+    _plines = (_r_panel.stderr or _r_panel.stdout or "").strip().splitlines()
+    check("A8 本机 Python %s 真导入 canvas_panel（offscreen 冒烟）"
+          % ".".join(str(v) for v in sys.version_info[:2]),
+          _r_panel.returncode == 0 and "PANEL_OK" in (_r_panel.stdout or ""),
+          (_plines[-1] if _plines else "")[:200])
 
     # ================= B 组：统一资产有效性四态 =================
     print("\n[B] 统一资产有效性入口 assess_asset")

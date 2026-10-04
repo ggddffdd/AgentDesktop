@@ -350,20 +350,54 @@ def get_promo_motion_fn():
     return _fn
 
 
-def make_promo_motion_preview(graph, asset_root, out_gif, params=None):
+def collect_promo_frames(graph, asset_root=None):
+    """收集画布上「可用作促销动效帧」的 image 产物路径，并把跳过的分档报出来。
+
+    返回：{"paths": [...],
+           "skipped": {"placeholder": n, "stale": n, "invalid": n},
+           "skipped_detail": [{"node", "port", "why"}, ...]}
+
+    为什么不能只看 `os.path.exists` + `kind == "image"`：占位物的路径是编出来的
+    （stub）或内容只有几行 manifest 文本（passthrough），`exists` 一样为真。旧实现
+    把它收进帧列表，到 `pil_promo_motion` 里 `Image.open` 抛错被 `except: pass` 吃掉
+    —— 于是「界面上几个 image 节点都写着 completed，点动效预览却出来一段纯色渐变，
+    且没有任何提示说明为什么没用上你的图」。这里按统一入口 `assess_asset` 判定，
+    不可用的一律不当帧，并分档计数交给 UI 讲清楚。
+    """
+    import canvas_graph as cg  # 函数内延迟导入：本模块顶层只依赖 PIL / numpy
+
+    paths, detail = [], []
+    skipped = {"placeholder": 0, "stale": 0, "invalid": 0}
+    if graph is None:
+        return {"paths": paths, "skipped": skipped, "skipped_detail": detail}
+    for nid, node in graph.nodes.items():
+        for p, a in (getattr(node, "out_assets", {}) or {}).items():
+            if getattr(a, "kind", "") != "image":
+                continue
+            if not (getattr(a, "path", "") or "").strip():
+                continue  # 压根没产出引用的端口不算「跳过」，不进统计
+            validity, _why = cg.assess_asset(a, asset_root)
+            if validity == cg.ASSET_REAL:
+                paths.append(a.path)
+            else:
+                skipped[validity] = skipped.get(validity, 0) + 1
+                detail.append({"node": nid, "port": p, "why": validity})
+    return {"paths": paths, "skipped": skipped, "skipped_detail": detail}
+
+
+def make_promo_motion_preview(graph, asset_root, out_gif, params=None, stats=None):
     """画布级促销动效预览：收集所有 image 资产帧 → 生成 GIF。
 
     供工具栏「促销动效预览」按钮调用（纯本地，不耗额度）。
     返回生成的 GIF 路径；无任何 image 资产时仍产出合法 GIF（退化帧）。
+
+    `stats`：可选的可变 dict，回填 `collect_promo_frames` 的结果（真实帧路径 +
+    跳过占位/失效/历史各几个），供调用方把「为什么没用上我的图」讲出来。
     """
     import os
 
     os.makedirs(asset_root, exist_ok=True)
-    paths = []
-    if graph is not None:
-        for nid, node in graph.nodes.items():
-            for p, a in (getattr(node, "out_assets", {}) or {}).items():
-                if getattr(a, "kind", "") == "image" and getattr(a, "path", ""):
-                    if os.path.exists(a.path):
-                        paths.append(a.path)
-    return pil_promo_motion(paths, out_gif, params)
+    info = collect_promo_frames(graph, asset_root)
+    if isinstance(stats, dict):
+        stats.update(info)
+    return pil_promo_motion(info["paths"], out_gif, params)

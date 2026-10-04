@@ -486,6 +486,28 @@ else:
         check("B18 顺序边撤销", False, f"{type(e).__name__}: {e}")
 
     try:
+        # 数据边撤销（复审「删除连线会同步撤销底层 TaskGraph 依赖」的真实回归）。
+        # 已有 B18 只覆盖**顺序边**，且只断言「边不在了」—— 挡不住「边删了、底层
+        # 依赖还挂着」：那种图能打开、连线上也看不见了，但下游会永远等一个不存在的
+        # 上游，表现为「任务死活不跑」而不是报错，是所有故障里最难查的一类。
+        gb4b = cg.build_sample_graph()
+        pairs_before = _tg_pairs(gb4b)
+        gb4b.remove_data_edge("src", "prompt", "img", "prompt")
+        pairs_after = _tg_pairs(gb4b)
+        check("B18b 删数据边后底层依赖同步撤销（不是只删边）",
+              ("src", "img") in pairs_before and ("src", "img") not in pairs_after,
+              "before=%s after=%s" % (sorted(pairs_before), sorted(pairs_after)))
+        check("B18c img 的 blockedBy 里不再有 src（残留依赖会让它永远 blocked）",
+              "src" not in _tg_deps(gb4b, "img"), str(_tg_deps(gb4b, "img")))
+        # 反向：删这条边不能顺手把别的依赖也清掉 —— 过度撤销同样是错，
+        # 而且更难发现（图跑得动，只是顺序乱了）。
+        check("B18d 删边不波及其它依赖（过度撤销同样是错）",
+              ("vid", "twin") in pairs_after,
+              "after=%s" % sorted(pairs_after))
+    except Exception as e:  # noqa: BLE001
+        check("B18b 删数据边同步撤销依赖", False, f"{type(e).__name__}: {e}")
+
+    try:
         # 自依赖：promo.video → promo.video 类型是兼容的，只有自依赖检查能拦
         gb5 = cg.CanvasGraph()
         pn = cg.CanvasNode("p", "promo_fx",

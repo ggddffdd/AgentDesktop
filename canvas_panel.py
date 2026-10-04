@@ -1213,12 +1213,30 @@ class CanvasPanel(QWidget):
         asset_root = os.path.join(os.getcwd(), "canvas_runtime")
         os.makedirs(asset_root, exist_ok=True)
         out_gif = os.path.join(asset_root, "promo_preview.gif")
+        stats = {}
         try:
             from agnes_bridge import make_promo_motion_preview
-            path = make_promo_motion_preview(self.graph, asset_root, out_gif)
-            self.detail.addItem("促销动效预览已生成 → %s" % path)
+            path = make_promo_motion_preview(self.graph, asset_root, out_gif,
+                                             stats=stats)
         except Exception as e:  # noqa: BLE001
             self.detail.addItem("促销动效预览失败: %s" % e)
+            return
+        self.detail.addItem("促销动效预览已生成 → %s" % path)
+        # 把「为什么没用上我的图」讲出来。旧实现把占位/失效帧静默跳过：界面上一排
+        # completed 的节点，生成出来的却是一段纯色渐变，用户无从判断是哪儿的问题。
+        n_ok = len(stats.get("paths") or [])
+        sk = stats.get("skipped") or {}
+        parts = []
+        if sk.get("placeholder"):
+            parts.append("%d 个占位产物（stub/流程占位，不是真图）" % sk["placeholder"])
+        if sk.get("stale"):
+            parts.append("%d 个历史产物（本轮未重跑）" % sk["stale"])
+        if sk.get("invalid"):
+            parts.append("%d 个失效产物（文件缺失/为空/越目录）" % sk["invalid"])
+        if parts:
+            self.detail.addItem("  用了 %d 帧真实图片；跳过：" % n_ok + "、".join(parts))
+        elif n_ok:
+            self.detail.addItem("  用了 %d 帧真实图片。" % n_ok)
 
     def _fit(self):
         if getattr(self, "plan", None) is not None:

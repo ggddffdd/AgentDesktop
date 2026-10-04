@@ -295,6 +295,11 @@ case("P31 port_from_spec 忽略 multi（往返丢标记）",
          "        multi = False  # 扰动：忽略 multi"),
      ["B24"], static=False)
 
+case("P32 remove_data_edge 不重算底层依赖（边删了、依赖还挂着）",
+     sub("        self.data_edges = kept\n        self._sync_order_deps()",
+         "        self.data_edges = kept\n        pass  # 扰动：不重算依赖"),
+     ["B18b"], static=False)
+
 # ---- 反向：没坏就不许红（防判据过宽）----
 print("\n=== 反向：原样通过时不许有任何红项 ===")
 _red0, _out0 = run_judge(SRC, "baseline")

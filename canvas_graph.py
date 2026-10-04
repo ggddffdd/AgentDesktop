@@ -196,6 +196,21 @@ def assess_asset(ref, asset_root=None):
     return ASSET_REAL, ""
 
 
+def is_usable_asset(ref, asset_root=None) -> bool:
+    """这个产物引用能否被下游当「真实素材」读（占位 / 失效 / 历史一律不算）。
+
+    为什么单独收一个布尔入口：`assess_asset` 返回的是带原因的 (validity, reason)，
+    消费侧（促销动效收帧、结果图导出……）多数只关心「能不能用」这一个问题。
+    没有这个函数时，每个消费点都自己写一遍 `== ASSET_REAL`，还可能各写各的
+    （有人只判 `os.path.exists`、有人只判 kind）—— 那正是「占位物被静默当成真素材」
+    的来源：占位物的路径是编出来的，磁盘上即使存在也只是一段 manifest 文本，
+    喂给 PIL/ffmpeg 会以「解码失败」的形式炸在离真因很远的地方。
+
+    判定仍走 `assess_asset`（唯一事实源），这里只是把结论收敛成布尔。
+    """
+    return assess_asset(ref, asset_root)[0] == ASSET_REAL
+
+
 @dataclass
 class AssetRef:
     """对一条资产的引用（第 2 步已写进 asset_store）。

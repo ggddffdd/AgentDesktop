@@ -273,6 +273,104 @@ if active("B7"):
 # --------------------------------------------------------------------------
 # C 结构
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# B8~B10（2026-10-04）：促销动效帧的**消费侧四态过滤**
+#   旧实现只判 `kind == "image"` + `os.path.exists(path)`，会把占位物一起收进帧列表
+#   （占位物的路径是编出来的、或内容只有几行 manifest 文本，exists 一样为真），
+#   到 `pil_promo_motion` 里 Image.open 失败被 `except: pass` 丢掉 —— 结果是
+#   「界面上一排 image 节点都写着 completed，点动效预览却出来一段纯色渐变，
+#    而且没有任何提示说明为什么没用上你的图」。
+#   这批判据钉住新行为：不可用的一律不当帧，且**分档计数**回传给调用方。
+# --------------------------------------------------------------------------
+def _mk_png(d, name):
+    """写一张真 PNG（PIL 能打开）——「真产物」和「文本占位」必须用不同载体，
+    否则判据分不出「过滤生效」与「PIL 恰好读不进去」。"""
+    from PIL import Image
+    os.makedirs(d, exist_ok=True)
+    p = os.path.join(d, name)
+    Image.new("RGB", (8, 8), (10, 120, 200)).save(p)
+    return p
+
+
+if active("B8"):
+    g8 = cg.build_sample_graph()
+    root8 = tempfile.mkdtemp()
+    real8 = _mk_png(root8, "real.png")
+
+    g8.nodes["img"].out_assets["image"] = cg.AssetRef(
+        kind="image", name="real", path=real8)
+    i1 = ab.collect_promo_frames(g8, root8)
+    check("B8a 真实图片产物被当帧（paths 命中且无跳过）",
+          i1["paths"] == [real8] and sum(i1["skipped"].values()) == 0, str(i1))
+
+    g8.nodes["img"].out_assets["image"] = cg.AssetRef(
+        kind="image", name="stub", path=real8, placeholder=True)
+    i2 = ab.collect_promo_frames(g8, root8)
+    check("B8b 占位产物不当帧，且记到 placeholder 档（不是静默丢掉）",
+          i2["paths"] == [] and i2["skipped"]["placeholder"] == 1, str(i2))
+
+    g8.nodes["img"].out_assets["image"] = cg.AssetRef(
+        kind="image", name="gone", path=os.path.join(root8, "gone.png"))
+    i3 = ab.collect_promo_frames(g8, root8)
+    check("B8c 失效产物不当帧，且记到 invalid 档",
+          i3["paths"] == [] and i3["skipped"]["invalid"] == 1, str(i3))
+
+    check("B8d 跳过明细带 node/why（能定位到是哪个节点的哪种问题）",
+          bool(i3["skipped_detail"])
+          and i3["skipped_detail"][0].get("node") == "img"
+          and i3["skipped_detail"][0].get("why") == "invalid",
+          str(i3["skipped_detail"]))
+
+if active("B9"):
+    # 预览入口必须把统计**回填**出去 —— 不回填的话 UI 想提示也无从提示。
+    g9 = cg.build_sample_graph()
+    root9 = tempfile.mkdtemp()
+    real9 = _mk_png(root9, "real.png")
+    g9.nodes["img"].out_assets["image"] = cg.AssetRef(
+        kind="image", name="stub", path=real9, placeholder=True)
+    st = {}
+    out9 = ab.make_promo_motion_preview(g9, root9,
+                                        os.path.join(root9, "p.gif"), stats=st)
+    check("B9 预览入口回填 stats（UI 靠它解释「为什么没用上我的图」）",
+          os.path.exists(out9) and st.get("skipped", {}).get("placeholder") == 1
+          and st.get("paths") == [],
+          "stats=%s" % {k: st.get(k) for k in ("paths", "skipped")})
+
+if active("B10"):
+    # 跑图路径（promo_fx_executor）同样要过滤。特别注意：示例图里 promo 的 image 帧
+    # **全走递归上游通道**（promo←vid←img），递归项若不反查 ref，这段过滤就是死代码。
+    # 所以判据必须打到「上游是占位 → frame_count 归零」上，而不是只看源码里有判断。
+    g10 = cg.build_sample_graph()
+    root10 = tempfile.mkdtemp()
+    real10 = _mk_png(root10, "real.png")
+
+    g10.nodes["img"].out_assets["image"] = cg.AssetRef(
+        kind="image", name="real", path=real10)
+    g10.use_real_executors(root10)
+    r1 = g10.nodes["promo"].executor({})
+    check("B10a 真图上游：promo 收到 1 帧且无跳过",
+          r1.get("frame_count") == 1
+          and r1.get("skipped_frames", {}).get("placeholder") == 0,
+          "frame_count=%s skipped=%s from=%s" % (
+              r1.get("frame_count"), r1.get("skipped_frames"), r1.get("frames_from")))
+
+    g10.nodes["img"].out_assets["image"] = cg.AssetRef(
+        kind="image", name="stub", path=real10, placeholder=True)
+    r2 = g10.nodes["promo"].executor({})
+    check("B10b 占位上游：frame_count 归零且 skipped_frames 记到占位"
+          "（证明递归通道也拿到了 ref，过滤不是死代码）",
+          r2.get("frame_count") == 0
+          and r2.get("skipped_frames", {}).get("placeholder") == 1,
+          "frame_count=%s skipped=%s" % (r2.get("frame_count"), r2.get("skipped_frames")))
+
+    g10.nodes["img"].out_assets["image"] = cg.AssetRef(
+        kind="image", name="gone", path=os.path.join(root10, "gone.png"))
+    r3 = g10.nodes["promo"].executor({})
+    check("B10c 失效上游：frame_count 归零且记到 invalid 档",
+          r3.get("frame_count") == 0
+          and r3.get("skipped_frames", {}).get("invalid") == 1,
+          "frame_count=%s skipped=%s" % (r3.get("frame_count"), r3.get("skipped_frames")))
+
 if active("C1"):
     check("C1 gen_video_executor 调用 video_fn", "video_fn(node, asset_root, src_path, prompt)" in EXEC
           or "video_fn(" in EXEC)

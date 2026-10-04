@@ -116,9 +116,10 @@ def main():
         "        motion_fn(img_paths, out_path, params); res = \"Z:/tampered.gif\"  # 扰动：绕过真实返回值")
 
     # PG4 make_promo_motion_preview 不真生成预览文件 → B4 红
+    # （2026-10-04：锚点随「回填 stats」改动而更新 —— 收集与生成之间多了 info 中转）
     _pg("预览生成器返回不存在路径", "B4", BRIDGE,
-        "    return pil_promo_motion(paths, out_gif, params)",
-        "    return out_gif + \".missing\"  # 扰动：不真生成预览")
+        '    return pil_promo_motion(info["paths"], out_gif, params)',
+        '    return out_gif + ".missing"  # 扰动：不真生成预览')
 
     # PG5 _upstream_asset_paths 不遍历边 → B5 红
     _pg("_upstream_asset_paths 不遍历边", "B5", EXEC,
@@ -141,6 +142,40 @@ def main():
     _pg("凭据解析忽略 env（优先级写反）", "B7", BRIDGE,
         '    key = (os.environ.get("AGNES_API_KEY") or "").strip()',
         '    key = ""  # 扰动：忽略 env')
+
+    # ------------------------------------------------------------------
+    # PC1~PC3（2026-10-04）：促销动效帧的**消费侧四态过滤**非空转验证。
+    # 背景：旧实现只看 `kind == "image"` + `os.path.exists`，占位物被收进帧列表后
+    # 在 PIL 里静默丢掉（界面上一排 completed，出来却是纯色渐变且无任何提示）。
+    # ------------------------------------------------------------------
+    # PC1 collect_promo_frames 不看四态（退回「有路径就当帧」）→ B8/B9 红
+    _pg("帧收集不过四态（占位物也当帧）", "B8", BRIDGE,
+        "            validity, _why = cg.assess_asset(a, asset_root)\n"
+        "            if validity == cg.ASSET_REAL:\n"
+        "                paths.append(a.path)\n"
+        "            else:\n"
+        "                skipped[validity] = skipped.get(validity, 0) + 1\n"
+        '                detail.append({"node": nid, "port": p, "why": validity})',
+        "            paths.append(a.path)  # 扰动：不过四态，一律当帧")
+
+    # PC2 promo_fx_executor 消费侧不做四态判定 → B10 红（占位上游也当帧）
+    _pg("promo 执行器不做消费侧四态过滤", "B10", EXEC,
+        '            ref = f.get("ref")\n'
+        "            if ref is not None:\n"
+        "                validity, _why = assess_asset(ref, asset_root)\n"
+        "                if validity != ASSET_REAL:\n"
+        "                    skipped[validity] = skipped.get(validity, 0) + 1\n"
+        "                    continue",
+        "            pass  # 扰动：消费侧不做四态过滤（占位上游也当帧）")
+
+    # PC3 递归上游不反查 ref → B10 红。
+    # 这条专治本轮踩到的坑：promo 的 image 帧**全走递归上游通道**（promo←vid←img），
+    # 若递归项拿不到 ref，PC2 那段过滤就是死代码 —— 加了防护却毫无作用，
+    # 而且**看着像做过了**。必须有一条变异钉住它。
+    _pg("递归上游不反查 ref（过滤变死代码）", "B10", EXEC,
+        "            if isinstance(a, AssetRef) and a.path == path:\n"
+        "                return a",
+        "            pass  # 扰动：不反查（递归上游永远拿不到 ref）")
 
     # 反向基线：所有文件已还原，全量判据应全绿
     CHECKS[0] += 1

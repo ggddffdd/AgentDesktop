@@ -22,7 +22,7 @@ from PIL import Image, ImageDraw
 
 import image_local_edit as il
 from image_local_edit import UnsupportedEditMode
-from canvas_graph import AssetRef, NODE_TYPES
+from canvas_graph import (AssetRef, NODE_TYPES, assess_asset, ASSET_REAL)
 
 
 # --------------------------------------------------------------------------
@@ -273,13 +273,30 @@ def _direct_upstream(graph, node, want_kind):
             ref = (up.out_assets or {}).get(e.from_port) if up is not None else None
             if ref is not None and getattr(ref, "kind", "") == want_kind \
                     and getattr(ref, "path", ""):
+                # 带上 ref 本体（2026-10-04）：消费侧要按统一入口判「这个产物能不能
+                # 当真素材用」（占位物路径是编出来的，只看 kind + path 挡不住）。
                 out.append({"path": ref.path, "port": e.to_port,
-                            "from": "%s.%s" % (e.from_node, e.from_port)})
+                            "from": "%s.%s" % (e.from_node, e.from_port),
+                            "ref": ref})
     return out
 
 
+def _ref_by_path(graph, path):
+    """按路径反查 AssetRef。
+
+    递归上游通道（`_upstream_asset_paths`）只传路径、拿不到 ref，而消费侧要按
+    统一入口判「这个产物能不能当真素材用」。不反查的话，像 promo 这种**帧全来自
+    间接上游**的节点，过滤就成了死代码（每个 f["ref"] 都是 None，一律放行）。
+    """
+    for _nid, n in (getattr(graph, "nodes", {}) or {}).items():
+        for _p, a in (getattr(n, "out_assets", {}) or {}).items():
+            if isinstance(a, AssetRef) and a.path == path:
+                return a
+    return None
+
+
 def _upstream_assets(graph, node, want_kind):
-    """收集上游 kind 相符的资产 -> [{"path", "port", "from"}]，顺序**确定**。
+    """收集上游 kind 相符的资产 -> [{"path", "port", "from", "ref"}]，顺序**确定**。
 
     顺序规则（写死，不依赖连线时序）：
       1. 直接上游按输入端口声明顺序；
@@ -298,7 +315,9 @@ def _upstream_assets(graph, node, want_kind):
         if p in seen:
             continue
         seen.add(p)
-        found.append({"path": p, "port": "", "from": "递归上游"})
+        # 递归上游走的是只带路径的老通道 —— 反查回 ref，让消费侧的四态判定同样生效。
+        found.append({"path": p, "port": "", "from": "递归上游",
+                      "ref": _ref_by_path(graph, p)})
     return found
 
 
@@ -390,8 +409,22 @@ def promo_fx_executor(node, asset_root, inpaint_fn=None, video_fn=None, graph=No
     def _exec(state):
         # Wave D #8：动效帧来源同样确定化（输入端口声明顺序 + 递归补齐），
         # 并把实际用的来源回显出去（旧实现只给路径，出片不对时无从排查）。
+        #
+        # 消费侧四态过滤（2026-10-04）：只把**真实**产物当帧喂给 motion_fn。
+        # 占位物的路径是编出来的（stub）或内容只有几行 manifest 文本（passthrough），
+        # 旧实现照单全收 —— 本地 PIL 实现会在 Image.open 失败后静默跳过（帧没了却
+        # 没有任何提示），换成 ffmpeg 实现则可能报一个与真因无关的解码错误。
         frames = _upstream_assets(graph, node, "image")
-        img_paths = [f["path"] for f in frames]
+        usable, skipped = [], {"placeholder": 0, "stale": 0, "invalid": 0}
+        for f in frames:
+            ref = f.get("ref")
+            if ref is not None:
+                validity, _why = assess_asset(ref, asset_root)
+                if validity != ASSET_REAL:
+                    skipped[validity] = skipped.get(validity, 0) + 1
+                    continue
+            usable.append(f)
+        img_paths = [f["path"] for f in usable]
         out_path = os.path.join(asset_root, "video", "%s_promo" % node.id)  # 后缀由 motion_fn 决定
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         params = (node.config or {}).get("motion_params") or {}
@@ -412,7 +445,8 @@ def promo_fx_executor(node, asset_root, inpaint_fn=None, video_fn=None, graph=No
             produced = ref
         return {"node": node.id, "type": node.node_type, "out_kind": "video",
                 "out_path": res, "frame_count": len(img_paths),
-                "frames_from": [f["from"] for f in frames],
+                "frames_from": [f["from"] for f in usable],
+                "skipped_frames": skipped,
                 "produced": produced.to_dict() if produced else None}
     return _exec
 
