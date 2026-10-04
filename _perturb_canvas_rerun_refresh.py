@@ -86,10 +86,12 @@ MUTATIONS = [
      "            pass  # 扰动：不清 out_assets\n"),
 
     # ---- 缺陷②：自动重绘（含"删除顺序边"这条完全无效的支路）----
-    # PR5：删除选中连线后不重画 → 数据层少了一条边，画面纹丝不动。
+    # PR5：断「indexChanged → _refresh_view」信号通道 → push 删边后画面不再更新。
+    #      targets 只报 C1：断信号后 C2 的画面断言会「巧合绿」（画面从没变过 =
+    #      undo 后的"恢复"假象），C2 的数据断言由 PR7 守。
     ("PR5_delete_no_refresh", ["C1"], CP,
-     "                break\n        self._refresh_view()",
-     "                break\n        pass  # 扰动：删完不重画"),
+     "        self.undo_stack.indexChanged.connect(self._refresh_view)",
+     "        pass  # 扰动：断信号通道"),
     # PR6：RemoveEdgeCommand 退回"只处理数据边"（顺序边点了没反应的原始 bug）。
     #      静态契约 E3（remove_order_edge 字样消失）与行为 C3 一起红。
     ("PR6_order_edge_revert", ["C3"], CP,
@@ -98,18 +100,32 @@ MUTATIONS = [
      "        else:\n"
      "            self.graph.remove_data_edge(*self.f)\n",
      "        self.graph.remove_data_edge(*self.f)  # 扰动：顺序边不管\n"),
-    # PR7：撤销后不重画 → 数据回来了、画面还是少一条线。
+    # PR7：撤销根本不执行 → 数据不回来、画面也不恢复。
+    #      （v4.211.9 起 _undo 只调 undo()，重绘由 indexChanged 驱动——
+    #       变异点从"删手动刷新"改为"撤销不执行"，守的是同一语义。）
     ("PR7_undo_no_refresh", ["C2"], CP,
-     "            self.undo_stack.undo()\n        self._refresh_view()",
-     "            self.undo_stack.undo()\n        pass  # 扰动：撤销后不重画"),
+     "            self.undo_stack.undo()",
+     "            pass  # 扰动：撤销不执行"),
     # PR8：重绘时顺带刷新详情区 → 把"上一次操作的输出"（运行结果）冲掉。
     ("PR8_refresh_kills_detail", ["C5"], CP,
      "        self.render_graph(self.graph, fit=False, refresh_detail=False)",
      "        self.render_graph(self.graph, fit=False, refresh_detail=True)  # 扰动：冲掉详情区"),
     # PR9：连线后不发信号 → 面板收不到"该重画了"的通知。
+    #      锚点锁 _finish_link（v4.211.9 起 _apply_menu_choice 里也有
+    #       cmd.redo()+emit 同构片段，裸锚点不唯一，须带 ConnectCommand 前缀）。
     ("PR9_no_graphchanged", ["C6"], CP,
-     "            cmd.redo()\n        self.graphChanged.emit()",
-     "            cmd.redo()\n        pass  # 扰动：不发信号"),
+     "        cmd = ConnectCommand(self.graph, self.undo_stack, *f)\n"
+     "        if self.undo_stack is not None:\n"
+     "            self.undo_stack.push(cmd)\n"
+     "        else:\n"
+     "            cmd.redo()\n"
+     "        self.graphChanged.emit()",
+     "        cmd = ConnectCommand(self.graph, self.undo_stack, *f)\n"
+     "        if self.undo_stack is not None:\n"
+     "            self.undo_stack.push(cmd)\n"
+     "        else:\n"
+     "            cmd.redo()\n"
+     "        pass  # 扰动：不发信号"),
 
     # ---- 缺陷③：局部编辑参数键 ----
     # PR10：sharpen 写回 factor（原始 bug）→ 引擎读 amount 读不到，静默回落 1.5。

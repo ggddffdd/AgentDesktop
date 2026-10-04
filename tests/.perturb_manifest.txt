@@ -17,6 +17,7 @@ _perturb_canvas_executor.py
 _perturb_canvas_export.py
 _perturb_canvas_localedit.py
 _perturb_canvas_model.py
+_perturb_canvas_ops.py
 _perturb_canvas_panel.py
 _perturb_canvas_rerun_refresh.py
 _perturb_critical_proc_deny.py

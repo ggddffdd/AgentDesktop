@@ -213,6 +213,28 @@ class TaskGraph:
                 task.result = None
             return len(self._tasks)
 
+    def remove_task(self, task_id) -> bool:
+        """删除一个任务，连带清掉它参与的**全部**依赖关系（画布删节点用）。
+
+        为什么连带清必须写在这里而不是调用方：残留的依赖分两种坏法 ——
+        ① 别的任务 `blocked_by` 里还挂着已删 id → `is_ready` 里
+        `task_map[bid].status` 永远查不到（键被跳过不炸，但语义变成
+        「依赖凭空满足」）；② `blocks` 残留 → 撤销重算时对不上账。
+        两种都是**静默**错，删除侧一次性清干净最稳。
+        """
+        with self._lock:
+            t = self._tasks.pop(task_id, None)
+            if t is None:
+                return False
+            if task_id in self._entry_ids:
+                self._entry_ids = [i for i in self._entry_ids if i != task_id]
+            for other in self._tasks.values():
+                if task_id in other.blocked_by:
+                    other.blocked_by.remove(task_id)
+                if task_id in other.blocks:
+                    other.blocks.remove(task_id)
+            return True
+
     def run(self, state: Dict[str, Any], token=None) -> Dict[str, Any]:
         """自动推进：找到就绪的任务 → 执行 → 标记完成 → 循环直到全部完成。
 

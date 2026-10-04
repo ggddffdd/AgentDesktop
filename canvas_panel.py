@@ -322,14 +322,15 @@ def region_svg_overlay(region: Optional[dict], ox: float, oy: float,
 # 视图层（Qt）：把 ScenePlan 画成可见画布（复用第 0 步三坑保护法）
 # --------------------------------------------------------------------------
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal  # noqa: E402
-from PySide6.QtGui import (QBrush, QColor, QFont, QPainter, QPainterPath,  # noqa: E402
-                           QPen, QPolygonF, QUndoCommand, QUndoStack)
+from PySide6.QtGui import (QBrush, QColor, QFont, QMouseEvent, QPainter,  # noqa: E402
+                           QPainterPath, QPen, QPolygonF, QUndoCommand,
+                           QUndoStack)
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog,  # noqa: E402
                                QFormLayout, QFrame, QGraphicsEllipseItem,
                                QGraphicsPathItem, QGraphicsPolygonItem,
                                QGraphicsRectItem, QGraphicsScene, QGraphicsSceneMouseEvent,
                                QGraphicsTextItem, QGraphicsView, QHBoxLayout,
-                               QLabel, QLineEdit, QListWidget, QPushButton,
+                               QLabel, QLineEdit, QListWidget, QMenu, QPushButton,
                                QTextEdit, QVBoxLayout, QWidget)
 
 
@@ -568,6 +569,67 @@ class CanvasScene(QGraphicsScene):
         else:
             cmd.redo()
 
+    # ---- 右键菜单：空白处建节点 / 节点上删节点（手感档） ----
+    def _unique_node_id(self, node_type: str) -> str:
+        i = 1
+        while "%s_%d" % (node_type, i) in self.graph.nodes:
+            i += 1
+        return "%s_%d" % (node_type, i)
+
+    def contextMenuEvent(self, ev):
+        if self.graph is None:
+            super().contextMenuEvent(ev)
+            return
+        menu = QMenu()
+        pos = ev.scenePos()
+        node_item = next((it for it in self.items(pos)
+                          if isinstance(it, CanvasNodeItem)), None)
+        if node_item is not None:
+            act = menu.addAction("删除节点：%s" % node_item.spec.label)
+            act.setData(("del", node_item.spec.id))
+        else:
+            for t, name in cg.NODE_TYPES.items():
+                a = menu.addAction("新建：%s" % name)
+                a.setData(("add", t))
+        chosen = menu.exec(ev.screenPos())
+        if chosen is None:
+            return
+        kind, payload = chosen.data()
+        self._apply_menu_choice(kind, payload, pos)
+
+    def _apply_menu_choice(self, kind, payload, pos):
+        """执行右键菜单选择（从 contextMenuEvent 拆出：判据可以不弹窗直接测）。
+
+        kind: "add"（payload=节点类型，落位在 pos）/ "del"（payload=节点 id）。
+        """
+        if kind == "add":
+            nid = self._unique_node_id(payload)
+            cmd = AddNodeCommand(self.graph, self.undo_stack, payload, nid,
+                                 (pos.x(), pos.y()))
+        else:
+            cmd = RemoveNodeCommand(self.graph, self.undo_stack, payload)
+        if self.undo_stack is not None:
+            self.undo_stack.push(cmd)
+        else:
+            cmd.redo()
+        self.graphChanged.emit()
+
+    def keyPressEvent(self, ev):
+        # Delete/Backspace 删除**选中的节点**（连线仍走工具栏按钮）。
+        if ev.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.graph is not None:
+            ids = [it.spec.id for it in self.selectedItems()
+                   if isinstance(it, CanvasNodeItem)]
+            if ids:
+                for nid in ids:
+                    cmd = RemoveNodeCommand(self.graph, self.undo_stack, nid)
+                    if self.undo_stack is not None:
+                        self.undo_stack.push(cmd)
+                    else:
+                        cmd.redo()
+                self.graphChanged.emit()
+                return
+        super().keyPressEvent(ev)
+
 
 # --------------------------------------------------------------------------
 # 撤销 / 重做命令（QUndoCommand 包裹编辑操作；item 为可选，判据可传 None 纯测数据层）
@@ -649,6 +711,107 @@ class RemoveEdgeCommand(QUndoCommand):
 
 
 # --------------------------------------------------------------------------
+# 阶段 C（手感档）：节点创建 / 删除 —— 默认端口表 + 撤销命令
+# --------------------------------------------------------------------------
+# 每类节点的默认端口（name -> port_type），照抄 build_sample_graph 的拓扑。
+# 右键新建节点时用这套端口起步；用户可按需连线（连线校验照旧走 can_connect）。
+DEFAULT_PORTS = {
+    "source_prompt": ({}, {"prompt": "prompt"}),
+    "gen_image": ({"prompt": "prompt"}, {"image": "image"}),
+    "gen_video": ({"image": "image"}, {"clip": "clip"}),
+    "digital_twin": ({"video": "video"}, {"video": "video"}),
+    "promo_fx": ({"video": "video"}, {"video": "video"}),
+    "final_output": ({"main": "video", "promo": "video"}, {"final": "final"}),
+}
+
+
+def _node_from_dict(d: dict) -> "cg.CanvasNode":
+    """从 CanvasNode.to_dict() 重建节点（删节点撤销用）。
+
+    Port 的 v2 序列化是 {"type":..., "multi":...}；multi 缺省按 False
+    （v1 裸字符串兼容：直接当 type 用）。
+    """
+    def _ports(raw):
+        out = {}
+        for k, v in (raw or {}).items():
+            if isinstance(v, dict):
+                out[k] = cg.Port(k, v.get("type", "data"), bool(v.get("multi", False)))
+            else:                        # v1 裸字符串
+                out[k] = cg.Port(k, str(v))
+        return out
+
+    pos = tuple(d["pos"]) if d.get("pos") else None
+    return cg.CanvasNode(
+        d["id"], d["type"],
+        inputs=_ports(d.get("inputs")),
+        outputs=_ports(d.get("outputs")),
+        config=dict(d.get("config") or {}),
+        pos=pos,
+    )
+
+
+class AddNodeCommand(QUndoCommand):
+    """右键「新建节点」：建默认端口节点（落位在鼠标位置）→ 撤销=删掉。"""
+
+    def __init__(self, graph, undo_stack, node_type, node_id, scene_pos):
+        super().__init__("新建节点 %s" % node_id)
+        self.graph = graph
+        self.undo_stack = undo_stack
+        self.node_type = node_type
+        self.node_id = node_id
+        self.scene_pos = scene_pos
+
+    def redo(self):
+        ins, outs = DEFAULT_PORTS[self.node_type]
+        node = cg.CanvasNode(
+            self.node_id, self.node_type,
+            inputs={k: cg.Port(k, v) for k, v in ins.items()},
+            outputs={k: cg.Port(k, v) for k, v in outs.items()},
+            pos=self.scene_pos)
+        self.graph.add_node(node)
+
+    def undo(self):
+        self.graph.remove_node(self.node_id)
+
+
+class RemoveNodeCommand(QUndoCommand):
+    """右键「删除节点」：图模型 remove_node（连带清边）→ 撤销=按快照原样恢复。
+
+    边恢复的诚实边界：若删除期间用户往同一端口连了别的线，恢复旧边可能
+    撞上单入校验 —— 这时**丢弃那条边**（节点本身恢复成功），让撤销走完，
+    而不是让整次撤销抛异常卡在半路。
+    """
+
+    def __init__(self, graph, undo_stack, node_id):
+        super().__init__("删除节点 %s" % node_id)
+        self.graph = graph
+        self.undo_stack = undo_stack
+        self.node_id = node_id
+        self._snap = None
+
+    def redo(self):
+        self._snap = self.graph.remove_node(self.node_id)
+
+    def undo(self):
+        if self._snap is None:
+            return
+        nd, data_edges, order_edges = self._snap
+        self.graph.add_node(_node_from_dict(nd))
+        node = self.graph.nodes[nd["id"]]
+        node.status = nd.get("status", "pending")
+        for f, fp, t, tp, lbl in data_edges:
+            try:
+                self.graph.connect_data(f, fp, t, tp, label=lbl)
+            except ValueError:
+                pass               # 端口被新连线占用（见 docstring 边界）
+        for f, t, r in order_edges:
+            try:
+                self.graph.connect_order(f, t, reason=r)
+            except ValueError:
+                pass
+
+
+# --------------------------------------------------------------------------
 # 阶段 B：图片局部编辑的撤销命令（整份快照 set_local_edits，idempotent）
 # --------------------------------------------------------------------------
 class AddLocalEditCommand(QUndoCommand):
@@ -707,12 +870,66 @@ class EditLocalEditCommand(QUndoCommand):
 
 
 class CanvasView(QGraphicsView):
+    """画布视图：滚轮缩放（锚定鼠标）、左键空白框选、中键拖动平移。
+
+    ComfyUI 式手感的第一档：缩放/框选/平移三件套。
+    """
+
+    MIN_ZOOM = 0.1
+    MAX_ZOOM = 8.0
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setRenderHint(QPainter.Antialiasing)
-        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        # 左键拖空白 = 框选（RubberBand）；平移走中键（_pan_start/_pan_stop 切模式）。
+        # 旧版是 ScrollHandDrag（左键平移）—— 那样左键就没法框选了。
+        self.setDragMode(QGraphicsView.RubberBandDrag)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
         self._dpr = self.devicePixelRatioF() or 1.0
+
+    def wheelEvent(self, ev):
+        """滚轮缩放（围绕鼠标位置）。钳制在 [MIN_ZOOM, MAX_ZOOM]。
+
+        为什么钳制：缩到 0.1x 以下节点小到选不中、放到 8x 以上滚一圈就丢，
+        而且极端 transform 会放大浮点误差让 fit() 抖动。
+        """
+        dy = ev.angleDelta().y()
+        if dy == 0:
+            super().wheelEvent(ev)
+            return
+        factor = 1.25 if dy > 0 else 0.8
+        cur = self.transform().m11()
+        if not (self.MIN_ZOOM <= cur * factor <= self.MAX_ZOOM):
+            return
+        self.scale(factor, factor)
+
+    # ---- 中键平移：按下时切 ScrollHandDrag 并合成左键事件，松开还原 ----
+    def _pan_start(self, ev):
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        fake = QMouseEvent(ev.type(), ev.position(), ev.scenePosition(),
+                           ev.globalPosition(), Qt.LeftButton, Qt.LeftButton,
+                           ev.modifiers())
+        super().mousePressEvent(fake)
+
+    def _pan_stop(self, ev):
+        fake = QMouseEvent(ev.type(), ev.position(), ev.scenePosition(),
+                           ev.globalPosition(), Qt.LeftButton, Qt.NoButton,
+                           ev.modifiers())
+        super().mouseReleaseEvent(fake)
+        self.setDragMode(QGraphicsView.RubberBandDrag)
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.MiddleButton:
+            self._pan_start(ev)
+            return
+        super().mousePressEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if ev.button() == Qt.MiddleButton:
+            self._pan_stop(ev)
+            return
+        super().mouseReleaseEvent(ev)
 
     def fit_plan(self, plan: ScenePlan):
         self.setSceneRect(0, 0, plan.width, plan.height)
@@ -980,7 +1197,24 @@ class PropertyPanel(QWidget):
 
     阶段 B：若选中节点是图片类（生图/场景图等），额外显示「局部编辑」按钮，
     点击经 local_edit_callback 打开遮罩编辑器对话框。
+    阶段 C（手感档）：按节点类型生成**结构化参数行**（PARAM_SCHEMAS），
+    只登记执行器真读的键 —— passthrough 类节点不读 config，就不摆假输入框。
     """
+
+    # (label, config键, 类型) —— 手感档 schema。只收 executors.py 真读的键：
+    #   ref_source / ref_port（gen_video、promo_fx 的 select_upstream 显式参考源）。
+    # prompt 已由顶部输入框覆盖（全类型引擎都读它）；motion_params / local_edits
+    # 是嵌套结构，留给下方 JSON 框（高级用法），不做假控件。
+    PARAM_SCHEMAS = {
+        "source_prompt": [],
+        "gen_image": [],
+        "gen_video": [("参考源(上游.端口)", "ref_source", "str"),
+                      ("参考端口", "ref_port", "str")],
+        "digital_twin": [],
+        "promo_fx": [("参考源(上游.端口)", "ref_source", "str"),
+                     ("参考端口", "ref_port", "str")],
+        "final_output": [],
+    }
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -996,8 +1230,13 @@ class PropertyPanel(QWidget):
         self.edit_prompt = QLineEdit()
         form.addRow("提示词(prompt)", self.edit_prompt)
         lay.addLayout(form)
+        # 手感档：结构化参数行（按节点类型动态生成；无 schema 的类型为空）
+        self.param_rows = {}
+        self.form_params = QFormLayout()
+        lay.addLayout(self.form_params)
         self.edit_config = QTextEdit()
-        self.edit_config.setPlaceholderText("节点 config（JSON）")
+        self.edit_config.setPlaceholderText(
+            "节点 config（JSON，高级用法：motion_params / local_edits 等）")
         lay.addWidget(self.edit_config)
         self.btn_apply = QPushButton("应用更改")
         self.btn_apply.clicked.connect(self.apply)
@@ -1016,11 +1255,13 @@ class PropertyPanel(QWidget):
             self.lbl.setText("（未选中节点）")
             self.edit_prompt.clear()
             self.edit_config.clear()
+            self._clear_param_rows()
             self.btn_local.setVisible(False)
             return
         self.lbl.setText("节点: %s\n类型: %s\n状态: %s" % (
             node.id, NODE_TYPES.get(node.node_type, node.node_type), node.status))
         self.edit_prompt.setText(str(node.config.get("prompt", "")))
+        self._build_param_rows(node)
         self.edit_config.setPlainText(
             json.dumps(node.config, ensure_ascii=False, indent=1))
         # 阶段 B：局部编辑按钮按节点类型显隐 + 显示已有编辑数
@@ -1033,6 +1274,22 @@ class PropertyPanel(QWidget):
         if self.node is not None and self.local_edit_callback is not None:
             self.local_edit_callback(self.node)
 
+    # ---- 手感档：结构化参数行的动态生成 / 清空 ----
+    def _clear_param_rows(self):
+        self.param_rows = {}
+        while self.form_params.rowCount() > 0:
+            self.form_params.removeRow(0)
+
+    def _build_param_rows(self, node):
+        self._clear_param_rows()
+        for label, key, typ in self.PARAM_SCHEMAS.get(node.node_type, []):
+            edit = QLineEdit()
+            edit.setPlaceholderText("（未指定）" if typ == "str" else "")
+            cur = str((node.config or {}).get(key, "") or "")
+            edit.setText(cur)
+            self.form_params.addRow(label, edit)
+            self.param_rows[key] = edit
+
     def apply(self):
         if self.node is None or self.graph is None:
             return
@@ -1042,6 +1299,14 @@ class PropertyPanel(QWidget):
             new_cfg = dict(self.node.config)
         if self.edit_prompt.text().strip():
             new_cfg["prompt"] = self.edit_prompt.text().strip()
+        # 结构化参数行优先于 JSON 框：填了就写入；清空 = 回到「未指定」并移除键。
+        # 引擎侧 `cfg.get(...) or ""` 的语义就是「空 = 未指定」，这里对齐它。
+        for key, edit in self.param_rows.items():
+            txt = edit.text().strip()
+            if txt:
+                new_cfg[key] = txt
+            else:
+                new_cfg.pop(key, None)
         old = dict(self.node.config)
         if new_cfg == old:
             return
@@ -1112,6 +1377,11 @@ class CanvasPanel(QWidget):
         self.scene.selectionChanged.connect(self._on_selection_changed)
         # 场景里的编辑操作（连线等）只改数据层 → 由场景发信号让面板重画
         self.scene.graphChanged.connect(self._refresh_view)
+        # 撤销栈任何变化（push / undo / redo）都重画。为什么走信号而不是只在
+        # _undo/_redo 按钮里手动刷：键盘 Delete、右键菜单、判据探针等路径会
+        # 直调 undo_stack.undo()/push() —— 只靠按钮刷新，这些路径画面就不动
+        # （v4.211.9 实测踩过：撤销建节点后场景仍 7 个节点）。
+        self.undo_stack.indexChanged.connect(self._refresh_view)
 
         if graph is not None:
             self.render_graph(graph)
@@ -1153,15 +1423,13 @@ class CanvasPanel(QWidget):
                 it.setSelected(True)
 
     def _undo(self):
-        """撤销后必须重画：命令只改数据层（如把删掉的边连回来），不重画画面还是旧的。"""
+        """撤销后重画由 indexChanged 信号统一驱动（按钮只是触发撤销）。"""
         if self.undo_stack is not None:
             self.undo_stack.undo()
-        self._refresh_view()
 
     def _redo(self):
         if self.undo_stack is not None:
             self.undo_stack.redo()
-        self._refresh_view()
 
     def _on_selection_changed(self):
         items = self.scene.selectedItems()
@@ -1179,11 +1447,11 @@ class CanvasPanel(QWidget):
                 cmd = RemoveEdgeCommand(self.graph, self.undo_stack, *it.edge_tuple,
                                         kind=it.spec.kind, label=it.spec.label)
                 if self.undo_stack is not None:
-                    self.undo_stack.push(cmd)
+                    self.undo_stack.push(cmd)  # push 触发 indexChanged → _refresh_view
                 else:
                     cmd.redo()
+                    self._refresh_view()  # 无撤销栈时没有信号通道，手动兜底
                 break
-        self._refresh_view()
 
     # ---- 阶段 B：图片局部编辑入口 ----
     def _selected_node(self):

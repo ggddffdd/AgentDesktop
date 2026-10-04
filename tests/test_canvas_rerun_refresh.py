@@ -232,8 +232,16 @@ def _c():
     check("C5 重绘不冲掉详情区（那里承载操作结果反馈）",
           txt == ["哨兵：这是操作结果，不该被重绘冲掉"], str(txt))
 
+    # C6：静态契约（AST 限定作用域，防被同名残留骗 —— 文件里 emit 有 3 处，
+    #     全文匹配打掉任意一处都翻不红）
+    import ast as _ast
+    _fl = next((n for n in _ast.walk(_ast.parse(CP_SRC))
+                if isinstance(n, _ast.FunctionDef) and n.name == "_finish_link"), None)
+    _fl_src = _ast.get_source_segment(CP_SRC, _fl) if _fl else ""
     check("C6 CanvasScene 定义了 graphChanged 且连线后发信号",
-          "graphChanged = Signal()" in CP_SRC and "self.graphChanged.emit()" in CP_SRC)
+          "graphChanged = Signal()" in CP_SRC
+          and "self.graphChanged.emit()" in _fl_src,
+          "_finish_link 体里有 emit（scope-limited）")
 
 
 # --------------------------------------------- D 局部编辑参数键（行为验证）

@@ -433,6 +433,31 @@ class CanvasGraph:
         self._tg.create(node.id, node.node_type, self._wrap(node), node.id)
         return self
 
+    def remove_node(self, node_id):
+        """删除节点 + 关联边（数据/顺序）+ 底层任务；返回撤销所需的完整快照。
+
+        边集是依赖的唯一事实源：节点没了，挂着它的边必须一并清，
+        否则 topo()/调度会踩到悬空引用。逐条走 remove_data_edge/remove_order_edge
+        （内部会 _sync_order_deps 重算底层依赖），最后 remove_task 清调度侧。
+        快照格式：(node_to_dict, [(f,fp,t,tp,label)...], [(f,t,reason)...])，
+        撤销命令用它原样恢复（重建节点 → 重建边）。
+        """
+        if node_id not in self.nodes:
+            raise KeyError(f"未知节点: {node_id!r}")
+        data_snap = [(e.from_node, e.from_port, e.to_node, e.to_port, e.label)
+                     for e in self.data_edges
+                     if node_id in (e.from_node, e.to_node)]
+        for f, fp, t, tp, _lbl in data_snap:
+            self.remove_data_edge(f, fp, t, tp)
+        order_snap = [(e.from_node, e.to_node, e.reason)
+                      for e in self.order_edges
+                      if node_id in (e.from_node, e.to_node)]
+        for f, t, r in order_snap:
+            self.remove_order_edge(f, t, r)
+        node = self.nodes.pop(node_id)
+        self._tg.remove_task(node_id)
+        return node.to_dict(), data_snap, order_snap
+
     def _wrap(self, node: CanvasNode) -> Callable:
         def _exec(state: dict) -> dict:
             # 本轮要重产了：先把该节点**上一轮的**产出标成「历史产物」（stale 档）。
@@ -885,8 +910,34 @@ class CanvasGraph:
 
     # ---- 查询 ----
     def topo(self) -> List[str]:
-        """返回节点拓扑顺序（依赖先后）。"""
-        return [t["id"] for t in self._tg.task_list()]
+        """返回节点拓扑顺序（依赖先后）。
+
+        v4.211.9 起是**真**拓扑序（Kahn，基于边集）。旧实现直接返回
+        `task_list()` 的 dict 插入序 —— build_sample_graph 恰好按拓扑序
+        create，掩盖了这一点；一旦「删节点 → 撤销恢复」，任务在 `_tasks`
+        里被重新排到尾部，"拓扑序"随之失真，layout_graph 的
+        「前驱必已分配」前提崩（max() empty，v4.211.9 实测踩过）。
+        稳定性：每轮按 nodes 字典序取就绪节点，同图输出确定。
+        """
+        deps = {}
+        for f, t in self._edge_pairs():
+            if f in self.nodes and t in self.nodes:
+                deps.setdefault(t, set()).add(f)
+        order = []
+        seen = set()
+        remaining = list(self.nodes.keys())
+        while remaining:
+            progressed = False
+            for nid in list(remaining):
+                if all(p in seen for p in deps.get(nid, ())):
+                    order.append(nid)
+                    seen.add(nid)
+                    remaining.remove(nid)
+                    progressed = True
+            if not progressed:      # 防御：成环（连线时应已被 _reject_cycle 拒）
+                order.extend(remaining)
+                break
+        return order
 
     def to_dict(self) -> dict:
         return {

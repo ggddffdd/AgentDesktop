@@ -1,36 +1,37 @@
 # -*- coding: utf-8 -*-
-"""v4.211.8 进包核验：节点画布三处「点了没反应」修复。
+"""v4.211.9 进包核验：画布 ComfyUI 式「手感档」+ 连带修掉的两个既有缺陷。
 
-本轮进包的改动有三处（分属三个文件）：
-  ① `canvas_panel.py` —— 场景新增 `graphChanged` 信号 + 面板统一重绘 `_refresh_view()`
-     （全量重建 + 还原视图变换与选中态）；`_undo`/`_redo` 走重绘；`render_graph` 新增
-     `refresh_detail` 开关（**重绘不冲掉详情区**）；`RemoveEdgeCommand` 支持顺序边
-     （`remove_order_edge`/`connect_order`）；`_delete_selected` 传 kind/label 并重绘；
-     `_run_graph` **先 `reset_for_rerun()` 再 `run()`**；`build_edit` 按引擎口径分派参数名
-     （blur→sigma / sharpen→amount / 其余→factor）。
-  ② `canvas_graph.py` —— 新增 `CanvasGraph.reset_for_rerun()`（节点状态/产出引用/占位标记归零）。
-  ③ `task_graph.py` —— 新增 `TaskGraph.reset()`（全部任务归 pending，走 self._lock）。
+本轮进包的改动（v4.211.8 的三处修复一并复验）：
+  ① `canvas_panel.py` —— CanvasView 滚轮缩放（MIN/MAX_ZOOM 钳制）+ RubberBandDrag
+     框选 + 中键平移；CanvasScene 右键菜单（建/删节点）+ Delete 键；
+     PropertyPanel 结构化参数行（PARAM_SCHEMAS，只做引擎真读的键）；
+     撤销重绘改 `undo_stack.indexChanged` 信号统一驱动。
+  ② `canvas_graph.py` —— 新增 `remove_node()`（连带清边 + 撤销快照）；
+     **`topo()` 换成 Kahn 真拓扑序**（旧实现是 task_list() 的 dict 插入序，
+     「删→撤」后失真 → layout 崩 max() empty）。
+  ③ `task_graph.py` —— 新增 `remove_task()`（连带清双向依赖）。
   判据套件与扰动脚本**不进包**。
 
-所以核验重点：① 这三个模块的字节码指纹必须与当前源码一致（改对了得真进包）；
-② 版本号 v4.211.8 且不含 v4.211.7；③ 包内 `co_names` **真含**本轮新增的三个函数名
-（`reset_for_rerun` / `reset` / `_refresh_view` / `graphChanged` / `remove_order_edge`）——
-「函数定义在源码里」与「函数被编进包里」是两回事；④ 前几轮钉子复验。
+所以核验重点：① 三个模块的字节码指纹必须与当前源码一致（改对了得真进包）；
+② 版本号 v4.211.9 且不含 v4.211.8；③ 包内 `co_names` **真含**本轮新符号
+（`remove_node` / `remove_task` / `AddNodeCommand` / `RemoveNodeCommand` /
+`DEFAULT_PORTS` / `PARAM_SCHEMAS` / `wheelEvent` / `indexChanged` /
+`_apply_menu_choice` / `_node_from_dict`）；④ `topo` 函数体引用 `_edge_pairs`
+（真拓扑序的实现依赖，防退回 dict 伪序）；⑤ 前几轮钉子复验。
 
 核验策略：
   · **主判据 = 字节码树指纹**：把当前源码 compile() 出来的 code object 与 PYZ 里抽出来
     的逐字节比 sha256。相等 ⇒ 打进包的就是这份源码。
-  · **回归钉子（本轮）**：三个模块指纹一致；包内含上述新符号；`TaskGraph.reset` 体里
-    有 `_lock`（并发语义）；`canvas_panel` 里 `_run_graph` 函数体**同时**引用
-    `reset_for_rerun` 与 `run`（防"定义在但忘了调"）。
+  · **回归钉子（本轮）**：三个模块指纹一致；包内含上述新符号；`topo` 体里
+    有 `_edge_pairs`；`remove_task` 体里有 `blocked_by`/`blocks`（双向清理）。
   · **回归钉子（前几轮）**：系统控制 14 个 tool_* 可中断 + 关键进程黑名单 9 名 +
     tools 两条拦截标签；决策审计（`_audited`/`_audit_decision`/`tool_audit`）；
     UI 颜色等值化三模块；`ui_hex_guard` **不得进包**；画布四态与统一入口；
-    `VALID_STATUSES` 六态 —— 一并复验，防本轮改画布时顺带塌掉。
-  · **版本一致性**：PYZ 里 `config` 的常量表必须含 v4.211.8，且不含 v4.211.7。
+    v4.211.8 的重跑/重绘/参数键钉子；`VALID_STATUSES` 六态 —— 一并复验。
+  · **版本一致性**：PYZ 里 `config` 的常量表必须含 v4.211.9，且不含 v4.211.8。
   · **不漏测试**：`tests/` 下的判据套件与根目录扰动脚本绝不能被收进包。
 
-用法：python _verify_pyz_v42118.py
+用法：python _verify_pyz_v42119.py
 """
 import hashlib
 import marshal
@@ -198,7 +199,7 @@ def _load_entry_script(exe: Path, name: str = "main"):
 
 
 def main():
-    print("v4.211.8 进包核验（节点画布：重跑语义 / 自动重绘 / 参数键）")
+    print("v4.211.9 进包核验（画布手感档：缩放/框选/建删节点/参数行 + topo 真拓扑）")
     print("-" * 62)
     if not EXE.is_file():
         print(f"未找到产物：{EXE}")
@@ -242,10 +243,10 @@ def main():
     if "config" in names:
         consts = _str_consts(_load(za, "config"))
         old = sorted(s for s in consts if s.startswith("v4.210.") or s.startswith("v4.211."))
-        check("PYZ 内 config 的版本常量 == v4.211.8",
-              "v4.211.8" in consts, f"包内出现的版本串={old}")
-        check("PYZ 内不含上一版旧版本常量 v4.211.7",
-              "v4.211.7" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
+        check("PYZ 内 config 的版本常量 == v4.211.9",
+              "v4.211.9" in consts, f"包内出现的版本串={old}")
+        check("PYZ 内不含上一版旧版本常量 v4.211.8",
+              "v4.211.8" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
 
     print("\n-- 3) 本轮能力的回归钉子（防重启打包时被丢掉）--")
     if "system_control_tools" in names:
@@ -542,6 +543,39 @@ def main():
               _rst is not None and "_tasks" in _code_names(_rst), "实现漂移")
     else:
         check("task_graph 在 PYZ 里", False, "缺失")
+
+    print("\n-- 3g) v4.211.9 钉子：画布手感档（缩放/框选/建删节点/参数行/topo）--")
+    if "canvas_panel" in names:
+        _co_cp9 = _load(za, "canvas_panel")
+        _cpn9 = _code_names(_co_cp9)
+        for _sym in ("wheelEvent", "contextMenuEvent", "keyPressEvent",
+                     "AddNodeCommand", "RemoveNodeCommand", "DEFAULT_PORTS",
+                     "PARAM_SCHEMAS", "_node_from_dict", "_apply_menu_choice",
+                     "RubberBandDrag", "AnchorUnderMouse"):
+            check(f"canvas_panel 含 v4.211.9 符号 {_sym}", _sym in _cpn9, "符号丢失")
+        check("★ canvas_panel 引用 indexChanged（撤销重绘信号驱动）",
+              "indexChanged" in _cpn9, "缺失 → 键盘/右键路径撤销后画面不动")
+        check("★ CanvasView 常量 MIN_ZOOM / MAX_ZOOM（缩放钳制）",
+              "MIN_ZOOM" in _cpn9 and "MAX_ZOOM" in _cpn9, "缺失 → 缩放无界")
+    if "canvas_graph" in names:
+        _co_cg9 = _load(za, "canvas_graph")
+        check("★ canvas_graph 定义 remove_node（删节点连带清边）",
+              "remove_node" in _code_names(_co_cg9), "缺失 → 删节点留悬空边")
+        _topo = _func_codes(_co_cg9, "topo").get("topo")
+        check("★ topo 函数体引用 _edge_pairs（Kahn 真拓扑序，防退回 dict 伪序）",
+              _topo is not None and "_edge_pairs" in _code_names(_topo),
+              "缺失 → 「删→撤」后 layout 崩 max() empty")
+        check("★ topo 函数体不再引用 task_list（dict 插入序伪拓扑已根除）",
+              _topo is not None and "task_list" not in _code_names(_topo),
+              "退回伪拓扑 → 删节点撤销后布局崩")
+    if "task_graph" in names:
+        _co_tg9 = _load(za, "task_graph")
+        check("★ task_graph 定义 remove_task（删任务连带清双向依赖）",
+              "remove_task" in _code_names(_co_tg9), "缺失 → 残余依赖悬空 id")
+        _rt = _func_codes(_co_tg9, "remove_task").get("remove_task")
+        check("★ remove_task 体里引用 blocked_by 与 blocks（双向清理）",
+              _rt is not None and "blocked_by" in _code_names(_rt)
+              and "blocks" in _code_names(_rt), "单向清理 → Task.blocks 留脏数据")
 
     print("\n-- 4) 不漏测试 / 不漏扰动脚本 --")
     leaked = sorted(n for n in names
