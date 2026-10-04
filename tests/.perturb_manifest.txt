@@ -21,5 +21,6 @@ _perturb_canvas_panel.py
 _perturb_hitarea_2103.py
 _perturb_probe_graphics.py
 _perturb_system_control_a.py
+_perturb_system_control_b.py
 _perturb_toast_204.py
 _perturb_ui_a11y.py

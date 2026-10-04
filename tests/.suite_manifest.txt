@@ -69,6 +69,7 @@ test_skill_and_route_gates.py
 test_software_control_2b.py
 test_status_len_2091.py
 test_system_control_a.py
+test_system_control_b.py
 test_task_graph_cancel.py
 test_task_graph_incomplete.py
 test_task_status.py

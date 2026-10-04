@@ -298,6 +298,8 @@ SYSTEM_CONTROL_TOOL_DEFS = [
 #    永不抛异常，所有错误转为自然语言 str 返回
 # ============================================================
 
+import csv
+import io
 import os
 import time
 import shlex
@@ -328,6 +330,20 @@ def _aborted(should_stop=None, stop_event=None):
         logger.warning("停止信号读取异常，按已停止处理（fail-closed）: %r", _e)
         return True
     return False
+
+
+def _require(args, *keys):
+    """必填参数校验：缺哪个就回报哪个，参数齐则返回 None。
+
+    此前 8 个工具直接 `args["x"]` 取必填参数，缺键会抛 KeyError —— 既违背本模块
+    文件头「永不抛异常，所有错误转为自然语言 str 返回」的承诺，又被 tools.exec_tool
+    的兜底吞成英文 `工具执行异常：'x'`，模型根本不知道缺了哪个参数。
+    只判「键不存在」，不把空串/None 当缺（保持与原先 args[...] 的语义一致）。
+    """
+    missing = [k for k in keys if k not in args]
+    if not missing:
+        return None
+    return "缺少必填参数：" + "、".join(missing) + "。请补齐后重试。"
 
 
 def _split_win_args(s):
@@ -501,6 +517,9 @@ def _init_pyautogui():
 def tool_mouse_move(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
     if _aborted(should_stop, stop_event):
         return ("⏹ 已停止（用户请求）", [], None)
+    _miss = _require(args, "x", "y")
+    if _miss:
+        return (_miss, [], None)
     x, y = args["x"], args["y"]
     duration = args.get("duration", 0)
     try:
@@ -559,6 +578,9 @@ def tool_mouse_scroll(cfg, app_dir, args, progress=None, stop_event=None, should
 def tool_keyboard_type(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
     if _aborted(should_stop, stop_event):
         return ("⏹ 已停止（用户请求）", [], None)
+    _miss = _require(args, "text")
+    if _miss:
+        return (_miss, [], None)
     text = args["text"]
     interval = args.get("interval", 0)
     try:
@@ -574,6 +596,9 @@ def tool_keyboard_type(cfg, app_dir, args, progress=None, stop_event=None, shoul
 def tool_keyboard_press(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
     if _aborted(should_stop, stop_event):
         return ("⏹ 已停止（用户请求）", [], None)
+    _miss = _require(args, "keys")
+    if _miss:
+        return (_miss, [], None)
     keys = args["keys"]
     try:
         pag = _init_pyautogui()
@@ -605,6 +630,9 @@ def tool_clipboard_read(cfg, app_dir, args, progress=None, stop_event=None, shou
 def tool_clipboard_write(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
     if _aborted(should_stop, stop_event):
         return ("⏹ 已停止（用户请求）", [], None)
+    _miss = _require(args, "text")
+    if _miss:
+        return (_miss, [], None)
     text = args["text"]
     try:
         import pyperclip
@@ -645,6 +673,9 @@ def tool_window_list(cfg, app_dir, args, progress=None, stop_event=None, should_
 def tool_window_focus(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
     if _aborted(should_stop, stop_event):
         return ("⏹ 已停止（用户请求）", [], None)
+    _miss = _require(args, "title")
+    if _miss:
+        return (_miss, [], None)
     title = args["title"]
     try:
         import pygetwindow as gw
@@ -665,6 +696,9 @@ def tool_window_focus(cfg, app_dir, args, progress=None, stop_event=None, should
 def tool_window_get_info(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
     if _aborted(should_stop, stop_event):
         return ("⏹ 已停止（用户请求）", [], None)
+    _miss = _require(args, "title")
+    if _miss:
+        return (_miss, [], None)
     title = args["title"]
     try:
         import pygetwindow as gw
@@ -697,17 +731,23 @@ def tool_process_list(cfg, app_dir, args, progress=None, stop_event=None, should
         # tasklist 输出稳定，不依赖 psutil
         cmd = ["tasklist", "/FO", "CSV", "/NH"]
         result = subprocess.run(cmd, capture_output=True, text=True, encoding="gbk", errors="replace")
-        lines = result.stdout.strip().split("\n")
 
+        # tasklist /FO CSV 的内存列自带千分位（"12,345 K"）且被引号包住。原先用
+        # line.replace('"','').split(",") 会把这一列切成两段 -> 内存值只取到 "12"，
+        # 1,234,567 K 的进程显示成 0 MB，排序也整体错乱。改用 csv 模块按 RFC4180
+        # 解析引号字段，再只去掉千分位逗号。
         processes = []
-        for line in lines:
-            parts = line.replace('"', "").split(",")
-            if len(parts) >= 5:
-                name, pid, _, mem_str = parts[0], parts[1], parts[2], parts[4]
-                if filt and filt.lower() not in name.lower():
-                    continue
-                mem_kb = int(mem_str.replace("K", "").replace(" K", "").strip() or 0)
-                processes.append((name.strip(), pid.strip(), mem_kb))
+        for parts in csv.reader(io.StringIO(result.stdout)):
+            if len(parts) < 5:
+                continue
+            name, pid, mem_str = parts[0], parts[1], parts[4]
+            if filt and filt.lower() not in name.lower():
+                continue
+            try:
+                mem_kb = int(mem_str.replace("K", "").replace(",", "").strip() or 0)
+            except ValueError:
+                mem_kb = 0
+            processes.append((name.strip(), pid.strip(), mem_kb))
 
         # 按内存降序
         processes.sort(key=lambda x: x[2], reverse=True)
@@ -726,6 +766,9 @@ def tool_process_list(cfg, app_dir, args, progress=None, stop_event=None, should
 def tool_process_kill(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
     if _aborted(should_stop, stop_event):
         return ("⏹ 已停止（用户请求）", [], None)
+    _miss = _require(args, "name")
+    if _miss:
+        return (_miss, [], None)
     name = args["name"]
     force = args.get("force", False)
     try:
@@ -746,6 +789,9 @@ def tool_process_kill(cfg, app_dir, args, progress=None, stop_event=None, should
 def tool_process_start(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
     if _aborted(should_stop, stop_event):
         return ("⏹ 已停止（用户请求）", [], None)
+    _miss = _require(args, "target")
+    if _miss:
+        return (_miss, [], None)
     target = args["target"]
     shell_args = args.get("args", "")
     working_dir = args.get("working_dir", "")
