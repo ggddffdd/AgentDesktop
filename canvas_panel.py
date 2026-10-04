@@ -321,7 +321,7 @@ def region_svg_overlay(region: Optional[dict], ox: float, oy: float,
 # --------------------------------------------------------------------------
 # 视图层（Qt）：把 ScenePlan 画成可见画布（复用第 0 步三坑保护法）
 # --------------------------------------------------------------------------
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal  # noqa: E402
+from PySide6.QtCore import QPointF, QRectF, Qt, QThread, Signal  # noqa: E402
 from PySide6.QtGui import (QBrush, QColor, QFont, QMouseEvent, QPainter,  # noqa: E402
                            QPainterPath, QPen, QPolygonF, QUndoCommand,
                            QUndoStack)
@@ -477,6 +477,10 @@ class CanvasScene(QGraphicsScene):
         self.undo_stack = undo_stack
         self._link_src = None          # 发起连线的输出 PortItem
         self._temp_link = None         # 临时连线 QGraphicsPathItem
+        # v4.211.10：整图在后台线程跑时置 True —— 期间拒绝一切改图操作
+        # （连线/建节点/删节点），否则 GUI 线程与 worker 线程对同一份
+        # nodes/dict/边集并发读写，属于数据竞争。
+        self.run_active = False
 
     def build(self, plan: ScenePlan, graph=None):
         if graph is not None:
@@ -533,6 +537,10 @@ class CanvasScene(QGraphicsScene):
         self._clear_link()
         if src is None or self.graph is None:
             return
+        if self.run_active:
+            # 运行中拒绝落边：连一半的图被 worker 线程读走 = 数据竞争。
+            # 起手清掉临时线再退出，画面不残留半截拖拽线。
+            return
         # 找鼠标下的输入端口
         target = None
         for it in self.items(ev.scenePos()):
@@ -577,7 +585,8 @@ class CanvasScene(QGraphicsScene):
         return "%s_%d" % (node_type, i)
 
     def contextMenuEvent(self, ev):
-        if self.graph is None:
+        if self.graph is None or self.run_active:
+            # 运行中不弹菜单：弹了再拒是"点了没反应"，不如一开始就不给入口。
             super().contextMenuEvent(ev)
             return
         menu = QMenu()
@@ -602,6 +611,10 @@ class CanvasScene(QGraphicsScene):
 
         kind: "add"（payload=节点类型，落位在 pos）/ "del"（payload=节点 id）。
         """
+        if self.run_active:
+            # 运行中拒绝建/删节点（数据竞争）。守卫放执行层而非菜单层：
+            # 任何调用路径（菜单/快捷键/判据直调）都过这里。
+            return
         if kind == "add":
             nid = self._unique_node_id(payload)
             cmd = AddNodeCommand(self.graph, self.undo_stack, payload, nid,
@@ -617,6 +630,10 @@ class CanvasScene(QGraphicsScene):
     def keyPressEvent(self, ev):
         # Delete/Backspace 删除**选中的节点**（连线仍走工具栏按钮）。
         if ev.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.graph is not None:
+            if self.run_active:
+                # 运行中拒绝删节点（数据竞争，同 contextMenuEvent 守卫）
+                ev.accept()
+                return
             ids = [it.spec.id for it in self.selectedItems()
                    if isinstance(it, CanvasNodeItem)]
             if ids:
@@ -1317,6 +1334,54 @@ class PropertyPanel(QWidget):
             cmd.redo()
 
 
+class _GraphRunWorker(QThread):
+    """整图执行的后台线程（v4.211.10）。
+
+    为什么必须后台跑：图里的 gen_video 节点要连 Agnes 生视频
+    （提交 120s + 轮询 60×8s + 下载 300s，典型 1~5 分钟）。之前
+    `_run_graph` 在按钮槽里同步跑 = GUI 线程被占住 → Windows 判
+    「未响应」。v4.211.8 修好「运行假成功」后按钮真的开始跑图，
+    这个结构性问题随之暴露。
+
+    线程安全边界：worker 只动图数据层（纯 Python，无 Qt 对象）；
+    对 UI 的一切触碰经信号回到 GUI 线程（QThread 信号→槽自动排队）。
+    结果语义沿用 TaskGraph：取消不抛异常，未开始节点标 cancelled、
+    state 带 `__cancelled__`；执行器异常被 TaskGraph 吸收成节点级
+    failed，只有 reset/装配阶段抛错才走到 failed 信号。
+    """
+
+    succeeded = Signal(list)   # 产物行（"  - node.port → path"）
+    failed = Signal(str)       # 装配/重置阶段异常
+    cancelled = Signal(str)    # 协作式取消（reason）
+
+    def __init__(self, graph, asset_root, inpaint_fn, video_fn, token, parent=None):
+        super().__init__(parent)
+        self.graph = graph
+        self.asset_root = asset_root
+        self.inpaint_fn = inpaint_fn
+        self.video_fn = video_fn
+        self.token = token
+
+    def run(self):  # QThread override —— 本体在后台线程执行
+        try:
+            self.graph.reset_for_rerun()
+            self.graph.use_real_executors(
+                self.asset_root, inpaint_fn=self.inpaint_fn,
+                video_fn=self.video_fn)
+            state = self.graph.run({}, token=self.token)
+            if self.token is not None and self.token.is_cancelled:
+                self.cancelled.emit(self.token.reason or "已取消")
+                return
+            lines = []
+            for nid, n in self.graph.nodes.items():
+                for p, a in n.out_assets.items():
+                    if isinstance(a, cg.AssetRef) and a.path:
+                        lines.append("  - %s.%s → %s" % (nid, p, a.path))
+            self.succeeded.emit(lines)
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
+
+
 class CanvasPanel(QWidget):
     """独立画布面板（阶段 A：可编辑 + 撤销/重做 + 属性面板 + 端口连线）。"""
 
@@ -1329,6 +1394,9 @@ class CanvasPanel(QWidget):
         self.property_panel = PropertyPanel(self)
         # 阶段 B：属性面板「局部编辑」按钮 → 打开遮罩编辑器
         self.property_panel.local_edit_callback = self._open_local_edit_for
+        # v4.211.10：后台运行状态（worker/token 只在运行期间非空）
+        self._run_worker = None
+        self._run_token = None
 
         # 工具栏
         bar = QHBoxLayout()
@@ -1346,6 +1414,9 @@ class CanvasPanel(QWidget):
         btn_export.clicked.connect(self._export_local_edited_images)
         btn_run = QPushButton("运行")
         btn_run.clicked.connect(self._run_graph)
+        btn_stop = QPushButton("停止")
+        btn_stop.setEnabled(False)   # 运行中才可用（协作式取消，见 _stop_run）
+        btn_stop.clicked.connect(self._stop_run)
         btn_promo = QPushButton("促销动效预览")
         btn_promo.clicked.connect(self._make_promo_motion)
         bar.addWidget(btn_fit)
@@ -1355,10 +1426,24 @@ class CanvasPanel(QWidget):
         bar.addWidget(btn_local)
         bar.addWidget(btn_export)
         bar.addWidget(btn_run)
+        bar.addWidget(btn_stop)
         bar.addWidget(btn_promo)
         bar.addStretch(1)
         legend = QLabel("● 完成  ● 进行  ● 失败  ● 待办 蓝色实线=数据 灰色虚线=顺序")
         bar.addWidget(legend)
+        # v4.211.10：保存按钮引用 —— 运行期间禁用/恢复（含撤销重做：undo 也会改图）
+        self.btn_run = btn_run
+        self.btn_stop = btn_stop
+        self.btn_promo = btn_promo
+        self.btn_del = btn_del
+        self.btn_local = btn_local
+        self.btn_export = btn_export
+        self.btn_undo = btn_undo
+        self.btn_redo = btn_redo
+        # 应用退出时若还在跑：协作取消 + 有限等待，防止 QThread 带线程销毁崩溃
+        _app = QApplication.instance()
+        if _app is not None:
+            _app.aboutToQuit.connect(self._shutdown_run)
 
         # 详情
         self.detail = QListWidget()
@@ -1442,6 +1527,9 @@ class CanvasPanel(QWidget):
             self.property_panel.bind(self.graph, None, self.undo_stack)
 
     def _delete_selected(self):
+        if self.scene.run_active:
+            # 运行中拒绝删边（按钮已禁用，这里是行为层兜底，防其他调用路径）
+            return
         for it in self.scene.selectedItems():
             if isinstance(it, CanvasEdgeItem):
                 cmd = RemoveEdgeCommand(self.graph, self.undo_stack, *it.edge_tuple,
@@ -1510,9 +1598,17 @@ class CanvasPanel(QWidget):
 
     # ---- 第 5 步：运行（真正落盘执行器）----
     def _run_graph(self):
-        """工具栏「运行」：给所有节点装上真实执行器并跑图，详情区列出落地文件。"""
+        """工具栏「运行」：给所有节点装上真实执行器，**后台线程**跑图。
+
+        v4.211.10 前在 GUI 线程同步跑：gen_video 连 Agnes 生视频典型
+        1~5 分钟（轮询 60×8s），期间事件循环不动 → Windows 判「未响应」，
+        看起来就是"点运行程序卡死"。
+        """
         if self.graph is None:
             self.detail.addItem("（没有可运行的画布）")
+            return
+        if self._run_worker is not None and self._run_worker.isRunning():
+            self.detail.addItem("已有一次运行在进行中（可点「停止」）")
             return
         import os
         asset_root = os.path.join(os.getcwd(), "canvas_runtime")
@@ -1528,23 +1624,77 @@ class CanvasPanel(QWidget):
         except Exception:  # noqa: BLE001
             inpaint_fn = None
             video_fn = None
-        # 先重置为「待跑」：画布一打开时示例流已被 stub 跑过一遍、节点全是终态，
-        # 而 TaskGraph 只派发 pending 的任务 —— 不重置的话 run() 会**一个节点都不执行**
-        # 直接返回，界面却照样打印「运行完成，产物落在…」（静默假成功）。
-        self.graph.reset_for_rerun()
-        try:
-            self.graph.use_real_executors(asset_root, inpaint_fn=inpaint_fn, video_fn=video_fn)
-            self.graph.run({})
-        except Exception as e:  # noqa: BLE001
-            self.detail.addItem("运行失败: %s" % e)
-            self._refresh_view()
-            return
-        self.detail.addItem("运行完成，产物落在: %s" % asset_root)
-        for nid, n in self.graph.nodes.items():
-            for p, a in n.out_assets.items():
-                if isinstance(a, cg.AssetRef) and a.path:
-                    self.detail.addItem("  - %s.%s → %s" % (nid, p, a.path))
+        from cancel_token import CancellationToken
+        self._run_token = CancellationToken(name="canvas_run")
+        worker = _GraphRunWorker(
+            self.graph, asset_root, inpaint_fn, video_fn,
+            self._run_token, parent=self)
+        worker.succeeded.connect(self._on_run_succeeded)
+        worker.failed.connect(self._on_run_failed)
+        worker.cancelled.connect(self._on_run_cancelled)
+        worker.finished.connect(self._on_run_finished)
+        self._run_worker = worker
+        # 运行期间：改图入口全关（按钮禁 + scene.run_active 守卫），
+        # 防 GUI 线程与 worker 线程对同一份图并发读写。
+        # （「先重置再跑」的静默假成功防线搬进了 worker.run —— 见其 docstring）
+        self.scene.run_active = True
+        self.btn_run.setEnabled(False)
+        self.btn_run.setText("运行中…")
+        self.btn_stop.setEnabled(True)
+        for b in (self.btn_promo, self.btn_del, self.btn_local,
+                  self.btn_export, self.btn_undo, self.btn_redo):
+            b.setEnabled(False)
+        self.detail.addItem(
+            "运行已开始（后台线程）。含「生视频」时通常需 1~5 分钟，界面不会卡住。")
+        worker.start()
+
+    # ---- 运行回调（经 QThread 信号回到 GUI 线程执行）----
+
+    def _on_run_succeeded(self, lines):
+        import os
+        self.detail.addItem("运行完成，产物落在: %s" % os.path.join(
+            os.getcwd(), "canvas_runtime"))
+        for ln in lines:
+            self.detail.addItem(ln)
+
+    def _on_run_failed(self, msg):
+        self.detail.addItem("运行失败: %s" % msg)
+
+    def _on_run_cancelled(self, reason):
+        self.detail.addItem("已停止: %s" % reason)
+
+    def _on_run_finished(self):
+        """QThread.finished：无论成功/失败/取消，交互态只在这一处收口。"""
+        self.scene.run_active = False
+        self.btn_run.setEnabled(True)
+        self.btn_run.setText("运行")
+        self.btn_stop.setEnabled(False)
+        for b in (self.btn_promo, self.btn_del, self.btn_local,
+                  self.btn_export, self.btn_undo, self.btn_redo):
+            b.setEnabled(True)
+        self._run_worker = None
+        self._run_token = None
         self._refresh_view()
+
+    def _stop_run(self):
+        """协作式取消：已在跑的节点（如正在轮询的生视频）会做完当前步骤才停。
+
+        诚实边界：不是立刻杀线程 —— 强杀会留半截产物与脏状态。
+        TaskGraph 在派发前/执行器开头查令牌，未开始的节点直接标 cancelled。
+        """
+        if self._run_token is None:
+            return
+        self._run_token.cancel("用户点了停止", stage="user_stop")
+        self.btn_stop.setEnabled(False)
+        self.detail.addItem("停止请求已发出（当前节点做完这一步后停）…")
+
+    def _shutdown_run(self):
+        """应用退出时的兜底：取消 + 有限等待，防 QThread 销毁时线程仍活着。"""
+        w = self._run_worker
+        if w is not None and w.isRunning():
+            if self._run_token is not None:
+                self._run_token.cancel("应用退出", stage="app_quit")
+            w.wait(5000)
 
     # ---- 第 6 步：促销动效预览（纯本地，零网络、零 ffmpeg）----
     def _make_promo_motion(self):

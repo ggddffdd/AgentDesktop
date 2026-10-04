@@ -1,37 +1,35 @@
 # -*- coding: utf-8 -*-
-"""v4.211.9 进包核验：画布 ComfyUI 式「手感档」+ 连带修掉的两个既有缺陷。
+"""v4.211.10 进包核验：画布「运行」后台线程化（用户实弹"点运行程序就卡死"修复）。
 
-本轮进包的改动（v4.211.8 的三处修复一并复验）：
-  ① `canvas_panel.py` —— CanvasView 滚轮缩放（MIN/MAX_ZOOM 钳制）+ RubberBandDrag
-     框选 + 中键平移；CanvasScene 右键菜单（建/删节点）+ Delete 键；
-     PropertyPanel 结构化参数行（PARAM_SCHEMAS，只做引擎真读的键）；
-     撤销重绘改 `undo_stack.indexChanged` 信号统一驱动。
-  ② `canvas_graph.py` —— 新增 `remove_node()`（连带清边 + 撤销快照）；
-     **`topo()` 换成 Kahn 真拓扑序**（旧实现是 task_list() 的 dict 插入序，
-     「删→撤」后失真 → layout 崩 max() empty）。
-  ③ `task_graph.py` —— 新增 `remove_task()`（连带清双向依赖）。
+本轮进包的改动（v4.211.9 手感档 + v4.211.8 三处修复一并复验）：
+  ① `canvas_panel.py` —— 新增 `_GraphRunWorker(QThread)`：整图执行（reset +
+     use_real_executors + run）搬进后台线程，结果经信号回 GUI 线程；
+     `_run_graph` 改为启动 worker + 按钮态切换；工具栏新增「停止」按钮
+     （协作式取消，CancellationToken）；运行期防编辑守卫（scene.run_active，
+     覆盖 _apply_menu_choice / keyPressEvent / _finish_link / _delete_selected）；
+     退出保护（aboutToQuit → cancel + wait）。
   判据套件与扰动脚本**不进包**。
 
-所以核验重点：① 三个模块的字节码指纹必须与当前源码一致（改对了得真进包）；
-② 版本号 v4.211.9 且不含 v4.211.8；③ 包内 `co_names` **真含**本轮新符号
-（`remove_node` / `remove_task` / `AddNodeCommand` / `RemoveNodeCommand` /
-`DEFAULT_PORTS` / `PARAM_SCHEMAS` / `wheelEvent` / `indexChanged` /
-`_apply_menu_choice` / `_node_from_dict`）；④ `topo` 函数体引用 `_edge_pairs`
-（真拓扑序的实现依赖，防退回 dict 伪序）；⑤ 前几轮钉子复验。
+所以核验重点：① `canvas_panel` 的字节码指纹必须与当前源码一致（改对了得真进包）；
+② 版本号 v4.211.10 且不含 v4.211.9；③ 包内 `co_names` **真含**本轮新符号
+（`_GraphRunWorker` / `QThread` / `CancellationToken` / `_stop_run` /
+`_shutdown_run` / `_on_run_finished` / `run_active` / `aboutToQuit`）——
+「函数定义在源码里」与「函数被编进包里」是两回事。
 
 核验策略：
   · **主判据 = 字节码树指纹**：把当前源码 compile() 出来的 code object 与 PYZ 里抽出来
     的逐字节比 sha256。相等 ⇒ 打进包的就是这份源码。
-  · **回归钉子（本轮）**：三个模块指纹一致；包内含上述新符号；`topo` 体里
-    有 `_edge_pairs`；`remove_task` 体里有 `blocked_by`/`blocks`（双向清理）。
+  · **回归钉子（本轮）**：canvas_panel 指纹一致 + 上述新符号；`cancel_token`
+    模块在 PYZ 里（worker import 它）。
   · **回归钉子（前几轮）**：系统控制 14 个 tool_* 可中断 + 关键进程黑名单 9 名 +
     tools 两条拦截标签；决策审计（`_audited`/`_audit_decision`/`tool_audit`）；
     UI 颜色等值化三模块；`ui_hex_guard` **不得进包**；画布四态与统一入口；
-    v4.211.8 的重跑/重绘/参数键钉子；`VALID_STATUSES` 六态 —— 一并复验。
-  · **版本一致性**：PYZ 里 `config` 的常量表必须含 v4.211.9，且不含 v4.211.8。
+    v4.211.8 的重跑/重绘/参数键钉子；v4.211.9 的手感档钉子（缩放/框选/建删节点/
+    参数行/topo 真拓扑）；`VALID_STATUSES` 六态 —— 一并复验。
+  · **版本一致性**：PYZ 里 `config` 的常量表必须含 v4.211.10，且不含 v4.211.9。
   · **不漏测试**：`tests/` 下的判据套件与根目录扰动脚本绝不能被收进包。
 
-用法：python _verify_pyz_v42119.py
+用法：python _verify_pyz_v421110.py
 """
 import hashlib
 import marshal
@@ -199,7 +197,7 @@ def _load_entry_script(exe: Path, name: str = "main"):
 
 
 def main():
-    print("v4.211.9 进包核验（画布手感档：缩放/框选/建删节点/参数行 + topo 真拓扑）")
+    print("v4.211.10 进包核验（画布运行后台线程化：不卡死/停止/防编辑）")
     print("-" * 62)
     if not EXE.is_file():
         print(f"未找到产物：{EXE}")
@@ -243,10 +241,10 @@ def main():
     if "config" in names:
         consts = _str_consts(_load(za, "config"))
         old = sorted(s for s in consts if s.startswith("v4.210.") or s.startswith("v4.211."))
-        check("PYZ 内 config 的版本常量 == v4.211.9",
-              "v4.211.9" in consts, f"包内出现的版本串={old}")
-        check("PYZ 内不含上一版旧版本常量 v4.211.8",
-              "v4.211.8" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
+        check("PYZ 内 config 的版本常量 == v4.211.10",
+              "v4.211.10" in consts, f"包内出现的版本串={old}")
+        check("PYZ 内不含上一版旧版本常量 v4.211.9",
+              "v4.211.9" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
 
     print("\n-- 3) 本轮能力的回归钉子（防重启打包时被丢掉）--")
     if "system_control_tools" in names:
@@ -501,21 +499,25 @@ def main():
         check("★ 包内引用 remove_order_edge / connect_order（顺序边删除支路）",
               {"remove_order_edge", "connect_order"} <= _cpn,
               f"缺={sorted({'remove_order_edge', 'connect_order'} - _cpn)}")
-        # 关键：_run_graph 必须**真的调** reset_for_rerun 与 run
+        # 关键：重跑语义（reset_for_rerun → run）必须**真的被调**
         # —— 本轮缺陷的根因形状就是「代码都在，就是没人在跑之前调它」，
         #    所以这里查的是**函数体引用**，不是"函数定义存在"。
+        # v4.211.10 起这两步搬进了 _GraphRunWorker.run（后台线程）——
+        # 钉子随执行位置迁移；_run_graph 只负责起 worker（另有 3g 段钉子守）。
         _rg = _func_codes(_co_cp, "_run_graph").get("_run_graph")
         check("★ canvas_panel 里存在名为 _run_graph 的函数（AST 契约）",
               _rg is not None, "改名会连带搞坏 test_canvas_rerun_refresh.py 的 E 组")
-        if _rg is not None:
-            _body = _code_names(_rg)
-            check("★ _run_graph 函数体里真的调了 reset_for_rerun"
+        _wr = _func_codes(_co_cp, "run").get("run")
+        if _wr is not None:
+            _wbody = _code_names(_wr)
+            check("★ _GraphRunWorker.run 体里真的调了 reset_for_rerun"
                   "（防「函数定义了但忘了调」—— 正是本轮缺陷的根因形状）",
-                  "reset_for_rerun" in _body, "重跑前不再重置 → 退回静默假成功")
-            check("★ _run_graph 函数体里也调了 run（两个都得在，缺一不成立）",
-                  "run" in _body, "调用链断裂")
-            check("★ _run_graph 形参表含 asset_root（落盘根目录来源）",
-                  "asset_root" in _rg.co_varnames, "形参改名 → UI 调用会 TypeError")
+                  "reset_for_rerun" in _wbody, "重跑前不再重置 → 退回静默假成功")
+            check("★ worker.run 体里也调了 run（两个都得在，缺一不成立）",
+                  "run" in _wbody, "调用链断裂")
+            check("★ _run_graph 形参表/局部含 asset_root（落盘根目录来源）",
+                  _rg is not None and "asset_root" in _rg.co_varnames,
+                  "来源丢失 → UI 调用会 TypeError")
         _rd = _func_codes(_co_cp, "render_graph").get("render_graph")
         check("★ render_graph 形参表含 refresh_detail（重绘不冲详情区的开关）",
               _rd is not None and "refresh_detail" in _rd.co_varnames,
@@ -557,6 +559,18 @@ def main():
               "indexChanged" in _cpn9, "缺失 → 键盘/右键路径撤销后画面不动")
         check("★ CanvasView 常量 MIN_ZOOM / MAX_ZOOM（缩放钳制）",
               "MIN_ZOOM" in _cpn9 and "MAX_ZOOM" in _cpn9, "缺失 → 缩放无界")
+
+        # ---- v4.211.10 钉子：运行后台线程化 ----
+        for _sym in ("_GraphRunWorker", "QThread", "CancellationToken",
+                     "_stop_run", "_shutdown_run", "_on_run_finished",
+                     "run_active", "aboutToQuit", "isRunning"):
+            check(f"canvas_panel 含 v4.211.10 符号 {_sym}", _sym in _cpn9, "符号丢失")
+        _wkr = _func_codes(_co_cp9, "run").get("run")
+        check("★ 包内 worker 语义完整（QThread + run 方法在）",
+              _wkr is not None and "QThread" in _cpn9,
+              "缺失 → 运行退回 GUI 线程同步跑（卡死回归）")
+        check("cancel_token 模块在 PYZ 里（worker 的取消依赖）",
+              "cancel_token" in names, "缺失 → 停止按钮无令牌可用")
     if "canvas_graph" in names:
         _co_cg9 = _load(za, "canvas_graph")
         check("★ canvas_graph 定义 remove_node（删节点连带清边）",

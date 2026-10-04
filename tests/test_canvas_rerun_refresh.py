@@ -155,7 +155,13 @@ def _b():
         os.chdir(work)
         g = build_demo()
         panel = CanvasPanel(g)
+        # v4.211.10 起运行是**后台线程**（异步）：点完按钮立即返回，
+        # 产物/详情经 worker 信号回到 GUI 线程 —— 判据要等 worker 跑完。
         panel._run_graph()
+        from PySide6.QtCore import QEventLoop
+        loop = QEventLoop()
+        panel._run_worker.finished.connect(loop.quit)
+        loop.exec()
         files = _walk(os.path.join(work, "canvas_runtime"))
         detail = [panel.detail.item(i).text() for i in range(panel.detail.count())]
 
@@ -281,9 +287,21 @@ def _d():
 def _e():
     print("E 组 · 源码契约（AST 限定在目标函数体内，见 L270）")
     tree = ast.parse(CP_SRC)
+    # v4.211.10：reset/run 搬进了 _GraphRunWorker.run（后台线程），
+    # E1 锚点随之迁移；同时守 _run_graph 必须走 worker（防退回同步跑）。
     fn = next((n for n in ast.walk(tree)
-               if isinstance(n, ast.FunctionDef) and n.name == "_run_graph"), None)
-    ok_e1, detail = False, "未找到 _run_graph"
+               if isinstance(n, ast.FunctionDef) and n.name == "run"
+               and getattr(n, "parent_cls", "") == "_GraphRunWorker"), None)
+    ok_e1, detail = False, "未找到 _GraphRunWorker.run"
+    if fn is None:
+        # PySide6 QThread 子类的 run 是普通 FunctionDef；用类定义定位
+        for cls in ast.walk(tree):
+            if isinstance(cls, ast.ClassDef) and cls.name == "_GraphRunWorker":
+                for m in cls.body:
+                    if isinstance(m, ast.FunctionDef) and m.name == "run":
+                        fn = m
+                        break
+                break
     if fn is not None:
         reset_l, run_l = [], []
         for n in ast.walk(fn):
@@ -295,7 +313,11 @@ def _e():
                     run_l.append(n.lineno)
         ok_e1 = bool(reset_l) and bool(run_l) and min(reset_l) < min(run_l)
         detail = "reset@%s run@%s" % (sorted(reset_l), sorted(run_l))
-    check("E1 ★ _run_graph 内 reset_for_rerun 早于 run（防「忘了调」）", ok_e1, detail)
+    check("E1 ★ _GraphRunWorker.run 内 reset_for_rerun 早于 run（防「忘了调」）", ok_e1, detail)
+
+    check("E1b ★ _run_graph 走后台 worker（防退回 GUI 线程同步跑）",
+          "_GraphRunWorker(" in CP_SRC.split("def _run_graph")[1].split("def _on_run")[0],
+          "worker 构造不在 _run_graph 里")
 
     check("E2 RemoveEdgeCommand 带 kind/label 参数",
           'kind="data", label=""' in CP_SRC)

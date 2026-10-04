@@ -50,8 +50,9 @@ MUTATIONS = [
     # PR1：画布「运行」不再重置 → 真执行器一个不被调用 → 磁盘 0 文件。
     #      同时该行从 `_run_graph` 消失，AST 契约 E1 也红（"防忘了调"那层）。
     ("PR1_run_no_reset", ["E1", "B1"], CP,
-     "        self.graph.reset_for_rerun()\n        try:",
-     "        try:  # 扰动：不重置，run() 一个节点都不执行\n"),
+     # v4.211.10 起 reset 搬进 _GraphRunWorker.run（后台线程），锚点随迁
+     "            self.graph.reset_for_rerun()\n",
+     "            pass  # 扰动：不重置，run() 一个节点都不执行\n"),
     # PR2：底层 TaskGraph 不归 pending → 节点状态看着是 pending，任务仍是终态，
     #      run() 照样空转。**只在 CanvasGraph 上重置是不够的** —— 这正是
     #      "多道防线要一起拆"的那类：只改画布层，底层仍会挡住重跑。
