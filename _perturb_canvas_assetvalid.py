@@ -178,6 +178,37 @@ def main():
     else:
         print("  [FAIL] M18 -> A6: 假源码含 PEP701 但体检仍绿（判据空转）")
 
+    # ---- M19：A6 扫描清单必须包含「未跟踪的新增 .py」（2026-10-04 补盲区） ----
+    # 发布列车顺序是「打包 → 全量回归 → commit」，回归跑在 `git add` 之前 ——
+    # 那时只认 `git ls-files` 会让**本轮新写的文件**整轮隐身：v4.211.3 的
+    # tests/test_system_control_b.py 就是这样带着 3.10/3.11 语法错溜过 A6 的
+    # （下一轮提交后它成了跟踪文件，才被本轮回归暴露）。
+    # 这里真的造一个**未跟踪**的违规文件、**不**注入 EXT_CHECK_LIST，让
+    # `_tracked_py()` 自己去发现它；发现不了 = 清单仍在漏新文件（修复空转）。
+    # 用 test_zz_ 前缀：run_all 的 clean_stale_fixtures() 认得这个前缀，
+    # 即使中途被杀也清得掉，不会污染后续套件。
+    total += 1
+    probe = os.path.join(HERE, "tests", "test_zz_pep701_untracked_probe.py")
+    try:
+        with open(probe, "w", encoding="utf-8") as f:
+            # \x27 写出来才是单引号：probe 的内容是 `print(f'a {d['k']}')`
+            # （3.12-only 写法），而**本行自身**不含该字面写法。
+            f.write("d = {'k': 1}\nprint(f'a {d[\x27k\x27]}')\n")
+        rc19 = run_with("A6")
+    finally:
+        try:
+            os.remove(probe)
+        except OSError:
+            pass
+    if rc19 == 2:
+        total -= 1  # 无外部解释器 → A6 没跑，目标判据不存在；环境相关，不计入
+        print("  [SKIP] M19 -> A6: 本机无外部解释器（3.10/3.11），该变异无法验证")
+    elif rc19 != 0:
+        passed += 1
+        print("  [OK ] M19 -> A6: 未跟踪的违规新文件被体检自己发现（清单盲区已补）")
+    else:
+        print("  [FAIL] M19 -> A6: 未跟踪的违规文件未被扫到（清单仍在漏新文件）")
+
     # ---- 反向基线：原文件 + 同判据应绿 ----
     base_bad = []
     for target in BASELINE:

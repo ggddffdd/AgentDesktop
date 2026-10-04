@@ -79,6 +79,7 @@ test_thinking_channel_reasoning.py
 test_toast_204.py
 test_toast_wiring_205.py
 test_tokens_200.py
+test_tool_audit_c.py
 test_twin_seg_resilience.py
 test_ui_a11y_2102.py
 test_uidecision_fix_186.py

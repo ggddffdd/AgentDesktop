@@ -91,7 +91,7 @@ from config import (
 from session import SessionStore
 import search as search_mod
 import tools as tools_mod
-from permissions import PermissionEngine, MODES
+from permissions import PermissionEngine, MODES, default_audit_dir
 import voice as voice_mod
 from agent import AgentWorker
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -2593,7 +2593,11 @@ class ChatWindow(QMainWindow):
         _scope = [os.path.join(_home, "Documents"),
                   os.path.join(_home, "Desktop"),
                   config.APP_DIR, _home]
-        self.permission_engine = PermissionEngine(_mode, _auto_allow, _scope, _external_allow)
+        # v4.211.4（盘点 G1）：主对话链是唯一真实构造点 —— 必须显式接线审计账本，
+        # 否则 decide() 的决策只在内存里，用户确认过的键鼠/杀进程事后无从抽查。
+        # 判据 tests/test_tool_audit_c.py F 组用 AST 守这条接线（删了就翻红）。
+        self.permission_engine = PermissionEngine(_mode, _auto_allow, _scope, _external_allow,
+                                                  audit_dir=default_audit_dir())
         self.permission_mode = self.permission_engine.mode
         self.session_trusted = False  # 本次会话信任危险/浏览器操作（确认弹窗勾选后置 True）
         self._agent_worker = None

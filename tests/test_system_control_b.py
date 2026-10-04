@@ -645,8 +645,12 @@ def test_helpers():
     check("_split_win_args 普通切分", sp("-a -b") == ["-a", "-b"])
     check("★ _split_win_args 剥外层引号但保留空格",
           sp('"C:\\Program Files\\x.exe" -v') == ["C:\\Program Files\\x.exe", "-v"])
+    # v4.211.4：原写法 f"got={sp('-a\\\\b')}" 的表达式部分含反斜杠，
+    # 3.10/3.11 下是 SyntaxError（python 3.12 的 PEP 701 才放开）。
+    # 先算出来再格式化，语义不变：输入仍是双反斜杠的 -a\\\\b。
+    _got_bs = sp("-a\\\\b")
     check("★ _split_win_args 反斜杠不当作转义（posix=False）",
-          sp("-a\\b") == ["-a\\b"], f"got={sp('-a\\\\b')}")
+          sp("-a\\b") == ["-a\\b"], f"got={_got_bs!r}")
     check("_split_win_args 单引号同样剥离", sp("'D:\\a b\\c.txt'") == ["D:\\a b\\c.txt"])
 
     p = sct._resolve_save_path("X:/tmp/a.png", app_dir=APP_DIR)

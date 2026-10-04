@@ -44,12 +44,10 @@
 供事后抽查（对应第 ③ 条边界）。
 """
 
-import hashlib
-import json
 import os
 import threading
-import time
 
+import tool_audit
 from permissions import PermissionEngine
 from risk import RiskClass, classify
 
@@ -63,41 +61,20 @@ DANGEROUS_CMD_PATTERNS = (
 )
 
 # 非只读决策才写审计（只读量大且无风险，全记会把账本淹掉）
-_AUDIT_NAME = "legion_tool_audit.jsonl"
-_AUDIT_LOCK = threading.Lock()      # 军团是多线程的，审计不能靠"通常不碰撞"
-_ARG_DIGEST_LEN = 12
-_ARG_PREVIEW_MAX = 200
-
-# 参数里可能是敏感值的键（写审计前抹掉）
-_SENSITIVE_KEY_HINTS = ("key", "token", "secret", "password", "cookie",
-                        "authorization", "credential")
-
-
-def _digest(args) -> str:
-    """参数摘要哈希：用于"参数变了必须重新批"的留痕比对。"""
-    try:
-        blob = json.dumps(args or {}, sort_keys=True, ensure_ascii=False, default=str)
-    except Exception:
-        blob = repr(args)
-    return hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()[:_ARG_DIGEST_LEN]
-
-
-def _redact(args) -> str:
-    """参数可读摘要（脱敏 + 截断）——审计里能看"干了啥"，但不留敏感值。"""
-    try:
-        obj = args if isinstance(args, dict) else {"_": args}
-        safe = {}
-        for k, v in obj.items():
-            if any(h in str(k).lower() for h in _SENSITIVE_KEY_HINTS):
-                safe[k] = "***"
-            elif isinstance(v, str) and len(v) > 80:
-                safe[k] = v[:80] + "…"
-            else:
-                safe[k] = v
-        txt = json.dumps(safe, ensure_ascii=False, default=str)
-    except Exception:
-        txt = repr(args)
-    return txt[:_ARG_PREVIEW_MAX]
+#
+# v4.211.4：这一份 `_AUDIT_LOCK / _digest / _redact` 原本在军团里是**独立实现**。
+# 主对话链（permissions.decide）落地审计时也要同一套落盘范式 —— 两份「看起来
+# 一样」的实现迟早会漂移，漂移了就会出现「同样的参数两个账本对不上」。故抽成
+# 公共件 tool_audit：两边共用同一把锁、同一套脱敏规则、同一套字段名。
+# 下面这些名字保留为**别名**，不破坏既有引用（tests/test_legion_permissions.py
+# 就直接调 `lp._digest`）。
+_AUDIT_NAME = tool_audit.LEGION_AUDIT_NAME
+_AUDIT_LOCK = tool_audit.AUDIT_LOCK
+_ARG_DIGEST_LEN = tool_audit.ARG_DIGEST_LEN
+_ARG_PREVIEW_MAX = tool_audit.ARG_PREVIEW_MAX
+_SENSITIVE_KEY_HINTS = tool_audit.SENSITIVE_KEY_HINTS
+_digest = tool_audit.digest
+_redact = tool_audit.redact
 
 
 class LegionDecision:
@@ -337,41 +314,19 @@ class LegionPermissionAdapter:
         """写一笔工具级审计（加锁 + 脱敏 + 参数摘要）。失败不影响主流程。"""
         if not self._audit_dir:
             return None
-        rec = {
-            "ts": time.time(),
-            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "run_id": self.run_id,
-            "project_id": self.project_id,
-            "project_name": self.project_name,
-            "wave": wave,
-            "role": role,
-            "tool": tool,
-            "args_digest": _digest(args),
-            "args_preview": _redact(args),
-            "decision": "allow" if dec.allowed else "deny",
-            "rule": dec.rule,
-            "reason": (dec.reason + (f"；{extra_reason}" if extra_reason else ""))[:300],
-            "by": by,
-        }
-        try:
-            os.makedirs(self._audit_dir, exist_ok=True)
-            path = os.path.join(self._audit_dir, _AUDIT_NAME)
-            line = json.dumps(rec, ensure_ascii=False)
-            # 军团是多线程系统，审计是授权体系的证据 —— 不能靠"通常不碰撞"
-            with _AUDIT_LOCK:
-                with open(path, "a", encoding="utf-8") as f:
-                    f.write(line + "\n")
+        # 落盘范式（锁 / 摘要 / 脱敏 / 一次告警）统一在公共件里，与主对话链的
+        # tool_audit.jsonl 同构；origin 让两个账本可以合并抽查。
+        rec = tool_audit.build_record(
+            tool, args,
+            "allow" if dec.allowed else "deny", dec.rule,
+            reason=(dec.reason + (f"；{extra_reason}" if extra_reason else "")),
+            by=by, origin="legion", allowed=dec.allowed,
+            extra={"run_id": self.run_id, "project_id": self.project_id,
+                   "project_name": self.project_name, "wave": wave, "role": role})
+        if tool_audit.write(self._audit_dir, _AUDIT_NAME, rec, tag="legion"):
             return rec
-        except Exception:
-            # 只报一次，别把日志刷满
-            if not self._audit_failed_logged:
-                self._audit_failed_logged = True
-                try:
-                    import logging
-                    logging.getLogger(__name__).warning("军团工具审计写入失败")
-                except Exception:
-                    pass
-            return None
+        self._audit_failed_logged = True
+        return None
 
     def audit_path(self) -> str:
         return os.path.join(self._audit_dir, _AUDIT_NAME) if self._audit_dir else ""

@@ -153,13 +153,31 @@ def main():
     # （`git ls-files` 为空、打包 spec 也不收编），里面残留旧写法是预期内的 ——
     # 2026-10-04 已核实并报告过。把它们算进来只会造一条永远红的判据。
     def _tracked_py():
+        # ★ 2026-10-04 补盲区：只认 `git ls-files` 会让**本轮新写的文件**整轮隐身 ——
+        # 发布列车的顺序是「打包 → 全量回归 → commit」，回归跑在 `git add` 之前，
+        # 新文件当时还是未跟踪状态。v4.211.3 的 tests/test_system_control_b.py
+        # 就是这样带着 3.10/3.11 语法错漏过 A6（下一轮才被暴露）。
+        # 扩展为：已跟踪 ∪ 未跟踪新增（仍排除 `_` 开头的未跟踪副本：
+        # _cur_*/_bak_* 等旧写法备份不是交付物，算进来只会造一条永远红的判据）。
+        out = []
         try:
             _r = subprocess.run(["git", "ls-files", "*.py"], cwd=_ROOT,
                                 capture_output=True, text=True)
             if _r.returncode == 0 and _r.stdout.strip():
-                return [p for p in _r.stdout.split() if p.endswith(".py")]
+                out = [p for p in _r.stdout.split() if p.endswith(".py")]
         except Exception:  # noqa: BLE001 - 无 git 时退回前缀约定
             pass
+        try:
+            _r2 = subprocess.run(["git", "ls-files", "--others", "--exclude-standard",
+                                  "*.py"], cwd=_ROOT, capture_output=True, text=True)
+            if _r2.returncode == 0:
+                for _p in _r2.stdout.split():
+                    if _p.endswith(".py") and not os.path.basename(_p).startswith("_"):
+                        out.append(_p)
+        except Exception:  # noqa: BLE001
+            pass
+        if out:
+            return out
         return sorted(n for n in os.listdir(_ROOT)
                       if n.endswith(".py") and not n.startswith("_"))
 

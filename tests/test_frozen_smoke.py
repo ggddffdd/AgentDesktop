@@ -126,6 +126,8 @@ want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         "video_pipeline", "vision_qc", "director_panel", "director_web",
         "legion_worker", "agent_node", "agent", "ui", "tools", "core_agnes",
         "core.agnes", "legion", "permissions", "risk", "route_log", "config",
+        # v4.211.4：主对话决策审计的公共件（permissions 顶层 import，必在包里）
+        "tool_audit",
         "digital_twin_panel",
         # 节点画布链路（设计稿 §9）—— **全是函数内延迟导入**，静态分析扫不到，
         # 只靠 spec 的 hiddenimports 兜着。漏一个的表现是「源码全绿、切到画布页
@@ -223,7 +225,10 @@ def main():
                          "strip_attachment_refs", "_ATTACH_REF_RE"],
         "permissions": ["explicit_intent", "args_fingerprint", "is_trusted",
                         # 两道新闸的 rule 名（常量字符串）
-                        "implicit_intent", "always_confirm"],
+                        "implicit_intent", "always_confirm",
+                        # v4.211.4：决策审计（装饰器 + 落盘入口 + 接线用的目录来源）
+                        "_audited", "_audit_decision", "default_audit_dir",
+                        "tool_audit"],
         "risk": ["ALWAYS_CONFIRM", "validate_policy", "_policy", "_TIER_ORDER"],
         # v4.169.0 批次B：技能启用判据 + 复杂度切换 + 日志证据链
         "config": ["is_skill_enabled", "skills_disabled_all",
@@ -232,6 +237,8 @@ def main():
                    # v4.177.0：历史字符预算（0=关闭）
                    "history_char_budget"],
         "route_log": ["log_tool_decision", "event=tool"],
+        "tool_audit": ["AUDIT_LOCK", "build_record", "args_preview", "origin",
+                       "tool_audit.jsonl", "legion_tool_audit.jsonl"],
         "tools": ["is_skill_enabled", "__getattr__", "TOOL_TIER"],
         "legion_permissions": ["grant_wave", "LegionPermissionAdapter"],
         "task_graph": ["incomplete", "__incomplete__"],

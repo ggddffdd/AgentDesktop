@@ -9,14 +9,23 @@
 - 路径作用域：本地写入/执行类工具写文件必须落在允许目录（用户目录内），安全边界
 
 引擎只做决策（decide），UI 只负责弹窗，互不耦合。
+
+v4.211.4 决策审计（盘点 G1 / 宪法第二章第 ③ 条「每笔自动放行留审计痕」）：
+`decide()` 是纯内存决策，返回完就没了 —— 用户亲手确认过的 `process_kill` /
+`run_command` 事后无从抽查。现在由 `_audited` 装饰器包一层，**每条 return
+路径**都往 `tool_audit.jsonl` 落一笔（工具 / 参数摘要 + 可读脱敏预览 /
+决策三态 / 命中规则 / 谁批的）。只读不记，与军团侧同一口径。
+审计是证据不是闸门：写盘失败绝不改变决策（见 `tool_audit` 模块注释）。
 """
 
 import os
 import json
 import hashlib
+import inspect
 import logging
 from dataclasses import dataclass
 
+import tool_audit
 from risk import (RiskClass, classify, tier_of, ALWAYS_CONFIRM, command_danger_level,
                   task_risk_level, TASK_CONFIRM_LEVELS)
 
@@ -34,6 +43,17 @@ def args_fingerprint(args):
     except Exception:
         s = repr(args)
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
+
+
+def default_audit_dir():
+    """主对话链审计账本的默认目录（`<USER_DATA_DIR>/logs`）。
+
+    刻意**不做成 PermissionEngine 的默认值**：判据套件会大量构造该引擎
+    （授权层有 7~9 个套件），默认落盘等于把测试记录写进真实账本 ——
+    污染证据比不记更糟。应用侧（`ui.py` 的引擎构造点）必须显式传进来，
+    由 tests/test_tool_audit_c.py F 组的 AST 判据守着这条接线不许被删。
+    """
+    return tool_audit.default_dir()
 
 
 # 模式中文标签（value -> 显示文本）
@@ -55,8 +75,76 @@ class Decision:
     rule: str = ""      # 命中规则（mode:auto / session / auto_allow / risk:exec ...）
 
 
+def _audit_decision(engine, name, args, dec, explicit_intent=True):
+    """把一次 decide() 的结果落进审计账本（主对话链的「每笔留痕」）。
+
+    **只读不记** —— 与军团侧同一口径：只读决策量大且无风险，全记会把账本
+    淹掉；而且两边口径一旦不一致，日后合并抽查就会把「主对话记了只读、
+    军团没记」误读成「军团漏了」。分类失败按「要记」处理（fail-closed：
+    宁可多记一条，不可漏记）。
+    """
+    audit_dir = getattr(engine, "audit_dir", "")
+    if not audit_dir:
+        return False        # 未接线 = 关闭（默认值；判据套件靠它零副作用）
+    try:
+        if classify(name) == RiskClass.READ:
+            return False
+    except Exception:
+        pass
+    if not dec.allowed:
+        decision, by = "deny", "engine_deny"
+    elif dec.needs_user:
+        decision, by = "confirm", "pending_user"
+    else:
+        decision, by = "allow", "engine_auto"
+    rec = tool_audit.build_record(
+        name, args, decision, dec.rule, reason=dec.reason, by=by,
+        origin="main", allowed=dec.allowed, need_confirm=dec.needs_user,
+        extra={"source": "explicit" if explicit_intent else "implicit"})
+    return tool_audit.write(audit_dir, tool_audit.MAIN_AUDIT_NAME, rec, tag="main")
+
+
+def _audited(fn):
+    """给 `decide()` 包一层：**任何** return 路径都落一笔审计（v4.211.4）。
+
+    为什么用装饰器、而不把写盘代码塞进 decide 的函数体：
+    tests/test_permission_gates.py 的 G 组会用 `ast.get_source_segment` 把
+    decide 的**函数体源码**抽出来，在受限命名空间里 exec 后挂回实例做负面
+    验证。函数体里一旦出现模块级名字（tool_audit / open …），那个受限命名
+    空间就会 NameError —— 等于为了记一笔账把一套守门判据搞坏。
+    （实测：get_source_segment 对带装饰器的函数只返回 def 起的那一段，
+    不含装饰器行，所以装饰器不会污染那个受限命名空间。）
+
+    装饰器把副作用留在函数体之外，好处不只是「少改代码」：decide 有 13 个
+    return 分支，逐条插写盘代码迟早漏一个；包一层则**一条路径都漏不掉**。
+
+    参数用 `inspect.signature(fn).bind` 现取，不在包装器里重抄一遍签名 ——
+    抄一遍就多一处会漂移的事实源。
+    """
+    def _wrapper(self, *a, **kw):
+        dec = fn(self, *a, **kw)
+        try:
+            try:
+                ba = inspect.signature(fn).bind(self, *a, **kw)
+                _name = ba.arguments.get("name", "")
+                _args = ba.arguments.get("args")
+                _intent = ba.arguments.get("explicit_intent", True)
+            except Exception:
+                _name, _args, _intent = "", None, True
+            _audit_decision(self, _name, _args, dec, _intent)
+        except Exception:
+            # 审计是旁路：任何意外都不许影响决策结果
+            pass
+        return dec
+    _wrapper.__name__ = getattr(fn, "__name__", "decide")
+    _wrapper.__doc__ = getattr(fn, "__doc__", None)
+    _wrapper.__wrapped__ = fn
+    return _wrapper
+
+
 class PermissionEngine:
-    def __init__(self, mode="interactive", auto_allow=None, scope_paths=None, external_allow=None):
+    def __init__(self, mode="interactive", auto_allow=None, scope_paths=None,
+                 external_allow=None, audit_dir=""):
         self.mode = mode if mode in MODES else "interactive"
         # 配置级免确认白名单（工具名集合）
         self.auto_allow = set(auto_allow or [])
@@ -67,6 +155,10 @@ class PermissionEngine:
         # 会话级信任：工具名集合，含 "*" 表示信任全部
         self.session_allow = set()
         self.session_trusted = False
+        # 审计账本落点（v4.211.4）：**空 = 不落盘**，这是故意的默认值 ——
+        # 判据套件会大量构造本引擎，默认落盘会把测试记录写进真实账本。
+        # 应用侧唯一构造点（ui.py）显式传 default_audit_dir()，由判据 F 组守着。
+        self.audit_dir = audit_dir or ""
 
     # ---------- 配置变更 ----------
     def set_mode(self, mode):
@@ -121,6 +213,7 @@ class PermissionEngine:
         return False
 
     # ---------- 核心决策 ----------
+    @_audited
     def decide(self, name, args=None, explicit_intent=True, task_risk=None):
         """给定工具名与参数，返回 Decision。
 
