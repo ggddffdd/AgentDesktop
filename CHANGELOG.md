@@ -9,6 +9,40 @@
 
 ---
 
+## v4.211.7 — 2026-10-04
+
+**系统控制 D 批（G4 第二步）**：系统关键进程（lsass / explorer / svchost …）不许杀，三个入口一起堵。
+
+### G4 · 关键进程名黑名单 → 硬拒绝
+- **问题**：`process_kill("lsass.exe")` 一句话就能让系统强制重启/蓝屏，此前无任何拦阻。
+  这条与「需确认」有本质区别 —— 等用户在确认框上点一下已经晚了。
+- **修法**：`system_control_tools` 立 `CRITICAL_PROCESS_NAMES`（9 个：`lsass` / `csrss` /
+  `winlogon` / `wininit` / `smss` / `services` / `svchost` / `explorer` / `dwm`），命中即
+  **直接拒绝，且不 spawn 任何子进程**；`force=True` 不是逃生口。
+- **归一化**：带不带 `.exe`、大小写、前后空白都算命中（`lsass` / `LSASS.EXE` 都拦）。
+- **PID 也要过**：PID 路径先只读反查镜像名 —— 否则 `process_list` 拿到 lsass 的 PID
+  再杀就绕过去了。反查失败 / 不是关键进程 → 照常终止（不误伤普通 PID）。
+- **三个入口一起堵**（少一个等于没堵）：
+  ① `process_kill`（主入口）；② `software_control_tools.app_kill`（同样走 `taskkill /IM`，
+  判定与文案**复用** sct 的 helper，单一事实源）；③ `tools._dangerous_command_check`
+  补 `taskkill /IM <关键名>` 与 `Stop-Process -Name <关键名>` 两条文本模式 ——
+  否则一条 `run_command("taskkill /IM lsass.exe /F")` 就绕过了工具层名单。
+- **逃生口**：`taskkill /PID <n>` / `Stop-Process -Id <n>` 这种精确形式**不拦**
+  （不连带、也可能是用户明确要求的运维动作，如按 PID 重启任务栏）。
+- **诚实边界**：文本级检测天生可绕（`run_python` 里拼 argv 就绕过了），这层只负责
+  「拦住最可能的误操作」，真正的兜底是工具层那两道。
+
+### 判据 / 扰动
+- 新增 `tests/test_critical_proc_deny.py`（45 项：A 名单与归一化 / B `process_kill` /
+  C `app_kill` / D 命令层文本入口 / E 单源与源码契约）。
+- 新增 `_perturb_critical_proc_deny.py`（7 命中 = 6 变异 + 反向基线）。
+- `tests/test_system_control_b.py` 有一条 G4 判据**随语义更新**：PID 路径现在**会**调一次
+  `tasklist`（反查镜像名过黑名单），所以口径从「一次 tasklist 都没调」改成
+  「没有 `IMAGENAME` 式的计数查询」——注意这不是放宽，是两个不同用途的查询。
+- 修一条**自己写错的判据**：源码契约的顺序断言原用整文件文本 `find("subprocess.run(cmd")`，
+  被文件里更早的 `process_list` 段命中（同名前缀 → 假红），改为 AST 限定在
+  `tool_process_kill` 函数体内。本仓第二次栽在这个前缀坑上。
+
 ## v4.211.6 — 2026-10-04
 
 **系统控制 D 批（G4 第一步）**：杀进程之前，先告诉你这一刀会影响几个。

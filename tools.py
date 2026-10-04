@@ -1609,6 +1609,17 @@ _DANGEROUS_CMD_PATTERNS = (
     (r"\bicacls\s+[a-z]:\\.*/grant", "篡改系统目录权限 (icacls /grant)"),
     (r"\bbcdedit\b|\bbootrec\b", "修改引导记录 (bcdedit/bootrec)"),
     (r"\bmkfs\b", "创建文件系统 (mkfs)"),
+    # G4 第二步：终止系统关键进程。结构化工具（process_kill / app_kill）那一层已
+    # 硬拒绝，这里堵同一条路的**文本入口** —— 否则一条
+    # `run_command("taskkill /IM lsass.exe /F")` 就绕过了工具层名单。
+    # 只拦**按镜像名**的形式（/IM、-Name）；`taskkill /PID <n>` 这种精确形式不拦
+    # （不连带、也可能是用户明确要求的运维动作，如按 PID 重启任务栏）。
+    # 诚实说：文本级检测天生可绕（run_python 里拼 argv 就绕过了），这层只负责
+    # 「拦住最可能的误操作」，真正的兜底是工具层那两道。
+    (r"\btaskkill\b[^\n]*\b(?:lsass|csrss|winlogon|wininit|smss|services|svchost|explorer|dwm)\.exe\b",
+     "终止系统关键进程 (taskkill)"),
+    (r"\bstop-process\b[^\n]*\b(?:lsass|csrss|winlogon|wininit|smss|services|svchost|explorer|dwm)\b",
+     "终止系统关键进程 (Stop-Process)"),
 )
 
 

@@ -249,7 +249,7 @@ SYSTEM_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "process_kill",
-            "description": "终止指定进程。⚠️ 强制杀进程可能导致未保存数据丢失。",
+            "description": "终止指定进程。⚠️ 强制杀进程可能导致未保存数据丢失。系统关键进程（lsass/explorer/svchost 等）会被直接拒绝，不接受强制参数。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -763,6 +763,84 @@ def tool_process_list(cfg, app_dir, args, progress=None, stop_event=None, should
         return (f"列出进程失败：{e}", [], None)
 
 
+# ---------------------------------------------------------------------------
+# G4 第二步：系统关键进程黑名单 —— 命中即**硬拒绝**（在任何 spawn 之前）
+#
+# 与「需确认」的区别是本质的：这些进程被杀是**系统级事故**（lsass → 强制重启/
+# 蓝屏；svchost → 一大批服务连带崩溃），等用户在确认框上点一下已经晚了，所以
+# 这里连确认的机会都不给，直接拒绝且**不 spawn 任何子进程**。
+#
+# 名单按「带不带 .exe 都算命中」归一化比较（大小写不敏感）。名字路径与 PID 路径
+# 都要过 —— 只挡名字的话，`process_list` 拿到 lsass 的 PID 再 kill 就绕过去了。
+# ---------------------------------------------------------------------------
+CRITICAL_PROCESS_NAMES = frozenset({
+    "lsass.exe",      # 本地安全机构 → 被杀常直接触发系统强制重启/蓝屏
+    "csrss.exe",      # 客户端/服务器运行时子系统 → 系统不稳
+    "winlogon.exe",   # 登录会话管理
+    "wininit.exe",    # 会话初始化
+    "smss.exe",       # 会话管理器（启动后的第一个用户态进程）
+    "services.exe",   # 服务控制管理器
+    "svchost.exe",    # 大批系统服务的宿主 → 连带崩溃
+    "explorer.exe",   # 桌面外壳 → 任务栏/桌面全部消失
+    "dwm.exe",        # 桌面窗口管理器 → 闪屏/黑屏
+})
+
+
+def _critical_process_hit(name):
+    """命中系统关键进程黑名单则返回归一化后的名字（小写、带 .exe），否则 None。
+
+    归一化：去空白 → 转小写 → 补 .exe。于是 "lsass" / "LSASS.EXE" / " lsass.exe "
+    三种写法都命中（模型给进程名时带不带扩展名都常见）。非字符串/空值一律未命中。
+    """
+    if not name:
+        return None
+    n = str(name).strip().lower()
+    if not n.endswith(".exe"):
+        n += ".exe"
+    return n if n in CRITICAL_PROCESS_NAMES else None
+
+
+def _image_of_pid(pid):
+    """只读查 PID 对应的镜像名（tasklist 过滤查询）；查不到返回空串。
+
+    G4 第二步：PID 路径也要过黑名单 —— 否则 `process_list` 拿到 lsass 的 PID 后
+    `process_kill("<pid>")` 就绕过了名字检查。查询失败（tasklist 缺失/超时/输出
+    畸形/PID 不存在）一律返回空串 ⇒ 视为「不是关键进程」，**不阻断普通 PID 终止**：
+    宁可漏拦异常路径，也不让 tasklist 一坏就把整个终止能力废掉。
+    """
+    try:
+        r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                           capture_output=True, text=True, encoding="gbk",
+                           errors="replace", timeout=10)
+    except Exception:
+        return ""
+    for parts in csv.reader(io.StringIO(r.stdout or "")):
+        if not parts:
+            continue
+        nm = parts[0].strip()
+        # 无匹配时 tasklist 打的是「信息: 没有运行的任务…」，不是镜像名 ——
+        # 只有 .exe 结尾才认（内核伪进程 System/Registry 不在名单里，无需兼容）。
+        if nm.lower().endswith(".exe"):
+            return nm
+    return ""
+
+
+def _critical_process_deny(name):
+    """关键进程硬拒绝：命中返回拒绝文案，否则 None（含「不是关键进程」与「查不到」）。
+
+    单一入口：`tool_process_kill` 与 `software_control_tools.tool_app_kill` 都调它，
+    免得两处各写一份判定和文案（两份必然漂移）。PID 路径先只读反查镜像名 ——
+    名字挡得住、PID 挡不住等于没挡。
+    """
+    hit = _critical_process_hit(name)
+    if hit is None and name and str(name).isdigit():
+        hit = _critical_process_hit(_image_of_pid(name))
+    if not hit:
+        return None
+    return (f"⛔ 已拒绝：『{hit}』是系统关键进程，终止它会导致系统不稳、强制重启或"
+            f"蓝屏，属不可逆操作。如确有需要，请由你在系统层面手动处理。")
+
+
 def _count_processes(name):
     """只读统计同名进程数（tasklist 过滤查询）；查询失败返回 None。
 
@@ -800,6 +878,12 @@ def tool_process_kill(cfg, app_dir, args, progress=None, stop_event=None, should
         return (_miss, [], None)
     name = args["name"]
     force = args.get("force", False)
+
+    # G4 第二步：系统关键进程一律硬拒绝（在任何 spawn 之前）。
+    _deny = _critical_process_deny(name)
+    if _deny:
+        return (_deny, [], None)
+
     try:
         # 判断是 PID 还是进程名
         flag = "/PID" if name.isdigit() else "/IM"

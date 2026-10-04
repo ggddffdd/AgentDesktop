@@ -21,6 +21,7 @@ test_claim_evidence_195.py
 test_cmd_robustness_2a.py
 test_core_fix_188.py
 test_count_audit_194.py
+test_critical_proc_deny.py
 test_dataloss_fix_186.py
 test_director_cancel_retry.py
 test_director_manifest.py

@@ -612,6 +612,16 @@ def tool_app_kill(cfg, app_dir, args, progress=None, stop_event=None, should_sto
     if _aborted(should_stop, stop_event):
         return ("⏹ 已停止（用户请求）", [], None)
     target = args["target"]
+
+    # G4 第二步：系统关键进程一律硬拒绝（在任何 spawn 之前）。
+    # 判定 + 文案从 system_control_tools 取 —— 单一事实源，别在这里抄一份
+    # （抄一份就等着两处漂移）。函数内 import：与本模块其余延迟导入同风格，
+    # 也不给模块级加耦合。
+    from system_control_tools import _critical_process_deny
+    _deny = _critical_process_deny(target)
+    if _deny:
+        return (_deny, [], None)
+
     try:
         # 1) 数字 PID 直杀（最精确）
         if target.isdigit():

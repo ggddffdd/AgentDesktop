@@ -1,28 +1,33 @@
 # -*- coding: utf-8 -*-
-"""v4.211.6 进包核验：系统控制 D 批（G4 第一步 · `/IM` 影响面计数）。
+"""v4.211.7 进包核验：系统控制 D 批（G4 第二步 · 关键进程名黑名单 → 硬拒绝）。
 
-本轮进包的改动只有一处：`system_control_tools.py` 的 `tool_process_kill` ——
-`/IM` 路径在杀之前先**只读**统计同名进程数（新增模块级 helper `_count_processes`），
-返回值回报「（同名进程共 N 个，已一并终止）」。判据套件与扰动脚本**不进包**。
+本轮进包的改动有三处（三个入口，少一个等于没堵）：
+  ① `system_control_tools.py` —— 立 `CRITICAL_PROCESS_NAMES`（9 个名单）+ 归一化判定
+     + PID 镜像名反查 + 单源 helper `_critical_process_deny`；`tool_process_kill` 在
+     spawn 之前直接拒绝。
+  ② `software_control_tools.py` —— `tool_app_kill` 复用 sct 的同一个 helper（函数内 import）。
+  ③ `tools.py` —— `_DANGEROUS_CMD_PATTERNS` 补两条文本模式（taskkill /IM、Stop-Process -Name）。
+  判据套件与扰动脚本**不进包**。
 
-所以核验重点：① `system_control_tools` 的字节码指纹必须与当前源码一致（改对了得真进包）；
-② 版本号 v4.211.6；③ 前几轮钉子复验（含上一轮 3 个 UI 模块 + `ui_hex_guard` 不得进包）。
+所以核验重点：① 这三个模块的字节码指纹必须与当前源码一致（改对了得真进包）；
+② 版本号 v4.211.7；③ 包内常量表里**真有那 9 个进程名**（名单不是空壳）；
+④ 前几轮钉子复验（含上一轮 3 个 UI 模块 + `ui_hex_guard` 不得进包）。
 
 核验策略：
   · **主判据 = 字节码树指纹**：把当前源码 compile() 出来的 code object 与 PYZ 里抽出来
-    的逐字节比 sha256。相等 ⇒ 打进包的就是这份源码（本轮 `system_control_tools` + 前几轮关键文件）。
-  · **回归钉子（本轮）**：`system_control_tools` 在 PYZ 里、指纹一致，且包内 `co_names`
-    确实含 `_count_processes`（新增的计数入口真编进去了）。
+    的逐字节比 sha256。相等 ⇒ 打进包的就是这份源码（本轮 sct / swc / tools + 前几轮关键文件）。
+  · **回归钉子（本轮）**：三个模块指纹一致；包内 `co_names` 含 `_critical_process_deny`
+    与 `_count_processes`；包内常量表含 9 个关键进程名；tools 的常量表含两条拦截标签。
   · **回归钉子（前几轮）**：4 个 UI 模块颜色等值化真进包（`director_panel` / `skill_manager_ui` /
     `skill_market_ui` / `tool_manager_ui`）；`ui_hex_guard` **不得进包**；`legion_status_widget`
     （THEME 兜底字典的宿主）仍在包里且指纹一致；permissions 的 `_audited` / `_audit_decision` /
     顶层 `tool_audit` 与「`decide` 函数体不引用 `tool_audit`」；system_control 的 `_require`
     与 8 处调用、`csv.reader`、可中断形参；软件控制候选枚举；画布四态与统一入口 ——
-    一并复验，防本轮改系统控制时顺带塌掉。
-  · **版本一致性**：PYZ 里 `config` 的常量表必须含 v4.211.6，且不含 v4.211.5。
+    一并复验，防本轮加黑名单时顺带塌掉。
+  · **版本一致性**：PYZ 里 `config` 的常量表必须含 v4.211.7，且不含 v4.211.6。
   · **不漏测试**：`tests/` 下的判据套件与根目录扰动脚本绝不能被收进包。
 
-用法：python _verify_pyz_v42116.py
+用法：python _verify_pyz_v42117.py
 """
 import hashlib
 import marshal
@@ -37,9 +42,11 @@ EXE = ROOT / "dist" / "小臭玩AI" / "小臭玩AI.exe"
 MODULES = ["config", "canvas_graph", "canvas_export", "executors",
            "canvas_panel", "task_graph", "digital_twin_panel",
            "director_panel", "ui",
-           # 本轮改动（⑨：颜色字面量 → 等值 THEME[key]，零视觉变化）
+           # 本轮改动（G4 第二步：关键进程黑名单 → 硬拒绝；三个入口）
+           "tools",
+           # 上一轮改动（⑨：颜色字面量 → 等值 THEME[key]，零视觉变化）
            "skill_manager_ui", "skill_market_ui", "tool_manager_ui",
-           # 上一轮改动（系统控制补可中断 / 软件控制控件查找改造）—— 本轮必须仍在包里
+           # 上上轮改动（系统控制补可中断 / 软件控制控件查找改造）—— 本轮必须仍在包里
            "system_control_tools", "software_control_tools",
            # 上轮改动（主对话决策审计落盘 + 抽公共审计件 + 军团改为复用）
            "permissions", "legion_permissions", "tool_audit",
@@ -120,6 +127,30 @@ def _str_consts(co):
     return out
 
 
+def _deep_str_consts(co):
+    """递归收集**任意嵌套层级**里的 str 常量。
+
+    为什么不用 `_str_consts`：它只下探一层（`elif isinstance(x, (tuple, frozenset))`
+    只取直接元素），而 `_DANGEROUS_CMD_PATTERNS = ((re, label), ...)` 是
+    **tuple 套 tuple** → 标签字符串一个都扫不到 → 假 FAIL。同类坑本仓已踩过一次
+    （L240：`(NAME_A, NAME_B)` 枚举元组扫不到）。这里不动公共的 `_str_consts`，
+    免得把既有「包含/不包含」类断言的严格度一起改掉。
+    """
+    out = set()
+
+    def _walk(o):
+        if isinstance(o, str):
+            out.add(o)
+        elif isinstance(o, (tuple, list, frozenset, set)):
+            for y in o:
+                _walk(y)
+
+    for c in _code_iter(co):
+        for x in c.co_consts:
+            _walk(x)
+    return out
+
+
 def _tuple_consts(co):
     """所有 tuple 形态的常量（含内层全 str 的）—— ASSET_VALIDITIES / VALID_STATUSES
     这类「元组即枚举」的声明只有这样才能精确钉住。"""
@@ -164,7 +195,7 @@ def _load_entry_script(exe: Path, name: str = "main"):
 
 
 def main():
-    print("v4.211.6 进包核验（系统控制 D 批 · /IM 影响面计数）")
+    print("v4.211.7 进包核验（系统控制 D 批 · 关键进程名黑名单 → 硬拒绝）")
     print("-" * 62)
     if not EXE.is_file():
         print(f"未找到产物：{EXE}")
@@ -208,10 +239,10 @@ def main():
     if "config" in names:
         consts = _str_consts(_load(za, "config"))
         old = sorted(s for s in consts if s.startswith("v4.210.") or s.startswith("v4.211."))
-        check("PYZ 内 config 的版本常量 == v4.211.6",
-              "v4.211.6" in consts, f"包内出现的版本串={old}")
-        check("PYZ 内不含上一版旧版本常量 v4.211.5",
-              "v4.211.5" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
+        check("PYZ 内 config 的版本常量 == v4.211.7",
+              "v4.211.7" in consts, f"包内出现的版本串={old}")
+        check("PYZ 内不含上一版旧版本常量 v4.211.6",
+              "v4.211.6" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
 
     print("\n-- 3) 本轮能力的回归钉子（防重启打包时被丢掉）--")
     if "system_control_tools" in names:
@@ -411,25 +442,48 @@ def main():
         check("★ legion_status_widget 指纹一致（护栏让它静默，但它本身是产品代码）",
               _fingerprint(_co_src) == _fingerprint(_load(za, "legion_status_widget")))
 
-    print("\n-- 3e) 本轮钉子：/IM 影响面计数真进包 --")
+    print("\n-- 3e) 本轮钉子：关键进程黑名单真进包（三个入口）--")
+    _CRIT_NAMES = ("lsass.exe", "csrss.exe", "winlogon.exe", "wininit.exe", "smss.exe",
+                   "services.exe", "svchost.exe", "explorer.exe", "dwm.exe")
     if "system_control_tools" not in names:
         check("system_control_tools 在 PYZ 里", False, "缺失 → 系统控制工具全不可用")
     else:
         _src = (ROOT / "system_control_tools.py").read_bytes()
         _co_src = compile(_src.decode("utf-8-sig"), "system_control_tools.py", "exec")
         _co_in = _load(za, "system_control_tools")
-        check("★ system_control_tools 字节码指纹一致（G4 的影响面计数真进包了）",
+        check("★ system_control_tools 字节码指纹一致（本轮黑名单真进包了）",
               _fingerprint(_co_src) == _fingerprint(_co_in),
               "包内还是旧版 → 改了个寂寞")
-        # 新增的是模块级函数 → 由 tool_process_kill 以 LOAD_GLOBAL 引用，必在 co_names。
-        # 顶层 code 与各函数子 code 合并取并集（防它被编译进嵌套作用域后扫不到）。
-        _names_in = set(_co_in.co_names)
-        for _child in _co_in.co_consts:
-            if isinstance(_child, types.CodeType):
-                _names_in |= set(_child.co_names)
-        check("★ 包内 system_control_tools 含 _count_processes（新计数入口编进去了）",
-              "_count_processes" in _names_in,
-              "_count_processes 不在包内 co_names → 计数逻辑没编进去")
+        _names_in = _code_names(_co_in)
+        check("★ 包内 system_control_tools 含 _critical_process_deny（判定入口编进去了）",
+              "_critical_process_deny" in _names_in,
+              "_critical_process_deny 不在包内 co_names → 判定逻辑没编进去")
+        check("★ 包内仍含 _count_processes（上一轮的钉子不能掉）",
+              "_count_processes" in _names_in, "上一轮的计数入口没了")
+        # frozenset({...}) 可能被折叠成 frozenset 常量，也可能走 BUILD_SET ——
+        # `_str_consts` 两种形态都扫（它已处理 tuple/frozenset 元素）。
+        _consts_in = _str_consts(_co_in)
+        _missing = [n for n in _CRIT_NAMES if n not in _consts_in]
+        check("★ 包内常量表含全部 9 个关键进程名（名单不是空壳）",
+              not _missing, f"缺={_missing}")
+
+    if "software_control_tools" in names:
+        _src = (ROOT / "software_control_tools.py").read_bytes()
+        _co_src = compile(_src.decode("utf-8-sig"), "software_control_tools.py", "exec")
+        check("★ software_control_tools 指纹一致（第二个入口的复用真进包了）",
+              _fingerprint(_co_src) == _fingerprint(_load(za, "software_control_tools")))
+
+    if "tools" in names:
+        _co_in = _load(za, "tools")
+        _src = (ROOT / "tools.py").read_bytes()
+        _co_src = compile(_src.decode("utf-8-sig"), "tools.py", "exec")
+        check("★ tools 字节码指纹一致（命令层两条拦截模式真进包了）",
+              _fingerprint(_co_src) == _fingerprint(_co_in))
+        _tags = _deep_str_consts(_co_in)
+        check("★ 包内 tools 含两条关键进程拦截标签（taskkill / Stop-Process）",
+              "终止系统关键进程 (taskkill)" in _tags
+              and "终止系统关键进程 (Stop-Process)" in _tags,
+              "拦截标签不在包内常量表 → 文本入口没编进去")
 
     print("\n-- 4) 不漏测试 / 不漏扰动脚本 --")
     leaked = sorted(n for n in names

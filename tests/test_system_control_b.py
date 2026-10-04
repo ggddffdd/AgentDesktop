@@ -616,8 +616,12 @@ def test_process_contract():
     SP.runs.clear()
     SP.run_result = _Completed(returncode=0)
     s = txt("process_kill", {"name": "1234"})
-    check("★ G4 PID 路径不查进程数（精确 1 个，不必查）",
-          not any(c[0] == "tasklist" for c, _ in SP.runs),
+    # G4 第二步（v4.211.7）起，PID 路径**会**调一次 tasklist —— 但那是反查镜像名
+    # （过关键进程黑名单，见 tests/test_critical_proc_deny.py），不是查影响面计数。
+    # 所以这里判的是「没有 IMAGENAME 式的计数查询」，而不是「一次 tasklist 都没调」。
+    check("★ G4 PID 路径不做影响面计数（精确 1 个，不必查 IMAGENAME）",
+          not any(c[0] == "tasklist" and any("IMAGENAME" in x for x in c)
+                  for c, _ in SP.runs),
           f"runs={[c for c, _ in SP.runs]}")
 
     SP.runs.clear()
