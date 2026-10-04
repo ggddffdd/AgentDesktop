@@ -1,27 +1,28 @@
 # -*- coding: utf-8 -*-
-"""v4.211.5 进包核验：工程卫生（⑧ 回归期日志改道 / ⑨ UI 裸 hex 护栏存量归零）。
+"""v4.211.6 进包核验：系统控制 D 批（G4 第一步 · `/IM` 影响面计数）。
 
-本轮进包的改动只有一类：4 个 UI 源码里的颜色**字面量**换成等值的 `THEME[key]`
-（`director_panel` / `skill_manager_ui` / `skill_market_ui` / `tool_manager_ui`），
-另两个改动（`ui_hex_guard.py` 的兜底豁免、`tests/run_all.py` 的日志改道）都**不进包**。
-所以核验重点：① 这几个 UI 模块的字节码指纹必须与当前源码一致（改对了得真进包）；
-② 版本号 v4.211.5；③ **`ui_hex_guard` 不得进包**（构建期脚本混进分发物 = 白带一份
-未脱敏的扫描逻辑）；④ 前几轮钉子复验。
+本轮进包的改动只有一处：`system_control_tools.py` 的 `tool_process_kill` ——
+`/IM` 路径在杀之前先**只读**统计同名进程数（新增模块级 helper `_count_processes`），
+返回值回报「（同名进程共 N 个，已一并终止）」。判据套件与扰动脚本**不进包**。
+
+所以核验重点：① `system_control_tools` 的字节码指纹必须与当前源码一致（改对了得真进包）；
+② 版本号 v4.211.6；③ 前几轮钉子复验（含上一轮 3 个 UI 模块 + `ui_hex_guard` 不得进包）。
 
 核验策略：
   · **主判据 = 字节码树指纹**：把当前源码 compile() 出来的 code object 与 PYZ 里抽出来
-    的逐字节比 sha256。相等 ⇒ 打进包的就是这份源码（本轮 4 个 UI 模块 + 前几轮关键文件）。
-  · **回归钉子（本轮）**：3 个 UI 模块在 PYZ 里且指纹一致；`ui_hex_guard` **不在** PYZ；
-    `legion_status_widget`（兜底字典的宿主）仍在包里且指纹一致 —— 护栏让它静默，
-    但那个兜底字典本身是**产品代码**，必须还在。
-  · **回归钉子（前几轮）**：permissions 的 `_audited` / `_audit_decision` / 顶层 `tool_audit`
-    与「`decide` 函数体不引用 `tool_audit`」；system_control 的 `_require` 与 8 处调用、
-    `csv.reader`、可中断形参；软件控制候选枚举；画布四态与统一入口 —— 一并复验，
-    防本轮改 UI 时顺带塌掉。
-  · **版本一致性**：PYZ 里 `config` 的常量表必须含 v4.211.5，且不含 v4.211.4。
+    的逐字节比 sha256。相等 ⇒ 打进包的就是这份源码（本轮 `system_control_tools` + 前几轮关键文件）。
+  · **回归钉子（本轮）**：`system_control_tools` 在 PYZ 里、指纹一致，且包内 `co_names`
+    确实含 `_count_processes`（新增的计数入口真编进去了）。
+  · **回归钉子（前几轮）**：4 个 UI 模块颜色等值化真进包（`director_panel` / `skill_manager_ui` /
+    `skill_market_ui` / `tool_manager_ui`）；`ui_hex_guard` **不得进包**；`legion_status_widget`
+    （THEME 兜底字典的宿主）仍在包里且指纹一致；permissions 的 `_audited` / `_audit_decision` /
+    顶层 `tool_audit` 与「`decide` 函数体不引用 `tool_audit`」；system_control 的 `_require`
+    与 8 处调用、`csv.reader`、可中断形参；软件控制候选枚举；画布四态与统一入口 ——
+    一并复验，防本轮改系统控制时顺带塌掉。
+  · **版本一致性**：PYZ 里 `config` 的常量表必须含 v4.211.6，且不含 v4.211.5。
   · **不漏测试**：`tests/` 下的判据套件与根目录扰动脚本绝不能被收进包。
 
-用法：python _verify_pyz_v42115.py
+用法：python _verify_pyz_v42116.py
 """
 import hashlib
 import marshal
@@ -163,7 +164,7 @@ def _load_entry_script(exe: Path, name: str = "main"):
 
 
 def main():
-    print("v4.211.5 进包核验（工程卫生：回归期日志改道 + UI 裸 hex 护栏存量归零）")
+    print("v4.211.6 进包核验（系统控制 D 批 · /IM 影响面计数）")
     print("-" * 62)
     if not EXE.is_file():
         print(f"未找到产物：{EXE}")
@@ -207,10 +208,10 @@ def main():
     if "config" in names:
         consts = _str_consts(_load(za, "config"))
         old = sorted(s for s in consts if s.startswith("v4.210.") or s.startswith("v4.211."))
-        check("PYZ 内 config 的版本常量 == v4.211.5",
-              "v4.211.5" in consts, f"包内出现的版本串={old}")
-        check("PYZ 内不含上一版旧版本常量 v4.211.4",
-              "v4.211.4" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
+        check("PYZ 内 config 的版本常量 == v4.211.6",
+              "v4.211.6" in consts, f"包内出现的版本串={old}")
+        check("PYZ 内不含上一版旧版本常量 v4.211.5",
+              "v4.211.5" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
 
     print("\n-- 3) 本轮能力的回归钉子（防重启打包时被丢掉）--")
     if "system_control_tools" in names:
@@ -409,6 +410,26 @@ def main():
         _co_src = compile(_src.decode("utf-8-sig"), "legion_status_widget.py", "exec")
         check("★ legion_status_widget 指纹一致（护栏让它静默，但它本身是产品代码）",
               _fingerprint(_co_src) == _fingerprint(_load(za, "legion_status_widget")))
+
+    print("\n-- 3e) 本轮钉子：/IM 影响面计数真进包 --")
+    if "system_control_tools" not in names:
+        check("system_control_tools 在 PYZ 里", False, "缺失 → 系统控制工具全不可用")
+    else:
+        _src = (ROOT / "system_control_tools.py").read_bytes()
+        _co_src = compile(_src.decode("utf-8-sig"), "system_control_tools.py", "exec")
+        _co_in = _load(za, "system_control_tools")
+        check("★ system_control_tools 字节码指纹一致（G4 的影响面计数真进包了）",
+              _fingerprint(_co_src) == _fingerprint(_co_in),
+              "包内还是旧版 → 改了个寂寞")
+        # 新增的是模块级函数 → 由 tool_process_kill 以 LOAD_GLOBAL 引用，必在 co_names。
+        # 顶层 code 与各函数子 code 合并取并集（防它被编译进嵌套作用域后扫不到）。
+        _names_in = set(_co_in.co_names)
+        for _child in _co_in.co_consts:
+            if isinstance(_child, types.CodeType):
+                _names_in |= set(_child.co_names)
+        check("★ 包内 system_control_tools 含 _count_processes（新计数入口编进去了）",
+              "_count_processes" in _names_in,
+              "_count_processes 不在包内 co_names → 计数逻辑没编进去")
 
     print("\n-- 4) 不漏测试 / 不漏扰动脚本 --")
     leaked = sorted(n for n in names

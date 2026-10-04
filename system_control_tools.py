@@ -763,6 +763,35 @@ def tool_process_list(cfg, app_dir, args, progress=None, stop_event=None, should
         return (f"列出进程失败：{e}", [], None)
 
 
+def _count_processes(name):
+    """只读统计同名进程数（tasklist 过滤查询）；查询失败返回 None。
+
+    G4：`taskkill /IM <name>` 会杀掉**所有**同名进程，此前返回值只写
+    「已终止进程: <name>」，用户看不到究竟影响了几个。计数失败一律返回 None
+    （tasklist 缺失 / 超时 / 权限 / 输出畸形），**绝不阻断终止动作本身**。
+    名字不带 .exe 时回退试 <name>.exe 一次（`taskkill /IM` 能匹配无扩展名，
+    `tasklist /FI IMAGENAME` 不能）。
+
+    只读：仅调 tasklist，不 spawn 任何有副作用的子进程。
+    """
+    cands = [name] if name.lower().endswith(".exe") else [name, name + ".exe"]
+    for cand in cands:
+        try:
+            r = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {cand}",
+                                "/FO", "CSV", "/NH"],
+                               capture_output=True, text=True, encoding="gbk",
+                               errors="replace", timeout=10)
+        except Exception:
+            return None
+        n = 0
+        for parts in csv.reader(io.StringIO(r.stdout or "")):
+            if parts and parts[0].strip().lower() == cand.lower():
+                n += 1
+        if n:
+            return n
+    return 0
+
+
 def tool_process_kill(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
     if _aborted(should_stop, stop_event):
         return ("⏹ 已停止（用户请求）", [], None)
@@ -777,8 +806,15 @@ def tool_process_kill(cfg, app_dir, args, progress=None, stop_event=None, should
         cmd = ["taskkill", flag, name]
         if force:
             cmd.append("/F")
+
+        # G4：/IM 会杀掉**所有**同名进程 → 先只读统计影响面（PID 路径天然只影响 1 个，
+        # 不查）。统计失败返回 None → 不阻断、不加后缀、不谎报。
+        n_same = None if name.isdigit() else _count_processes(name)
+
         result = subprocess.run(cmd, capture_output=True, text=True, encoding="gbk", errors="replace")
         if result.returncode == 0:
+            if n_same:
+                return (f"已终止进程: {name}（同名进程共 {n_same} 个，已一并终止）", [], None)
             return (f"已终止进程: {name}", [], None)
         else:
             return (f"终止失败: {result.stderr.strip() or result.stdout.strip()}", [], None)

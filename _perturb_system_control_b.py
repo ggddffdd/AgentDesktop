@@ -210,6 +210,47 @@ case("PB10 _aborted 的 fail-closed 改成 fail-open",
      ["★ _aborted 回调抛异常 → True（fail-closed：绝不误当成继续干）"])
 
 # ---------------------------------------------------------------------------
+# G4（D 批）：/IM 影响面计数
+# 两个方向各验一次 —— 「整段删掉」（留 helper）与「只删动作留条件」（照查不回报）。
+# ---------------------------------------------------------------------------
+_COUNT_CALL = "        n_same = None if name.isdigit() else _count_processes(name)\n"
+
+# PB11：整段删掉计数调用（helper 留着 → 死代码）
+_mut = sub(SCT_SRC, _COUNT_CALL, "        n_same = None\n", "PB11 drop impact count")
+case("PB11 整段删掉 /IM 的影响面计数调用（helper 变死代码）",
+     {"SCT_PATH": ("sct_mut_", _mut)},
+     ["★ G4 /IM 杀之前先统计同名进程数",
+      "★ G4 /IM 返回值回报「同名进程共 2 个」",
+      "★ G4 名字不带 .exe → 回退查 <name>.exe 一次"])
+
+# PB12：只删后缀分支（计数照查、结果不回报）
+_mut = sub(SCT_SRC,
+           '            if n_same:\n'
+           '                return (f"已终止进程: {name}（同名进程共 {n_same} 个，已一并终止）", [], None)\n',
+           "",
+           "PB12 drop impact suffix")
+case("PB12 只删影响面后缀分支（照查进程数、不回报）",
+     {"SCT_PATH": ("sct_mut_", _mut)},
+     ["★ G4 /IM 返回值回报「同名进程共 2 个」",
+      "★ G4 名字不带 .exe → 回退查 <name>.exe 一次"])
+
+# PB13：解析不到时默认非零（编造影响面 → 该红「计数为 0 不加后缀」）
+_mut = sub(SCT_SRC,
+           "        except Exception:\n            return None\n        n = 0\n",
+           "        except Exception:\n            return None\n        n = 1\n",
+           "PB13 default nonzero")
+case("PB13 计数解析不到时默认 1（编造影响面）",
+     {"SCT_PATH": ("sct_mut_", _mut)},
+     ["★ G4 计数为 0 时不加影响面后缀（不谎报）"])
+
+# PB14：PID 路径也去查（多余的 IO，且语义上无意义）
+_mut = sub(SCT_SRC, _COUNT_CALL, "        n_same = _count_processes(name)\n",
+           "PB14 count for PID too")
+case("PB14 让 PID 路径也查进程数（多余 IO）",
+     {"SCT_PATH": ("sct_mut_", _mut)},
+     ["★ G4 PID 路径不查进程数（精确 1 个，不必查）"])
+
+# ---------------------------------------------------------------------------
 # 反向基线
 # ---------------------------------------------------------------------------
 print("-" * 66)

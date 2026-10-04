@@ -185,6 +185,19 @@ sys.modules["pygetwindow"] = GW
 sct.subprocess = SP
 
 
+def _last_kill(sp):
+    """最近一次 taskkill 调用的 argv（筛掉 tasklist 记录）。
+
+    G4 起 `process_kill` 的 /IM 路径会**先**调一次 `tasklist` 统计同名进程数
+    （`_count_processes`），于是 `sp.runs[-1]` 不再是 taskkill —— 判 /IM、/F
+    必须筛出 taskkill 记录，否则新判据会把 tasklist 当成终止命令。
+    """
+    for c, _kw in reversed(sp.runs):
+        if c and c[0] == "taskkill":
+            return c
+    return None
+
+
 def _fake_qt_app():
     """假 QApplication：thread() 报"当前就是 GUI 线程"→ 让 _run_on_gui_thread 就地跑 _do。
 
@@ -564,13 +577,48 @@ def test_process_contract():
 
     SP.runs.clear()
     s = txt("process_kill", {"name": "notepad.exe"})
-    check("★ 进程名 → 用 /IM", SP.runs and "/IM" in SP.runs[-1][0] and "/PID" not in SP.runs[-1][0],
-          f"cmd={SP.runs[-1][0] if SP.runs else None}")
+    _k = _last_kill(SP)
+    check("★ 进程名 → 用 /IM", _k and "/IM" in _k and "/PID" not in _k,
+          f"cmd={_k}")
 
     SP.runs.clear()
     txt("process_kill", {"name": "notepad.exe", "force": True})
-    check("★ force=True → 追加 /F", SP.runs and "/F" in SP.runs[-1][0],
-          f"cmd={SP.runs[-1][0] if SP.runs else None}")
+    _k = _last_kill(SP)
+    check("★ force=True → 追加 /F", _k and "/F" in _k, f"cmd={_k}")
+
+    # ---- G4（D 批）：/IM 影响面计数 ----
+    # `taskkill /IM <name>` 会杀掉**所有**同名进程；此前返回值只写 "已终止进程: <name>"，
+    # 用户看不到影响了几个。G4 在杀之前先只读统计（_count_processes），返回值回报影响面。
+    SP.runs.clear()
+    SP.run_result = _Completed(stdout=('"notepad.exe","1","Console","1","1 K"\n'
+                                       '"notepad.exe","2","Console","1","1 K"\n'),
+                               returncode=0)
+    s = txt("process_kill", {"name": "notepad.exe"})
+    check("★ G4 /IM 杀之前先统计同名进程数",
+          any(c[0] == "tasklist" and any("IMAGENAME eq notepad.exe" in x for x in c)
+              for c, _ in SP.runs),
+          f"runs={[c for c, _ in SP.runs]}")
+    check("★ G4 /IM 返回值回报「同名进程共 2 个」",
+          s is not None and "同名进程共 2 个" in s, f"s={s!r}")
+
+    SP.runs.clear()
+    SP.run_result = _Completed(stdout='"notepad.exe","5","Console","1","1 K"', returncode=0)
+    s = txt("process_kill", {"name": "notepad"})
+    check("★ G4 名字不带 .exe → 回退查 <name>.exe 一次",
+          s is not None and "同名进程共 1 个" in s, f"s={s!r}")
+
+    SP.runs.clear()
+    SP.run_result = _Completed(stdout="", returncode=0)
+    s = txt("process_kill", {"name": "notepad.exe"})
+    check("★ G4 计数为 0 时不加影响面后缀（不谎报）",
+          s is not None and "同名" not in s and "已终止" in s, f"s={s!r}")
+
+    SP.runs.clear()
+    SP.run_result = _Completed(returncode=0)
+    s = txt("process_kill", {"name": "1234"})
+    check("★ G4 PID 路径不查进程数（精确 1 个，不必查）",
+          not any(c[0] == "tasklist" for c, _ in SP.runs),
+          f"runs={[c for c, _ in SP.runs]}")
 
     SP.runs.clear()
     SP.run_result = _Completed(stdout="", stderr="ERROR: 没有找到进程", returncode=128)
