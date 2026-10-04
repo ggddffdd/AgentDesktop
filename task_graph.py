@@ -198,6 +198,21 @@ class TaskGraph:
                 n += 1
         return n
 
+    def reset(self) -> int:
+        """把全部任务重置回 `pending`（供「重跑整图」用）。返回被重置的任务数。
+
+        为什么必须有这一层：`run()` 只派发 `is_ready()` 为真的任务，而它要求
+        `status == "pending"` —— 跑过一轮的图全是终态，再 `run()` 会**一个任务都不执行**
+        就走进 `all_done` 分支直接返回。「重新跑一遍」是画布「运行」按钮的核心语义：
+        缺了这一步，那个按钮只会打印一句"运行完成"却什么都没跑 —— **静默假成功**
+        （比报错更糟：用户拿到的是"成功"，完全无从判断哪出了问题）。
+        """
+        with self._lock:
+            for task in self._tasks.values():
+                task.status = "pending"
+                task.result = None
+            return len(self._tasks)
+
     def run(self, state: Dict[str, Any], token=None) -> Dict[str, Any]:
         """自动推进：找到就绪的任务 → 执行 → 标记完成 → 循环直到全部完成。
 

@@ -1,33 +1,36 @@
 # -*- coding: utf-8 -*-
-"""v4.211.7 进包核验：系统控制 D 批（G4 第二步 · 关键进程名黑名单 → 硬拒绝）。
+"""v4.211.8 进包核验：节点画布三处「点了没反应」修复。
 
-本轮进包的改动有三处（三个入口，少一个等于没堵）：
-  ① `system_control_tools.py` —— 立 `CRITICAL_PROCESS_NAMES`（9 个名单）+ 归一化判定
-     + PID 镜像名反查 + 单源 helper `_critical_process_deny`；`tool_process_kill` 在
-     spawn 之前直接拒绝。
-  ② `software_control_tools.py` —— `tool_app_kill` 复用 sct 的同一个 helper（函数内 import）。
-  ③ `tools.py` —— `_DANGEROUS_CMD_PATTERNS` 补两条文本模式（taskkill /IM、Stop-Process -Name）。
+本轮进包的改动有三处（分属三个文件）：
+  ① `canvas_panel.py` —— 场景新增 `graphChanged` 信号 + 面板统一重绘 `_refresh_view()`
+     （全量重建 + 还原视图变换与选中态）；`_undo`/`_redo` 走重绘；`render_graph` 新增
+     `refresh_detail` 开关（**重绘不冲掉详情区**）；`RemoveEdgeCommand` 支持顺序边
+     （`remove_order_edge`/`connect_order`）；`_delete_selected` 传 kind/label 并重绘；
+     `_run_graph` **先 `reset_for_rerun()` 再 `run()`**；`build_edit` 按引擎口径分派参数名
+     （blur→sigma / sharpen→amount / 其余→factor）。
+  ② `canvas_graph.py` —— 新增 `CanvasGraph.reset_for_rerun()`（节点状态/产出引用/占位标记归零）。
+  ③ `task_graph.py` —— 新增 `TaskGraph.reset()`（全部任务归 pending，走 self._lock）。
   判据套件与扰动脚本**不进包**。
 
 所以核验重点：① 这三个模块的字节码指纹必须与当前源码一致（改对了得真进包）；
-② 版本号 v4.211.7；③ 包内常量表里**真有那 9 个进程名**（名单不是空壳）；
-④ 前几轮钉子复验（含上一轮 3 个 UI 模块 + `ui_hex_guard` 不得进包）。
+② 版本号 v4.211.8 且不含 v4.211.7；③ 包内 `co_names` **真含**本轮新增的三个函数名
+（`reset_for_rerun` / `reset` / `_refresh_view` / `graphChanged` / `remove_order_edge`）——
+「函数定义在源码里」与「函数被编进包里」是两回事；④ 前几轮钉子复验。
 
 核验策略：
   · **主判据 = 字节码树指纹**：把当前源码 compile() 出来的 code object 与 PYZ 里抽出来
-    的逐字节比 sha256。相等 ⇒ 打进包的就是这份源码（本轮 sct / swc / tools + 前几轮关键文件）。
-  · **回归钉子（本轮）**：三个模块指纹一致；包内 `co_names` 含 `_critical_process_deny`
-    与 `_count_processes`；包内常量表含 9 个关键进程名；tools 的常量表含两条拦截标签。
-  · **回归钉子（前几轮）**：4 个 UI 模块颜色等值化真进包（`director_panel` / `skill_manager_ui` /
-    `skill_market_ui` / `tool_manager_ui`）；`ui_hex_guard` **不得进包**；`legion_status_widget`
-    （THEME 兜底字典的宿主）仍在包里且指纹一致；permissions 的 `_audited` / `_audit_decision` /
-    顶层 `tool_audit` 与「`decide` 函数体不引用 `tool_audit`」；system_control 的 `_require`
-    与 8 处调用、`csv.reader`、可中断形参；软件控制候选枚举；画布四态与统一入口 ——
-    一并复验，防本轮加黑名单时顺带塌掉。
-  · **版本一致性**：PYZ 里 `config` 的常量表必须含 v4.211.7，且不含 v4.211.6。
+    的逐字节比 sha256。相等 ⇒ 打进包的就是这份源码。
+  · **回归钉子（本轮）**：三个模块指纹一致；包内含上述新符号；`TaskGraph.reset` 体里
+    有 `_lock`（并发语义）；`canvas_panel` 里 `_run_graph` 函数体**同时**引用
+    `reset_for_rerun` 与 `run`（防"定义在但忘了调"）。
+  · **回归钉子（前几轮）**：系统控制 14 个 tool_* 可中断 + 关键进程黑名单 9 名 +
+    tools 两条拦截标签；决策审计（`_audited`/`_audit_decision`/`tool_audit`）；
+    UI 颜色等值化三模块；`ui_hex_guard` **不得进包**；画布四态与统一入口；
+    `VALID_STATUSES` 六态 —— 一并复验，防本轮改画布时顺带塌掉。
+  · **版本一致性**：PYZ 里 `config` 的常量表必须含 v4.211.8，且不含 v4.211.7。
   · **不漏测试**：`tests/` 下的判据套件与根目录扰动脚本绝不能被收进包。
 
-用法：python _verify_pyz_v42117.py
+用法：python _verify_pyz_v42118.py
 """
 import hashlib
 import marshal
@@ -195,7 +198,7 @@ def _load_entry_script(exe: Path, name: str = "main"):
 
 
 def main():
-    print("v4.211.7 进包核验（系统控制 D 批 · 关键进程名黑名单 → 硬拒绝）")
+    print("v4.211.8 进包核验（节点画布：重跑语义 / 自动重绘 / 参数键）")
     print("-" * 62)
     if not EXE.is_file():
         print(f"未找到产物：{EXE}")
@@ -239,10 +242,10 @@ def main():
     if "config" in names:
         consts = _str_consts(_load(za, "config"))
         old = sorted(s for s in consts if s.startswith("v4.210.") or s.startswith("v4.211."))
-        check("PYZ 内 config 的版本常量 == v4.211.7",
-              "v4.211.7" in consts, f"包内出现的版本串={old}")
-        check("PYZ 内不含上一版旧版本常量 v4.211.6",
-              "v4.211.6" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
+        check("PYZ 内 config 的版本常量 == v4.211.8",
+              "v4.211.8" in consts, f"包内出现的版本串={old}")
+        check("PYZ 内不含上一版旧版本常量 v4.211.7",
+              "v4.211.7" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
 
     print("\n-- 3) 本轮能力的回归钉子（防重启打包时被丢掉）--")
     if "system_control_tools" in names:
@@ -484,6 +487,61 @@ def main():
               "终止系统关键进程 (taskkill)" in _tags
               and "终止系统关键进程 (Stop-Process)" in _tags,
               "拦截标签不在包内常量表 → 文本入口没编进去")
+
+    print("\n-- 3f) 本轮钉子：画布三处修复的符号真进包（含「定义在但忘了调」）--")
+    if "canvas_panel" in names:
+        _co_cp = _load(za, "canvas_panel")
+        _cpn = _code_names(_co_cp)
+        for _sym in ("_refresh_view", "_undo", "_redo", "CanvasScene",
+                     "RemoveEdgeCommand", "LocalEditDialog", "CanvasPanel"):
+            check(f"canvas_panel 定义 {_sym}", _sym in _cpn, "符号丢失")
+        check("★ 包内含 graphChanged（场景→面板的重绘信号名）",
+              "graphChanged" in _cpn, "信号名不在包内 → 重绘通知链没编进去")
+        check("★ 包内引用 remove_order_edge / connect_order（顺序边删除支路）",
+              {"remove_order_edge", "connect_order"} <= _cpn,
+              f"缺={sorted({'remove_order_edge', 'connect_order'} - _cpn)}")
+        # 关键：_run_graph 必须**真的调** reset_for_rerun 与 run
+        # —— 本轮缺陷的根因形状就是「代码都在，就是没人在跑之前调它」，
+        #    所以这里查的是**函数体引用**，不是"函数定义存在"。
+        _rg = _func_codes(_co_cp, "_run_graph").get("_run_graph")
+        check("★ canvas_panel 里存在名为 _run_graph 的函数（AST 契约）",
+              _rg is not None, "改名会连带搞坏 test_canvas_rerun_refresh.py 的 E 组")
+        if _rg is not None:
+            _body = _code_names(_rg)
+            check("★ _run_graph 函数体里真的调了 reset_for_rerun"
+                  "（防「函数定义了但忘了调」—— 正是本轮缺陷的根因形状）",
+                  "reset_for_rerun" in _body, "重跑前不再重置 → 退回静默假成功")
+            check("★ _run_graph 函数体里也调了 run（两个都得在，缺一不成立）",
+                  "run" in _body, "调用链断裂")
+            check("★ _run_graph 形参表含 asset_root（落盘根目录来源）",
+                  "asset_root" in _rg.co_varnames, "形参改名 → UI 调用会 TypeError")
+        _rd = _func_codes(_co_cp, "render_graph").get("render_graph")
+        check("★ render_graph 形参表含 refresh_detail（重绘不冲详情区的开关）",
+              _rd is not None and "refresh_detail" in _rd.co_varnames,
+              "开关丢失 → 重绘会把「运行完成」那行冲掉")
+    else:
+        check("canvas_panel 在 PYZ 里", False, "缺失 → 画布页一打开就 ModuleNotFoundError")
+
+    if "canvas_graph" in names:
+        check("★ 包内 canvas_graph 定义 reset_for_rerun（重跑原语编进去了）",
+              "reset_for_rerun" in _code_names(_load(za, "canvas_graph")),
+              "缺失 → 运行按钮退回静默假成功")
+    else:
+        check("canvas_graph 在 PYZ 里", False, "缺失")
+
+    if "task_graph" in names:
+        _co_tg = _load(za, "task_graph")
+        check("★ 包内 task_graph 定义 reset（底层重跑原语）",
+              "reset" in _code_names(_co_tg),
+              "缺失 → reset_for_rerun 会在运行时 AttributeError")
+        _rst = _func_codes(_co_tg, "reset").get("reset")
+        check("★ TaskGraph.reset 体里引用 _lock（与 run 的并发语义一致）",
+              _rst is not None and "_lock" in _code_names(_rst),
+              "没加锁 → 与 run 并发时状态可能半重置")
+        check("★ TaskGraph.reset 体里引用 _tasks（实现没漂移）",
+              _rst is not None and "_tasks" in _code_names(_rst), "实现漂移")
+    else:
+        check("task_graph 在 PYZ 里", False, "缺失")
 
     print("\n-- 4) 不漏测试 / 不漏扰动脚本 --")
     leaked = sorted(n for n in names

@@ -18,6 +18,7 @@ _perturb_canvas_export.py
 _perturb_canvas_localedit.py
 _perturb_canvas_model.py
 _perturb_canvas_panel.py
+_perturb_canvas_rerun_refresh.py
 _perturb_critical_proc_deny.py
 _perturb_hitarea_2103.py
 _perturb_log_redirect_hyg.py

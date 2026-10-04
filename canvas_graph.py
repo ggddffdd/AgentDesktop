@@ -967,6 +967,27 @@ class CanvasGraph:
         self.asset_root = asset_root
         return apply_real_executors(self, asset_root, inpaint_fn, video_fn, motion_fn)
 
+    def reset_for_rerun(self) -> int:
+        """把整张图重置为「待跑」：节点状态/产出/占位标记 + 底层任务状态。
+
+        语义：下一次 `run()` 会**真正重跑每一个节点**，而不是因为「都已经 completed」
+        直接返回。画布「运行」按钮必须先调它 —— 画布一打开时 `build_demo()` 已用
+        stub 把示例流跑过一遍（节点全是终态），而 `TaskGraph.run()` 只派发
+        `is_ready()` 为真的任务（要求 status 为 pending）→ 不重置的话 run()
+        一个节点都不执行就返回，界面却照样打印「运行完成」（静默假成功）。
+
+        为什么清 `out_assets`：那是上一轮的产出引用，重跑后应由执行器重新登记；
+        留着旧引用会让 `_wrap` 把「上一轮产物」标成 stale —— 而这次是从头跑，
+        不是「没重跑」。返回被重置的节点数。
+        """
+        self._tg.reset()
+        for node in self.nodes.values():
+            node.status = "pending"
+            node.result = None
+            node.placeholder = False
+            node.out_assets = {p: None for p in node.outputs}
+        return len(self.nodes)
+
     # ---- 执行 ----
     def run(self, state: Optional[dict] = None, token=None) -> dict:
         state = self._tg.run(state or {}, token)

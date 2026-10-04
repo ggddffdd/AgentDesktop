@@ -466,6 +466,10 @@ class CanvasEdgeItem(QGraphicsPathItem):
 class CanvasScene(QGraphicsScene):
     """画布场景：渲染节点/连线，并承载阶段 A 的编辑交互（拖拽写回 + 端口连线）。"""
 
+    # 数据层变了（连线/拖动等）→ 通知 CanvasPanel 重画。渲染本身在
+    # `CanvasPanel.render_graph`，场景只负责把"该重画了"这件事传出去。
+    graphChanged = Signal()
+
     def __init__(self, graph=None, undo_stack=None, parent=None):
         super().__init__(parent)
         self.graph = graph
@@ -550,6 +554,7 @@ class CanvasScene(QGraphicsScene):
             self.undo_stack.push(cmd)
         else:
             cmd.redo()
+        self.graphChanged.emit()
 
     # ---- 节点拖动写回 ----
     def on_node_moved(self, item, start: QPointF, end: QPointF):
@@ -618,17 +623,29 @@ class ConnectCommand(QUndoCommand):
 
 
 class RemoveEdgeCommand(QUndoCommand):
-    def __init__(self, graph, undo_stack, from_node, from_port, to_node, to_port):
+    def __init__(self, graph, undo_stack, from_node, from_port, to_node, to_port,
+                 kind="data", label=""):
         super().__init__("删除连线 %s.%s -> %s.%s" %
                          (from_node, from_port, to_node, to_port))
         self.graph = graph
         self.f = (from_node, from_port, to_node, to_port)
+        # 数据边与顺序边走的是**两套** API：前者 remove_data_edge/connect_data，
+        # 后者 remove_order_edge/connect_order。旧实现只调了数据边那套 → 选中一条
+        # 顺序边点「删除选中连线」，数据层纹丝不动（1 -> 1），按钮等于没用。
+        self.kind = kind
+        self.label = label           # 顺序边的 label 就是它的 reason
 
     def redo(self):
-        self.graph.remove_data_edge(*self.f)
+        if self.kind == "order":
+            self.graph.remove_order_edge(self.f[0], self.f[2], self.label)
+        else:
+            self.graph.remove_data_edge(*self.f)
 
     def undo(self):
-        self.graph.connect_data(*self.f)
+        if self.kind == "order":
+            self.graph.connect_order(self.f[0], self.f[2], self.label)
+        else:
+            self.graph.connect_data(*self.f)
 
 
 # --------------------------------------------------------------------------
@@ -928,7 +945,17 @@ class LocalEditDialog(QDialog):
             if val:
                 try:
                     num = float(val)
-                    key = "sigma" if op == "blur" else "factor"
+                    # 参数键名以**引擎**为准（image_local_edit._pil_filter）：
+                    # blur 读 sigma、sharpen 读 amount、其余三种读 factor。
+                    # 旧写法只区分了 blur（`"sigma" if op == "blur" else "factor"`），
+                    # 于是 sharpen 被写成 factor → 引擎读不到 amount、静默回落默认 1.5，
+                    # 「锐化」这个参数框填了等于没填。
+                    if op == "blur":
+                        key = "sigma"
+                    elif op == "sharpen":
+                        key = "amount"
+                    else:
+                        key = "factor"
                     params[key] = num
                 except Exception:
                     pass
@@ -1043,9 +1070,9 @@ class CanvasPanel(QWidget):
         btn_fit = QPushButton("适配视图")
         btn_fit.clicked.connect(self._fit)
         btn_undo = QPushButton("撤销")
-        btn_undo.clicked.connect(self.undo_stack.undo)
+        btn_undo.clicked.connect(self._undo)
         btn_redo = QPushButton("重做")
-        btn_redo.clicked.connect(self.undo_stack.redo)
+        btn_redo.clicked.connect(self._redo)
         btn_del = QPushButton("删除选中连线")
         btn_del.clicked.connect(self._delete_selected)
         btn_local = QPushButton("局部编辑")
@@ -1083,18 +1110,58 @@ class CanvasPanel(QWidget):
 
         # 选中变化 → 刷新属性面板
         self.scene.selectionChanged.connect(self._on_selection_changed)
+        # 场景里的编辑操作（连线等）只改数据层 → 由场景发信号让面板重画
+        self.scene.graphChanged.connect(self._refresh_view)
 
         if graph is not None:
             self.render_graph(graph)
 
-    def render_graph(self, graph: "cg.CanvasGraph"):
+    def render_graph(self, graph: "cg.CanvasGraph", fit: bool = True,
+                     refresh_detail: bool = True):
         self.graph = graph
         self.scene.graph = graph
         self.plan = layout_graph(graph)
         self.scene.build(self.plan, graph)
         self.view.setScene(self.scene)
-        self._fit()
-        self._refresh_detail(None)
+        if fit:
+            self._fit()
+        if refresh_detail:
+            self._refresh_detail(None)
+
+    def _refresh_view(self):
+        """数据层变了就重画场景，**保留视图变换与选中**。
+
+        为什么需要它：`render_graph` 从前只在 `__init__` 调过一次 —— 之后连/删线、
+        跑完、撤销都只改数据层，画面纹丝不动。实测：删一条数据边后场景仍是 6 节点
+        7 连线，而图内 `data_edges` 已变成 5；节点状态改成 failed，方块颜色也不变。
+        用户据此判断"操作没生效"，其实数据是对的、只是没重画。
+
+        这里做全量重建（`fit=False`，不重置缩放），再还原视图变换与被选中的节点，
+        避免"一操作视图就跳回去"。
+        """
+        if self.graph is None:
+            return
+        tf = self.view.transform()
+        selected = [it.spec.id for it in self.scene.selectedItems()
+                    if isinstance(it, CanvasNodeItem)]
+        # refresh_detail=False：重绘**不该冲掉**详情区 —— 那里显示的是上一次操作的
+        # 输出（例如「运行完成，产物落在…」），是最要紧的反馈，被重绘清掉等于白跑。
+        self.render_graph(self.graph, fit=False, refresh_detail=False)
+        self.view.setTransform(tf)
+        for it in self.scene.items():
+            if isinstance(it, CanvasNodeItem) and it.spec.id in selected:
+                it.setSelected(True)
+
+    def _undo(self):
+        """撤销后必须重画：命令只改数据层（如把删掉的边连回来），不重画画面还是旧的。"""
+        if self.undo_stack is not None:
+            self.undo_stack.undo()
+        self._refresh_view()
+
+    def _redo(self):
+        if self.undo_stack is not None:
+            self.undo_stack.redo()
+        self._refresh_view()
 
     def _on_selection_changed(self):
         items = self.scene.selectedItems()
@@ -1109,12 +1176,14 @@ class CanvasPanel(QWidget):
     def _delete_selected(self):
         for it in self.scene.selectedItems():
             if isinstance(it, CanvasEdgeItem):
-                cmd = RemoveEdgeCommand(self.graph, self.undo_stack, *it.edge_tuple)
+                cmd = RemoveEdgeCommand(self.graph, self.undo_stack, *it.edge_tuple,
+                                        kind=it.spec.kind, label=it.spec.label)
                 if self.undo_stack is not None:
                     self.undo_stack.push(cmd)
                 else:
                     cmd.redo()
                 break
+        self._refresh_view()
 
     # ---- 阶段 B：图片局部编辑入口 ----
     def _selected_node(self):
@@ -1191,17 +1260,23 @@ class CanvasPanel(QWidget):
         except Exception:  # noqa: BLE001
             inpaint_fn = None
             video_fn = None
+        # 先重置为「待跑」：画布一打开时示例流已被 stub 跑过一遍、节点全是终态，
+        # 而 TaskGraph 只派发 pending 的任务 —— 不重置的话 run() 会**一个节点都不执行**
+        # 直接返回，界面却照样打印「运行完成，产物落在…」（静默假成功）。
+        self.graph.reset_for_rerun()
         try:
             self.graph.use_real_executors(asset_root, inpaint_fn=inpaint_fn, video_fn=video_fn)
             self.graph.run({})
         except Exception as e:  # noqa: BLE001
             self.detail.addItem("运行失败: %s" % e)
+            self._refresh_view()
             return
         self.detail.addItem("运行完成，产物落在: %s" % asset_root)
         for nid, n in self.graph.nodes.items():
             for p, a in n.out_assets.items():
                 if isinstance(a, cg.AssetRef) and a.path:
                     self.detail.addItem("  - %s.%s → %s" % (nid, p, a.path))
+        self._refresh_view()
 
     # ---- 第 6 步：促销动效预览（纯本地，零网络、零 ffmpeg）----
     def _make_promo_motion(self):
