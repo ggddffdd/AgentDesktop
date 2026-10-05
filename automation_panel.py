@@ -104,6 +104,11 @@ class TaskEditDialog(QDialog):
         self.enabled_chk.setStyleSheet(f"QCheckBox{{{label_body()}}}")
         lay.addWidget(self.enabled_chk)
 
+        # v4.215.0：独立工具权限 —— 默认受限工具集，勾选才放开执行类工具
+        self.full_tools_chk = QCheckBox("允许执行类工具（命令执行/浏览器点击等，触发时需人工确认）")
+        self.full_tools_chk.setChecked(False)
+        self.full_tools_chk.setStyleSheet(f"QCheckBox{{{label_body()}}}")
+        lay.addWidget(self.full_tools_chk)
         # 按钮
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
@@ -212,6 +217,7 @@ class TaskEditDialog(QDialog):
         idx = self.sched_combo.findData(task.get("schedule_type", auto.SCHED_DAILY))
         self.sched_combo.setCurrentIndex(max(0, idx))
         self.enabled_chk.setChecked(bool(task.get("enabled", True)))
+        self.full_tools_chk.setChecked(bool(task.get("full_tools", False)))
 
         at_time = task.get("at_time", "09:00")
         hh, mm = auto._parse_hm(at_time)
@@ -249,6 +255,7 @@ class TaskEditDialog(QDialog):
             "message": message,
             "schedule_type": st,
             "enabled": self.enabled_chk.isChecked(),
+            "full_tools": self.full_tools_chk.isChecked(),
             "at_time": self.daily_time.time().toString("HH:mm"),
             "at_date": self.once_date.date().toString("yyyy-MM-dd"),
             "weekday": self.weekday_combo.currentData(),
@@ -340,7 +347,8 @@ def _open_edit(app, task):
                 data["name"], data["action"], data["message"], data["schedule_type"],
                 at_time=data["at_time"], at_date=data["at_date"],
                 weekday=data["weekday"], interval_minutes=data["interval_minutes"],
-                enabled=data["enabled"])
+                enabled=data["enabled"],
+                full_tools=data.get("full_tools", False))
             st.add(t)
         else:
             merged = dict(task)
@@ -349,6 +357,7 @@ def _open_edit(app, task):
                 "schedule_type": data["schedule_type"], "enabled": data["enabled"],
                 "at_time": data["at_time"], "at_date": data["at_date"],
                 "weekday": data["weekday"], "interval_minutes": data["interval_minutes"],
+                "full_tools": data.get("full_tools", False),
             })
             st.update(merged)
         app._refresh_automation_list()

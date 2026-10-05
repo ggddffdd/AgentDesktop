@@ -162,7 +162,13 @@ if os.path.isfile(FIXTURE):
     # v4.212.0：原唯一一条登记（画布页外壳 `{"background": "#F7F8FC"}`）随画布模块
     # 一并移除 —— 那一页没了，它的 setStyleSheet 实例也消失，留着登记会触发 B1c
     # 「登记了却没被消耗」。登记制本身保留：以后再有有意新增照此登记。
-    KNOWN_ADDITIONS = {}
+    # v4.215.0：自动化任务编辑器新增「允许执行类工具」复选框（full_tools_chk，
+    # 样式与 enabled_chk 同款 label_body()）——同词条 +1 实例，照此登记。
+    KNOWN_ADDITIONS = {
+        "automation_panel.py": collections.Counter({
+            ("QCheckBox", '{"color": "#202124", "font-size": "13px"}'): 1,
+        }),
+    }
 
     files = sorted(set(before) | set(after))
     for fn in files:

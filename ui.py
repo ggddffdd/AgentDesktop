@@ -88,7 +88,7 @@ from config import (
     AGENT_SYS_APPEND, TOOL_RESULT_LIMIT, load_dynamic_skills,
     get_app_icon, APP_VERSION, MAX_RENDERED_MSGS,
 )
-from session import SessionStore
+from session import SessionStore, Session
 import search as search_mod
 import tools as tools_mod
 from permissions import PermissionEngine, MODES, default_audit_dir
@@ -4970,36 +4970,69 @@ class ChatWindow(QMainWindow):
         except Exception as e:
             log.error("自动化任务调度异常: %s", e)
 
+    def _automation_session(self, task):
+        """v4.215.0：取/建自动化任务的专属会话（外部审核 P1：任务与用户聊天分流）。
+
+        每个任务一个持久会话（sid = auto_{task_id}，folder=自动化）：
+        - 不再污染用户当前聊天会话；
+        - 同任务多次触发累积在同一会话里，Agent 看得见自己上次干了什么；
+        - 任务上下文与用户会话完全隔离（不继承聊天历史，也不被聊天继承）。
+        """
+        tid = (task.get("id") or "").strip()
+        if not tid:
+            return None
+        sid = f"{automation.SESSION_SID_PREFIX}{tid}"
+        s = self.store.sessions.get(sid)
+        if s is None:
+            s = Session(sid, title=f"⚙️ {task.get('name') or '自动化任务'}",
+                        folder="自动化")
+            self.store.sessions[sid] = s
+        return s
+
     def _fire_automation_run(self, task):
-        """把任务的执行指令作为一条 user 消息交给 Agent 跑（结果流式显示在对话页）。
+        """把任务的执行指令交给 Agent 跑在**任务专属会话**里（结果在该会话流式显示）。
+
+        v4.215.0：独立会话 + 独立工具权限（外部审核 P1）——
+        - 会话：不再追加进用户当前聊天，而是 auto_{task_id} 专属会话；
+        - 权限：默认受限工具集（automation.filter_tools_safe，无 EXEC/EXTERNAL/
+          硬确认项，无人值守不卡确认框）；任务 full_tools=True 才放开全部。
 
         v4.213.0：返回 bool —— True = Agent worker 已成功启动（任务实际提交）；
         False = 提交失败，调用方**不得** mark_fired（下一 tick 自动重试）。
         失败时回滚刚追加的会话消息，防止重试时同一指令重复堆积。
         """
         appended = None
+        session = None
         try:
             msg = (task.get("message") or "").strip()
             if not msg:
                 return False
-            session = self.store.active()
+            session = self._automation_session(task)
+            if session is None:
+                log.error("自动化任务 %r 缺 id，无法建专属会话，跳过",
+                          task.get("name", ""))
+                return False
             appended = {"role": "user",
                         "content": f"{self._AUTO_TASK_PREFIX}{msg}"}
             session.messages.append(appended)
+            # 专属会话成为 active（_agent_run 读 store.active()），用户的原会话
+            # 完整保留在侧栏，随时点回去——分流是「可见的」，不是静默的。
+            self.store.switch(session.sid)
             self.store.save()
             # 切到对话页（nav index 0）让用户看到结果
             self._switch_nav(0)
             self._render_messages(force_bottom=True)
             # v4.95：标记本次 run 是自动化任务触发，完成时托盘+语音通知
             self._pending_done_notify = (task.get("name") or "").strip() or "自动化任务"
+            # v4.215.0：_agent_run 据此应用受限工具集（full_tools=True 除外）
+            self._auto_task_active = task
             self._agent_run()
             return True
         except Exception as e:
             # 回滚刚追加的消息（找得到才删）：at-least-once 的重复堆积只发生在
             # 「Agent 启动成功后进程崩溃」这种极小概率窗口，普通失败不留下半条消息。
-            if appended is not None:
+            if appended is not None and session is not None:
                 try:
-                    session = self.store.active()
                     if appended in session.messages:
                         session.messages.remove(appended)
                         self.store.save()
@@ -9605,6 +9638,12 @@ class ChatWindow(QMainWindow):
         messages = [sys_msg] + hist
 
         all_tools = config.get_all_tools(self.cfg)
+        # v4.215.0：自动化任务的独立工具权限（外部审核 P1）—— 无人值守触发时
+        # 默认受限工具集（无 EXEC/EXTERNAL/硬确认项，不会卡确认框、不会被
+        # session_trusted 静默放行越权）；任务 full_tools=True 才放开全部。
+        _auto_t = getattr(self, "_auto_task_active", None)
+        if _auto_t is not None and not _auto_t.get("full_tools"):
+            all_tools = automation.filter_tools_safe(all_tools)
         # 可观测性：Agent 整轮任务——一次登记覆盖整轮，不按工具调用刷屏
         try:
             self._task_agent = task_status.begin("agent", "Agent 任务")
@@ -9833,6 +9872,7 @@ class ChatWindow(QMainWindow):
     def _on_agent_done(self):
         self._agent_active = False
         self._reset_busy()
+        self._auto_task_active = None   # v4.215.0：自动化受限工具标记随轮次收口
         self.stop_btn.setVisible(False)
         self.stop_btn.setEnabled(True)
         self.resume_agent_btn.setVisible(False)

@@ -150,11 +150,12 @@ case("AF3 删成功路径 return True（fire 永远不算成功 → 永不标记
 
 # ---------------------------------------------------------------------------
 # AF4：删异常回滚块
+# v4.215.0 锚点更新：回滚块随独立会话改造换形（旧版 except 里重新取
+# store.active()，新版 session 由 try 前置取得、失败回滚同一引用）。
 # ---------------------------------------------------------------------------
 _mut = sub(UI_SRC,
-           "            if appended is not None:\n"
+           "            if appended is not None and session is not None:\n"
            "                try:\n"
-           "                    session = self.store.active()\n"
            "                    if appended in session.messages:\n"
            "                        session.messages.remove(appended)\n"
            "                        self.store.save()\n"

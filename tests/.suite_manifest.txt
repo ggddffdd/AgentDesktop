@@ -4,6 +4,7 @@ test_anti_fabrication_189.py
 test_attachment_and_director_gates.py
 test_audio_regress.py
 test_automation_fire_order.py
+test_automation_isolation.py
 test_bridge_security.py
 test_browser_control.py
 test_bugfix_2092.py

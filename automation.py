@@ -35,6 +35,10 @@ ACT_RUN = "run"              # 到点把 message 作为指令交给 Agent 执行
 SCHEDULE_TYPES = [SCHED_ONCE, SCHED_DAILY, SCHED_WEEKLY, SCHED_INTERVAL]
 ACTIONS = [ACT_REMIND, ACT_RUN]
 
+# v4.215.0：自动化任务专属会话的 sid 前缀（ui._automation_session 拼专用 sid：
+# auto_{task_id}）。单源常量：进包核验据此钉「独立会话能力在包里」。
+SESSION_SID_PREFIX = "auto_"
+
 WEEKDAY_NAMES = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
 SCHEDULE_LABELS = {
@@ -50,8 +54,14 @@ ACTION_LABELS = {
 
 
 def new_task(name, action, message, schedule_type, at_time="09:00",
-             at_date="", weekday=0, interval_minutes=60, enabled=True):
-    """构造一个任务字典（新建用）。"""
+             at_date="", weekday=0, interval_minutes=60, enabled=True,
+             full_tools=False):
+    """构造一个任务字典（新建用）。
+
+    full_tools（v4.215.0）：False = 默认受限工具集（查询/生成/本地写，无人值守
+    安全：不含 EXEC/EXTERNAL、不含硬确认项）；True = 放开全部工具（含命令执行、
+    浏览器点击等，遇到确认弹窗会等用户回来点）。
+    """
     return {
         "id": uuid.uuid4().hex[:12],
         "name": (name or "").strip() or "未命名任务",
@@ -63,9 +73,50 @@ def new_task(name, action, message, schedule_type, at_time="09:00",
         "weekday": int(weekday) % 7,
         "interval_minutes": max(1, int(interval_minutes or 60)),
         "enabled": bool(enabled),
+        "full_tools": bool(full_tools),
         "last_run": 0.0,
         "created": time.time(),
     }
+
+
+def filter_tools_safe(tools):
+    """v4.215.0：自动化任务的默认受限工具集。
+
+    外部审核 P1「自动任务继承当前会话工具权限」的对策：定时任务多在无人值守时
+    触发，默认不放行任何需要**人工确认**的工具（EXEC / EXTERNAL / 硬确认项），
+    否则要么卡在确认弹窗上（任务挂起），要么在 session_trusted 状态下被静默
+    放行（越权执行）。保留 READ（自主）与 WRITE_LOCAL 无硬确认项（半自主，
+    本地生成/写入，无外发）。
+
+    - 未登记工具（含全部 MCP 工具）按 risk.classify 兜底 EXTERNAL → 一律滤除
+      （保守侧：新 MCP 工具不会静默获得无人值守执行权）。
+    - **tier=manual 的本地写**（write_file / db_insert / db_update / schedule）
+      也滤除 —— 交互模式下它们要人工确认（permissions.decide 第 7 步），
+      无人值守触发只会卡在确认弹窗上。
+    - 返回的是入参列表的**新列表**（浅拷贝过滤），不改入参。
+    """
+    try:
+        from risk import (classify as _classify, tier_of as _tier_of,
+                          ALWAYS_CONFIRM, RiskClass)
+    except Exception:            # risk 不可用 → 最保守：全滤（退化为纯对话）
+        return []
+    kept = []
+    for t in tools or []:
+        name = ""
+        try:
+            name = (t or {}).get("function", {}).get("name", "")
+        except Exception:
+            continue
+        if not name:
+            continue
+        if _classify(name) not in (RiskClass.READ, RiskClass.WRITE_LOCAL):
+            continue
+        if name in ALWAYS_CONFIRM:
+            continue
+        if _tier_of(name) == "manual":
+            continue
+        kept.append(t)
+    return kept
 
 
 class AutomationStore:

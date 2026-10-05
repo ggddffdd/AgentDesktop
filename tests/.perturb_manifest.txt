@@ -9,6 +9,7 @@ _perturb_2091.py
 _perturb_2092.py
 _perturb_210.py
 _perturb_automation_fire.py
+_perturb_automation_isolation.py
 _perturb_browser_control.py
 _perturb_critical_proc_deny.py
 _perturb_evidence_mask.py

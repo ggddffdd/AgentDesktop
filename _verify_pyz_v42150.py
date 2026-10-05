@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v4.214.0 进包核验：证据库入库脱敏。
+"""v4.215.0 进包核验：自动化独立会话 + 独立工具权限。
 
 本轮 = 删：源码 7 个（canvas_graph / canvas_panel / canvas_export / executors /
 agnes_bridge / image_local_edit / demo_canvas_cli）+ 判据 14 + 扰动 14 + 文档 20；
@@ -9,7 +9,7 @@ UI 摘掉「画布」导航项与页外壳；spec 去掉 6 个画布 hiddenimpor
 
 核验重点：① **反向** —— 6 个画布模块绝不能出现在 PYZ，ui 里也不能再有
 _build_canvas_page / CanvasPanel 引用（防「源码删了但 spec/入口没清」死代码进包）；
-② 版本号 v4.214.0 且不含 v4.213.0；③ 前几轮钉子（系统控制 tool_*、决策审计、
+② 版本号 v4.215.0 且不含 v4.214.0；③ 前几轮钉子（系统控制 tool_*、决策审计、
 UI 颜色等值化、关键进程黑名单、不漏测试不漏扰动）一并复验。
 """
 import hashlib
@@ -177,7 +177,7 @@ def _load_entry_script(exe: Path, name: str = "main"):
 
 
 def main():
-    print("v4.214.0 进包核验（证据脱敏 + 前几轮钉子复验）")
+    print("v4.215.0 进包核验（自动化独立会话 + 前几轮钉子复验）")
     print("-" * 62)
     if not EXE.is_file():
         print(f"未找到产物：{EXE}")
@@ -222,10 +222,10 @@ def main():
         consts = _str_consts(_load(za, "config"))
         old = sorted(s for s in consts if s.startswith("v4.210.") or s.startswith("v4.211.")
                      or s.startswith("v4.212."))
-        check("PYZ 内 config 的版本常量 == v4.214.0",
-              "v4.214.0" in consts, f"包内出现的版本串={old}")
-        check("PYZ 内不含上一版旧版本常量 v4.213.0",
-              "v4.213.0" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
+        check("PYZ 内 config 的版本常量 == v4.215.0",
+              "v4.215.0" in consts, f"包内出现的版本串={old}")
+        check("PYZ 内不含上一版旧版本常量 v4.214.0",
+              "v4.214.0" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
 
     print("\n-- 3) 本轮能力的回归钉子（防重启打包时被丢掉）--")
     if "system_control_tools" in names:
@@ -434,7 +434,28 @@ def main():
         _uin2 = _code_names(_load(za, "ui"))
         check("★ ui 保留 _fire_automation_run（先执行后标记主体）",
               "_fire_automation_run" in _uin2, "自动化执行入口丢失")
-        print("\n-- 3z) v4.212.0 反向钉子：画布模块**不得**出现在包里 --")
+        print("\n-- 3w) v4.215.0 钉子：自动化独立会话 + 独立工具权限 --")
+    if "automation" in names:
+        _atn = _code_names(_load(za, "automation"))
+        check("★ automation 定义 filter_tools_safe（受限工具集）",
+              "filter_tools_safe" in _atn, "自动化工具过滤能力丢失")
+        _at_consts = _str_consts(_load(za, "automation"))
+        check("★ automation 含 full_tools 字段常量（任务级逃生口）",
+              "full_tools" in _at_consts, "full_tools 任务字段丢失")
+        check("★ automation 含 auto_ 会话前缀常量（专属会话 sid）",
+              "auto_" in _at_consts, "专属会话前缀丢失")
+    if "ui" in names:
+        _uin3 = _code_names(_load(za, "ui"))
+        check("★ ui 定义 _automation_session（get-or-create 专属会话）",
+              "_automation_session" in _uin3, "独立会话入口丢失")
+        check("★ ui 含 _auto_task_active（受限工具标记）",
+              "_auto_task_active" in _uin3, "自动化权限标记丢失")
+    if "automation_panel" in names:
+        _apn = _code_names(_load(za, "automation_panel"))
+        check("★ automation_panel 含 full_tools_chk（UI 逃生口复选框）",
+              "full_tools_chk" in _apn, "执行类工具复选框丢失")
+
+    print("\n-- 3z) v4.212.0 反向钉子：画布模块**不得**出现在包里 --")
     _CANVAS_MODS = ("canvas_graph", "canvas_panel", "canvas_export",
                     "executors", "agnes_bridge", "image_local_edit")
     for _cm in _CANVAS_MODS:
