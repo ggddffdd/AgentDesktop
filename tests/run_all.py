@@ -91,7 +91,7 @@ def clean_stale_fixtures(verbose=True):
         if removed:
             gone.append(fp.name)
         elif verbose:
-            print(f"⚠️ 无法清理残留夹具 {fp.name}（可能被占用，请手动删）")
+            print(f"[WARN] 无法清理残留夹具 {fp.name}（可能被占用，请手动删）")  # v4.213.0: ASCII 前缀，GBK 重定向下不再 UnicodeEncodeError
     if gone and verbose:
         print(f"[run_all] 已清理上次扰动残留的临时夹具: {', '.join(gone)}")
     return gone
@@ -160,7 +160,7 @@ def save_manifest(names, path=None):
     try:
         path.write_text("\n".join(sorted(names)) + "\n", encoding="utf-8")
     except OSError as e:
-        print(f"⚠️ 无法写入基线清单 {path.name}（不影响本轮结果）: {e}")
+        print(f"[WARN] 无法写入基线清单 {path.name}（不影响本轮结果）: {e}")
 
 
 def run_guard_preflight():
@@ -400,7 +400,7 @@ def main():
             # 极易被误判成代码回归。实测 2026-10-03 全量跑废掉 11 个脚本才发现。
             if status != "ok" and "SAFE_DELETE_BULK_CONFIRM_REQUIRED" in out:
                 status = "BLOCKED"
-                print("   ⚠️ 环境性失败：沙箱「每轮删除配额」已耗尽 —— "
+                print("   [WARN] 环境性失败：沙箱「每轮删除配额」已耗尽 —— "
                       "脚本删临时副本时被拦、进程被杀，**不是代码问题**。")
             p_rows.append((name, n_pass, n_fail, status, secs, out))
             for line in out.splitlines():
@@ -453,7 +453,7 @@ def main():
             print(f"\n失败扰动：{', '.join(r[0] for r in p_failed)}")
         _blocked = [r for r in p_rows if r[3] == "BLOCKED"]
         if _blocked:
-            print(f"\n⚠️ 其中 {len(_blocked)} 个是**环境性**「删除配额」失败（不是代码问题）："
+            print(f"\n[WARN] 其中 {len(_blocked)} 个是**环境性**「删除配额」失败（不是代码问题）："
                   f"{', '.join(r[0] for r in _blocked)}")
             print("   沙箱对每轮删除次数有阈值，超了之后的删除会被拦、进程被杀；"
                   "扰动脚本每个 case 都要建/删一份临时副本，最吃配额。")

@@ -9,6 +9,45 @@
 
 ---
 
+## v4.213.0 — 2026-10-05
+
+外部审核（第三方只读审计）两条 P1 修复 + 一条低危加固。审核甄别结论：5 条 P1 里
+2 真（且比报告更严重）、2 半真、1 基本伪；采纳其 prioritization 的前两条。
+
+### 修复 1：自动化执行任务「先执行后标记」（P1，任务丢失风险）
+- 旧顺序：tick 里先 `mark_fired`（once 类型同时置 disabled）再 `_fire_automation_run`，
+  而 _fire 内部异常全吞、空消息静默 return —— 任务被记成「跑过」但实际没执行，
+  **一次性任务就此静默丢失**（mark_fired 时已 `enabled=False`，无重试）。
+- 新语义：`_fire_automation_run` 返回 bool，确认 Agent worker 已启动才 `mark_fired`；
+  失败不标记，`is_due` 下一 tick 仍成立 → 自动重试（at-least-once）。
+- 失败时**回滚**刚追加的会话消息（`messages.remove` + save），防重试时同一指令重复堆积。
+- 空指令（任务本身坏了）标记 fired 防每秒无限重试；`_busy` 跳过保留。
+- `automation.mark_fired` docstring 撒谎修正（说返回是否有变化，实际无返回值）。
+
+### 修复 2：记忆准入元数据随长期记忆落库（P1，幻觉治理闭环）
+- `memory_gate.admit()` 判出的 `source/confidence/evidence_id/expires_at/verified`
+  旧版落库时全部丢弃（只存 fact/type/topic）——记忆落库后分不清「用户明确说的」
+  和「模型推断的」。讽刺的是被拦下的 pending 条目反而存了 `[来源:xxx]`。
+- `append_memory` 新增五个元数据参数；条目紧跟结构化头写一行
+  `[元数据] 来源:… | 置信:… | 证据:EV#n | 有效期至:… | 已验证`（全部缺省时不写，
+  与旧文件格式逐字节兼容）；topic 冲突替换路径（`_replace_by_topic`）同样保留。
+- 新增 `entry_is_expired()`：`recall_memory` 召回时**过期事实不再当确定事实注入**
+  （无有效期条目默认永久，行为不变）；管理/搜索路径仍可见全部条目。
+
+### 加固：tests/run_all.py 的 GBK 兼容（低危）
+- 4 处 print 的 `⚠️` 换 `[WARN]`：GBK 重定向下（PYTHONIOENCODING=gbk 实证复现）
+  触发 `UnicodeEncodeError`，会把测试框架自己搞崩、掩盖真实失败原因。
+- 解析正则里的 ✅/❌ 不动（那是判据的一部分）。
+
+### 质量门
+- 新判据 2 套：`test_automation_fire_order`（18 项）+ `test_memory_metadata`（15 项），
+  套件 88 → 90。
+- 新扰动 2 个：`_perturb_automation_fire`（6 变异 + 反向基线）+
+  `_perturb_memory_meta`（5 变异 + 反向基线），扰动 20 → 22。
+  首轮扰动抓出判据自身 2 处「静默跳过」哑弹（C2/C3、D2b 依赖前置物存在才判），
+  已改为无条件判——**改坏必红**才是验收标准。
+- GBK 模式实测 run_all 跑通（EXIT=0）。
+
 ## v4.212.0 — 2026-10-05
 
 **移除节点画布模块（用户定论：用不上，属过度设计）。**

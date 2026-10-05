@@ -691,6 +691,10 @@ def recall_memory(query, limit=8, max_chars=4000):
     if q_set:
         scored = []
         for ts, content in entries:
+            # v4.213.0：过有效期的事实不再当确定事实注入（外部审核 P1-1）。
+            # 注意只在召回路径过滤——管理/搜索（search_memory）仍可见全部条目。
+            if entry_is_expired(content):
+                continue
             e_set = set(_tokenize(content))
             if not e_set:
                 continue
@@ -721,11 +725,12 @@ def _write_memory(text):
     _write_text_file(MEMORY_PATH, text)
 
 
-def _replace_by_topic(topic, fact, type=None, tags=None):
+def _replace_by_topic(topic, fact, type=None, tags=None, meta=None):
     """在 memory.md 中找到同 topic 的旧条目并替换，返回新全文；找不到返回 None。
 
     v4.73 修：替换后的新条目头部持久化 `#topic` 标签，否则后续同主题写入会因
     关键字丢失而退化为"追加"，导致新旧并存。匹配时也认 `#topic` 标签。
+    v4.213.0：meta（准入元数据行）随替换写入，同 append_memory。
     """
     if not os.path.exists(_physical(MEMORY_PATH)):
         return None
@@ -753,7 +758,11 @@ def _replace_by_topic(topic, fact, type=None, tags=None):
             header += f" #{topic}"
             if tags:
                 header += " " + " ".join("#" + t.lstrip("#") for t in tags)
-            new_parts.append(f"{header}\n{fact}")
+            entry = f"{header}\n"
+            if meta:
+                entry += f"{meta}\n"
+            entry += fact
+            new_parts.append(entry)
             replaced = True
         else:
             new_parts.append(p)
@@ -779,12 +788,65 @@ def _db_replace_by_topic(topic, fact):
 
 
 @_sync  # v4.108 M-21：跨线程写加锁
-def append_memory(fact, type=None, topic=None, tags=None, pinned=False):
+def _meta_line(source=None, confidence=None, evidence_id=None,
+               expires_at=None, verified=False):
+    """v4.213.0：把记忆准入关的治理元数据拼成一行可读、可 grep 的元数据行。
+
+    全部字段缺省时返回 None（老调用方不带元数据 → 文件格式与旧版逐字节一致）。
+    """
+    segs = []
+    if source:
+        segs.append(f"来源:{source}")
+    if confidence is not None:
+        try:
+            segs.append("置信:%.2f" % float(confidence))
+        except (TypeError, ValueError):
+            pass
+    if evidence_id:
+        segs.append(f"证据:{evidence_id}")
+    if expires_at:
+        segs.append(f"有效期至:{expires_at}")
+    if verified:
+        segs.append("已验证")
+    return "[元数据] " + " | ".join(segs) if segs else None
+
+
+_META_EXPIRES_RE = None
+
+
+def entry_is_expired(content, now=None):
+    """v4.213.0：条目是否已过有效期（元数据行 `有效期至:YYYY-MM-DD`）。
+
+    没有/解析不了的元数据 → False（不带有效期的记忆默认永久，行为与旧版一致）。
+    """
+    global _META_EXPIRES_RE
+    import re as _re
+    if _META_EXPIRES_RE is None:
+        _META_EXPIRES_RE = _re.compile(r"有效期至[:：]\s*(\d{4})-(\d{1,2})-(\d{1,2})")
+    m = _META_EXPIRES_RE.search(content or "")
+    if not m:
+        return False
+    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    now = now or datetime.now()
+    try:
+        return now.date() > datetime(y, mo, d).date()
+    except ValueError:  # 月份/日期越界（如 2026-13-40）—— 当没写
+        return False
+
+
+def append_memory(fact, type=None, topic=None, tags=None, pinned=False,
+                  source=None, confidence=None, evidence_id=None,
+                  expires_at=None, verified=False):
     """v4.73：追加/更新一条长期记忆。
 
     - pinned=True：写入 memory_core.md（钉住核心画像，永远注入）。
     - topic 给定：若已有同主题旧条目则替换（冲突合并，防新旧并存），否则追加。
     - 结构化头：## 时间 [类型] #标签 事实
+    - v4.213.0：记忆准入关（memory_gate）的治理元数据随条目落库 ——
+      紧跟结构化头写一行 `[元数据] 来源:… | 置信:… | 证据:EV#n | 有效期至:… | 已验证`。
+      旧版只存 fact/type/topic，准入判出的 source/confidence/evidence_id/
+      expires_at/verified 全部丢弃，落库后分不清「用户说的」和「模型猜的」
+      （外部审核 P1-1）。全部缺省时不写该行，与旧文件格式逐字节兼容。
     - 去重：与已有条目重复则跳过；超 MAX_ENTRIES 滚动淘汰。
     """
     fact = (fact or "").strip()
@@ -792,6 +854,9 @@ def append_memory(fact, type=None, topic=None, tags=None, pinned=False):
         return "记忆内容为空，未写入"
     if pinned:
         return append_pinned(fact, type=type, tags=tags)
+    meta = _meta_line(source=source, confidence=confidence,
+                      evidence_id=evidence_id, expires_at=expires_at,
+                      verified=verified)
     ensure_dir()
     _snapshot_memory("append")
     existing = load_memory()
@@ -799,7 +864,7 @@ def append_memory(fact, type=None, topic=None, tags=None, pinned=False):
         return "记忆已存在，跳过"
     # 冲突合并：同 topic 旧条目替换
     if topic:
-        new_txt = _replace_by_topic(topic, fact, type=type, tags=tags)
+        new_txt = _replace_by_topic(topic, fact, type=type, tags=tags, meta=meta)
         if new_txt is not None:
             try:
                 _write_memory(new_txt)
@@ -818,7 +883,10 @@ def append_memory(fact, type=None, topic=None, tags=None, pinned=False):
         header += f" #{topic}"
     if tags:
         header += " " + " ".join("#" + t.lstrip("#") for t in tags)
-    block = f"\n{header}\n{fact}\n"
+    block = f"\n{header}\n"
+    if meta:
+        block += f"{meta}\n"
+    block += f"{fact}\n"
     # P1-7（v4.186.0 审查）：同 pinned——读失败即拒绝追加，绝不用空历史回写。
     _prev = _read_text_file_ex(MEMORY_PATH)
     if _prev is False:

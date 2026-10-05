@@ -188,7 +188,7 @@ def is_due(task, now=None):
 
 
 def mark_fired(task, now=None):
-    """触发后回写 last_run；once 类型同时置 disabled。返回是否持久化字段有变化。"""
+    """触发后回写 last_run；once 类型同时置 disabled（就地修改，无返回值）。"""
     now = now or datetime.now()
     task["last_run"] = now.timestamp()
     if task.get("schedule_type") == SCHED_ONCE:

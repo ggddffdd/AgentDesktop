@@ -2757,7 +2757,11 @@ class AgentWorker(QThread):
             if decision == "admit":
                 try:
                     result = memory_store.append_memory(
-                        v.get("fact", ""), type=v.get("category"), topic=v.get("topic"))
+                        v.get("fact", ""), type=v.get("category"), topic=v.get("topic"),
+                        source=v.get("source"), confidence=v.get("confidence"),
+                        evidence_id=v.get("evidence_id"),
+                        expires_at=v.get("expires_at"),
+                        verified=bool(v.get("verified")))
                     if "已写入" in result or "已更新" in result:
                         count += 1
                 except Exception as e:

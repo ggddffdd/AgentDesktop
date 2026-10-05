@@ -3,6 +3,7 @@ test_agent_node_failure.py
 test_anti_fabrication_189.py
 test_attachment_and_director_gates.py
 test_audio_regress.py
+test_automation_fire_order.py
 test_bridge_security.py
 test_bugfix_2092.py
 test_cancel_token.py
@@ -40,6 +41,7 @@ test_legion_resume_fill.py
 test_legion_status.py
 test_log_redirect_hyg.py
 test_memory_gate_196.py
+test_memory_metadata.py
 test_nav_ia_198.py
 test_no_stall_186.py
 test_outcome_honesty_195.py

@@ -4952,21 +4952,40 @@ class ChatWindow(QMainWindow):
                     # 执行任务：App 忙则跳过，等下一 tick 重试（不标记 fired）
                     if self._busy:
                         continue
-                    automation.mark_fired(t, now)
-                    self.automation_store.save()
-                    self._fire_automation_run(t)
+                    # v4.213.0：**先执行后标记**（外部审核 P1）。旧顺序是先 mark_fired
+                    # 再 _fire —— 一旦 _fire 内部失败（会话保存失败 / Agent 启动异常），
+                    # 任务已被记成「跑过」，once 类型更被置 disabled，**一次性任务就此
+                    # 静默丢失**。新语义：确认 Agent 已接手（_fire 返回 True）才 mark_fired；
+                    # 失败不标记，is_due 下一 tick 仍成立 → 自动重试。
+                    if not (t.get("message") or "").strip():
+                        # 任务本身坏了（指令为空），重试也没用 → 标记 fired 防每秒重试
+                        log.error("自动化任务 %r 指令为空，标记已执行防止无限重试",
+                                  t.get("name", ""))
+                        automation.mark_fired(t, now)
+                        self.automation_store.save()
+                        continue
+                    if self._fire_automation_run(t):
+                        automation.mark_fired(t, now)
+                        self.automation_store.save()
         except Exception as e:
             log.error("自动化任务调度异常: %s", e)
 
     def _fire_automation_run(self, task):
-        """把任务的执行指令作为一条 user 消息交给 Agent 跑（结果流式显示在对话页）。"""
+        """把任务的执行指令作为一条 user 消息交给 Agent 跑（结果流式显示在对话页）。
+
+        v4.213.0：返回 bool —— True = Agent worker 已成功启动（任务实际提交）；
+        False = 提交失败，调用方**不得** mark_fired（下一 tick 自动重试）。
+        失败时回滚刚追加的会话消息，防止重试时同一指令重复堆积。
+        """
+        appended = None
         try:
             msg = (task.get("message") or "").strip()
             if not msg:
-                return
+                return False
             session = self.store.active()
-            session.messages.append({"role": "user",
-                                     "content": f"{self._AUTO_TASK_PREFIX}{msg}"})
+            appended = {"role": "user",
+                        "content": f"{self._AUTO_TASK_PREFIX}{msg}"}
+            session.messages.append(appended)
             self.store.save()
             # 切到对话页（nav index 0）让用户看到结果
             self._switch_nav(0)
@@ -4974,8 +4993,20 @@ class ChatWindow(QMainWindow):
             # v4.95：标记本次 run 是自动化任务触发，完成时托盘+语音通知
             self._pending_done_notify = (task.get("name") or "").strip() or "自动化任务"
             self._agent_run()
+            return True
         except Exception as e:
-            log.error("自动化任务执行失败: %s", e)
+            # 回滚刚追加的消息（找得到才删）：at-least-once 的重复堆积只发生在
+            # 「Agent 启动成功后进程崩溃」这种极小概率窗口，普通失败不留下半条消息。
+            if appended is not None:
+                try:
+                    session = self.store.active()
+                    if appended in session.messages:
+                        session.messages.remove(appended)
+                        self.store.save()
+                except Exception:
+                    pass
+            log.error("自动化任务执行失败（已回滚，将自动重试）: %s", e)
+            return False
 
     # ============ 工具箱页 ============
     def _build_tools_page(self):
