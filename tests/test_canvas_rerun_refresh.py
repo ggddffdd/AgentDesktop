@@ -146,6 +146,7 @@ def _b():
 
     import agnes_bridge
     agnes_bridge.get_agnes_video_fn = lambda: _no_net   # 不联网
+    agnes_bridge.get_agnes_text2img_fn = lambda: None   # 文生图未注入 → PIL 兜底，不联网
 
     from canvas_panel import CanvasPanel, build_demo
 

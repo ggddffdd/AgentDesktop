@@ -1,7 +1,14 @@
 # -*- coding: utf-8 -*-
-"""v4.211.10 进包核验：画布「运行」后台线程化（用户实弹"点运行程序就卡死"修复）。
+"""v4.211.11 进包核验：画布「生图」接通 Agnes 纯文生图（用户实弹"会生成渐变图"反馈）。
 
-本轮进包的改动（v4.211.9 手感档 + v4.211.8 三处修复一并复验）：
+本轮进包的改动（v4.211.10 后台线程 + v4.211.9 手感档 + v4.211.8 一并复验）：
+  ⓪ `agnes_bridge.py` —— 新增 `get_agnes_text2img_fn`：纯文生图（同 inpaint
+     端点 /images/generations、同模型 agnes-image-2.5-flash，payload **不带**
+     extra_body.image）；`executors.py` —— gen_image_executor 注入即走真生图
+     （异常诚实 failed）、未注入回落 PIL 渐变占位，prompt 解析扩为「自身 config
+     → 上游 prompt 端口（数据边）」；`canvas_graph.py` —— use_real_executors
+     透传 + 示例图 src 出厂默认 prompt；`canvas_panel.py` —— worker/_run_graph
+     注入链补 text2img_fn。
   ① `canvas_panel.py` —— 新增 `_GraphRunWorker(QThread)`：整图执行（reset +
      use_real_executors + run）搬进后台线程，结果经信号回 GUI 线程；
      `_run_graph` 改为启动 worker + 按钮态切换；工具栏新增「停止」按钮
@@ -11,8 +18,9 @@
   判据套件与扰动脚本**不进包**。
 
 所以核验重点：① `canvas_panel` 的字节码指纹必须与当前源码一致（改对了得真进包）；
-② 版本号 v4.211.10 且不含 v4.211.9；③ 包内 `co_names` **真含**本轮新符号
-（`_GraphRunWorker` / `QThread` / `CancellationToken` / `_stop_run` /
+② 版本号 v4.211.11 且不含 v4.211.10；③ 包内 `co_names` **真含**本轮新符号
+（`get_agnes_text2img_fn` / `_text2img` / `text2img_fn` / `_GraphRunWorker` /
+`QThread` / `CancellationToken` / `_stop_run` /
 `_shutdown_run` / `_on_run_finished` / `run_active` / `aboutToQuit`）——
 「函数定义在源码里」与「函数被编进包里」是两回事。
 
@@ -26,10 +34,10 @@
     UI 颜色等值化三模块；`ui_hex_guard` **不得进包**；画布四态与统一入口；
     v4.211.8 的重跑/重绘/参数键钉子；v4.211.9 的手感档钉子（缩放/框选/建删节点/
     参数行/topo 真拓扑）；`VALID_STATUSES` 六态 —— 一并复验。
-  · **版本一致性**：PYZ 里 `config` 的常量表必须含 v4.211.10，且不含 v4.211.9。
+  · **版本一致性**：PYZ 里 `config` 的常量表必须含 v4.211.11，且不含 v4.211.10。
   · **不漏测试**：`tests/` 下的判据套件与根目录扰动脚本绝不能被收进包。
 
-用法：python _verify_pyz_v421110.py
+用法：python _verify_pyz_v421111.py
 """
 import hashlib
 import marshal
@@ -197,7 +205,7 @@ def _load_entry_script(exe: Path, name: str = "main"):
 
 
 def main():
-    print("v4.211.10 进包核验（画布运行后台线程化：不卡死/停止/防编辑）")
+    print("v4.211.11 进包核验（画布生图接通 Agnes 纯文生图 + 上游 prompt 流动）")
     print("-" * 62)
     if not EXE.is_file():
         print(f"未找到产物：{EXE}")
@@ -241,10 +249,10 @@ def main():
     if "config" in names:
         consts = _str_consts(_load(za, "config"))
         old = sorted(s for s in consts if s.startswith("v4.210.") or s.startswith("v4.211."))
-        check("PYZ 内 config 的版本常量 == v4.211.10",
-              "v4.211.10" in consts, f"包内出现的版本串={old}")
-        check("PYZ 内不含上一版旧版本常量 v4.211.9",
-              "v4.211.9" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
+        check("PYZ 内 config 的版本常量 == v4.211.11",
+              "v4.211.11" in consts, f"包内出现的版本串={old}")
+        check("PYZ 内不含上一版旧版本常量 v4.211.10",
+              "v4.211.10" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
 
     print("\n-- 3) 本轮能力的回归钉子（防重启打包时被丢掉）--")
     if "system_control_tools" in names:
@@ -590,6 +598,27 @@ def main():
         check("★ remove_task 体里引用 blocked_by 与 blocks（双向清理）",
               _rt is not None and "blocked_by" in _code_names(_rt)
               and "blocks" in _code_names(_rt), "单向清理 → Task.blocks 留脏数据")
+
+    # ---- 3h) v4.211.11 钉子：gen_image 接通 Agnes 纯文生图 ----
+    if "agnes_bridge" in names:
+        co_ab = _load(za, "agnes_bridge")
+        abn = _code_names(co_ab)
+        for _sym in ("get_agnes_text2img_fn", "_text2img"):
+            check(f"agnes_bridge 含 v4.211.11 符号 {_sym}", _sym in abn, "符号丢失")
+        _t2i = _func_codes(co_ab, "_text2img").get("_text2img")
+        check("★ 包内 _text2img 体引用 images/generations（真打文生图端点）",
+              _t2i is not None
+              and any("images/generations" in c
+                      for c in _deep_str_consts(_t2i) if isinstance(c, str)),
+              "缺失 → 包内文生图是假的")
+    if "executors" in names:
+        co_ex = _load(za, "executors")
+        check("executors 含 v4.211.11 符号 _resolve_prompt",
+              "_resolve_prompt" in _code_names(co_ex), "缺失 → 上游 prompt 断流")
+    if "canvas_panel" in names:
+        _cp11 = _code_names(_load(za, "canvas_panel"))
+        check("canvas_panel worker 注入 text2img_fn",
+              "text2img_fn" in _cp11, "缺失 → UI 注入断链（生图退回渐变占位）")
 
     print("\n-- 4) 不漏测试 / 不漏扰动脚本 --")
     leaked = sorted(n for n in names

@@ -482,8 +482,8 @@ run("C1 切片 gen_image_executor 含真实写盘（_array_to_png 调用）",
     "_array_to_png(out_arr, out_path)" in EXEC_SRC)
 run("C2 切片 apply_real_executors 含 node.executor 赋值",
     "node.executor = build_executor" in EXEC_SRC)
-run("C3 切片 use_real_executors 调用 executors 模块（透传 inpaint_fn/video_fn/motion_fn）",
-    "apply_real_executors(self, asset_root, inpaint_fn, video_fn, motion_fn)" in GRAPH_SRC)
+run("C3 切片 use_real_executors 调用 executors 模块（透传 inpaint_fn/video_fn/motion_fn/text2img_fn）",
+    "apply_real_executors(self, asset_root, inpaint_fn, video_fn, motion_fn, text2img_fn)" in GRAPH_SRC)
 
 
 # --------------------------------------------------------------------------

@@ -102,8 +102,8 @@ def _pg(desc, check, filepath, old, new):
 def main():
     # PG1 use_real_executors 不把 inpaint_fn 透传给 apply_real_executors → B1 红
     _pg("use_real_executors 丢弃 inpaint_fn", "B1", GRAPH,
-        "return apply_real_executors(self, asset_root, inpaint_fn, video_fn, motion_fn)",
-        "return apply_real_executors(self, asset_root, None, video_fn, motion_fn)")
+        "return apply_real_executors(self, asset_root, inpaint_fn, video_fn, motion_fn, text2img_fn)",
+        "return apply_real_executors(self, asset_root, None, video_fn, motion_fn, text2img_fn)")
 
     # PG2 gen_video_executor 强制走 None 分支（即使注入 video_fn 也不调用）→ B2 红
     _pg("gen_video 强制 None 分支不调 video_fn", "B2", EXEC,

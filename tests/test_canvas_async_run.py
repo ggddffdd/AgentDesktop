@@ -100,6 +100,7 @@ def _a():
         return out
 
     agnes_bridge.get_agnes_video_fn = lambda: slow_video_fn
+    agnes_bridge.get_agnes_text2img_fn = lambda: None
     agnes_bridge.get_agnes_inpaint_fn = lambda: None
 
     work = tempfile.mkdtemp(prefix="canvas_async_a_")
@@ -166,6 +167,7 @@ def _b():
         return None
 
     agnes_bridge.get_agnes_video_fn = lambda: slow_no_out
+    agnes_bridge.get_agnes_text2img_fn = lambda: None
 
     work = tempfile.mkdtemp(prefix="canvas_async_b_")
     orig = os.getcwd()
@@ -210,6 +212,7 @@ def _c():
         raise RuntimeError("判据探针: 生视频炸了")
 
     agnes_bridge.get_agnes_video_fn = lambda: boom
+    agnes_bridge.get_agnes_text2img_fn = lambda: None
 
     work = tempfile.mkdtemp(prefix="canvas_async_c_")
     orig = os.getcwd()
@@ -241,6 +244,7 @@ def _d():
 
     agnes_bridge.get_agnes_video_fn = lambda: (
         lambda node, asset_root, src_path, prompt: time.sleep(1.2) or None)
+    agnes_bridge.get_agnes_text2img_fn = lambda: None
 
     work = tempfile.mkdtemp(prefix="canvas_async_d_")
     orig = os.getcwd()

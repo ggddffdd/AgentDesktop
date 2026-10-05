@@ -1354,12 +1354,14 @@ class _GraphRunWorker(QThread):
     failed = Signal(str)       # 装配/重置阶段异常
     cancelled = Signal(str)    # 协作式取消（reason）
 
-    def __init__(self, graph, asset_root, inpaint_fn, video_fn, token, parent=None):
+    def __init__(self, graph, asset_root, inpaint_fn, video_fn, text2img_fn,
+                 token, parent=None):
         super().__init__(parent)
         self.graph = graph
         self.asset_root = asset_root
         self.inpaint_fn = inpaint_fn
         self.video_fn = video_fn
+        self.text2img_fn = text2img_fn
         self.token = token
 
     def run(self):  # QThread override —— 本体在后台线程执行
@@ -1367,7 +1369,7 @@ class _GraphRunWorker(QThread):
             self.graph.reset_for_rerun()
             self.graph.use_real_executors(
                 self.asset_root, inpaint_fn=self.inpaint_fn,
-                video_fn=self.video_fn)
+                video_fn=self.video_fn, text2img_fn=self.text2img_fn)
             state = self.graph.run({}, token=self.token)
             if self.token is not None and self.token.is_cancelled:
                 self.cancelled.emit(self.token.reason or "已取消")
@@ -1613,21 +1615,26 @@ class CanvasPanel(QWidget):
         import os
         asset_root = os.path.join(os.getcwd(), "canvas_runtime")
         os.makedirs(asset_root, exist_ok=True)
-        # 默认注入 Agnes 真实现：inpaint（图生图重绘）+ video（视频生成）。
-        # 调用时才需 key/网络；import 失败则退回诚实的 None（运行时缺回调会抛明确错误）。
+        # 默认注入 Agnes 真实现：inpaint（图生图重绘）+ video（视频生成）
+        # + text2img（纯文生图）。调用时才需 key/网络；import 失败则退回诚实的
+        # None（运行时缺回调 → gen_image 回落 PIL 占位，gen_video 诚实抛错）。
         inpaint_fn = None
         video_fn = None
+        text2img_fn = None
         try:
-            from agnes_bridge import get_agnes_inpaint_fn, get_agnes_video_fn
+            from agnes_bridge import (get_agnes_inpaint_fn, get_agnes_text2img_fn,
+                                      get_agnes_video_fn)
             inpaint_fn = get_agnes_inpaint_fn()
             video_fn = get_agnes_video_fn()
+            text2img_fn = get_agnes_text2img_fn()
         except Exception:  # noqa: BLE001
             inpaint_fn = None
             video_fn = None
+            text2img_fn = None
         from cancel_token import CancellationToken
         self._run_token = CancellationToken(name="canvas_run")
         worker = _GraphRunWorker(
-            self.graph, asset_root, inpaint_fn, video_fn,
+            self.graph, asset_root, inpaint_fn, video_fn, text2img_fn,
             self._run_token, parent=self)
         worker.succeeded.connect(self._on_run_succeeded)
         worker.failed.connect(self._on_run_failed)

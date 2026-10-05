@@ -4,9 +4,11 @@
 设计原则：
   * 本模块是「真实」实现——会真打网络、消耗 Agnes 免费额度。判据套件**不**直接依赖
     本模块的网络行为（用 mock 回调验证「注入生效」），因此无头沙箱也能跑全绿。
-  * 三个对外回调，签名与 executors.py 调用点一一对应：
+  * 四个对外回调，签名与 executors.py 调用点一一对应：
       - get_agnes_inpaint_fn()      -> inpaint_fn(out, region, instruction, params)
                                       （阶段 C image_local_edit 的 inpaint 回调）
+      - get_agnes_text2img_fn()     -> text2img_fn(prompt)
+                                      （gen_image 纯文生图，v4.211.11）
       - get_agnes_video_fn()        -> video_fn(node, asset_root, src_image_path, prompt)
                                       （gen_video 真实生成 clip）
       - get_promo_motion_fn()       -> motion_fn(src_image_paths, out_path, params)
@@ -189,6 +191,49 @@ def get_agnes_inpaint_fn(api_key=None, base_url=None):
 
 
 # --------------------------------------------------------------------------
+def get_agnes_text2img_fn(api_key=None, base_url=None):
+    """返回 text2img_fn(prompt) -> np.ndarray：Agnes 纯文生图（v4.211.11）。
+
+    与 inpaint 同端点（/images/generations）、同模型（agnes-image-2.5-flash），
+    区别仅在 **不带 extra_body.image** —— 即纯文字生图（2026-10-05 实探通过：
+    8.6s / 1024×1024 / 雪地柯基）。未配 key 时 _resolve_cred 抛错（绝不静默
+    用假 key 打网络）。调用方（executors.gen_image_executor）语义约定：
+    fn 注入则走真生图、异常诚实 failed（不静默回落占位图）；未注入（None）
+    或 prompt 为空时由执行器回落本地 PIL 渐变占位（离线兜底）。
+    """
+    key, base = _resolve_cred(api_key, base_url)
+
+    def _text2img(prompt):
+        text = (prompt or "").strip()
+        if not text:
+            raise RuntimeError("文生图需要非空 prompt")
+        payload = {
+            "model": "agnes-image-2.5-flash",
+            "prompt": text,
+            "size": "1K",
+            "extra_body": {"response_format": "url"},
+        }
+        headers = {"Authorization": "Bearer %s" % key, "Content-Type": "application/json"}
+
+        last_err = None
+        for _ in range(_MAX_RETRY + 1):
+            try:
+                data = _http_json("%s/images/generations" % base, payload, headers, "POST", 120)
+                url = (data.get("data") or [{}])[0].get("url") or data.get("url")
+                if not url:
+                    raise RuntimeError("Agnes 文生图未返回 url: %s" % str(data)[:200])
+                out_buf = io.BytesIO()
+                import urllib.request
+                with urllib.request.urlopen(url, timeout=60) as r:
+                    out_buf.write(r.read())
+                return _pil_to_arr(Image.open(out_buf).convert("RGB"))
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+        raise RuntimeError("Agnes 文生图失败: %s" % last_err)
+
+    return _text2img
+
+
 # ② 视频生成（gen_video 真实产出 clip）
 # --------------------------------------------------------------------------
 def _aspect_ratio(w, h):

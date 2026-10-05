@@ -1003,7 +1003,7 @@ class CanvasGraph:
         n.executor = executor
 
     def use_real_executors(self, asset_root: str, inpaint_fn=None, video_fn=None,
-                           motion_fn=None) -> List[str]:
+                           motion_fn=None, text2img_fn=None) -> List[str]:
         """第 5 步：给所有节点装上真正落盘的执行器（run 前调用即可生效）。
 
         `_wrap` 在 run 时实时调 `node.executor`，故 run 前替换 executor 即生效，
@@ -1011,12 +1011,13 @@ class CanvasGraph:
         局部编辑引擎（未注入时 inpaint 模式诚实抛 UnsupportedEditMode）；
         video_fn 透传给 gen_video 真实视频生成（未注入时 gen_video 诚实抛
         UnsupportedEditMode）；motion_fn 透传给 promo_fx 促销动效（未注入时
-        promo_fx 回落本地 PIL，零网络）。返回被替换执行器的节点 id 列表。
+        promo_fx 回落本地 PIL，零网络）；text2img_fn 透传给 gen_image 纯文生图
+        （未注入或 prompt 为空时回落本地 PIL 渐变占位）。返回被替换执行器的节点 id 列表。
         """
         from executors import apply_real_executors
         # 记下资产根目录：_register_asset 的统一校验要用它做「越出资产目录」围栏
         self.asset_root = asset_root
-        return apply_real_executors(self, asset_root, inpaint_fn, video_fn, motion_fn)
+        return apply_real_executors(self, asset_root, inpaint_fn, video_fn, motion_fn, text2img_fn)
 
     def reset_for_rerun(self) -> int:
         """把整张图重置为「待跑」：节点状态/产出/占位标记 + 底层任务状态。
@@ -1067,7 +1068,8 @@ def build_sample_graph(asset_store=None) -> CanvasGraph:
     g = CanvasGraph(asset_store=asset_store)
 
     src = CanvasNode("src", "source_prompt",
-                     outputs={"prompt": Port("prompt", "prompt")})
+                     outputs={"prompt": Port("prompt", "prompt")},
+                     config={"prompt": "示例：雪山下的松树林，清晨薄雾，写实摄影风格"})
     img = CanvasNode("img", "gen_image",
                      inputs={"prompt": Port("prompt", "prompt")},
                      outputs={"image": Port("image", "image")})

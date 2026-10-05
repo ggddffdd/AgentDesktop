@@ -142,16 +142,43 @@ def _make_source_image(node, path, size=(480, 270)):
 # --------------------------------------------------------------------------
 # gen_image 真实执行器（含局部编辑落盘）
 # --------------------------------------------------------------------------
-def gen_image_executor(node, asset_root, inpaint_fn=None):
+def gen_image_executor(node, asset_root, inpaint_fn=None, text2img_fn=None, graph=None):
     """gen_image 节点的真实执行器。返回 (state) -> dict 闭包。
 
     闭包捕获 node，run 时实时读 node.config["local_edits"]（最新值）。
+    源图来源（v4.211.11）：text2img_fn 注入且 prompt 非空 → Agnes 纯文生图
+    （异常诚实 failed，不静默回落）；否则本地 PIL 渐变占位（离线兜底）。
+    prompt 解析：① 节点自身 config（属性面板直填，显式优先）② 上游
+    prompt 端口（数据边 src.prompt → img.prompt，示例图形态）。
     """
     out_ports = [p for p, pt in node.outputs.items() if pt.port_type == "image"]
 
+    def _resolve_prompt():
+        cfg = node.config if isinstance(node.config, dict) else {}
+        p = (cfg.get("prompt") or "").strip()
+        if p:
+            return p
+        if graph is not None:
+            for e in graph.data_edges:
+                if e.to_node == node.id and e.to_port == "prompt":
+                    up = graph.nodes.get(e.from_node)
+                    if up is not None:
+                        p = ((up.config or {}).get("prompt") or "").strip()
+                        if p:
+                            return p
+        return ""
+
     def _exec(state):
         src_path = stage_path(asset_root, "image", node.id, "source")
-        _make_source_image(node, src_path)
+        prompt = _resolve_prompt()
+        if text2img_fn is not None and prompt:
+            # 真·AI 文生图：注入即走网络；异常向上抛 → TaskGraph 吸收成节点
+            # failed（诚实失败），绝不静默回落占位图 —— 网络错必须让人看见。
+            arr = text2img_fn(prompt)
+            _array_to_png(arr, src_path)
+        else:
+            # 未注入（无 key / 无 prompt）→ 本地 PIL 渐变占位（离线兜底）。
+            _make_source_image(node, src_path)
         arr = _png_to_array(src_path).astype(np.float64) / 255.0
         edits = (node.config or {}).get("local_edits") or []
         if edits:
@@ -454,29 +481,29 @@ def promo_fx_executor(node, asset_root, inpaint_fn=None, video_fn=None, graph=No
 # --------------------------------------------------------------------------
 # 注册表 + 装配
 # --------------------------------------------------------------------------
-# node_type -> factory(node, asset_root, inpaint_fn=None, video_fn=None, graph=None)
+# node_type -> factory(node, asset_root, inpaint_fn=None, video_fn=None, graph=None, text2img_fn=None)
 DEFAULT_EXECUTORS = {
-    "gen_image": lambda node, asset_root, inpaint_fn=None, video_fn=None, graph=None, motion_fn=None:
-        gen_image_executor(node, asset_root, inpaint_fn),
-    "gen_video": lambda node, asset_root, inpaint_fn=None, video_fn=None, graph=None, motion_fn=None:
+    "gen_image": lambda node, asset_root, inpaint_fn=None, video_fn=None, graph=None, motion_fn=None, text2img_fn=None:
+        gen_image_executor(node, asset_root, inpaint_fn, text2img_fn=text2img_fn, graph=graph),
+    "gen_video": lambda node, asset_root, inpaint_fn=None, video_fn=None, graph=None, motion_fn=None, text2img_fn=None:
         gen_video_executor(node, asset_root, inpaint_fn, video_fn, graph),
-    "promo_fx": lambda node, asset_root, inpaint_fn=None, video_fn=None, graph=None, motion_fn=None:
+    "promo_fx": lambda node, asset_root, inpaint_fn=None, video_fn=None, graph=None, motion_fn=None, text2img_fn=None:
         promo_fx_executor(node, asset_root, inpaint_fn, video_fn, graph, motion_fn),
 }
 
 
-def build_executor(node, asset_root, inpaint_fn=None, video_fn=None, graph=None, motion_fn=None):
+def build_executor(node, asset_root, inpaint_fn=None, video_fn=None, graph=None, motion_fn=None, text2img_fn=None):
     """按 node_type 选真实执行器工厂；未知类型回落 passthrough。"""
     factory = DEFAULT_EXECUTORS.get(node.node_type)
     if factory is not None:
-        return factory(node, asset_root, inpaint_fn, video_fn, graph, motion_fn)
+        return factory(node, asset_root, inpaint_fn, video_fn, graph, motion_fn, text2img_fn)
     return passthrough_executor(node, asset_root)
 
 
-def apply_real_executors(graph, asset_root, inpaint_fn=None, video_fn=None, motion_fn=None):
+def apply_real_executors(graph, asset_root, inpaint_fn=None, video_fn=None, motion_fn=None, text2img_fn=None):
     """给整张图的所有节点装上真实执行器（run 前调用）。返回被替换的节点 id 列表。"""
     replaced = []
     for nid, node in graph.nodes.items():
-        node.executor = build_executor(node, asset_root, inpaint_fn, video_fn, graph, motion_fn)
+        node.executor = build_executor(node, asset_root, inpaint_fn, video_fn, graph, motion_fn, text2img_fn)
         replaced.append(nid)
     return replaced

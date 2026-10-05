@@ -19,6 +19,7 @@ test_canvas_model.py
 test_canvas_ops.py
 test_canvas_panel.py
 test_canvas_rerun_refresh.py
+test_canvas_text2img.py
 test_cdp_profile_path.py
 test_claim_evidence_195.py
 test_cmd_robustness_2a.py
