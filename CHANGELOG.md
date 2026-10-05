@@ -9,6 +9,40 @@
 
 ---
 
+## v4.212.0 — 2026-10-05
+
+**移除节点画布模块（用户定论：用不上，属过度设计）。**
+
+大哥实弹反馈"画布功能我确实用不上，属于过度设计了"。两轮实弹（v4.211.10 修卡死、
+v4.211.11 接通真生图）之后确认：功能可用但不在实际工作流里，继续投入是过度设计。
+同时**取消 Web 画布立项**（同一判断）。
+
+### 删除（55 个文件，约 4400 行源码）
+- 源码 7 个：`canvas_graph` / `canvas_panel` / `canvas_export` / `executors` /
+  `agnes_bridge` / `image_local_edit` / `demo_canvas_cli`
+- 判据 14 套 + 扰动脚本 14 个 + 文档 20 份
+- UI：左导航「画布」项（NAV_GROUPS / nav_defs / 图标字典三处同步）、画布页外壳、
+  `_build_canvas_page` 懒加载入口、THEME 里 11 个 `canvas_*` 语义色
+- 打包：`小臭玩AI.spec` 的 6 个画布 hiddenimports（保留 `asset_store` —— 它是公共底座）
+
+### 保留（公共底座，非画布专属，删了会砸到别的功能）
+- `task_graph.py` —— 被 `agent.py` / `legion.py` / `legion_worker.py` 共用（军团调度核心）
+- `cancel_token.py` —— 被 `digital_twin_panel` / `legion_worker` / `tools` / `video_pipeline` 共用
+- `asset_store.py` —— 被 `director_panel` / `legion_worker` / `tools` / `video_pipeline` 共用
+
+### 连带修复（判据抓出，说明清理被真守门）
+- `tests/test_tokens_200.py` B1c 反向判据红：白名单登记了「画布页外壳」的
+  setStyleSheet 实例，页面删了它就成孤儿 → 移除该登记（登记制本身保留）。
+- `tests/test_frozen_smoke.py`：清掉画布 6 模块的 TOC/符号断言；
+  色键版本钉子 `canvas_status_text` / `canvas_final_bg` 随模块移除。
+- 5 处注释提到已删文件（`release_check` / `task_graph` / `ui_hex_guard` /
+  `run_all` / `test_ui_hex_guard_fallback`）同步改诚实。
+
+### 回退方式（本次删除可逆）
+已打 tag `canvas-baseline-v421111`（= a8bd78f，且已 push GitHub）：
+`git show canvas-baseline-v421111:canvas_graph.py > canvas_graph.py` 即可取回任一文件。
+
+---
 ## v4.211.11 — 2026-10-05
 
 - **画布「生图」接通真·AI 文生图**：此前「生图」节点只会画本地渐变占位图（用户反馈"会生成渐变图，可能是我不会用"——实为功能未接通，非操作问题）。现在 `gen_image` 走 Agnes 纯文生图（同 inpaint 端点、同模型，payload 不带 image；实测 8.6s 出 1024×1024）。未配 key / prompt 为空时回落原占位图；生图失败诚实报错不冒充。

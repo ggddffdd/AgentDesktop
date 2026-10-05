@@ -42,7 +42,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 TIMEOUT = 180  # 单套件超时（秒），防止挂死拖住整轮
-PERTURB_TIMEOUT = 600  # 单扰动脚本超时（秒）；最重的 _perturb_canvas_model 实测 44s
+PERTURB_TIMEOUT = 600  # 单扰动脚本超时（秒）；最重的扰动脚本实测 44s
 
 # 临时夹具前缀：扰动脚本的 case_newfile 会从无到有造 tests/test_zz_*.py 来测
 # 「集合登记式判据」（光靠字符串替换测不到）。它**不是套件**，本入口不得收集它，
@@ -288,7 +288,7 @@ def main():
                     help="追加跑根目录的扰动脚本（元测试：改坏源码验判据，数分钟）")
     ap.add_argument("--perturb-only", default="",
                     help="只跑文件名含该子串的扰动脚本（隐含 --with-perturb）。"
-                         "分段跑用：沙箱对每轮删除次数有上限，而 canvas 扰动"
+                         "分段跑用：沙箱对每轮删除次数有上限，而扰动脚本"
                          "每个 case 都要建/删一个临时副本，很吃配额")
     ap.add_argument("--refresh-perturb-manifest", action="store_true",
                     help="重建扰动脚本基线清单（故意删除/改名扰动脚本后使用）")
@@ -395,7 +395,7 @@ def main():
             name, n_pass, n_fail, status, secs, out = run_one(s, PERTURB_TIMEOUT)
             # v4.210.x：把「环境性删除配额失败」单独标出来。
             # 沙箱对**每轮**删除次数有阈值，超了之后的删除会被拦、进程直接被杀；
-            # 而 canvas 扰动每个 case 都要 tempfile.mkstemp + os.remove 一份临时副本，
+            # 而扰动脚本每个 case 都要 tempfile.mkstemp + os.remove 一份临时副本，
             # 21 个脚本全量跑必然会撞到。表现是「脚本 PASS=0 且几乎没有输出」——
             # 极易被误判成代码回归。实测 2026-10-03 全量跑废掉 11 个脚本才发现。
             if status != "ok" and "SAFE_DELETE_BULK_CONFIRM_REQUIRED" in out:
@@ -456,7 +456,7 @@ def main():
             print(f"\n⚠️ 其中 {len(_blocked)} 个是**环境性**「删除配额」失败（不是代码问题）："
                   f"{', '.join(r[0] for r in _blocked)}")
             print("   沙箱对每轮删除次数有阈值，超了之后的删除会被拦、进程被杀；"
-                  "canvas 扰动每个 case 都要建/删一份临时副本，最吃配额。")
+                  "扰动脚本每个 case 都要建/删一份临时副本，最吃配额。")
             print("   对策：① 换一轮重跑；② 用 --perturb-only <子串> 分段跑。")
     elif not (args.with_perturb or args.perturb_only) and perturb_files:
         print("-" * 62)

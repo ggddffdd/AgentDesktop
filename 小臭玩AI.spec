@@ -32,17 +32,7 @@ hiddenimports = ['toast', 'empty_state', 'PySide6', 'PySide6.QtPrintSupport', 'P
                # （agent._auto_remember / ui._audit_tone_evidence）。漏登记的表现
                # 不同但一样静默：前者「所有提炼条目都写不进去」，后者「语气层整体不生效」。
                'memory_gate', 'uncertainty',
-               # 节点画布（设计稿 §9）：canvas_panel 在 ui._ensure_canvas_page 内延迟导入、
-               # agnes_bridge 在 canvas_panel._run_graph 内延迟导入、executors/canvas_graph/
-               # image_local_edit 为画布链路依赖 —— 全部函数内延迟导入，静态分析扫不到，
-               # 必须显式登记，否则打包后切到「画布」页或点「运行」会 ModuleNotFoundError。
-               'canvas_graph', 'canvas_panel', 'executors', 'agnes_bridge', 'image_local_edit',
-               # 2026-10-03 画布页打不开事故复盘时顺带查出的两处漏登记（同为函数内延迟导入）：
-               #   canvas_export ← canvas_panel._export_local_edited_images（顶层引 canvas_panel 会成环）
-               #   asset_store   ← canvas_graph.make_real_asset_store
-               # 漏登记的后果不是崩，而是「导出局部编辑图 / 接真实资产库」打包后报
-               # ModuleNotFoundError —— 与切页无关，但一样是静默功能缺失。
-               'canvas_export', 'asset_store']
+               ]
 
 
 a = Analysis(

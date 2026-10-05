@@ -159,11 +159,10 @@ if os.path.isfile(FIXTURE):
     # 既保住 v4.200 历史锚点，也留下可审计的清单。
     # ⚠️ 注意边界：**全新 (sel, props) 词条仍然一律红、没有登记机制** —— 那才是样式走样。
     #    这里只吸收「已存在词条的 +1 实例」，且写死条数（多来一份照样红）。
-    KNOWN_ADDITIONS = {
-        "ui.py": collections.Counter({
-            ("", '{"background": "#F7F8FC"}'): 1,   # 画布页外壳（第 3 页），同页 0/1/2/4/5…
-        }),
-    }
+    # v4.212.0：原唯一一条登记（画布页外壳 `{"background": "#F7F8FC"}`）随画布模块
+    # 一并移除 —— 那一页没了，它的 setStyleSheet 实例也消失，留着登记会触发 B1c
+    # 「登记了却没被消耗」。登记制本身保留：以后再有有意新增照此登记。
+    KNOWN_ADDITIONS = {}
 
     files = sorted(set(before) | set(after))
     for fn in files:

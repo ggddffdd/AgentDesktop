@@ -38,7 +38,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 
-# 可选：从扰动拷贝路径加载 ui_hex_guard（UIHG_PATH），做法同 test_canvas_export.py
+# 可选：从扰动拷贝路径加载 ui_hex_guard（UIHG_PATH），做法同其它判据套件的路径覆盖
 _uihg = os.environ.get("UIHG_PATH")
 if _uihg and os.path.exists(_uihg):
     _spec = importlib.util.spec_from_file_location("ui_hex_guard", _uihg)

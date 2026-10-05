@@ -129,11 +129,7 @@ want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         # v4.211.4：主对话决策审计的公共件（permissions 顶层 import，必在包里）
         "tool_audit",
         "digital_twin_panel",
-        # 节点画布链路（设计稿 §9）—— **全是函数内延迟导入**，静态分析扫不到，
-        # 只靠 spec 的 hiddenimports 兜着。漏一个的表现是「源码全绿、切到画布页
-        # 点运行才 ModuleNotFoundError」，正是本套件存在的理由，必须逐模块点名。
-        "canvas_graph", "canvas_panel", "canvas_export", "executors",
-        "agnes_bridge", "image_local_edit"]
+        ]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
 print(json.dumps({"toc": toc, "present": present, "info": info}, ensure_ascii=False))
@@ -278,11 +274,10 @@ def main():
                # v4.174.0：图像链路「路由目标 ↔ 视觉能力判定」必须一致
                "VISION_MODEL_KW", "deepseek-flash",
                # v4.177.0：历史注入的字符预算闸（第二道闸，按体量）
-               "_fit_history_to_budget",
-               # 节点画布收尾轮：给导出层用的**取精确值**语义色键
-               # （`canvas_status_text` 专为 `#666666` 而加 —— 不挪用 faint=#6B7280，
-               #  否则会动实际色值）。这两个键存在 = 包里就是收尾轮之后的代码。
-               "canvas_status_text", "canvas_final_bg"],
+               "_fit_history_to_budget"],
+               # v4.212.0：原「节点画布收尾轮」色键 canvas_status_text /
+               # canvas_final_bg 随画布模块一并移除；版本钉子由上面的行为字面量
+               # 与 ③ APP_VERSION 断言承担，不另设替代键。
         "agent": ["is_non_action_message", "_internal",
                   # v4.168.1：程序化抓取否决 + 裸 URL 判据
                   "_prog_fetch_intent", "_is_bare_url", "_PROG_FETCH_KW",
@@ -299,29 +294,7 @@ def main():
                   "_twin_fingerprint", "_job_seg_ok", "_save_job_state",
                   "_job_done_count", "断点续跑", "failed_segs",
                   # v4.179.0：reference 模式（背景锁定）+ 并发出片
-                  "_gen_parallel", "_gen_serial", "ref_mode", "并发出片"],
-        # ---- 节点画布链路（设计稿 §9）：函数内延迟导入的重灾区 ----
-        "canvas_graph": ["CanvasGraph", "CanvasNode", "AssetRef", "Port",
-                         "build_sample_graph", "make_real_asset_store",
-                         "port_from_spec"],
-        "canvas_panel": ["ScenePlan", "NodeSpec", "layout_graph", "norm_rect",
-                         "region_svg_overlay", "node_supports_local_edit",
-                         "status_color"],
-        # 收尾轮把 7 处裸 hex 收编 THEME —— 所以 `THEME` 应当出现在 co_names 里，
-        # 既证明是新代码，也证明「导出层颜色走单一事实源」这条纪律进了包。
-        "canvas_export": ["export_svg", "export_png", "export_project_json",
-                          "import_project_json", "CanvasImportError",
-                          "export_all_local_edit_images", "THEME"],
-        "executors": ["build_executor", "apply_real_executors", "stage_path",
-                      "validate_output", "select_upstream",
-                      "gen_image_executor", "gen_video_executor"],
-        # 凭据只走 `_default_cred`（env → config），**不得硬编码 key** ——
-        # 点名它既验打包，也把「不硬编码凭据」这条铁律钉进冒烟。
-        "agnes_bridge": ["_default_cred", "get_agnes_inpaint_fn",
-                         "get_agnes_video_fn", "agnes_image_inpaint",
-                         "agnes_video_generate"],
-        "image_local_edit": ["apply_local_edits", "apply_op", "region_to_mask",
-                             "UnsupportedEditMode"],
+                  "_gen_parallel", "_gen_serial", "ref_mode", "并发出片"]
     }
     for mod, keys in marks.items():
         mi = info.get(mod) or {}

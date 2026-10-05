@@ -1,43 +1,16 @@
 # -*- coding: utf-8 -*-
-"""v4.211.11 进包核验：画布「生图」接通 Agnes 纯文生图（用户实弹"会生成渐变图"反馈）。
+"""v4.212.0 进包核验：画布模块已移除（反向钉子为主）。
 
-本轮进包的改动（v4.211.10 后台线程 + v4.211.9 手感档 + v4.211.8 一并复验）：
-  ⓪ `agnes_bridge.py` —— 新增 `get_agnes_text2img_fn`：纯文生图（同 inpaint
-     端点 /images/generations、同模型 agnes-image-2.5-flash，payload **不带**
-     extra_body.image）；`executors.py` —— gen_image_executor 注入即走真生图
-     （异常诚实 failed）、未注入回落 PIL 渐变占位，prompt 解析扩为「自身 config
-     → 上游 prompt 端口（数据边）」；`canvas_graph.py` —— use_real_executors
-     透传 + 示例图 src 出厂默认 prompt；`canvas_panel.py` —— worker/_run_graph
-     注入链补 text2img_fn。
-  ① `canvas_panel.py` —— 新增 `_GraphRunWorker(QThread)`：整图执行（reset +
-     use_real_executors + run）搬进后台线程，结果经信号回 GUI 线程；
-     `_run_graph` 改为启动 worker + 按钮态切换；工具栏新增「停止」按钮
-     （协作式取消，CancellationToken）；运行期防编辑守卫（scene.run_active，
-     覆盖 _apply_menu_choice / keyPressEvent / _finish_link / _delete_selected）；
-     退出保护（aboutToQuit → cancel + wait）。
-  判据套件与扰动脚本**不进包**。
+本轮 = 删：源码 7 个（canvas_graph / canvas_panel / canvas_export / executors /
+agnes_bridge / image_local_edit / demo_canvas_cli）+ 判据 14 + 扰动 14 + 文档 20；
+UI 摘掉「画布」导航项与页外壳；spec 去掉 6 个画布 hiddenimports。
+公共底座 task_graph / cancel_token / asset_store **保留**（军团 / 导演台 /
+数字分身共用）。
 
-所以核验重点：① `canvas_panel` 的字节码指纹必须与当前源码一致（改对了得真进包）；
-② 版本号 v4.211.11 且不含 v4.211.10；③ 包内 `co_names` **真含**本轮新符号
-（`get_agnes_text2img_fn` / `_text2img` / `text2img_fn` / `_GraphRunWorker` /
-`QThread` / `CancellationToken` / `_stop_run` /
-`_shutdown_run` / `_on_run_finished` / `run_active` / `aboutToQuit`）——
-「函数定义在源码里」与「函数被编进包里」是两回事。
-
-核验策略：
-  · **主判据 = 字节码树指纹**：把当前源码 compile() 出来的 code object 与 PYZ 里抽出来
-    的逐字节比 sha256。相等 ⇒ 打进包的就是这份源码。
-  · **回归钉子（本轮）**：canvas_panel 指纹一致 + 上述新符号；`cancel_token`
-    模块在 PYZ 里（worker import 它）。
-  · **回归钉子（前几轮）**：系统控制 14 个 tool_* 可中断 + 关键进程黑名单 9 名 +
-    tools 两条拦截标签；决策审计（`_audited`/`_audit_decision`/`tool_audit`）；
-    UI 颜色等值化三模块；`ui_hex_guard` **不得进包**；画布四态与统一入口；
-    v4.211.8 的重跑/重绘/参数键钉子；v4.211.9 的手感档钉子（缩放/框选/建删节点/
-    参数行/topo 真拓扑）；`VALID_STATUSES` 六态 —— 一并复验。
-  · **版本一致性**：PYZ 里 `config` 的常量表必须含 v4.211.11，且不含 v4.211.10。
-  · **不漏测试**：`tests/` 下的判据套件与根目录扰动脚本绝不能被收进包。
-
-用法：python _verify_pyz_v421111.py
+核验重点：① **反向** —— 6 个画布模块绝不能出现在 PYZ，ui 里也不能再有
+_build_canvas_page / CanvasPanel 引用（防「源码删了但 spec/入口没清」死代码进包）；
+② 版本号 v4.212.0 且不含 v4.211.11；③ 前几轮钉子（系统控制 tool_*、决策审计、
+UI 颜色等值化、关键进程黑名单、不漏测试不漏扰动）一并复验。
 """
 import hashlib
 import marshal
@@ -49,8 +22,7 @@ ROOT = Path(__file__).resolve().parent
 EXE = ROOT / "dist" / "小臭玩AI" / "小臭玩AI.exe"
 
 # 本轮改动过的源码（指纹必须与包内一致）
-MODULES = ["config", "canvas_graph", "canvas_export", "executors",
-           "canvas_panel", "task_graph", "digital_twin_panel",
+MODULES = ["config", "task_graph", "digital_twin_panel",
            "director_panel", "ui",
            # 本轮改动（G4 第二步：关键进程黑名单 → 硬拒绝；三个入口）
            "tools",
@@ -63,7 +35,7 @@ MODULES = ["config", "canvas_graph", "canvas_export", "executors",
            # 兜底字典的宿主：护栏让它静默，但它本身是产品代码，必须仍在包里
            "legion_status_widget", "legion_ui",
            # 仍在包里即核对指纹
-           "agnes_bridge", "risk",
+           "risk",
            # 上上轮改动、本轮必须仍在包里（指纹一并核对）
            "theme_qss", "ui_motion", "toast"]
 
@@ -205,7 +177,7 @@ def _load_entry_script(exe: Path, name: str = "main"):
 
 
 def main():
-    print("v4.211.11 进包核验（画布生图接通 Agnes 纯文生图 + 上游 prompt 流动）")
+    print("v4.212.0 进包核验（画布模块已移除：反向钉子 + 前几轮钉子复验）")
     print("-" * 62)
     if not EXE.is_file():
         print(f"未找到产物：{EXE}")
@@ -249,10 +221,10 @@ def main():
     if "config" in names:
         consts = _str_consts(_load(za, "config"))
         old = sorted(s for s in consts if s.startswith("v4.210.") or s.startswith("v4.211."))
-        check("PYZ 内 config 的版本常量 == v4.211.11",
-              "v4.211.11" in consts, f"包内出现的版本串={old}")
-        check("PYZ 内不含上一版旧版本常量 v4.211.10",
-              "v4.211.10" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
+        check("PYZ 内 config 的版本常量 == v4.212.0",
+              "v4.212.0" in consts, f"包内出现的版本串={old}")
+        check("PYZ 内不含上一版旧版本常量 v4.211.11",
+              "v4.211.11" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
 
     print("\n-- 3) 本轮能力的回归钉子（防重启打包时被丢掉）--")
     if "system_control_tools" in names:
@@ -307,65 +279,6 @@ def main():
     else:
         check("software_control_tools 在 PYZ 里", False,
               "缺失 → 软件控制工具集体消失")
-
-    print("\n-- 3b) 上一轮画布钉子复验（本轮改控制层，别把画布顺带塌掉）--")
-    want4 = ("real", "placeholder", "stale", "invalid")
-    if "canvas_graph" in names:
-        co_cg = _load(za, "canvas_graph")
-        cnames = _code_names(co_cg)
-        # ⚠️ 不能拿 `_tuple_consts` 找 ASSET_VALIDITIES：它是 `(ASSET_REAL, ...)`
-        # 用**变量名**拼的，字节码里由 BUILD_TUPLE 运行时构造，**不是编译期常量**，
-        # 常量表里根本没有这个元组（首版核验就栽在这，报了假 FAIL）。
-        check("canvas_graph 模块级定义四态常量 + ASSET_VALIDITIES",
-              {"ASSET_REAL", "ASSET_PLACEHOLDER", "ASSET_STALE",
-               "ASSET_INVALID", "ASSET_VALIDITIES"} <= cnames, "四态声明丢失")
-        for fn in ("assess_asset", "is_usable_asset", "audit_assets",
-                   "CanvasAssetError"):
-            check(f"canvas_graph 定义 {fn}", fn in cnames, "符号丢失")
-        scg = _str_consts(co_cg)
-        check("canvas_graph 常量表含四态字符串",
-              all(v in scg for v in want4), f"缺={[v for v in want4 if v not in scg]}")
-    else:
-        check("canvas_graph 在 PYZ 里", False, "缺失 → 画布页一打开就 ModuleNotFoundError")
-
-    if "executors" in names:
-        co_ex = _load(za, "executors")
-        sex = _str_consts(co_ex)
-        check("executors 占位扩展名 == .node-placeholder",
-              ".node-placeholder" in sex, "占位物仍会被当真媒体")
-        check("executors 定义 _ref_by_path（递归上游按路径反查 ref）",
-              "_ref_by_path" in _code_names(co_ex), "促销帧四态过滤会变死代码")
-        check("executors 常量表含 skipped_frames",
-              "skipped_frames" in sex, "跳过计数报不出来")
-    else:
-        check("executors 在 PYZ 里", False, "缺失")
-
-    if "agnes_bridge" in names:
-        check("agnes_bridge 定义 collect_promo_frames",
-              "collect_promo_frames" in _code_names(_load(za, "agnes_bridge")),
-              "收帧退回「有路径就要」")
-    else:
-        check("agnes_bridge 在 PYZ 里", False, "缺失")
-
-    if "task_graph" in names:
-        tgs = _tuple_consts(_load(za, "task_graph"))
-        check("task_graph 的 VALID_STATUSES 是六态元组",
-              ("pending", "in_progress", "completed", "failed",
-               "cancelled", "incomplete") in tgs, f"现有 str 元组={sorted(tgs)}")
-    else:
-        check("task_graph 在 PYZ 里", False, "缺失")
-
-    if "risk" in names:
-        co_rk = _load(za, "risk")
-        rn = _code_names(co_rk)
-        check("risk 仍定义 _policy / classify / tier_of（授权层唯一入口）",
-              {"_policy", "classify", "tier_of"} <= rn, "授权层入口丢失")
-        check("risk 仍定义 validate_policy（策略表自检）",
-              "validate_policy" in rn, "自检丢失")
-        check("risk 仍定义 command_danger_level（参数级高危探测）",
-              "command_danger_level" in rn, "高危探测丢失")
-    else:
-        check("risk 在 PYZ 里", False, "缺失 → 权限引擎 import 失败，整个启动崩")
 
     print("\n-- 3c) v4.211.4 决策审计钉子（主对话每笔非只读决策必须留痕）--")
     if "permissions" in names:
@@ -495,131 +408,18 @@ def main():
               and "终止系统关键进程 (Stop-Process)" in _tags,
               "拦截标签不在包内常量表 → 文本入口没编进去")
 
-    print("\n-- 3f) 本轮钉子：画布三处修复的符号真进包（含「定义在但忘了调」）--")
-    if "canvas_panel" in names:
-        _co_cp = _load(za, "canvas_panel")
-        _cpn = _code_names(_co_cp)
-        for _sym in ("_refresh_view", "_undo", "_redo", "CanvasScene",
-                     "RemoveEdgeCommand", "LocalEditDialog", "CanvasPanel"):
-            check(f"canvas_panel 定义 {_sym}", _sym in _cpn, "符号丢失")
-        check("★ 包内含 graphChanged（场景→面板的重绘信号名）",
-              "graphChanged" in _cpn, "信号名不在包内 → 重绘通知链没编进去")
-        check("★ 包内引用 remove_order_edge / connect_order（顺序边删除支路）",
-              {"remove_order_edge", "connect_order"} <= _cpn,
-              f"缺={sorted({'remove_order_edge', 'connect_order'} - _cpn)}")
-        # 关键：重跑语义（reset_for_rerun → run）必须**真的被调**
-        # —— 本轮缺陷的根因形状就是「代码都在，就是没人在跑之前调它」，
-        #    所以这里查的是**函数体引用**，不是"函数定义存在"。
-        # v4.211.10 起这两步搬进了 _GraphRunWorker.run（后台线程）——
-        # 钉子随执行位置迁移；_run_graph 只负责起 worker（另有 3g 段钉子守）。
-        _rg = _func_codes(_co_cp, "_run_graph").get("_run_graph")
-        check("★ canvas_panel 里存在名为 _run_graph 的函数（AST 契约）",
-              _rg is not None, "改名会连带搞坏 test_canvas_rerun_refresh.py 的 E 组")
-        _wr = _func_codes(_co_cp, "run").get("run")
-        if _wr is not None:
-            _wbody = _code_names(_wr)
-            check("★ _GraphRunWorker.run 体里真的调了 reset_for_rerun"
-                  "（防「函数定义了但忘了调」—— 正是本轮缺陷的根因形状）",
-                  "reset_for_rerun" in _wbody, "重跑前不再重置 → 退回静默假成功")
-            check("★ worker.run 体里也调了 run（两个都得在，缺一不成立）",
-                  "run" in _wbody, "调用链断裂")
-            check("★ _run_graph 形参表/局部含 asset_root（落盘根目录来源）",
-                  _rg is not None and "asset_root" in _rg.co_varnames,
-                  "来源丢失 → UI 调用会 TypeError")
-        _rd = _func_codes(_co_cp, "render_graph").get("render_graph")
-        check("★ render_graph 形参表含 refresh_detail（重绘不冲详情区的开关）",
-              _rd is not None and "refresh_detail" in _rd.co_varnames,
-              "开关丢失 → 重绘会把「运行完成」那行冲掉")
-    else:
-        check("canvas_panel 在 PYZ 里", False, "缺失 → 画布页一打开就 ModuleNotFoundError")
-
-    if "canvas_graph" in names:
-        check("★ 包内 canvas_graph 定义 reset_for_rerun（重跑原语编进去了）",
-              "reset_for_rerun" in _code_names(_load(za, "canvas_graph")),
-              "缺失 → 运行按钮退回静默假成功")
-    else:
-        check("canvas_graph 在 PYZ 里", False, "缺失")
-
-    if "task_graph" in names:
-        _co_tg = _load(za, "task_graph")
-        check("★ 包内 task_graph 定义 reset（底层重跑原语）",
-              "reset" in _code_names(_co_tg),
-              "缺失 → reset_for_rerun 会在运行时 AttributeError")
-        _rst = _func_codes(_co_tg, "reset").get("reset")
-        check("★ TaskGraph.reset 体里引用 _lock（与 run 的并发语义一致）",
-              _rst is not None and "_lock" in _code_names(_rst),
-              "没加锁 → 与 run 并发时状态可能半重置")
-        check("★ TaskGraph.reset 体里引用 _tasks（实现没漂移）",
-              _rst is not None and "_tasks" in _code_names(_rst), "实现漂移")
-    else:
-        check("task_graph 在 PYZ 里", False, "缺失")
-
-    print("\n-- 3g) v4.211.9 钉子：画布手感档（缩放/框选/建删节点/参数行/topo）--")
-    if "canvas_panel" in names:
-        _co_cp9 = _load(za, "canvas_panel")
-        _cpn9 = _code_names(_co_cp9)
-        for _sym in ("wheelEvent", "contextMenuEvent", "keyPressEvent",
-                     "AddNodeCommand", "RemoveNodeCommand", "DEFAULT_PORTS",
-                     "PARAM_SCHEMAS", "_node_from_dict", "_apply_menu_choice",
-                     "RubberBandDrag", "AnchorUnderMouse"):
-            check(f"canvas_panel 含 v4.211.9 符号 {_sym}", _sym in _cpn9, "符号丢失")
-        check("★ canvas_panel 引用 indexChanged（撤销重绘信号驱动）",
-              "indexChanged" in _cpn9, "缺失 → 键盘/右键路径撤销后画面不动")
-        check("★ CanvasView 常量 MIN_ZOOM / MAX_ZOOM（缩放钳制）",
-              "MIN_ZOOM" in _cpn9 and "MAX_ZOOM" in _cpn9, "缺失 → 缩放无界")
-
-        # ---- v4.211.10 钉子：运行后台线程化 ----
-        for _sym in ("_GraphRunWorker", "QThread", "CancellationToken",
-                     "_stop_run", "_shutdown_run", "_on_run_finished",
-                     "run_active", "aboutToQuit", "isRunning"):
-            check(f"canvas_panel 含 v4.211.10 符号 {_sym}", _sym in _cpn9, "符号丢失")
-        _wkr = _func_codes(_co_cp9, "run").get("run")
-        check("★ 包内 worker 语义完整（QThread + run 方法在）",
-              _wkr is not None and "QThread" in _cpn9,
-              "缺失 → 运行退回 GUI 线程同步跑（卡死回归）")
-        check("cancel_token 模块在 PYZ 里（worker 的取消依赖）",
-              "cancel_token" in names, "缺失 → 停止按钮无令牌可用")
-    if "canvas_graph" in names:
-        _co_cg9 = _load(za, "canvas_graph")
-        check("★ canvas_graph 定义 remove_node（删节点连带清边）",
-              "remove_node" in _code_names(_co_cg9), "缺失 → 删节点留悬空边")
-        _topo = _func_codes(_co_cg9, "topo").get("topo")
-        check("★ topo 函数体引用 _edge_pairs（Kahn 真拓扑序，防退回 dict 伪序）",
-              _topo is not None and "_edge_pairs" in _code_names(_topo),
-              "缺失 → 「删→撤」后 layout 崩 max() empty")
-        check("★ topo 函数体不再引用 task_list（dict 插入序伪拓扑已根除）",
-              _topo is not None and "task_list" not in _code_names(_topo),
-              "退回伪拓扑 → 删节点撤销后布局崩")
-    if "task_graph" in names:
-        _co_tg9 = _load(za, "task_graph")
-        check("★ task_graph 定义 remove_task（删任务连带清双向依赖）",
-              "remove_task" in _code_names(_co_tg9), "缺失 → 残余依赖悬空 id")
-        _rt = _func_codes(_co_tg9, "remove_task").get("remove_task")
-        check("★ remove_task 体里引用 blocked_by 与 blocks（双向清理）",
-              _rt is not None and "blocked_by" in _code_names(_rt)
-              and "blocks" in _code_names(_rt), "单向清理 → Task.blocks 留脏数据")
-
-    # ---- 3h) v4.211.11 钉子：gen_image 接通 Agnes 纯文生图 ----
-    if "agnes_bridge" in names:
-        co_ab = _load(za, "agnes_bridge")
-        abn = _code_names(co_ab)
-        for _sym in ("get_agnes_text2img_fn", "_text2img"):
-            check(f"agnes_bridge 含 v4.211.11 符号 {_sym}", _sym in abn, "符号丢失")
-        _t2i = _func_codes(co_ab, "_text2img").get("_text2img")
-        check("★ 包内 _text2img 体引用 images/generations（真打文生图端点）",
-              _t2i is not None
-              and any("images/generations" in c
-                      for c in _deep_str_consts(_t2i) if isinstance(c, str)),
-              "缺失 → 包内文生图是假的")
-    if "executors" in names:
-        co_ex = _load(za, "executors")
-        check("executors 含 v4.211.11 符号 _resolve_prompt",
-              "_resolve_prompt" in _code_names(co_ex), "缺失 → 上游 prompt 断流")
-    if "canvas_panel" in names:
-        _cp11 = _code_names(_load(za, "canvas_panel"))
-        check("canvas_panel worker 注入 text2img_fn",
-              "text2img_fn" in _cp11, "缺失 → UI 注入断链（生图退回渐变占位）")
-
+        print("\n-- 3z) v4.212.0 反向钉子：画布模块**不得**出现在包里 --")
+    _CANVAS_MODS = ("canvas_graph", "canvas_panel", "canvas_export",
+                    "executors", "agnes_bridge", "image_local_edit")
+    for _cm in _CANVAS_MODS:
+        check(f"★ 包内不含已移除的画布模块 {_cm}",
+              _cm not in names, "仍在包里 → spec/源码没清干净（死代码进包）")
+    if "ui" in names:
+        _uin = _code_names(_load(za, "ui"))
+        check("★ ui 不再引用 _build_canvas_page（入口已摘）",
+              "_build_canvas_page" not in _uin, "入口残留 → 切页 ModuleNotFoundError")
+        check("★ ui 不再引用 CanvasPanel",
+              "CanvasPanel" not in _uin, "懒导入残留 → 同上")
     print("\n-- 4) 不漏测试 / 不漏扰动脚本 --")
     leaked = sorted(n for n in names
                     if n.startswith("test_") or "perturb" in n or "pep701" in n)

@@ -167,3 +167,6 @@ _perf_*.py
 *.zip
 *.7z
 *.rar
+
+# ===== 会话/工具数据目录（WorkBuddy 会话记忆，非项目源码，绝不入库） =====
+.workbuddy/
