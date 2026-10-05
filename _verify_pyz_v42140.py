@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v4.213.0 进包核验：自动化先执行后标记 + 记忆元数据落库。
+"""v4.214.0 进包核验：证据库入库脱敏。
 
 本轮 = 删：源码 7 个（canvas_graph / canvas_panel / canvas_export / executors /
 agnes_bridge / image_local_edit / demo_canvas_cli）+ 判据 14 + 扰动 14 + 文档 20；
@@ -9,7 +9,7 @@ UI 摘掉「画布」导航项与页外壳；spec 去掉 6 个画布 hiddenimpor
 
 核验重点：① **反向** —— 6 个画布模块绝不能出现在 PYZ，ui 里也不能再有
 _build_canvas_page / CanvasPanel 引用（防「源码删了但 spec/入口没清」死代码进包）；
-② 版本号 v4.213.0 且不含 v4.212.0；③ 前几轮钉子（系统控制 tool_*、决策审计、
+② 版本号 v4.214.0 且不含 v4.213.0；③ 前几轮钉子（系统控制 tool_*、决策审计、
 UI 颜色等值化、关键进程黑名单、不漏测试不漏扰动）一并复验。
 """
 import hashlib
@@ -177,7 +177,7 @@ def _load_entry_script(exe: Path, name: str = "main"):
 
 
 def main():
-    print("v4.213.0 进包核验（先执行后标记 + 记忆元数据 + 前几轮钉子复验）")
+    print("v4.214.0 进包核验（证据脱敏 + 前几轮钉子复验）")
     print("-" * 62)
     if not EXE.is_file():
         print(f"未找到产物：{EXE}")
@@ -222,10 +222,10 @@ def main():
         consts = _str_consts(_load(za, "config"))
         old = sorted(s for s in consts if s.startswith("v4.210.") or s.startswith("v4.211.")
                      or s.startswith("v4.212."))
-        check("PYZ 内 config 的版本常量 == v4.213.0",
-              "v4.213.0" in consts, f"包内出现的版本串={old}")
-        check("PYZ 内不含上一版旧版本常量 v4.212.0",
-              "v4.212.0" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
+        check("PYZ 内 config 的版本常量 == v4.214.0",
+              "v4.214.0" in consts, f"包内出现的版本串={old}")
+        check("PYZ 内不含上一版旧版本常量 v4.213.0",
+              "v4.213.0" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
 
     print("\n-- 3) 本轮能力的回归钉子（防重启打包时被丢掉）--")
     if "system_control_tools" in names:
@@ -409,7 +409,18 @@ def main():
               and "终止系统关键进程 (Stop-Process)" in _tags,
               "拦截标签不在包内常量表 → 文本入口没编进去")
 
-        print("\n-- 3y) v4.213.0 钉子：先执行后标记 + 记忆元数据 --")
+        print("\n-- 3x) v4.214.0 钉子：证据库入库脱敏 --")
+    if "evidence" in names:
+        _evn = _code_names(_load(za, "evidence"))
+        check("★ evidence 定义 _mask_secrets（入库脱敏）",
+              "_mask_secrets" in _evn, "证据脱敏能力丢失")
+        _ev_consts = _str_consts(_load(za, "evidence"))
+        check("★ evidence 含 *** 打码标记常量",
+              "***" in _ev_consts, "打码标记常量不在包内")
+        check("★ evidence 含 Cookie 头脱敏规则（cookie 字样）",
+              any("cookie" in c.lower() for c in _ev_consts), "Cookie 脱敏规则不在包内")
+
+    print("\n-- 3y) v4.213.0 钉子：先执行后标记 + 记忆元数据 --")
     if "memory_store" in names:
         _msn = _code_names(_load(za, "memory_store"))
         check("★ memory_store 定义 _meta_line（元数据行拼接）",

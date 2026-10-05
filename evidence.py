@@ -144,6 +144,50 @@ def _init_db():
 
 # ────────────────────────── 登记 ──────────────────────────
 
+# ── v4.214.0：入库脱敏（外部审核 P1-3 可采纳部分）──────────────────────
+# 设计取舍：证据链的存在意义是「完整原文可回验」（v4.195 批⑨），所以只对
+# **凭据类**内容打码，其余一字不动 —— 不做「默认只存摘要」（那会摧毁回验能力）。
+# 规则全部带上下文（键名 / Bearer|Basic 前缀 / sk- 前缀 / JWT 三段结构 / Cookie 头行），
+# 禁止裸「N 位字母数字」泛匹配（L233：泛规则必造噪音）。
+_MASK = "***"
+# ① 键值上下文：key: value / key=value / "key": "value"，值 ≥8 位才算凭据
+#    （短值如 token:5 是普通内容，不打码）。
+_KV_RE = re.compile(
+    r"(?i)([\"']?)(api[-_]?key|access_token|refresh_token|token|client_secret|"
+    r"secret|password|passwd|authorization|sessionid|session_id)"
+    r"([\"']?)(\s*[:=]\s*)([\"']?)([^\s\"',;&]{8,})")
+_KV_REPL = r"\1\2\3\4\5" + _MASK
+# ② HTTP 认证方案：Bearer / Basic + 12 位以上凭据值。
+_AUTH_SCHEME_RE = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{12,}")
+_AUTH_SCHEME_REPL = r"\1 " + _MASK
+# ③ sk- 前缀 API key（OpenAI/DeepSeek 风格，自带上下文无需键名）。
+_SK_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{16,}")
+# ④ JWT 三段结构（eyJ 开头自带指纹，无需上下文）。
+_JWT_RE = re.compile(
+    r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
+# ⑤ Cookie / Set-Cookie 整行头（HTTP 响应转储场景）。
+_COOKIE_RE = re.compile(r"(?im)^([ \t]*(?:set-)?cookie[ \t]*:[ \t]*).+$")
+
+
+def _mask_secrets(text):
+    """凭据打码：五类规则依次过一遍，其余内容一字不动。
+
+    失败兜底：打码异常时原文放行（登记不中断 —— 证据链连续性优先，
+    且 str 上的 re.sub 实际不可能抛）。
+    """
+    if not text:
+        return text
+    try:
+        text = _KV_RE.sub(_KV_REPL, text)
+        text = _AUTH_SCHEME_RE.sub(_AUTH_SCHEME_REPL, text)
+        text = _SK_RE.sub(_MASK, text)
+        text = _JWT_RE.sub(_MASK, text)
+        text = _COOKIE_RE.sub(r"\1" + _MASK, text)
+    except Exception:
+        pass
+    return text
+
+
 def register(tool, args, raw, ok=True, err=None):
     """登记一条工具证据，返回编号 (int)；任何失败返回 None（绝不阻断主流程）。
 
@@ -163,6 +207,12 @@ def register(tool, args, raw, ok=True, err=None):
                 args or {}, ensure_ascii=False)
         except Exception:
             args_s = str(args)
+        # v4.214.0：入库前凭据打码（raw/args/err 三处；sha 基于打码后文本，
+        # 库内自洽 —— 回验只对库内原文，不受影响）
+        raw = _mask_secrets(raw)
+        args_s = _mask_secrets(args_s)
+        if err:
+            err = _mask_secrets(str(err))
         n_lines = raw.count("\n") + (0 if raw.endswith("\n") or not raw else 1)
         sha = hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:12]
         ts = time.time()
