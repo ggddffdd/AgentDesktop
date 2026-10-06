@@ -53,8 +53,10 @@ def test_registration():
     check("handler 可调用", callable(sct.SYSTEM_CONTROL_TOOL_TABLE.get("clean_recycle_bin")))
     check("handler 签名含 (cfg, app_dir, args)",
           "cfg" in __import__("inspect").signature(sct.tool_clean_recycle_bin).parameters)
-    check("风险等级登记为 EXEC", RISK_MAP.get("clean_recycle_bin") == RiskClass.EXEC,
-          "RISK_MAP=%r" % RISK_MAP.get("clean_recycle_bin"))
+    spec = RISK_MAP.get("clean_recycle_bin")
+    check("风险等级登记为 EXEC 且硬确认（P1#1：会话信任不可绕过）",
+          isinstance(spec, tuple) and spec[0] == RiskClass.EXEC and spec[2] is True,
+          "RISK_MAP=%r" % (spec,))
     check("EXEC 对应 manual 确认档", tier_of("clean_recycle_bin") == "manual",
           "tier=%r" % tier_of("clean_recycle_bin"))
 

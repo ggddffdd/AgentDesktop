@@ -77,7 +77,7 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.220.0"
+APP_VERSION = "v4.221.0"
 APP_BUILD_DATE = "2026-10-06"
 # v4.164.0（2026-09-27）**运行数据归口：彻底治「dist 既是运行目录又是分发源」**：
 #   新增 config.WORKSPACE_DIR（默认 ~/Documents/小臭玩AI，与 USER_DATA_DIR 同值，
@@ -969,7 +969,12 @@ DEFAULT_CONFIG = {
         "| 图表/柱状图/折线图/饼图/散点图 | chart_gen | 数据可视化 |\n"
         "| 日志/报错/错误排查 | log_query | 查询运行日志 |\n"
         "| 清空回收站/系统控制操作 | clean_recycle_bin | system_* 桌面系统控制（清空回收站等） |\n"
-        "| 打开文件/打开应用/控制软件/输入文字/点按钮 | software_run | software_* 软件控制 |\n"
+        "| 打开应用 | app_launch | 软件控制 |\n"
+        "| 关闭应用 | app_close | 软件控制 |\n"
+        "| 点击控件/按钮 | app_click | 软件控制 |\n"
+        "| 输入文本 | app_type | 软件控制 |\n"
+        "| 窗口操作/最大化最小化 | app_window_state | 软件控制 |\n"
+        "| 查看控件树 | app_list_controls | 软件控制 |\n"
         "| 公众号/写文章/写稿子/续写 | use_skill(公众号文章) | 写作技能 |\n"
         "| 技能/装技能/搜索技能 | skill_search/skill_install | 技能管理 |\n"
         "| 浏览器打开/网页点击/填表 | browser_open/browser_click | 浏览器操作 |\n"

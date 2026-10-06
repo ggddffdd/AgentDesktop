@@ -1071,6 +1071,8 @@ class AgentWorker(QThread):
                     except Exception as e:
                         log.error("Agent 续跑调用失败: %s", e)
                         self.tool_log.emit({"name": "错误", "args": "", "result": str(e)})
+                        self._note_exit("api_error")          # v4.221：续跑失败也要记失败，否则断点被误删
+                        self._resumable_stop = True           # 保留断点，可继续/可诊断
                         break
                     # v4.102 fix12：续跑是烧 token 重灾区，同样累加工具名并做预算熔断
                     self._collect_step_tools(resp)

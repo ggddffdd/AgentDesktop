@@ -101,3 +101,6 @@ test_vision_channel.py
 test_vision_qc.py
 test_welcome_ia_199.py
 test_workspace_routing.py
+test_hard_confirm_bypass_221.py
+test_resume_api_error_221.py
+test_system_prompt_routing_221.py

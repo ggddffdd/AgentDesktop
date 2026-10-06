@@ -2,14 +2,14 @@
 """v4.218.0 判据：拆分 app_window_state.close 为独立 app_close（审查报告 P1-1）。
 
 根因：app_window_state 标 READ（auto 免确认）却含 close 动作会关窗口、丢未保存内容。
-修复：close 拆成独立 tool_app_close，归 EXEC + manual 档（需确认；结构等价于强制确认、
-但不进 ALWAYS_CONFIRM，从而不破坏「ALWAYS_CONFIRM 集合须与 v4.170.0 一致」的硬闸）。
+修复：close 拆成独立 tool_app_close，归 EXEC + manual 档（需确认）。
+v4.221（审查 P1#1）：app_close 现纳入 ALWAYS_CONFIRM 硬确认档（会话信任亦不可绕过）。
 
 契约：
   ① app_window_state schema 的 enum 不再含 'close'
   ② app_close 在 schema 声明（SOFTWARE_CONTROL_TOOL_DEFS）
   ③ app_close 在路由表（SOFTWARE_CONTROL_TOOL_TABLE）
-  ④ app_close 风险归 EXEC 且落 manual 档（需确认，不进 ALWAYS_CONFIRM）
+  ④ app_close 风险归 EXEC 且落 manual 档（需确认；v4.221 起同时进 ALWAYS_CONFIRM 硬确认）
   ⑤ handler 可调用
 
 零副作用：纯 import + 读 schema/表/风险表。

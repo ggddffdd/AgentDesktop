@@ -121,13 +121,13 @@ RISK_MAP = {
     "keyboard_press": RiskClass.EXEC,
     "keyboard_type": RiskClass.EXEC,
     "window_focus": RiskClass.EXEC,
-    "process_kill": RiskClass.EXEC,
+    "process_kill": (RiskClass.EXEC, None, True),
     "process_start": RiskClass.EXEC,
-    "clean_recycle_bin": RiskClass.EXEC,       # v4.217.0：清空回收站，不可逆，须手动确认
+    "clean_recycle_bin": (RiskClass.EXEC, None, True),       # v4.217.0：清空回收站，不可逆，须手动确认
     "app_click": RiskClass.EXEC,
     "app_focus": RiskClass.EXEC,
-    "app_kill": RiskClass.EXEC,
-    "app_close": RiskClass.EXEC,  # v4.218：关闭应用窗口，可能丢未保存内容，强制确认
+    "app_kill": (RiskClass.EXEC, None, True),
+    "app_close": (RiskClass.EXEC, None, True),  # v4.218：关闭应用窗口，可能丢未保存内容，强制确认
     "app_launch": RiskClass.EXEC,
     "app_type": RiskClass.EXEC,
     "app_wait_for": RiskClass.EXEC,

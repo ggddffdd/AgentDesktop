@@ -63,10 +63,10 @@ _guard.arm()
 
 # (名称, 文件, 原串, 新串, 期望变红的判据关键字)
 CASES = [
-    ("app_close 风险被降为 READ（绕过强制确认）",
+    ("app_close 风险被降为 READ（绕过硬确认）",
      "risk.py",
-     '    "app_close": RiskClass.EXEC,  # v4.218：关闭应用窗口，可能丢未保存内容，强制确认',
-     '    "app_close": RiskClass.READ,  # 扰动：降级为只读',
+     '    "app_close": (RiskClass.EXEC, None, True),  # v4.218：关闭应用窗口，可能丢未保存内容，强制确认',
+     '    "app_close": RiskClass.READ,  # 扰动：降级为只读（绕过硬确认）',
      ["app_close 风险归 EXEC"]),
 
     ("close 加回 app_window_state enum（无确认关窗复活）",

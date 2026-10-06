@@ -8,6 +8,17 @@
 - 新版本在上。
 
 ---
+## v4.221.0 — 2026-10-06
+
+**审查报告收口（P1#1 / P1#2 / P2#3）：硬确认不可绕过会话信任、续跑 API 异常记失败、路由表去幽灵名。**
+
+- **硬确认被「会话信任」绕过**（审查 P1#1）：`app_close` / `clean_recycle_bin` / `process_kill` / `app_kill` 此前为 `RiskClass.EXEC` 单值声明，不进 `ALWAYS_CONFIRM` 硬确认档，于是「本次会话全部信任」（`permissions.py` 的 `session_trusted` 分支）会直接放行，违背「须手动确认」的原意。修复：四工具声明改为 `(RiskClass.EXEC, None, True)` 三态（第三元 `True` → 进 `ALWAYS_CONFIRM`），该档位于会话信任之前（`permissions.decide` 顺序），任何模式 / 信任都免不了人工确认。验收：判据 `test_hard_confirm_bypass_221.py`（17 项：A 四工具在 ALWAYS_CONFIRM / B 三模式均需确认 / C ★全信任下仍须确认）+ 扰动 `_perturb_hard_confirm_bypass_221.py`（4 变异，各退化一工具必红）全命中（哑弹 0）。
+- **续跑分支 API 异常未记失败**（审查 P1#2）：`agent.py` 续跑循环（`for rstep in resume_steps`）的 except 块原仅 `log.error` + `break`，导致 API 异常被吞、断点被误删（续跑再也接不上）。修复：except 块补 `self._note_exit("api_error")` 标记失败 + `self._resumable_stop = True` 保留断点，结局推断为 `model_error`（而非「成功」）。验收：判据 `test_resume_api_error_221.py`（2 项：S1 静态校验两行修复 / B1 `_infer_outcome({api_error:1})=="model_error"`）+ 扰动 `_perturb_resume_api_error_221.py`（1 变异，删两行修复必红）全命中（哑弹 0）。
+- **系统提示路由表写幽灵工具名**（审查 P2#3）：`config.py` 系统提示的「软件控制」路由表里写着不存在的 `software_run`，小臭会去调一个没有的工具并编造结果。修复：替换为 6 个真实工具（`app_launch` / `app_close` / `app_click` / `app_type` / `app_window_state` / `app_list_controls`）。验收：判据 `test_system_prompt_routing_221.py`（7 项：A 无 `software_run` / B 路由含 6 真实工具）+ 扰动 `_perturb_system_prompt_routing_221.py`（1 变异，退化回 `software_run` 必红）全命中（哑弹 0）。
+- 验收：本轮 3 套件 26 项判据全绿（17+2+7）+ 3 扰动（4+1+1=6 变异）全命中（哑弹 0）。全量门禁：106 套件 / PASS=3507 FAIL=3（3 个失败为预存环境红——`test_dataloss_fix_186`/`test_director_manifest`/`test_video_core_home`，依赖真仓不存在的 `core` 包与 `%TEMP%/video-agent/core/agnes.py` 外部文件，在 v4.220.0 基线即红，非本轮引入）+ 38 扰动 PASS=296 FAIL=0。修复另触及 5 个旧判据/扰动（`test_clean_recycle_bin_217`/`test_tool_audit_c`/`test_app_close_218`/`_perturb_app_close_218`/`_perturb_clean_recycle_bin_217`），按「撞红改判据不删判据」适配到三态契约（硬确认仍单源，与既有 8 个三态工具一致），守卫强度未削弱。
+
+---
+
 ## v4.220.0 — 2026-10-06
 
 **工具调用契约统一：参数校验 / 结构化返回 / 输出脱敏 / 确认弹窗影响范围（审查第二优先级 + P1#5）。**

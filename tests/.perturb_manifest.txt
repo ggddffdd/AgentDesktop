@@ -33,3 +33,6 @@ _perturb_tool_audit_c.py
 _perturb_ui_a11y.py
 _perturb_ui_hex_guard_fallback.py
 _perturb_webhook_events_218.py
+_perturb_hard_confirm_bypass_221.py
+_perturb_resume_api_error_221.py
+_perturb_system_prompt_routing_221.py
