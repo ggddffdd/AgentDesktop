@@ -32,6 +32,12 @@ hiddenimports = ['toast', 'empty_state', 'PySide6', 'PySide6.QtPrintSupport', 'P
                # （agent._auto_remember / ui._audit_tone_evidence）。漏登记的表现
                # 不同但一样静默：前者「所有提炼条目都写不进去」，后者「语气层整体不生效」。
                'memory_gate', 'uncertainty',
+               # v4.216.0 拆分 ui.py / agent.py 拆出的 6 个新模块。
+               # 虽然目前都是顶层 import（静态分析能扫到），但 ui_audit_mixin /
+               # agent_text 是本轮新引入的间接层，显式登记以杜绝
+               # 「源码能跑、打包后 ModuleNotFoundError」这类只在 exe 上出现的坑。
+               'theme_tokens', 'ui_widgets', 'ui_workers', 'ui_msg',
+               'ui_audit_mixin', 'agent_text',
                ]
 
 

@@ -9,6 +9,26 @@
 
 ---
 
+## v4.216.0 — 2026-10-05
+
+**拆分 ui.py / agent.py 两个超大文件**（纯代码搬移，行为不变）。
+
+- **ui.py 12804 → 9591 行**：拆出 5 个模块 —— `theme_tokens.py`（THEME 唯一真源）、
+  `ui_widgets.py`（对话框族 / 状态条 / 图标工厂等通用构件）、`ui_workers.py`（生成线程 / ASR / TTS / 编排）、
+  `ui_msg.py`（消息与 API 请求拼装）、`ui_audit_mixin.py`（聊天审计族 20 个方法，以 mixin 挂回 ChatWindow）。
+- **agent.py 2833 → 2165 行**：17 个纯文本判据函数 + 24 个词表常量迁入 `agent_text.py`，改为模块级函数。
+- **THEME 迁到 `theme_tokens.py`**：切断 `theme_qss → ui` 的反向依赖，新模块才不会和 ui 循环导入。
+- 老写法不受影响：新模块全部经 ui.py 顶部 re-export，`from ui import X` 照旧可用。
+- 顺带修掉三处**静默故障**（都是搬移后被 `except Exception: pass` 吞掉的 NameError，界面上完全看不出来）：
+  - `agent_text.py` 缺 log 定义 → 「这个视频生成得真不错」这类评价句被误判成「需要行动」；
+  - `agent.py` 类体里两段意图归一 try 块仍以裸名引用已迁走的常量 → `_REF_KW` 少 12 个词；
+  - `ui_hex_guard` 的已批准色板仍只读 ui.py → 拆分后恒空，颜色守卫的「警告 / 阻断」分级整体失效。
+- 配套：新增判据套件 `tests/test_split_216.py`（28 项）+ 扰动脚本 `_perturb_216.py`（7 变异）；
+  23 个因搬家而红的既有判据套件、4 个扰动脚本的硬锚点已同步到新家。
+- 验收：94 个套件全绿 + 26 个扰动脚本全部命中（哑弹 0）。
+
+---
+
 ## v4.215.0 — 2026-10-05
 
 **自动化任务独立会话 + 独立工具权限**（外部审核 P1 第一阶段第 5 条）。

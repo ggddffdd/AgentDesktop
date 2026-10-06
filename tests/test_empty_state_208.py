@@ -255,14 +255,18 @@ print("\n--- E 全项目回扫（§12.3 对波次 3 的承诺）---")
 # E1：接组件的4 处（+本波 1 处= 5 个调用点，分布在 3 个文件）
 _counts = {
     "ui.py": len(re.findall(r"\bempty_state\(", _ui_code)),
+    # v4.216.0：SessionManagerDialog 的 2 处随对话框族迁到 ui_widgets.py（搬家）
+    "ui_widgets.py": len(re.findall(
+        r"\bempty_state\(", strip_comments(read("ui_widgets.py")))),
     "automation_panel.py": len(re.findall(r"\bempty_state\(", _ap_code)),
     "legion_ui.py": len(re.findall(r"\bempty_state\(", _leg_code)),
 }
-# v4.210.0：4+1+1=6 → 5+1+2=8
-check("E1 全项目 empty_state 调用点 = 5+1+2 = 8",
-      _counts == {"ui.py": 5, "automation_panel.py": 1, "legion_ui.py": 2},
+# v4.210.0：4+1+1=6 → 5+1+2=8；v4.216.0：ui 5 → ui 3 + ui_widgets 2（总数不变）
+check("E1 全项目 empty_state 调用点 = 3+2+1+2 = 8",
+      _counts == {"ui.py": 3, "ui_widgets.py": 2,
+                  "automation_panel.py": 1, "legion_ui.py": 2},
       _counts)
-# E2：组件化只碰了这 3 个文件，没扩散
+# E2：组件化只碰了这 4 个文件，没扩散（ui_widgets 是 v4.216.0 搬家带入）
 #注意要排除 empty_state.py 自己（它当然"import 自己"的匹配串）——
 # 第一版没排除，把组件自己算成"扩散"了，红得莫名其妙。
 _all_py = [f for f in os.listdir(ROOT)
@@ -270,8 +274,9 @@ _all_py = [f for f in os.listdir(ROOT)
            and f not in ("setup.py", "empty_state.py")]
 _users = sorted(f for f in _all_py
                 if re.search(r"^\s*from\s+empty_state\s+import", read(f), re.M))
-check("E2 只有 3 个文件 import 了 empty_state（未扩散）",
-      _users == ["automation_panel.py", "legion_ui.py", "ui.py"], _users)
+check("E2 只有 4 个文件 import 了 empty_state（未扩散）",
+      _users == ["automation_panel.py", "legion_ui.py", "ui.py", "ui_widgets.py"],
+      _users)
 # E3：第 5 类形态（一次性回执）全项目存在，但**一处都没接组件** —— 分类判据
 _receipt_pat = re.compile(
     r"_set_status\(|QMessageBox\.information\(|chat_panel\.say\(")

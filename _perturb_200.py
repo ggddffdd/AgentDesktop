@@ -94,7 +94,9 @@ def main():
     # ① 有人手滑写回裸标签 → C1（收口干净度）必须抓到
     results.append(perturb(
         "① 新增一处裸写标签（回归到收口前）",
-        [("ui.py", '        self._trust.setStyleSheet(label_second())\n',
+        # v4.216.0：_trust 控件随对话框族搬到 ui_widgets.py（锚点跟着搬；
+        # C1/C3 判据扫 SCAN_TARGETS 全表，ui_widgets 里的裸写照样被抓）
+        [("ui_widgets.py", '        self._trust.setStyleSheet(label_second())\n',
           '        self._trust.setStyleSheet(label_second())\n'
           '        self._dummy.setStyleSheet(f"color:{THEME[\'dim\']};font-size:12px;")  # 扰动\n')],
         lambda r: "C1" in r or "C3" in r))
@@ -107,9 +109,10 @@ def main():
         lambda r: "B1" in r or "D[" in r))
 
     # ③ 改 UI 侧间距真源 → A2 红，同时 A3 必须仍绿（派生关系成立）
+    #    v4.216.0：THEME 唯一真源迁 theme_tokens.py（ui.py 顶部只留 re-export）
     results.append(perturb(
         "③ THEME['space_lg'] 改成 18（派生关系应仍成立）",
-        [("ui.py", '"space_lg": 16,', '"space_lg": 18,  # 扰动')],
+        [("theme_tokens.py", '"space_lg": 16,', '"space_lg": 18,  # 扰动')],
         lambda r: "A2" in r))
 
     # ④ theme_qss 退化成第二份手写字典 → A5 必须抓到

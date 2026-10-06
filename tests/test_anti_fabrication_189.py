@@ -56,8 +56,8 @@ def main():
     print("=== [B] 批② 对账意图检测 + 注入接线 ===")
     import agent as AG
 
-    W = AG.AgentWorker.__new__(AG.AgentWorker)  # 轻量实例，只调实例方法
-    need = W._audit_ref_needed
+    import agent_text  # v4.216.0：判据族已拆到 agent_text.py（模块级函数）
+    need = agent_text._audit_ref_needed
     check("B1 「核对这份CHANGELOG」命中", need("帮我核对这份CHANGELOG", ""))
     check("B2 「对账更新日志」命中", need("对账一下更新日志", ""))
     check("B3 「核对这个文件的版本记录」命中", need("核对这个文件的版本记录", ""))
@@ -73,7 +73,7 @@ def main():
     with open(os.path.join(root, "agent.py"), encoding="utf-8") as fh:
         _asrc = fh.read()
     check("B9 run() 注入接线（_audit_ref_needed 调用 + _internal 注入 + 查重）",
-          ("self._audit_ref_needed(_cur_user, _prev_user)" in _asrc)
+          ("agent_text._audit_ref_needed(_cur_user, _prev_user)" in _asrc)
           and ('"content": self._AUDIT_REF_INSTRUCTION' in _asrc)
           and ("核对/对账文件内容" in _asrc))
 

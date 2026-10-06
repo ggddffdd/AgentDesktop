@@ -52,7 +52,7 @@ MUST_SYNC = [
     ("ui.py", "_last_user_intent_is_action"),
     ("ui.py", "_looks_like_praise"),        # 薄包装
     ("ui.py", "_looks_like_learning_question"),
-    ("agent.py", "_detect_action_intent"),
+    ("agent_text.py", "_detect_action_intent"),  # v4.216.0 随判据族迁至 agent_text.py
 ]
 
 # ---- 白名单：确实不需要接的（取文本 / 渲染 / 导出 / 另有独立位置判据） ----
@@ -75,27 +75,31 @@ def _funcs_with_user_scan(path):
     src = open(os.path.join(ROOT, path), encoding="utf-8-sig").read()
     tree = ast.parse(src)
     out = {}
+    # v4.216.0：判据族迁出后既有模块级函数（agent_text.py 等），类体与模块级都要扫
+    scopes = [fn for fn in tree.body if isinstance(fn, ast.FunctionDef)]
     for cls in ast.walk(tree):
-        if not isinstance(cls, ast.ClassDef):
+        if isinstance(cls, ast.ClassDef):
+            scopes.extend(fn for fn in cls.body if isinstance(fn, ast.FunctionDef))
+    for fn in scopes:
+        try:
+            body = ast.unparse(fn)
+        except Exception:
             continue
-        for fn in cls.body:
-            if not isinstance(fn, ast.FunctionDef):
-                continue
-            try:
-                body = ast.unparse(fn)
-            except Exception:
-                continue
-            if ("'user'" not in body and '"user"' not in body):
-                continue
-            if "messages" not in body:
-                continue
-            out[fn.name] = body
+        if ("'user'" not in body and '"user"' not in body):
+            continue
+        if "messages" not in body:
+            continue
+        out[fn.name] = body
     return out
 
 
 def _func_src(path, name):
     src = open(os.path.join(ROOT, path), encoding="utf-8-sig").read()
     tree = ast.parse(src)
+    # v4.216.0：模块级函数（agent_text.py）与类方法都支持
+    for fn in tree.body:
+        if isinstance(fn, ast.FunctionDef) and fn.name == name:
+            return ast.get_source_segment(src, fn) or ""
     for cls in ast.walk(tree):
         if not isinstance(cls, ast.ClassDef):
             continue
@@ -117,7 +121,7 @@ def part_a_contract():
 def part_b_auto_patrol():
     print("\n-- B) 自动巡检：新冒出来的判据必须被抓住 --")
     offenders = []
-    for path in ("ui.py", "agent.py", "tools.py"):
+    for path in ("ui.py", "agent.py", "agent_text.py", "tools.py"):
         for name, body in _funcs_with_user_scan(path).items():
             if name in WHITELIST:
                 continue

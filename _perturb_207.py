@@ -98,20 +98,22 @@ case("compact token 输出值被改（字号变了）",
 # ---- 接线层：破坏文案分叉 ---------------------------------------------------
 # 7) 两句文案合成一句 —— 回到"说谎"状态
 #    注意 old 要用文件里的**真实缩进与换行**（CRLF 已在 write_raw 里归一化）
+# v4.216.0：SessionManagerDialog 整体搬到 ui_widgets.py，#3 的锚点跟着搬
+# （判据套件 test_empty_state_207 已同步读双文件）。
 case("#3 文案分叉被改回同一句（空态说谎）",
-     "ui.py",
+     "ui_widgets.py",
      '"还没有会话", hint="在主界面发起对话后会出现在这里",',
      '"没有匹配的会话",',
      ["C6", "C7", "C10", "C11", "F1"])
 
 # 8) 又指引了不存在的「＋ 新建」按钮
 case("#3 空态指引不存在的「＋ 新建」按钮",
-     "ui.py", 'hint="在主界面发起对话后会出现在这里"',
+     "ui_widgets.py", 'hint="在主界面发起对话后会出现在这里"',
      'hint="点上方「＋ 新建」开始第一条"', ["C9", "C11"])
 
 # 9) 分支判据从 search 换成 folder（语义就错了）
 case("#3 分支依据从 search 换成 folder",
-     "ui.py", "q = (self.search.text() or \"\").strip()",
+     "ui_widgets.py", "q = (self.search.text() or \"\").strip()",
      "q = (self.folder_filter.currentText() or \"\").strip()", ["C8"])
 
 # 10) 有人"好心"把 #2 换成组件 —— 必须被守护判据拦住

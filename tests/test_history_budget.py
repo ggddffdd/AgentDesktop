@@ -150,13 +150,16 @@ def part_g_pure_function():
 
 def part_h_source_contract():
     print("\n-- H) 源码契约 --")
-    src = open(os.path.join(ROOT, "ui.py"), encoding="utf-8-sig").read()
+    # v4.216.0：_fit_history_to_budget/_build_api_history/_repair_tool_pairs
+    # 已迁 ui_msg.py（函数内部锚点看 ui_msg）；调用点仍在 ui.py 的 ChatWindow。
+    src = open(os.path.join(ROOT, "ui_msg.py"), encoding="utf-8-sig").read()
+    src_ui = open(os.path.join(ROOT, "ui.py"), encoding="utf-8-sig").read()
     check("H1 闸在**条数闸之后**（先粗后细）",
           src.index("len(cleaned) > int(max_history)") < src.index("_fit_history_to_budget(cleaned"))
     check("H2 裁剪后又修了一遍配对",
           "cleaned = _repair_tool_pairs(cleaned)" in src)
     check("H3 两个调用点都接上了配置键",
-          src.count('char_budget=self.cfg.get("history_char_budget", 0)'), 2)
+          src_ui.count('char_budget=self.cfg.get("history_char_budget", 0)'), 2)
     check("H4 _build_api_history 签名含 char_budget",
           "char_budget=None" in src)
     import config
@@ -170,7 +173,7 @@ def part_h_source_contract():
 
 def part_i_negative_direction():
     print("\n-- I) 负面验证：把「从最旧丢」改成「从最新丢」→ 当前提问会被丢掉 --")
-    src = open(os.path.join(ROOT, "ui.py"), encoding="utf-8-sig").read()
+    src = open(os.path.join(ROOT, "ui_msg.py"), encoding="utf-8-sig").read()  # v4.216.0 新家
     tree = ast.parse(src)
     fn = next(n for n in tree.body
               if isinstance(n, ast.FunctionDef) and n.name == "_fit_history_to_budget")

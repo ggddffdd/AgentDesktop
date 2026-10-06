@@ -39,6 +39,11 @@ def main():
     with open(src_path, encoding="utf-8-sig") as f:
         src = f.read()
     tree = ast.parse(src)
+    # v4.216.0：clamp_* 纯函数已迁 ui_widgets.py（ui.py re-export 保兼容）
+    widgets_path = os.path.join(ROOT, "ui_widgets.py")
+    with open(widgets_path, encoding="utf-8-sig") as f:
+        wsrc = f.read()
+    wtree = ast.parse(wsrc)
 
     print("-- 1) 源码接线 --")
 
@@ -68,9 +73,9 @@ def main():
     check("_show_popup 不再裸 move(pos)",
           "popup.move(pos)" not in sp_src)
 
-    # 模块级必须有 clamp_popup_to_screen 定义
+    # 模块级必须有 clamp_popup_to_screen 定义（v4.216.0 起真身在 ui_widgets.py）
     has_fn = any(isinstance(n, ast.FunctionDef) and n.name == "clamp_popup_to_screen"
-                 for n in tree.body)
+                 for n in wtree.body)
     check("模块级定义 clamp_popup_to_screen", has_fn)
 
     print("-- 2) 纯函数行为（假 Qt 对象）--")
@@ -123,10 +128,11 @@ def main():
             self.moved_to = (x, y)
 
     # 用 exec 把真函数抠出来跑（不 import ui —— 它要拉起 Qt 依赖）
+    # v4.216.0：从 ui_widgets.py 抽（ui.py 里只剩 re-import）
     fn_src = None
-    for n in tree.body:
+    for n in wtree.body:
         if isinstance(n, ast.FunctionDef) and n.name == "clamp_popup_to_screen":
-            fn_src = ast.get_source_segment(src, n)
+            fn_src = ast.get_source_segment(wsrc, n)
     ns = {"QPoint": lambda x, y: type("P", (), {"x": lambda s: x, "y": lambda s: y})()}
     exec(fn_src, ns)
     clamp = ns["clamp_popup_to_screen"]

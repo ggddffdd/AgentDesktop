@@ -62,18 +62,25 @@ def check(label, got, exp=True, extra=""):
 
 src = open(UI_SRC, encoding="utf-8").read()
 tree = ast.parse(src)
+# v4.216.0：THEME 迁 theme_tokens.py、_NAV_ICONS/_session_preview 迁 ui_widgets.py
+# —— 三份源都扫，搬走后判据不瞎。
+_extra_trees = []
+for _f_extra in ("theme_tokens.py", "ui_widgets.py"):
+    _s = open(os.path.join(ROOT, _f_extra), encoding="utf-8").read()
+    _extra_trees.append((_s, ast.parse(_s)))
 
 
 def _module_assign(name):
     """取模块级 `name = <literal>` 的值（THEME / _NAV_ICONS 用）。"""
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            for t in node.targets:
-                if isinstance(t, ast.Name) and t.id == name:
-                    try:
-                        return ast.literal_eval(node.value)
-                    except Exception:
-                        return None
+    for _s, _t in [(src, tree)] + _extra_trees:
+        for node in _t.body:
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name) and t.id == name:
+                        try:
+                            return ast.literal_eval(node.value)
+                        except Exception:
+                            return None
     return None
 
 
@@ -150,9 +157,16 @@ def _func(name):
 
 
 def _top_level_func(name):
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == name:
-            return node
+    """返回该函数的**源码片段**（跨 ui.py/theme_tokens.py/ui_widgets.py 找）。
+
+    v4.216.0 起返回源码而非 AST 节点：节点必须配「它自己文件的 src」才能
+    get_source_segment，跨文件返回节点会让位置错位。"""
+    for _s, _t in [(src, tree)] + _extra_trees:
+        for node in _t.body:
+            if isinstance(node, ast.FunctionDef) and node.name == name:
+                seg = ast.get_source_segment(_s, node)
+                if seg:
+                    return seg
     return None
 
 
@@ -278,7 +292,7 @@ if _refresh is not None:
 
 _pv = _top_level_func("_session_preview")
 if _pv is not None:
-    seg = ast.get_source_segment(src, _pv) or ""
+    seg = _pv  # v4.216.0：_top_level_func 已直接返回源码片段
     # Bug 模式：只翻最后一条消息 —— 工具卡片类消息没有正文，取到空串就整项空白
     check("C8 空/无正文消息会被跳过而非产出空摘要", "continue" in seg)
     check("C9 换行被压平（否则预览会顶出第二行）", '" ".join' in seg or "' '.join" in seg)

@@ -64,6 +64,7 @@ test_route_injection_guard.py
 test_session_goal_automation.py
 test_skill_and_route_gates.py
 test_software_control_2b.py
+test_split_216.py
 test_status_len_2091.py
 test_system_control_a.py
 test_system_control_b.py

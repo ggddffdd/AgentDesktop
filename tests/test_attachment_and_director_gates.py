@@ -115,6 +115,11 @@ def part_e_attachment_path_basis():
 
     _old = ui.WORKSPACE_DIR
     ui.WORKSPACE_DIR = tmp      # _resolve 运行期读模块全局 → 替换有效
+    # v4.216.0：_extract_file_image_parts 已迁 ui_msg.py，其模块全局必须同步替换
+    # （ui 的 re-export 是另一份绑定，只打 ui 打不到真身）
+    import ui_msg
+    _old_msg = ui_msg.WORKSPACE_DIR
+    ui_msg.WORKSPACE_DIR = tmp
     try:
         clean_img, parts = ui._extract_file_image_parts(
             "[文件: incoming/shot.png]", ui.APP_DIR)
@@ -131,6 +136,7 @@ def part_e_attachment_path_basis():
               "文件不存在" in clean_no, True)
 
         ui.WORKSPACE_DIR = tempfile.mkdtemp(prefix="xc_empty_")   # 工作区空
+        ui_msg.WORKSPACE_DIR = ui.WORKSPACE_DIR
         clean_alt, parts_alt = ui._extract_file_image_parts(
             "[文件: incoming/shot.png]", alt)
         check("E6 工作区没有时回退程序目录（兼容历史相对路径）",
@@ -138,17 +144,22 @@ def part_e_attachment_path_basis():
         check("E6b 回退时同样能提取出 image part", len(parts_alt), 1)
     finally:
         ui.WORKSPACE_DIR = _old
+        ui_msg.WORKSPACE_DIR = _old_msg
 
 
 def part_f_source_contract():
     print("\n-- F) 源码契约：两个基准必须同源（防同类漏改复发） --")
     src = open(os.path.join(ROOT, "ui.py"), encoding="utf-8-sig").read()
+    # v4.216.0：_extract_file_image_parts 已迁 ui_msg.py，其源码锚点跟过去
+    src_msg = open(os.path.join(ROOT, "ui_msg.py"), encoding="utf-8-sig").read()
     check("F1 附件落点用 WORKSPACE_DIR/incoming",
           'os.path.join(WORKSPACE_DIR, "incoming")' in src)
     check("F2 解析侧不再有「只按 app_dir 拼相对路径」的老写法",
-          "path = os.path.join(app_dir, rel) if not os.path.isabs(rel) else rel" not in src)
+          "path = os.path.join(app_dir, rel) if not os.path.isabs(rel) else rel"
+          not in src and "path = os.path.join(app_dir, rel) if not os.path.isabs(rel) else rel"
+          not in src_msg)
     check("F3 解析侧显式两基准回退（工作区优先）",
-          "for _base in (WORKSPACE_DIR, app_dir):" in src)
+          "for _base in (WORKSPACE_DIR, app_dir):" in src_msg)
     check("F4 判据前统一剥附件标记",
           "t = _strip_attachment_refs(text).lower()" in src)
     check("F5 同句判据已抽出（不散在分支里）",

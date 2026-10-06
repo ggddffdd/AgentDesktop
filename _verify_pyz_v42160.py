@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
-"""v4.215.0 进包核验：自动化独立会话 + 独立工具权限。
+"""v4.216.0 进包核验：拆分 ui.py / agent.py 后的新模块必须随包。
 
-本轮 = 删：源码 7 个（canvas_graph / canvas_panel / canvas_export / executors /
-agnes_bridge / image_local_edit / demo_canvas_cli）+ 判据 14 + 扰动 14 + 文档 20；
-UI 摘掉「画布」导航项与页外壳；spec 去掉 6 个画布 hiddenimports。
-公共底座 task_graph / cancel_token / asset_store **保留**（军团 / 导演台 /
-数字分身共用）。
+本轮 = 纯搬移 + re-export，THEME 下沉到叶子模块 theme_tokens.py：
+ui.py 12804 → 9591 行，agent.py 2833 → 2165 行。
 
-核验重点：① **反向** —— 6 个画布模块绝不能出现在 PYZ，ui 里也不能再有
-_build_canvas_page / CanvasPanel 引用（防「源码删了但 spec/入口没清」死代码进包）；
-② 版本号 v4.215.0 且不含 v4.214.0；③ 前几轮钉子（系统控制 tool_*、决策审计、
-UI 颜色等值化、关键进程黑名单、不漏测试不漏扰动）一并复验。
+核验重点：① 正向 —— 6 个新模块（theme_tokens / ui_widgets / ui_workers /
+ui_msg / ui_audit_mixin / agent_text）字节码指纹与当前源码一致，缺一个 exe
+就运行期 ImportError（打包后没有追溯报错那么友好）；② THEME 单源 ——
+theme_tokens 有 THEME 字典、ui 仍是 re-export 方；③ ui_audit_mixin /
+agent_text 的关键成员在包里（审计族靠继承接入、17 个判据函数搬到模块级）；
+④ 版本号 v4.216.0 且不含 v4.215.0；⑤ 前几轮钉子（系统控制 14 tool_*、
+画布模块反向钉子、不漏测试不漏扰动）一并复验。
 """
 import hashlib
 import marshal
@@ -37,7 +37,11 @@ MODULES = ["config", "task_graph", "digital_twin_panel",
            # 仍在包里即核对指纹
            "risk",
            # 上上轮改动、本轮必须仍在包里（指纹一并核对）
-           "theme_qss", "ui_motion", "toast"]
+           "theme_qss", "ui_motion", "toast",
+           # 本轮拆分产出的 6 个新模块（指纹必须与包内一致，否则 exe 跑不起来）
+           "theme_tokens", "ui_widgets", "ui_workers",
+           "ui_msg", "ui_audit_mixin", "agent_text",
+           ]
 
 # ⚠️ 入口脚本 main 不在 PYZ 里 —— PyInstaller 把它单独编译进 PKG(CArchive)
 # 的 `main` 条目（marshal 后的 code object），故单独走 CArchive 取。
@@ -177,7 +181,7 @@ def _load_entry_script(exe: Path, name: str = "main"):
 
 
 def main():
-    print("v4.215.0 进包核验（自动化独立会话 + 前几轮钉子复验）")
+    print("v4.216.0 进包核验（ui/agent 拆分后新模块随包 + 前几轮钉子复验）")
     print("-" * 62)
     if not EXE.is_file():
         print(f"未找到产物：{EXE}")
@@ -220,12 +224,12 @@ def main():
     print("\n-- 2) 版本一致性 --")
     if "config" in names:
         consts = _str_consts(_load(za, "config"))
-        old = sorted(s for s in consts if s.startswith("v4.210.") or s.startswith("v4.211.")
-                     or s.startswith("v4.212."))
-        check("PYZ 内 config 的版本常量 == v4.215.0",
-              "v4.215.0" in consts, f"包内出现的版本串={old}")
-        check("PYZ 内不含上一版旧版本常量 v4.214.0",
-              "v4.214.0" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
+        old = sorted(s for s in consts if s.startswith("v4.213.") or s.startswith("v4.214.")
+                     or s.startswith("v4.215."))
+        check("PYZ 内 config 的版本常量 == v4.216.0",
+              "v4.216.0" in consts, f"包内出现的版本串={old}")
+        check("PYZ 内不含上一版旧版本常量 v4.215.0",
+              "v4.215.0" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
 
     print("\n-- 3) 本轮能力的回归钉子（防重启打包时被丢掉）--")
     if "system_control_tools" in names:
@@ -455,6 +459,82 @@ def main():
         check("★ automation_panel 含 full_tools_chk（UI 逃生口复选框）",
               "full_tools_chk" in _apn, "执行类工具复选框丢失")
 
+    print("\n-- 3x) v4.216.0 钉子：ui / agent 拆分后的新模块与接线 --")
+    for _nm in ("theme_tokens", "ui_widgets", "ui_workers", "ui_msg",
+                "ui_audit_mixin", "agent_text"):
+        check(f"★ 包内含新模块 {_nm}（缺一个 exe 就 ImportError）",
+              _nm in names, "spec hiddenimports 或静态分析没把它带进包")
+
+    if "theme_tokens" in names:
+        _ttn = _code_names(_load(za, "theme_tokens"))
+        check("★ theme_tokens 含 THEME 字典（颜色 / 间距唯一真源）",
+              "THEME" in _ttn, "THEME 没随包 → 全项目取色为空")
+
+    if "ui" in names:
+        _uin4 = _code_names(_load(za, "ui"))
+        check("★ ui 仍是 THEME 的 re-export 方（from theme_tokens import THEME）",
+              "theme_tokens" in _uin4, "老代码 `from ui import THEME` 拿不到")
+        check("★ ui 引用 ChatAuditMixin（ChatWindow 的审计族靠继承接入）",
+              "ChatAuditMixin" in _uin4, "审计族继承断了 → AttributeError")
+
+    if "ui_audit_mixin" in names:
+        _uam = _code_names(_load(za, "ui_audit_mixin"))
+        for _m in ("_audit_reply_citations", "_audit_attachment_reads",
+                   "_extract_read_path", "_resolve_read_path",
+                   "_merge_ranges", "_find_gaps"):
+            check(f"★ ui_audit_mixin 定义 {_m}", _m in _uam, "审计族方法丢失")
+
+    if "ui_widgets" in names:
+        _uwn = _code_names(_load(za, "ui_widgets"))
+        for _c in ("SessionManagerDialog", "TaskStatusStrip", "ThemedDialog"):
+            check(f"★ ui_widgets 定义 {_c}", _c in _uwn, "对话框 / 状态条没随包")
+        check("★ ui_widgets 定义 _brief_err（toast / 错误提示的截断入口）",
+              "_brief_err" in _uwn, "_brief_err 丢失")
+
+    if "ui_workers" in names:
+        _uwkn = _code_names(_load(za, "ui_workers"))
+        for _c in ("_GenThread", "OrchestrateWorker", "_ASRWorker", "_TTSWorker"):
+            check(f"★ ui_workers 定义 {_c}", _c in _uwkn, "工作线程没随包")
+
+    if "ui_msg" in names:
+        _umn = _code_names(_load(za, "ui_msg"))
+        for _f in ("_build_api_history", "_fit_history_to_budget",
+                   "_normalize_image_dataurl"):
+            check(f"★ ui_msg 定义 {_f}", _f in _umn, "消息拼装函数丢失")
+        _umc = _deep_str_consts(_load(za, "ui_msg"))
+        check("★ ui_msg 含视觉模型关键字串（VISION_MODEL_KW 的元素）",
+              any("vision" in s for s in _umc), "视觉模型识别词丢失")
+
+    if "agent_text" in names:
+        _atfn = _code_names(_load(za, "agent_text"))
+        _want17 = ["_looks_like_promise", "_audit_ref_needed", "_looks_like_question",
+                   "_looks_like_fake_tool_call", "_is_question", "_verb_near",
+                   "_gen_intent_span", "_gen_intent", "_phrase_hit", "_neg_hit",
+                   "_ref_by_position", "_ref_existing_artifact", "_prog_fetch_intent",
+                   "_is_bare_url", "_route_force_tool", "_content_creation_only",
+                   "_detect_action_intent"]
+        lacking = [n for n in _want17 if n not in _atfn]
+        check(f"★ agent_text 含全部 17 个判据函数（缺 {len(lacking)}）",
+              not lacking, f"缺={lacking}")
+        check("★ agent_text 自带 logger（getLogger：intent_guard 的 log 不再靠 agent）",
+              "getLogger" in _atfn,
+              "logger 缺失 → intent_guard 前置短路 NameError 被 except 静默吞")
+
+    if "agent" in names:
+        _agn = _code_names(_load(za, "agent"))
+        check("★ agent 通过 agent_text. 调用判据族（接线没断）",
+              "agent_text" in _agn, "调用点改回旧 self 写法会 AttributeError")
+        _ag_codes = set(c.co_name for c in _code_iter(_load(za, "agent")))
+        check("★ agent 不再自带 _detect_action_intent 定义（已迁 agent_text）",
+              "_detect_action_intent" not in _ag_codes,
+              "agent.py 又出现同名定义 → 双份判据改一处漏一处")
+
+    # ⚠️ ui_hex_guard 是**本仓门禁脚本**（不随包发布），所以走源码级核验；
+    # 放进上面的 MODULES 指纹表会假红（模块缺失 → 运行必 ImportError）。
+    _uhg_src = (ROOT / "ui_hex_guard.py").read_bytes().decode("utf-8-sig")
+    check("★ ui_hex_guard 的 THEME_SOURCES 指向 theme_tokens.py（色板别再只扫 ui.py）",
+          "THEME_SOURCES" in _uhg_src and "theme_tokens.py" in _uhg_src,
+          "色板会收空 → 「THEME 里却写死」的 SOFT 命中全被误升 HARD")
     print("\n-- 3z) v4.212.0 反向钉子：画布模块**不得**出现在包里 --")
     _CANVAS_MODS = ("canvas_graph", "canvas_panel", "canvas_export",
                     "executors", "agnes_bridge", "image_local_edit")

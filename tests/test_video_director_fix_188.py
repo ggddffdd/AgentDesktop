@@ -47,12 +47,13 @@ def main():
           ui.RES_PRESETS[0] == ("竖屏 1080×1920 (9:16)", "1080x1920")
           and ui.RES_PRESETS[-1] == ("方形 1024×1024 (1:1)", "1024x1024"))
     defs = []
-    for f in ("ui.py", "digital_twin_panel.py", "director_panel.py",
-              "video_pipeline.py", "tools.py"):
+    for f in ("ui.py", "ui_widgets.py", "digital_twin_panel.py",
+              "director_panel.py", "video_pipeline.py", "tools.py"):
         with open(f, encoding="utf-8") as fh:
             if "RES_PRESETS = [" in fh.read():
                 defs.append(f)
-    check("A5 定义仅存 ui.py", defs == ["ui.py"], defs)
+    # v4.216.0：RES_PRESETS 定义随视频页构件迁到 ui_widgets.py（ui.py re-export）
+    check("A5 定义仅存 ui_widgets.py", defs == ["ui_widgets.py"], defs)
 
     print("=== [B] P2-8 _check_audio_level 返回值 + _merge 写入 ===")
     from video_pipeline import VideoPipeline

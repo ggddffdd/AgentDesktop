@@ -144,15 +144,19 @@ def part_e_source_contract():
     check("E4 判定入口是 _model_supports_vision(_m)",
           "_vision_ok = _model_supports_vision(_m)" in src)
     check("E5 视觉词表已提为模块常量（可被测试核对）",
-          "VISION_MODEL_KW = (" in src)
+          # v4.216.0：词表随消息纯函数族迁到 ui_msg.py
+          "VISION_MODEL_KW = (" in open(
+              os.path.join(ROOT, "ui_msg.py"), encoding="utf-8-sig").read())
     check("E6 config 暴露可编辑的追加清单",
           hasattr(config, "VISION_MODEL_EXTRA_HINTS"))
 
 
 def part_f_negative():
     print("\n-- F) 负面验证：把 deepseek-flash 从词表拆掉 → 事故必须复现 --")
-    old_kw = ui.VISION_MODEL_KW
-    ui.VISION_MODEL_KW = tuple(k for k in old_kw if k != "deepseek-flash")
+    # v4.216.0：词表真身在 ui_msg（ui 只是 re-export，打 ui 的属性碰不到真身）
+    import ui_msg
+    old_kw = ui_msg.VISION_MODEL_KW
+    ui_msg.VISION_MODEL_KW = tuple(k for k in old_kw if k != "deepseek-flash")
     try:
         check("F1 拆掉后 _model_supports_vision('deepseek-flash') 变 False",
               ui._model_supports_vision("deepseek-flash"), False)
@@ -164,7 +168,7 @@ def part_f_negative():
         check("F2b 模型收到的只剩文字占位符",
               "[图片]" in str((sent or {}).get("content")), True)
     finally:
-        ui.VISION_MODEL_KW = old_kw
+        ui_msg.VISION_MODEL_KW = old_kw
     check("F3 恢复后 deepseek-flash 又认图", ui._model_supports_vision("deepseek-flash"), True)
     _vok2 = ui._model_supports_vision("deepseek-flash")
     check("F4 恢复后同一链路把图保留下来（修复生效）",

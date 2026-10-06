@@ -107,7 +107,7 @@ BG_WHITE = "#FFFFFF"
 AA_NORMAL = 4.5   # WCAG AA 正文
 
 print("=== 1) 弱文色对比度（真算 WCAG，不是比对 hex 字符串）===")
-THEME = _dict_literal('ui.py', 'THEME')
+THEME = _dict_literal('theme_tokens.py', 'THEME')  # v4.216.0 迁移
 for key in ('faint', 'placeholder', 'weak'):
     val = THEME.get(key, '')
     ok_hex = bool(re.fullmatch(r'#[0-9A-Fa-f]{6}', val or ''))
@@ -144,7 +144,10 @@ check("ui.THEME['font_body'] == theme_qss.F['body']",
       extra=f"ui={THEME['font_body']} theme_qss={F['body']}")
 
 print("\n=== 4) 源码不得再出现 <12px 的字号（防回潮）===")
-SCAN_FILES = ['ui.py', 'theme_qss.py', 'automation_panel.py', 'director_panel.py',
+# v4.216.0：ui.py 拆出的四个 UI 模块一并纳入字号巡逻（样式随代码搬家，
+# 巡逻范围必须跟着走，否则新文件成了盲区）
+SCAN_FILES = ['ui.py', 'theme_tokens.py', 'ui_widgets.py', 'ui_workers.py',
+              'ui_msg.py', 'ui_audit_mixin.py', 'automation_panel.py', 'director_panel.py',
               'legion_chat.py', 'legion_status_widget.py', 'chat_web.py',
               'director_web.py', 'skill_market_ui.py', 'skill_manager_ui.py',
               'tool_manager_ui.py', 'onboarding.py', 'legion_ui.py']

@@ -15,9 +15,9 @@
    20 页面大标题（本次新增 font_title_xl）。
    豁免：14px = 输入框/强调按钮专用值（保留，入 token）；17/22/28 = 胶囊/
    Web 模板/欢迎页展示型特例，不收。
-4. **依赖方向**：本文件只 import ui（拿 THEME），不被 ui.py 导入——
-   任何文件 `from theme_qss import ...` 都不会造成循环依赖。
-   （onboarding.py 的 THEME 是 main.py 传参注入的，与本层无关。）
+4. **依赖方向**：本文件只 import theme_tokens（拿 THEME，v4.216.0 起 THEME 唯一
+   真源在 theme_tokens.py，不再依赖 ui）——任何文件 `from theme_qss import ...`
+   都不会造成循环依赖。（onboarding.py 的 THEME 是 main.py 传参注入的，与本层无关。）
 
 用法示例：
     from theme_qss import btn_primary, btn_secondary, edit_style, F
@@ -31,7 +31,7 @@ import os
 # 允许直接以脚本方式导入同目录 ui.py（与 director_panel.py 同套约定）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from ui import THEME  # noqa: E402
+from theme_tokens import THEME  # noqa: E402  v4.216.0：THEME 真源迁至 theme_tokens.py
 
 
 # ============================================================

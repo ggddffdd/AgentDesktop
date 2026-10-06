@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 _UI = (ROOT / "ui.py").read_text(encoding="utf-8-sig")
+_UMSG = (ROOT / "ui_msg.py").read_text(encoding="utf-8-sig")  # v4.216.0 消息族新家
 _AGENT = (ROOT / "agent.py").read_text(encoding="utf-8-sig")
 
 _p = _f = 0
@@ -63,7 +64,7 @@ def _extract(src, names, extra_ns=None):
 
 
 # 线上那份实现（不复制逻辑）
-_ns = _extract(_UI, {"_ensure_reasoning_content", "_is_thinking_channel",
+_ns = _extract(_UMSG, {"_ensure_reasoning_content", "_is_thinking_channel",
                      "_api_error_text", "_flatten_text_content",
                      "_sanitize_msg_for_api", "_build_api_history",
                      "is_thinking_channel", "_repair_tool_pairs"},

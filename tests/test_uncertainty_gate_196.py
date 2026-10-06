@@ -210,7 +210,10 @@ def part_e_wiring():
     import io
 
     ui_src = io.open(os.path.join(_ROOT, "ui.py"), encoding="utf-8").read()
-    check("E1 定义了 _audit_tone_evidence", "def _audit_tone_evidence" in ui_src)
+    # v4.216.0：审计族方法体迁至 ui_audit_mixin.py；调用链仍在 ui.py 的 _on_agent_done
+    mixin_src = io.open(os.path.join(_ROOT, "ui_audit_mixin.py"),
+                        encoding="utf-8").read()
+    check("E1 定义了 _audit_tone_evidence", "def _audit_tone_evidence" in mixin_src)
     idx_call = ui_src.find("self._audit_tone_evidence()")
     idx_chain = ui_src.find("self._audit_claim_evidence()")
     check("E2 已挂进 _on_agent_done 收尾链", idx_call > 0)

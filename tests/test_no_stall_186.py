@@ -42,13 +42,13 @@ def check(name, cond, detail=""):
 
 def main():
     import agent
-    w = agent.AgentWorker.__new__(agent.AgentWorker)
+    import agent_text  # v4.216.0：判据族已从 AgentWorker 拆到 agent_text.py
 
     def na(t):
-        return w._detect_action_intent([{"role": "user", "content": t}])
+        return agent_text._detect_action_intent([{"role": "user", "content": t}])
 
     def pr(t):
-        return w._looks_like_promise(t)
+        return agent_text._looks_like_promise(t)
 
     print("=== A) 诊断/检视类 request → needs_action=True（修复前漏词 = False）===")
     for t in ("对自己进行一次自检，只看不改", "自检一下", "排查最近的ERROR日志",
@@ -83,12 +83,13 @@ def main():
 
     print("=== C) 承诺兜底确已接线（不再是死代码）===")
     src = (ROOT / "agent.py").read_text(encoding="utf-8-sig")
-    check("_looks_like_promise 有定义", "def _looks_like_promise" in src)
-    _uses = src.count("self._looks_like_promise(")
+    atsrc = (ROOT / "agent_text.py").read_text(encoding="utf-8-sig")  # v4.216.0 新家
+    check("_looks_like_promise 有定义", "def _looks_like_promise" in atsrc)
+    _uses = src.count("agent_text._looks_like_promise(")
     check("_looks_like_promise 有 ≥2 处调用（主分支+续跑镜像）",
           _uses >= 2, f"调用点={_uses}")
     check("_nudged 一轮一次闸在兜底内", "_nudged = True" in src)
-    check("_ACTION_KEYWORDS 已含诊断动词", '"自检"' in src and '"排查"' in src)
+    check("_ACTION_KEYWORDS 已含诊断动词", '"自检"' in atsrc and '"排查"' in atsrc)
 
     print(f"\n汇总：PASS={_p} FAIL={_f}")
     return 1 if _f else 0

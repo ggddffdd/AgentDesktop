@@ -166,11 +166,14 @@ def part_b():
 
     ui = _read(_UI)
     ag = _read(_AGENT)
+    at = _read(os.path.join(ROOT, "agent_text.py"))  # v4.216.0 判据族新家
     ui_lines = ui.splitlines()
     ag_lines = ag.splitlines()
+    at_lines = at.splitlines()
 
     ast.parse(ui)
     ast.parse(ag)
+    ast.parse(at)
 
     print("\n-- B1 第 1 层：UI 自动路由前置于媒体判定 --")
     s, e = _method_span(ui_lines, "_message_needs_agent")
@@ -193,17 +196,17 @@ def part_b():
                        _method_span(ui_lines, "_looks_like_praise")[1]]))
 
     print("\n-- B2 第 2 层：Agent 意图判断前置于生成意图 --")
-    s, e = _method_span(ag_lines, "_detect_action_intent")
-    body = "\n".join(ag_lines[s:e])
+    s, e = _method_span(at_lines, "_detect_action_intent")  # v4.216.0：已迁 agent_text
+    body = "\n".join(at_lines[s:e])
     check("_detect_action_intent 调用共享判据",
           "intent_guard" in body and "is_non_action_message" in body)
     check("判据调用是真语句（未被短路）",
           any(l.strip() == "if _ig.is_non_action_message(text):"
-              for l in ag_lines[s:e]),
+              for l in at_lines[s:e]),
           f"实际含该子串的行："
-          f"{[l.strip() for l in ag_lines[s:e] if 'is_non_action_message' in l]}")
+          f"{[l.strip() for l in at_lines[s:e] if 'is_non_action_message' in l]}")
     check("判据调用早于 _gen_intent",
-          body.index("intent_guard") < body.index("self._gen_intent("))
+          body.index("intent_guard") < body.index("_gen_intent("))
 
     print("\n-- B3 第 3 层：模型调用层最终保险 --")
     s, e = _method_span(ui_lines, "_agent_call") if any(

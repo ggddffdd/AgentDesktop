@@ -242,12 +242,18 @@ check("B6 控件样式 == token 输出（主文案）",
 print("\n--- C 接线与文案分叉 ---")
 _lines = ui_lines()
 _ui_src = "\n".join(_lines)
-_refresh = find_method("_refresh", _lines)
+# v4.216.0：SessionManagerDialog._refresh 随对话框族迁到 ui_widgets.py
+_wg_lines = []
+with open(os.path.join(ROOT, "ui_widgets.py"), encoding="utf-8", newline="") as f:
+    _wg_lines = f.read().replace("\r\n", "\n").split("\n")
+_wg_src = "\n".join(_wg_lines)
+_refresh = find_method("_refresh", _lines) or find_method("_refresh", _wg_lines)
 check("C1 _refresh 里接了 empty_state", "empty_state(" in _refresh)
 check("C2 两处调用都带 compact=True",
       _refresh.count("compact=True") == 2, _refresh.count("compact=True"))
 check("C3 旧的内联 QLabel 空态已移除",
-      'QLabel("没有匹配的会话")' not in _ui_src)
+      'QLabel("没有匹配的会话")' not in _ui_src
+      and 'QLabel("没有匹配的会话")' not in _wg_src)
 check("C4 旧的硬编码样式已移除",
       "font-size:13px;padding:12px 0;" not in _refresh)
 
@@ -417,8 +423,11 @@ check("E9 DESIGN 记录了 #3 文案分叉这件事",
 _ui_code_for_count = _strip_comments(_ui_src)
 _ui_calls = len(re.findall(r"\bempty_state\(", _ui_code_for_count))
 # v4.210.0：4 → 5（同上，DESIGN §12.8 P2-2）
-check("E10 ui.py 内 empty_state 调用点写死为 5（搜索×2 + 会话 + 技能审核 + 欢迎页）",
-      _ui_calls == 5, _ui_calls)
+# v4.216.0：会话管理器搜索空态×2 随 SessionManagerDialog 迁到 ui_widgets.py，
+# 两文件合计仍写死 5（搬家不是增删）。
+_wg_calls = len(re.findall(r"\bempty_state\(", _strip_comments(_wg_src)))
+check("E10 ui.py+ui_widgets.py 内 empty_state 调用点写死为 5（搜索×2 + 会话 + 技能审核 + 欢迎页）",
+      _ui_calls + _wg_calls == 5, f"ui={_ui_calls} ui_widgets={_wg_calls}")
 # E10c：只写死"总数 == 4"的话，**同时删掉一处再加一处**是察觉不到的
 # （净变化为 0）。所以再判一次搜索空态的两个分支各自都在。
 check("E10c 搜索空态两个分支都在（防止一处被删一处被补）",
@@ -460,7 +469,8 @@ for _old, _name in (("没有匹配的会话", "F1 #3 旧文案"),
     check(f"{_name} 代码里零残留（注释可引用）",
           _old not in _ui_code and _old not in _ap_code, _old)
 check("F4 #3 旧文案确实在注释里被引用为「改动说明」（证明 F1 不是靠删注释过的）",
-      "没有匹配的会话" in _ui_src)
+      # v4.216.0：注释随 SessionManagerDialog 迁到 ui_widgets.py
+      "没有匹配的会话" in _ui_src or "没有匹配的会话" in _wg_src)
 
 print(f"\nPASS={CHECKED - len(FAIL)} FAIL={len(FAIL)}")
 if FAIL:

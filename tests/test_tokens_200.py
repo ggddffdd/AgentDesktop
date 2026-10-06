@@ -145,6 +145,95 @@ if os.path.isfile(FIXTURE):
         }),
     }
 
+    # v4.216.0（大文件拆分）：ui.py 拆出 ui_widgets / ui_workers / ui_msg /
+    # ui_audit_mixin（THEME 唯一真源迁 theme_tokens.py）。其中对话框族 /
+    # TaskStatusStrip / 图标与头像工厂等 **33 条直接 setStyleSheet 词条（47 个
+    # 实例）随代码原样搬进 ui_widgets.py** —— 纯搬家、零属性变化。
+    # 取证（_diff_216.py，扣除 206/207/215 既有登记后）：残余差异恰好
+    # ui.py before-only 与 ui_widgets.py after-only 两侧互为镜像 == True，
+    # 其余文件残余为零。搬出侧 / 搬入侧分别登记，各吃 B1b / B1c 反向判据
+    # （登记条目必须真被消耗，塞空条目蒙混会翻红）。
+    # ⚠️ 与 KNOWN_ADDITIONS 性质不同：那边是「已存在词条 +1 实例」，
+    #    这里是整条搬家 —— ui_widgets.py 是新文件，词条对新文件而言全新，
+    #    但对项目而言是旧词换了住处。
+    # 生成方式：python _diff_216.py
+    KNOWN_MIGRATIONS_216 = {
+        "ui.py": collections.Counter({
+            ("", '{"QComboBox": "focus"}'): 1,
+            ("", '{"QLineEdit": "focus"}'): 2,
+            ("", '{"QPushButton": "hover"}'): 6,
+            ("", '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "10px"}'): 1,
+            ("", '{"color": "#1A73E8", "font-size": "12px"}'): 2,
+            ("", '{"color": "#202124", "font-size": "15px", "font-weight": "600"}'): 3,
+            ("", '{"color": "#34A853", "font-size": "12px"}'): 1,
+            ("", '{"color": "#5F6368", "font-size": "12px"}'): 3,
+            ("", '{"color": "#5F6368", "font-size": "13px", "line-height": "1.6"}'): 2,
+            ("", '{"color": "#6B7280", "font-size": "12px"}'): 1,
+            ("", '{"color": "#EA4335", "font-size": "12px"}'): 2,
+            ("QCheckBox", '{"color": "#202124", "font-size": "13px"}'): 1,
+            ("QComboBox", '{"background": "#F7F8FC", "border": "1px solid #E5E7EB", "border-radius": "6px", "color": "#202124", "font-size": "12px", "padding": "0 8px"}'): 1,
+            ("QComboBox", '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "8px", "color": "#202124", "font-size": "13px", "padding": "0 8px"}'): 1,
+            ("QComboBox:focus", '{"border": "1px solid #1A73E8"}'): 1,
+            ("QDialog", '{"background": "#F7F8FC"}'): 1,
+            ("QDialog", '{"background": "#FFFFFF", "border": "1px solid #D2D5DA", "border-radius": "10px"}'): 1,
+            ("QLineEdit", '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "8px", "color": "#202124", "font-size": "13px", "padding": "0 12px"}'): 1,
+            ("QLineEdit", '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "8px", "color": "#202124", "font-size": "13px", "padding": "8px 12px"}'): 1,
+            ("QLineEdit:focus", '{"border": "1px solid #1A73E8"}'): 2,
+            ("QPushButton", '{"background": "#1A73E8", "border": "none", "border-radius": "8px", "color": "#FFFFFF", "font-size": "13px", "font-weight": "500", "padding": "0 16px"}'): 1,
+            ("QPushButton", '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "8px", "color": "#EA4335", "font-size": "13px", "padding": "0 12px"}'): 1,
+            ("QPushButton", '{"background": "transparent", "border": "none", "border-radius": "6px", "color": "#6B7280", "font-size": "16px", "font-weight": "600"}'): 1,
+            ("QPushButton", '{"background": "transparent", "border": "none", "color": "#1A73E8", "font-size": "12px", "padding": "0 4px"}'): 1,
+            ("QPushButton", '{"background": "transparent", "border": "none", "color": "#202124", "font-size": "13px", "padding": "0 4px", "text-align": "left"}'): 1,
+            ("QPushButton", '{"background": "transparent", "border": "none", "color": "#6B7280", "font-size": "12px", "padding": "0 4px"}'): 1,
+            ("QPushButton:hover", '{"background": "#1765CC"}'): 1,
+            ("QPushButton:hover", '{"background": "#E4E8F2", "color": "#EA4335"}'): 1,
+            ("QPushButton:hover", '{"background": "#FCE8E6", "border-color": "#EA4335"}'): 1,
+            ("QPushButton:hover", '{"color": "#1765CC"}'): 1,
+            ("QPushButton:hover", '{"color": "#1A73E8"}'): 1,
+            ("QPushButton:hover", '{"color": "#5F6368"}'): 1,
+            ("QScrollArea", '{"background": "transparent", "border": "none"}'): 1,
+        }),
+    }
+    # 搬入侧（after 方向登记，走 known_add 通道吃 B1c 反向判据）：
+    # 内容与上面 ui.py 侧**逐字相同** —— 这是"纯搬家"的可审计证明。
+    KNOWN_MIGRATION_TARGETS_216 = {
+        "ui_widgets.py": collections.Counter({
+            ("", '{"QComboBox": "focus"}'): 1,
+            ("", '{"QLineEdit": "focus"}'): 2,
+            ("", '{"QPushButton": "hover"}'): 6,
+            ("", '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "10px"}'): 1,
+            ("", '{"color": "#1A73E8", "font-size": "12px"}'): 2,
+            ("", '{"color": "#202124", "font-size": "15px", "font-weight": "600"}'): 3,
+            ("", '{"color": "#34A853", "font-size": "12px"}'): 1,
+            ("", '{"color": "#5F6368", "font-size": "12px"}'): 3,
+            ("", '{"color": "#5F6368", "font-size": "13px", "line-height": "1.6"}'): 2,
+            ("", '{"color": "#6B7280", "font-size": "12px"}'): 1,
+            ("", '{"color": "#EA4335", "font-size": "12px"}'): 2,
+            ("QCheckBox", '{"color": "#202124", "font-size": "13px"}'): 1,
+            ("QComboBox", '{"background": "#F7F8FC", "border": "1px solid #E5E7EB", "border-radius": "6px", "color": "#202124", "font-size": "12px", "padding": "0 8px"}'): 1,
+            ("QComboBox", '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "8px", "color": "#202124", "font-size": "13px", "padding": "0 8px"}'): 1,
+            ("QComboBox:focus", '{"border": "1px solid #1A73E8"}'): 1,
+            ("QDialog", '{"background": "#F7F8FC"}'): 1,
+            ("QDialog", '{"background": "#FFFFFF", "border": "1px solid #D2D5DA", "border-radius": "10px"}'): 1,
+            ("QLineEdit", '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "8px", "color": "#202124", "font-size": "13px", "padding": "0 12px"}'): 1,
+            ("QLineEdit", '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "8px", "color": "#202124", "font-size": "13px", "padding": "8px 12px"}'): 1,
+            ("QLineEdit:focus", '{"border": "1px solid #1A73E8"}'): 2,
+            ("QPushButton", '{"background": "#1A73E8", "border": "none", "border-radius": "8px", "color": "#FFFFFF", "font-size": "13px", "font-weight": "500", "padding": "0 16px"}'): 1,
+            ("QPushButton", '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "8px", "color": "#EA4335", "font-size": "13px", "padding": "0 12px"}'): 1,
+            ("QPushButton", '{"background": "transparent", "border": "none", "border-radius": "6px", "color": "#6B7280", "font-size": "16px", "font-weight": "600"}'): 1,
+            ("QPushButton", '{"background": "transparent", "border": "none", "color": "#1A73E8", "font-size": "12px", "padding": "0 4px"}'): 1,
+            ("QPushButton", '{"background": "transparent", "border": "none", "color": "#202124", "font-size": "13px", "padding": "0 4px", "text-align": "left"}'): 1,
+            ("QPushButton", '{"background": "transparent", "border": "none", "color": "#6B7280", "font-size": "12px", "padding": "0 4px"}'): 1,
+            ("QPushButton:hover", '{"background": "#1765CC"}'): 1,
+            ("QPushButton:hover", '{"background": "#E4E8F2", "color": "#EA4335"}'): 1,
+            ("QPushButton:hover", '{"background": "#FCE8E6", "border-color": "#EA4335"}'): 1,
+            ("QPushButton:hover", '{"color": "#1765CC"}'): 1,
+            ("QPushButton:hover", '{"color": "#1A73E8"}'): 1,
+            ("QPushButton:hover", '{"color": "#5F6368"}'): 1,
+            ("QScrollArea", '{"background": "transparent", "border": "none"}'): 1,
+        }),
+    }
+
     # 与上面两条**不同性质**的一类登记：不是「旧样式迁走了」，而是
     # **同一个已知属性多了一个实例** —— 新加了一个页面外壳。
     #
@@ -174,10 +263,13 @@ if os.path.isfile(FIXTURE):
     for fn in files:
         cb = collections.Counter(before.get(fn, []))
         ca = collections.Counter(after.get(fn, []))
-        # 两批登记合并：v4.206 的 8 条 + v4.207 的 1 条
+        # 三批迁移登记合并：v4.206 的 8 条 + v4.207 的 1 条 + v4.216 的 47 条（搬出侧）
         known = (KNOWN_MIGRATIONS_206.get(fn, collections.Counter())
-                 + KNOWN_MIGRATIONS_207.get(fn, collections.Counter()))
-        known_add = KNOWN_ADDITIONS.get(fn, collections.Counter())
+                 + KNOWN_MIGRATIONS_207.get(fn, collections.Counter())
+                 + KNOWN_MIGRATIONS_216.get(fn, collections.Counter()))
+        # known_add 通道：既吸收「同词条 +1 实例」，也吸收 v4.216 搬入侧（新文件词条）
+        known_add = (KNOWN_ADDITIONS.get(fn, collections.Counter())
+                     + KNOWN_MIGRATION_TARGETS_216.get(fn, collections.Counter()))
         # 扣掉已登记的有意迁移后，剩下的差异必须为零
         rest_before = cb - ca - known
         # 扣掉已登记的「同词条 +1 实例」后，剩下的**新增**一律红
@@ -194,7 +286,7 @@ if os.path.isfile(FIXTURE):
         # 反向判据（新增实例同理）：登记了却没多出来 → 说明这行登记已经过期/写错，
         # 会悄悄放宽后续的判断（拉高阈值后真实走样就溜过去了）。
         unused_add = known_add - (ca - cb)
-        check(f"B1c[{fn}] 登记的新增实例都被真正消耗（不许塞空条目）",
+        check(f"B1c[{fn}] 登记的新增实例/搬入词条都被真正消耗（不许塞空条目）",
               not unused_add, f"未被消耗 {len(unused_add)} 条：{list(unused_add)[:1]}")
     check("B2 快照非空（防止负负得正的空比对）",
           sum(len(v) for v in before.values()) > 400,

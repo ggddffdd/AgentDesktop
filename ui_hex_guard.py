@@ -33,6 +33,12 @@ import tokenize
 HEX = re.compile(r'#[0-9a-fA-F]{6}')
 THEME_START = re.compile(r'^\s*THEME\s*=\s*\{')
 THEME_END = re.compile(r'^\s*\}')
+
+# v4.216.0：THEME 字典已从 ui.py 迁到 theme_tokens.py（唯一真源）。
+# ⚠️ 这里必须两个文件都扫并取并集：只扫 ui.py 的话，迁走之后一个颜色都收不到，
+# 「THEME 内却写死」的命中会被静默误升成 HARD（SOFT 分类整体失效，构建直接失败）。
+# 保持两个候选也兼容旧版仓库（只有 ui.py 的场合）。
+THEME_SOURCES = ('theme_tokens.py', 'ui.py')
 RGBA = re.compile(r'rgba\s*\(')
 
 # 永远不扫描自身与构建脚本（非 UI 源，且含正则字面量 # 会干扰）
@@ -92,25 +98,33 @@ def _theme_fallback_spans(src):
 
 
 def _collect_approved_palette(root):
-    """从 ui.py 的 THEME 字典块抽取已批准颜色（全小写，含 prism 渐变里的 hex）。"""
+    """从 THEME 字典块抽取已批准颜色（全小写，含 prism 渐变里的 hex）。
+
+    真源位置见 `THEME_SOURCES`（v4.216.0 起在 theme_tokens.py，旧版在 ui.py），
+    逐个候选扫描后取并集 —— 缺一个候选就会静默漏色，把 SOFT 误升成 HARD。
+    """
     approved = set()
-    theme_path = os.path.join(root, 'ui.py')
-    try:
-        raw = open(theme_path, encoding='utf-8', errors='replace').read()
-        src = _strip_comments_keep_lines(raw)
-        _in = False
-        for line in src.splitlines():
-            if THEME_START.match(line):
-                _in = True
-                continue
-            if _in:
-                if THEME_END.match(line) and '}' in line:
-                    _in = False
+    for name in THEME_SOURCES:
+        try:
+            raw = open(os.path.join(root, name), encoding='utf-8',
+                       errors='replace').read()
+        except Exception:
+            continue
+        try:
+            src = _strip_comments_keep_lines(raw)
+            _in = False
+            for line in src.splitlines():
+                if THEME_START.match(line):
+                    _in = True
                     continue
-                for m in HEX.finditer(line):
-                    approved.add(m.group(0).lower())
-    except Exception:
-        pass
+                if _in:
+                    if THEME_END.match(line) and '}' in line:
+                        _in = False
+                        continue
+                    for m in HEX.finditer(line):
+                        approved.add(m.group(0).lower())
+        except Exception:
+            continue
     return approved
 
 

@@ -141,27 +141,27 @@ def main():
 
     print("=== [F] P3 agent 词表归一 ===")
     import agent
+    import agent_text  # v4.216.0：词表/判据族新家
     import intent_guard as ig
-    AW = agent.AgentWorker
     check("F1 _REF_KW ⊇ intent_guard 权威强引用表",
-          all(k in AW._REF_KW for k in ig._STRONG_REF_KW),
+          all(k in agent_text._REF_KW for k in ig._STRONG_REF_KW),
           f"{len(ig._STRONG_REF_KW)} 词全含")
     check("F2 _REF_KW 保留 agent 独有宽词",
-          all(k in AW._REF_KW for k in ("这件事", "你说的", "讨论", "评价")))
+          all(k in agent_text._REF_KW for k in ("这件事", "你说的", "讨论", "评价")))
     check("F3 _META_VERBS 与权威表一致",
-          tuple(AW._META_VERBS) == tuple(ig._META_VERBS))
+          tuple(agent_text._META_VERBS) == tuple(ig._META_VERBS))
     check("F4 _CLAUSE_SEP 与权威表一致",
-          tuple(AW._CLAUSE_SEP) == tuple(ig._CLAUSE_SEP))
+          tuple(agent_text._CLAUSE_SEP) == tuple(ig._CLAUSE_SEP))
     check("F5 _DISCUSS_KW 已改名消歧",
-          hasattr(AW, "_WEAK_DISCUSS_KW") and "聊聊" in AW._WEAK_DISCUSS_KW
-          and not hasattr(AW, "_DISCUSS_KW"))
+          hasattr(agent_text, "_WEAK_DISCUSS_KW") and "聊聊" in agent_text._WEAK_DISCUSS_KW
+          and not hasattr(agent_text, "_DISCUSS_KW")
+          and not hasattr(agent.AgentWorker, "_DISCUSS_KW"))
 
-    aw = agent.AgentWorker(None, [], [])  # 轻量实例（判定只读类属性词表）
-    r1 = aw._route_force_tool("生成个视频")
+    r1 = agent_text._route_force_tool("生成个视频")
     check("F6 真指令不回归（→video_gen）", r1 == "video_gen", r1)
-    r2 = aw._route_force_tool("分析下生成视频")
+    r2 = agent_text._route_force_tool("分析下生成视频")
     check("F7 引用语境仍拦截（→None）", r2 is None, r2)
-    r3 = aw._route_force_tool("我什么时候让你生成视频了")
+    r3 = agent_text._route_force_tool("我什么时候让你生成视频了")
     check("F8 强引用句仍拦截（→None）", r3 is None, r3)
 
     print("=== [G] 语法编译 ===")

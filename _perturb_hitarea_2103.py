@@ -24,6 +24,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
 
 UI = os.path.join(ROOT, "ui.py")
+WG = os.path.join(ROOT, "ui_widgets.py")   # v4.216.0：chk/pin 随 SessionManagerDialog 搬家
 SKILL = os.path.join(ROOT, "skill_market_ui.py")
 TOAST = os.path.join(ROOT, "toast.py")
 DIRECTOR = os.path.join(ROOT, "director_panel.py")
@@ -37,10 +38,11 @@ CASES = [
      "self.api_key_toggle.setFixedSize(24, 24)  # 扰动", "F2"),
 
     ("② 已修点掉破硬底线（16px 方图标，鼠标都难点）",
-     # ⚠️ 锚点必须带换行+缩进：`chk.setFixedSize(...)` 是
-     # `self.speech_chk.setFixedSize(...)`（ui.py:3147）的子串，且缩进完全相同，
-     # 不加边界会命中 2 处而报「锚点不唯一」。
-     UI, "\n        chk.setFixedSize(32, 32)",
+     # v4.216.0：这颗 chk（SessionManagerDialog 里）随对话框族搬到 ui_widgets.py；
+     # ui.py:889 的 speech_chk 仍在原地（它不带 \n 边界前缀，本来就不匹配）。
+     # 锚点必须带换行+缩进：ui_widgets.py 里 `delb/pin/chk` 同段落，
+     # 不加边界会命中多处而报「锚点不唯一」。
+     WG, "\n        chk.setFixedSize(32, 32)",
      "\n        chk.setFixedSize(16, 16)  # 扰动", "F1"),
 
     ("③ 已登记的 30px 被改到 20px（既漂移又破硬底线）",
@@ -48,8 +50,8 @@ CASES = [
      "install_btn.setFixedHeight(20)  # 扰动", "F1"),
 
     ("④ 「pin」被改回 30px（钉子失效，但仍在 24px 硬底线之上）",
-     UI, "pin.setFixedSize(32, 32)",
-     "pin.setFixedSize(30, 30)  # 扰动", "P ui.py :: pin"),
+     WG, "pin.setFixedSize(32, 32)",
+     "pin.setFixedSize(30, 30)  # 扰动", "P ui_widgets.py :: pin"),
 
     ("⑤ 高度提取器退化成取第 1 个参数（把宽度当高度 → 违规静默消失）",
      SUITE, "        return ints[1]",
@@ -77,7 +79,14 @@ CASES = [
 sys.path.insert(0, ROOT)
 import _perturb_guard as _guard  # noqa: E402
 
-TARGETS = [UI, SKILL, TOAST, DIRECTOR, SUITE]
+TARGETS = [UI, WG, SKILL, TOAST, DIRECTOR, SUITE]
+# ⚠️ 2026-10-05 事故护栏：CASES 里引用的每个文件都必须在 TARGETS 里 ——
+#    还原逻辑是 `open(path,"w")` 先截断再 `f.write(ORIG[path])`，若 path 不在
+#    ORIG 会 KeyError，且异常发生在截断之后、写入之前 → 目标文件被清成 0 字节
+#    （ui_widgets.py 曾因此被清空，靠拆分器+git HEAD 重建）。
+_case_files = {c[1] for c in CASES}
+_missing = _case_files - set(TARGETS)
+assert not _missing, "CASES 引用了不在 TARGETS 还原表里的文件：%s" % _missing
 _guard.arm(TARGETS)
 
 ORIG = {p: open(p, encoding="utf-8", newline="").read() for p in TARGETS}

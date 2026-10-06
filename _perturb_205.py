@@ -15,7 +15,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
 TEST = os.path.join(ROOT, "tests", "test_toast_wiring_205.py")
 
-FILES = ["ui.py", "diagnostic_export.py"]
+FILES = ["ui.py", "ui_widgets.py", "diagnostic_export.py"]
 _backup = {}
 
 # (名称, 文件, 原串, 新串, 期望变红的判据关键字)
@@ -34,7 +34,9 @@ CASES = [
      '            toast("配对码已复制到剪贴板", kind="success")',
      '            self.status_label.setText("✅ 配对码已复制到剪贴板")',
      ["D4", "E1"]),
-    ("_brief_err 不截断", "ui.py",
+    # v4.216.0：_brief_err 随对话框族搬到 ui_widgets.py（判据走 ui re-export 仍绿，
+    # 锚点必须跟着搬 —— 否则 [SKIP] 计 MISS）
+    ("_brief_err 不截断", "ui_widgets.py",
      "return s if len(s) <= limit else s[: limit - 1] + \"…\"",
      "return s",
      ["D8a"]),

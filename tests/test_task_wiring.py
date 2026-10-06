@@ -115,17 +115,19 @@ def main():
     # --- 界面接入 ---
     check("状态栏已接入 TaskStatusStrip",
           "TaskStatusStrip(self.status_bar)" in ui_src)
+    # v4.216.0：TaskStatusStrip 类体已迁 ui_widgets.py（接线调用点仍在 ui.py）
+    wg_src = read("ui_widgets.py")
     check("TaskStatusStrip 已订阅状态总线",
-          "task_status.subscribe(" in ui_src)
+          "task_status.subscribe(" in wg_src)
     check("TaskStatusStrip 会退订（防控件销毁后仍被回调）",
-          "task_status.unsubscribe(" in ui_src or "closeEvent" in ui_src,
+          "task_status.unsubscribe(" in wg_src or "closeEvent" in wg_src,
           "未发现退订/销毁处理")
     check("ui 暴露 TaskStatusStrip 供测试引用",
-          re.search(r"^class TaskStatusStrip", ui_src, re.M) is not None)
+          re.search(r"^class TaskStatusStrip", wg_src, re.M) is not None)
 
     # --- 状态条渲染引用了正确的状态常量（不是硬编码字符串）---
     check("状态条用常量判定失败态（非硬编码 'failed'）",
-          "task_status.STATE_FAILED" in ui_src,
+          "task_status.STATE_FAILED" in wg_src,
           "建议使用 task_status.STATE_FAILED 而非字面量")
 
     print(f"\n结果：PASS={PASS}  FAIL={FAIL}")

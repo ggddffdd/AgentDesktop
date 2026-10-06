@@ -65,14 +65,16 @@ ACCEPTED = {
 }
 
 # 本轮修好的 9 处：钉住"确实到了 32px"
+# v4.216.0：retry/clear/delb/chk/pin 五个 owner 随 SessionManagerDialog 迁到
+# ui_widgets.py（源码钉与 AST 实测都改按新文件对账；del_btn/api_key_toggle 仍在 ui.py）
 PINS = [
     ("toast.py", "self._close_btn", "self._close_btn.setFixedSize(32, 32)"),
-    ("ui.py", "self.retry_btn", "self.retry_btn.setFixedHeight(32)"),
-    ("ui.py", "self.clear_btn", "self.clear_btn.setFixedHeight(32)"),
+    ("ui_widgets.py", "self.retry_btn", "self.retry_btn.setFixedHeight(32)"),
+    ("ui_widgets.py", "self.clear_btn", "self.clear_btn.setFixedHeight(32)"),
     ("ui.py", "del_btn", "del_btn.setFixedSize(32, 32)"),
-    ("ui.py", "delb", "delb.setFixedSize(32, 32)"),
-    ("ui.py", "chk", "chk.setFixedSize(32, 32)"),
-    ("ui.py", "pin", "pin.setFixedSize(32, 32)"),
+    ("ui_widgets.py", "delb", "delb.setFixedSize(32, 32)"),
+    ("ui_widgets.py", "chk", "chk.setFixedSize(32, 32)"),
+    ("ui_widgets.py", "pin", "pin.setFixedSize(32, 32)"),
     ("ui.py", "self.api_key_toggle", "self.api_key_toggle.setFixedSize(32, 32)"),
     ("director_panel.py", "delb", "delb.setFixedSize(32, 32)"),
 ]

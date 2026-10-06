@@ -162,12 +162,16 @@ def part_c_history():
 
 def part_d_source_contract():
     print("\n-- D) 源码契约：两个调用点都必须丢弃无效图 --")
-    src = open(os.path.join(ROOT, "ui.py"), encoding="utf-8-sig").read()
+    # v4.216.0：归一化/整形函数族已迁 ui_msg.py
+    src = open(os.path.join(ROOT, "ui_msg.py"), encoding="utf-8-sig").read()
     check("D1 归一化失败返回空串（不再原样放行）",
           "解不开 ⇒ 无效" in src, True)
     check("D2 历史路径有丢弃分支", src.count("if _nu:") >= 1, True)
     check("D3 历史路径有丢弃计数", "_dropped_img += 1" in src, True)
-    check("D4 当前消息路径有丢弃计数", "_dropped_cur += 1" in src, True)
+    check("D4 当前消息路径有丢弃计数",
+          # v4.216.0：当前消息整形在 ui.py（ChatWindow），历史路径在 ui_msg.py
+          "_dropped_cur += 1" in open(
+              os.path.join(ROOT, "ui.py"), encoding="utf-8-sig").read(), True)
     check("D5 占位补在 `if cleaned` 之前（否则只有坏图的消息会退化）",
           src.index("[图片无法解析，已忽略]") < src.index("if cleaned:"), True)
     check("D6 400 报文会挂到异常上供界面显示", "def _attach_api_body" in src, True)
@@ -179,8 +183,11 @@ def part_d_source_contract():
 
 def part_e_negative():
     print("\n-- E) 负面验证：改回「原样返回」→ 坏图必须又混进 payload --")
-    old = ui._normalize_image_dataurl
-    ui._normalize_image_dataurl = lambda u: u        # 旧契约：解不开照发
+    # v4.216.0：_sanitize_msg_for_api 在 ui_msg 里读 ui_msg 的模块全局，
+    # 打 ui 的 re-export 碰不到真身（必须打 ui_msg）
+    import ui_msg
+    old = ui_msg._normalize_image_dataurl
+    ui_msg._normalize_image_dataurl = lambda u: u   # 旧契约：解不开照发
     try:
         m = {"role": "user", "content": [
             {"type": "text", "text": "看看这张图"},
@@ -192,7 +199,7 @@ def part_e_negative():
               urls and QImage.fromData(
                   base64.b64decode(urls[0].split(",", 1)[1] + "===")).isNull(), True)
     finally:
-        ui._normalize_image_dataurl = old
+        ui_msg._normalize_image_dataurl = old
     s2 = ui._sanitize_msg_for_api(
         {"role": "user", "content": [
             {"type": "text", "text": "看看这张图"},

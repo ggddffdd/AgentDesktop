@@ -55,6 +55,8 @@ def check(name, cond, detail=""):
 # --------------------------------------------------------------------------
 _AGENT_SRC = (ROOT / "agent.py").read_text(encoding="utf-8-sig")
 _UI_SRC = (ROOT / "ui.py").read_text(encoding="utf-8-sig")
+# v4.216.0：判据族（路由方法 + 词表常量）从 AgentWorker 拆到 agent_text.py 模块级
+_ATEXT_SRC = (ROOT / "agent_text.py").read_text(encoding="utf-8-sig")
 
 _METHODS = ("_route_force_tool", "_ref_existing_artifact", "_gen_intent", "_gen_intent_span", "_ref_by_position",
             "_is_question", "_verb_near", "_phrase_hit", "_neg_hit",
@@ -62,44 +64,11 @@ _METHODS = ("_route_force_tool", "_ref_existing_artifact", "_gen_intent", "_gen_
 
 
 def _build_router():
-    tree = ast.parse(_AGENT_SRC)
-    cls = next(n for n in ast.walk(tree)
-               if isinstance(n, ast.ClassDef) and n.name == "AgentWorker")
-    attrs = {}
-    for item in cls.body:
-        if not isinstance(item, ast.Assign):
-            continue
-        for t in item.targets:
-            if not isinstance(t, ast.Name):
-                continue
-            # 元组常量（词表）
-            if isinstance(item.value, ast.Tuple):
-                try:
-                    attrs[t.id] = ast.literal_eval(item.value)
-                except Exception:
-                    pass
-            # re.compile(...) 类属性（漏收会让 _is_bare_url 直接 AttributeError）
-            elif isinstance(item.value, ast.Call) \
-                    and getattr(item.value.func, "attr", "") == "compile":
-                try:
-                    attrs[t.id] = eval(ast.get_source_segment(_AGENT_SRC, item.value),
-                                       {"re": re})
-                except Exception:
-                    pass
-    ns = {"re": re}
-    for item in cls.body:
-        if isinstance(item, ast.FunctionDef) and item.name in _METHODS:
-            exec(ast.get_source_segment(_AGENT_SRC, item), ns)
-    # ⚠️ 必须挂到**类**上再实例化：挂到实例上时函数不会绑定 `self`，
-    # 于是 `self._neg_hit(text)` 会执行成 `_neg_hit(text)`（self 变成 text），
-    # 一路静默返回 None —— 表现是"所有路由都返 None"，极难看出。
-    fake_cls = type("_Fake", (), {})
-    for k, v in attrs.items():
-        setattr(fake_cls, k, v)
-    for m in _METHODS:
-        if m in ns:
-            setattr(fake_cls, m, ns[m])
-    return fake_cls()._route_force_tool
+    """v4.216.0 起判据族在 agent_text.py（模块级函数 + 模块级词表常量，
+    零 PySide6 依赖）——直接导入真模块，比抽源码 exec 更保真：
+    跨函数调用与常量引用都是真身，搬移/改名会在导入期就炸。"""
+    import agent_text
+    return agent_text._route_force_tool
 
 
 route = _build_router()
@@ -181,14 +150,17 @@ def part_a():
         check(f"{t} → {exp}", got == exp, f"实际 {got}")
 
     print("\n-- A4 判据本身 --")
+    # v4.216.0：词表与方法都搬进了 agent_text.py；agent.py 侧只钉调用接线。
     check("_PROG_FETCH_KW 已定义且含关键信号",
-          all(k in (_AGENT_SRC or "") for k in ("抓取", "requests", "rss", "直连")))
+          all(k in _ATEXT_SRC for k in ("抓取", "requests", "rss", "直连")))
     check("「抓取」已从打开动词表移除",
-          '"抓取"' not in _AGENT_SRC.split("_BROWSER_OPEN_VERB_KW = (")[1].split(")")[0],
+          '"抓取"' not in _ATEXT_SRC.split("_BROWSER_OPEN_VERB_KW = (")[1].split(")")[0],
           "「抓取」是抓下来喂程序，不是打开网页")
-    check("_is_bare_url 存在", "_is_bare_url" in _AGENT_SRC)
+    check("_is_bare_url 存在", "_is_bare_url" in _ATEXT_SRC)
     check("URL 分支要求打开意图或裸 URL",
-          "or self._is_bare_url(text)" in _AGENT_SRC)
+          "or _is_bare_url(text)" in _ATEXT_SRC)
+    check("agent.py 主循环仍接线 agent_text._route_force_tool（搬移不丢调用）",
+          "agent_text._route_force_tool(" in _AGENT_SRC)
 
 
 def part_b():
@@ -279,49 +251,32 @@ def _old_style_router():
       ① 删掉 `if self._prog_fetch_intent(text): return None` 抓取否决
       ② 把 URL 分支还原成「见 URL 就 return browser_open」
     """
-    lines = _AGENT_SRC.split("\n")
+    lines = _ATEXT_SRC.split("\n")  # v4.216.0：判据族新家在 agent_text.py
 
     def find_one(pred, what):
         hits = [i for i, l in enumerate(lines) if pred(l)]
         assert len(hits) == 1, f"{what}: 期望唯一命中，实际 {len(hits)}"
         return hits[0]
 
-    veto = find_one(lambda l: l.strip() == "if self._prog_fetch_intent(text):",
+    veto = find_one(lambda l: l.strip() == "if _prog_fetch_intent(text):",
                     "抓取否决")
     assert lines[veto + 1].strip() == "return None", "否决体不是 return None"
     del lines[veto:veto + 2]
 
-    url_line = find_one(lambda l: l.strip() == "if any(k in t for k in self._BROWSER_URL_KW):",
+    url_line = find_one(lambda l: l.strip() == "if any(k in t for k in _BROWSER_URL_KW):",
                         "URL 分支")
     # 紧跟的 4 行 = 新的"打开意图 or 裸 URL"判据 + return None
     blk = "\n".join(lines[url_line:url_line + 5])
-    assert "or self._is_bare_url(text)" in blk, f"URL 分支结构变了：\n{blk}"
+    assert "or _is_bare_url(text)" in blk, f"URL 分支结构变了：\n{blk}"
     assert lines[url_line + 4].strip() == "return None", "URL 分支收尾不是 return None"
-    lines[url_line + 1:url_line + 5] = ['            return "browser_open"']
+    lines[url_line + 1:url_line + 5] = ['        return "browser_open"']
 
     src = "\n".join(lines)
-    tree = ast.parse(src)
-    cls = next(n for n in ast.walk(tree)
-               if isinstance(n, ast.ClassDef) and n.name == "AgentWorker")
-    attrs = {}
-    ns = {"re": re}
-    for item in cls.body:
-        if isinstance(item, ast.Assign):
-            for t in item.targets:
-                if isinstance(t, ast.Name) and isinstance(item.value, ast.Tuple):
-                    try:
-                        attrs[t.id] = ast.literal_eval(item.value)
-                    except Exception:
-                        pass
-        elif isinstance(item, ast.FunctionDef) and item.name in _METHODS:
-            exec(ast.get_source_segment(src, item), ns)
-    fake_cls = type("_OldFake", (), {})
-    for k, v in attrs.items():
-        setattr(fake_cls, k, v)
-    for m in _METHODS:
-        if m in ns:
-            setattr(fake_cls, m, ns[m])
-    return fake_cls()._route_force_tool
+    ast.parse(src)  # 变异后必须仍是合法 Python
+    # v4.216.0：agent_text.py 是零依赖纯函数模块，整文件 exec 进独立命名空间
+    ns = {"re": re, "__name__": "_old_style_agent_text"}
+    exec(src, ns)
+    return ns["_route_force_tool"]
 
 
 def part_d():
