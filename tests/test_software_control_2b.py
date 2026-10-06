@@ -15,6 +15,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import software_control_tools as sct  # noqa: E402
 import tools  # noqa: E402
+from permissions import Decision  # noqa: E402
+
+# exec_tool 最终闸门（审查 P1 #4）要求携带合法决策；测试直调时显式授权
+_TEST_DECISION = Decision(True, False, "test-authorized", "test")
 
 _p = 0
 _f = 0
@@ -67,12 +71,13 @@ def test_exec_tool_plumbing():
     print("== ②-B.2 exec_tool→_wrap 透传链路 ==")
     # 经完整派发链路验证 should_stop 能透传到 software control handler
     out, _, _ = tools.exec_tool(None, APP_DIR, "app_kill",
-                                {"target": "x.exe"}, should_stop=lambda: True)
+                                {"target": "x.exe"}, should_stop=lambda: True,
+                                perm_ctx=_TEST_DECISION)
     check("exec_tool 透传 should_stop 到 app_kill", "已停止（用户请求）" in out, f"out={out!r}")
     # 正常（不停止）应走真实逻辑
     out2, _, _ = tools.exec_tool(None, APP_DIR, "app_kill",
                                  {"target": "nonexistent_xyz_12345.exe"},
-                                 should_stop=lambda: False)
+                                 should_stop=lambda: False, perm_ctx=_TEST_DECISION)
     check("exec_tool 不停止时走真实逻辑", "未找到匹配的进程" in out2, f"out={out2!r}")
 
 

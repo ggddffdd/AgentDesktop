@@ -8,6 +8,14 @@
 - 新版本在上。
 
 ---
+## v4.219.0 — 2026-10-06
+
+**exec_tool 成为不可绕过的最终权限闸门（审查 P1-4）。**
+
+- **新调用方可绕过主 Agent 权限判定**（审查 P1-4）：`exec_tool()` 此前只做 `allowed_tools` 白名单过滤（防模型幻觉出白名单外工具），但任何拿到 `exec_tool` 引用的调用方（`agent_node.py` 军团直调、未来插件/工具适配器）都能**不带任何权限决策直接执行**写入/执行/外发/桌面控制类工具，绕开主 Agent 的 `PermissionEngine.decide()`。v4.219 在 `exec_tool` 入口加 `_permission_gate`：携带合法 `Decision` 则信任其 `allowed`（不重复弹窗）；无上下文按风险分类 fail-closed——`READ` 放行（保向后兼容），其余（`WRITE_LOCAL`/`EXEC`/`EXTERNAL`/未登记）一律拒绝（`classify` 对未登记工具兜底 `EXTERNAL`，天然被拒）。用鸭子类型 `hasattr(.allowed)` 识别 `Decision`，`tools.py` 不 import `permissions`（避免循环依赖）。调用方 `agent.py`(3 处 + 并发段) 与 `agent_node.py`(军团直调) 已透传 `perm_ctx`；既有 `tests/test_software_control_2b.py` 的 `app_kill` 直调补 `Decision` 授权。补判据 `tests/test_exec_tool_gate_219.py`（8 项：无 ctx 时 EXEC/未登记被拒、READ 放行、Decision 信任放行/拒绝、exec_tool 集成拦截未真正执行）+ 扰动 `_perturb_exec_tool_gate_219.py`（1 变异，绕开 fail-closed 必红）。验收：判据 8/0 + 扰动 1/1 命中（哑弹 0）。
+
+---
+
 ## v4.218.0 — 2026-10-06
 
 **系统控制审查报告落地：修 3 个真 bug（路径围栏 / 风险登记去重 / 关闭窗口拆分）。**

@@ -30,6 +30,14 @@ from typing import Set, Optional
 log = logging.getLogger("dsdesktop")
 
 
+class _AllowDecision:
+    """军团无权限适配器时的兜底决策（保持旧行为：放行）。仅用于 exec_tool 最终闸门。"""
+    allowed = True
+    needs_user = False
+    reason = "legion-no-perm fallback"
+    rule = "fallback"
+
+
 class AgentExecutionError(RuntimeError):
     """成员执行的硬失败（模型调用异常等）—— 必须让上层看到失败，而不是空稿。
 
@@ -199,7 +207,9 @@ class AgentNode:
                     else:
                         try:
                             result, _, _ = exec_tool(self.mw.cfg, APP_DIR, t_name, args,
-                                                     allowed_tools=self.tool_names)
+                                                     allowed_tools=self.tool_names,
+                                                     perm_ctx=(_dec if _perm is not None
+                                                               else _AllowDecision()))
                         except Exception as _te:
                             result = f"工具执行异常：{_te}"
                     # 截断过长结果

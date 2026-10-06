@@ -82,6 +82,18 @@ FORCE_CONFIRM_RULES = (
 )
 
 
+class _AllowAllDecision:
+    """无权限引擎时的兜底决策（保持旧行为：放行）。仅用于 exec_tool 最终闸门。
+
+    模块级全局：并发批次若拿不到 permission_engine，沿用旧行为直接放行，
+    由 exec_tool 的 _permission_gate 通过鸭子类型 hasattr(.allowed) 识别。
+    """
+    allowed = True
+    needs_user = False
+    reason = "no-engine fallback"
+    rule = "fallback"
+
+
 class AgentWorker(QThread):
     """后台线程跑 Agent 循环，所有 UI 更新通过信号抛回主线程，彻底避免卡死。
     
@@ -1258,7 +1270,8 @@ class AgentWorker(QThread):
                     try:
                         result_str, deliverables, schedule = tools.exec_tool(
                             mw.cfg, APP_DIR, name, args,
-                            should_stop=lambda: self._stop_requested)
+                            should_stop=lambda: self._stop_requested,
+                            perm_ctx=dec)
                     except Exception as _te:
                         result_str = f"工具执行崩溃：{_te}"
                         deliverables, schedule = [], None
@@ -1267,7 +1280,8 @@ class AgentWorker(QThread):
                 try:
                     result_str, deliverables, schedule = tools.exec_tool(
                         mw.cfg, APP_DIR, name, args,
-                        should_stop=lambda: self._stop_requested)
+                        should_stop=lambda: self._stop_requested,
+                        perm_ctx=dec)
                 except Exception as _te:
                     result_str = f"工具执行崩溃：{_te}"
                     deliverables, schedule = [], None
@@ -1380,11 +1394,24 @@ class AgentWorker(QThread):
                 # 审计修复 E1：线程池工作线程是全新线程，不继承 thread-local——
                 # 在任务函数内先注入默认 sid，并发执行的 context 工具同样命中当前会话。
                 _ctx_sid = self._ctx_sid
+                # P1 #4（v4.219）：并发批次同样携带权限决策，杜绝绕过最终闸门。
+                # 有引擎则取真实决策（allowed 受信任）；无引擎兜底放行（保持旧行为）。
+                _engine = getattr(self.mw, "permission_engine", None)
+                _dec = None
+                if _engine is not None:
+                    try:
+                        _dec = _engine.decide(
+                            name, args,
+                            explicit_intent=getattr(self, "explicit_intent", True))
+                    except Exception:
+                        _dec = None
+                if _dec is None:
+                    _dec = _AllowAllDecision()
                 def _exec_with_ctx(_name=name, _args=args, _sid=_ctx_sid,
-                                  _stop=lambda: self._stop_requested):
+                                  _stop=lambda: self._stop_requested, _dec_ctx=_dec):
                     context_manager.set_default_sid(_sid)
                     return tools.exec_tool(mw.cfg, APP_DIR, _name, _args,
-                                           should_stop=_stop)
+                                           should_stop=_stop, perm_ctx=_dec_ctx)
                 futures[pool.submit(_exec_with_ctx)] = (tc, t0, idx)
 
             for future in as_completed(futures):

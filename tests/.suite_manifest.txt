@@ -28,6 +28,7 @@ test_empty_state_207.py
 test_empty_state_208.py
 test_evidence_mask.py
 test_evidence_registry_195.py
+test_exec_tool_gate_219.py
 test_frozen_smoke.py
 test_guardrail_conflicts.py
 test_high_risk_guard.py

@@ -826,8 +826,36 @@ def _trace_fetch(name, args, result, ok=None):
         log.warning("抓取留痕失败: %s", e)
 
 
+def _permission_gate(name, args, perm_ctx):
+    """exec_tool 最终权限闸门（审查报告 P1 #4）。
+
+    调用方必须携带合法权限决策；未携带时按风险分类 fail-closed：
+      · RiskClass.READ → 放行（保向后兼容，只读不拦）
+      · 其它（WRITE_LOCAL / EXEC / EXTERNAL / 副作用 / 未登记）→ 拒绝
+    未登记工具 classify 默认 EXTERNAL，故天然被拒（符合「未授权不执行」）。
+    perm_ctx 为 permissions.Decision 时信任其 .allowed（不重复弹窗）；
+    否则按上述分类判定。用鸭子类型识别 Decision，避免 tools<->permissions 循环依赖。
+    """
+    # 携带合法决策对象：信任其结论
+    if perm_ctx is not None and hasattr(perm_ctx, "allowed"):
+        if not perm_ctx.allowed:
+            return (False, f"权限决策拒绝执行 {name}：{getattr(perm_ctx, 'reason', '')}")
+        return (True, None)
+    # 无上下文：按风险分类 fail-closed
+    try:
+        _risk = classify(name)
+    except Exception:
+        _risk = RiskClass.EXTERNAL
+    if _risk == RiskClass.READ:
+        return (True, None)
+    return (False,
+            f"exec_tool 需要权限上下文：未携带合法授权即拒绝执行 {name} "
+            f"（风险类={_risk.name}，审查报告 P1 #4）。"
+            f"请通过主 Agent / 军团权限适配器调用。")
+
+
 def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
-              stop_event=None, should_stop=None):
+              stop_event=None, should_stop=None, perm_ctx=None):
     """统一工具路由，返回 (result_str, deliverables, schedule)。
 
     result_str: 工具执行结果文本
@@ -843,6 +871,12 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
         log.warning("工具 %s 不在执行端白名单内，已拒绝（M-04）", name)
         return (f"工具 {name} 不在本角色可用工具列表内，已拒绝执行。"
                 "请只使用角色卡声明的工具。", [], None)
+    # P1 #4（v4.219）：exec_tool 成为不可绕过的最终权限闸门。
+    # 未携带合法权限决策时，写入/执行/外发/桌面控制类操作一律拒绝。
+    _gate_ok, _gate_msg = _permission_gate(name, args, perm_ctx)
+    if not _gate_ok:
+        log.warning("exec_tool 最终闸门拒绝 %s：%s", name, _gate_msg)
+        return (_gate_msg, [], None)
     # v4.129：缓存 cfg，供无 cfg 参数的落盘函数读 products_layout 开关
     global _LAST_CFG
     try:
