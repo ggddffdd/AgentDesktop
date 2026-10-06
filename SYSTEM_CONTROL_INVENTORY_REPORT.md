@@ -1,4 +1,4 @@
-# 系统控制能力层 · 盘点报告（只读）
+﻿# 系统控制能力层 · 盘点报告（只读）
 
 > **v4.211.1 基线**（2026-10-04）· 任务板 #3 第一步
 > 范围：`system_control` / `software_control` / `browser_control` / `run_command+run_python`
@@ -15,7 +15,7 @@
 | 通道 | 文件 | 行数 | 工具数 | 声明位置 |
 |---|---|---|---|---|
 | 系统控制 | `system_control_tools.py` | 741 | 15 | `SYSTEM_CONTROL_TOOL_DEFS` + `SYSTEM_CONTROL_TOOL_TABLE` |
-| 软件控制 | `software_control_tools.py` | 988 | 10 | `SOFTWARE_CONTROL_TOOL_DEFS` + `SOFTWARE_CONTROL_TOOL_TABLE` |
+| 软件控制 | `software_control_tools.py` | 988 | 11 | `SOFTWARE_CONTROL_TOOL_DEFS` + `SOFTWARE_CONTROL_TOOL_TABLE` |
 | 浏览器控制 | `browser_control_tools.py` | 856 | 4 | `BROWSER_CONTROL_TOOL_DEFS` + `BROWSER_CONTROL_TOOL_TABLE` |
 | 浏览器执行器 | `browser_runner.py` | 304 | —（子进程侧） | 由 `browser_control_tools` 经 subprocess 调用 |
 | 命令/代码 | `tools.py::tool_run_command` / `run_python` | — | 2 | `tool_defs.py` |
@@ -64,7 +64,7 @@ v4.169.0 那轮手工补的 16 个漏登记工具，**没有回退**。
 | 通道 | exec/manual | read/auto | write_local/semi |
 |---|---|---|---|
 | system_control（14） | 8 | 5 | 1 |
-| software_control（10） | 6 | 4 | 0 |
+| software_control（11） | 7 | 4 | 0 |
 | browser_control（4） | 2 | 2 | 0 |
 
 **没有一个控制类工具走 auto 直通。** 键鼠、进程、窗口、点击填表全部 `manual`。
@@ -89,7 +89,7 @@ v4.169.0 那轮手工补的 16 个漏登记工具，**没有回退**。
 
 | | |
 |---|---|
-| **实证** | 按函数签名实测：`system_control` 工具 14 个，**可中断 0 个**；`software_control` 工具 10 个，**可中断 10 个** |
+| **实证** | 按函数签名实测：`system_control` 工具 14 个，**可中断 0 个**；`software_control` 工具 11 个，**可中断 11 个** |
 | **根因** | `system_control_tools.py` 的函数签名清一色 `(cfg, app_dir, args)`，没有 `progress/stop_event/should_stop`；而 `tools.py:192` 的 `_w` 包装器**只给声明了对应参数的 handler 透传**停止信号 → system_control 天然收不到 |
 | **后果** | 点了「停止」后，键鼠模拟 / 窗口枚举 / 进程操作**照跑完**。任务板 #23「stop 信号是否到达管线最底层」在主对话系统控制侧**未闭环** |
 | **代价** | 小且机械。14 个函数加参数 + 入口 `_aborted()` 检查，与 software_control 同款 |
@@ -126,7 +126,7 @@ v4.169.0 那轮手工补的 16 个漏登记工具，**没有回退**。
 |---|---|---|---|
 | `system_control_tools.py` | 741 | 15 | **1 个**（`test_system_control_a/b` + `test_clean_recycle_bin_217`） |
 | `browser_runner.py` | 304 | — | **0 个** ← 裸奔 |
-| `software_control_tools.py` | 988 | 10 | 1 个（`test_software_control_2b.py`，只覆盖截断/中断/启动健壮性） |
+| `software_control_tools.py` | 988 | 11 | 1 个（`test_software_control_2b.py` + `test_app_close_218.py`，只覆盖截断/中断/启动健壮性） |
 | `browser_control_tools.py` | 856 | 4 | 2 个（但都是 profile 路径 / workspace 路由，**非**点击填表逻辑） |
 | `skill_installer_tools.py` | 491 | — | 1 个 |
 | **授权层** `permissions.py` / `risk.py` | 674 | — | **7 / 9 个**（很厚） |
@@ -165,7 +165,7 @@ v4.169.0 那轮手工补的 16 个漏登记工具，**没有回退**。
 ```
 ① 停止信号接收能力 —— inspect.signature 逐函数实测
   [缺口] system_control     工具 14 个，可中断  0 个  ← 差 14 个
-  [OK  ] software_control   工具 10 个，可中断 10 个
+  [OK  ] software_control   工具 11 个，可中断 11 个
 
 ② 工具声明表 vs 风险登记表
   声明工具总数 81；RISK_MAP 登记 81；未登记 0 个

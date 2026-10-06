@@ -1,4 +1,4 @@
-# 更新日志
+﻿# 更新日志
 
 「小臭玩AI」桌面端（PySide6 + 多模型 API 的本地 AI 工作台）版本变更记录。
 
@@ -8,6 +8,18 @@
 - 新版本在上。
 
 ---
+## v4.218.0 — 2026-10-06
+
+**系统控制审查报告落地：修 3 个真 bug（路径围栏 / 风险登记去重 / 关闭窗口拆分）。**
+
+- **webhook_events 风险登记重复键**（审查 P1-4）：`risk.py` 里 `webhook_events` 同时被定义两次——`READ`（查本地事件记录）与 `EXTERNAL`（对外暴露），Python dict 后者覆盖，有效值历来是 `EXTERNAL`。经 `git show v4.170.0` 核对，该重复自 v4.170.0 起就存在，**并非本次新引入的拦截 bug**（审查报告属误判）。修复：删掉多余的 `READ` 行、保留唯一 `EXTERNAL`，行为零变化；补判据 `tests/test_risk_webhook_events_218.py`（4 项，断言归 `EXTERNAL` 且与历史一致）+ 扰动 `_perturb_webhook_events_218.py`（2 变异，防重复键复活 / 防错改回 READ）。
+- **关闭窗口没有独立工具 / 错级**（审查 P1-1）：`app_window_state` 被标 `READ`，`close` 只是它的子动作——「无确认关窗、可能丢未保存内容」。v4.218 拆出独立工具 `app_close`，归 `RiskClass.EXEC`；借助 `_RISK_TO_TIER[EXEC]="manual"`，**纯 `EXEC` 即自动落 `manual` 档（= 强制确认）**，从而**不进 `ALWAYS_CONFIRM`**、不挂 tier 覆盖，不破坏风险单一事实源「共有键不降级 / 覆盖只限本地写入类」的不变式；并从 `app_window_state` 的 enum 去掉 `close`。补判据 `tests/test_app_close_218.py`（6 项，断言 `tier_of("app_close")=="manual"`）+ 扰动 `_perturb_app_close_218.py`（3 变异）。
+- **截图 save_path 越界无围栏**（审查 P1-2）：`system_control_tools._resolve_save_path` 对显式 `save_path` 只做了 `expanduser` 没做越界校验，可写到任意目录且不防覆盖。加 fail-closed 围栏：落点必须落在产品目录 / 应用目录树内，越界回落默认目录；已存在文件自动加时间戳后缀禁静默覆盖。补判据 `tests/test_screenshot_path_fence_218.py`（4 项）+ 扰动 `_perturb_screenshot_fence_218.py`（2 变异）。
+- 验收：3 套件 14 项判据全绿 + 3 扰动 7 变异全命中（哑弹 0）；软件操控工具 10 → 11；全量门禁 98 套件 + 30 扰动全绿。另修 2 个 v4.217 遗留的扰动基线（系统控制工具计数 14→15 未同步，属门禁维护、非功能改动）。
+
+---
+
+
 
 ## v4.217.0 — 2026-10-06
 

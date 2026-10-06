@@ -377,24 +377,61 @@ def _split_win_args(s):
 
 def _resolve_save_path(save_path, prefix="screenshot", app_dir=None):
     """解析截图保存路径。
-    v4.162.x：默认落到统一产物目录的「截图」子目录（~/Documents/小臭玩AI/产物/截图），
-    不再塞进程序目录 app_dir/output（dist 打包后随清理丢失）。
-    调用方显式给 save_path 时仍优先尊重。"""
-    if save_path:
-        return save_path
+
+    v4.218 安全收紧：截图工具名义是 READ，但写文件是副作用。显式 save_path
+    必须落在「允许根目录」内（产物目录 PRODUCTS_DIR 树 / 应用目录 app_dir 树），
+    越界一律回落默认、绝不写入用户未预期的位置；已存在文件自动加时间戳后缀，
+    禁止静默覆盖。这样既保留「模型可指定文件名」的便利，又杜绝借参数写任意路径。
+    """
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    if app_dir is None:
-        app_dir = os.getcwd()
     try:
         from config import PRODUCTS_DIR
-        base = os.path.join(PRODUCTS_DIR, "截图")
+        default_base = os.path.join(PRODUCTS_DIR, "截图")
     except Exception:
-        base = os.path.join(app_dir, "output")
+        default_base = os.path.join(app_dir or os.getcwd(), "output")
+
+    if not save_path:
+        try:
+            os.makedirs(default_base, exist_ok=True)
+        except Exception:
+            pass
+        return os.path.join(default_base, f"{prefix}_{ts}.png")
+
+    # 显式路径：先做围栏校验，越界/非法一律回落默认（fail-closed）
     try:
-        os.makedirs(base, exist_ok=True)
+        sp = os.path.normcase(os.path.abspath(os.path.expanduser(str(save_path))))
+    except Exception:
+        logger.warning("screenshot save_path 非法，回落默认：%r", save_path)
+        try:
+            os.makedirs(default_base, exist_ok=True)
+        except Exception:
+            pass
+        return os.path.join(default_base, f"{prefix}_{ts}.png")
+
+    allowed = []
+    try:
+        allowed.append(os.path.normcase(os.path.abspath(PRODUCTS_DIR)))
     except Exception:
         pass
-    return os.path.join(base, f"{prefix}_{ts}.png")
+    if app_dir:
+        try:
+            allowed.append(os.path.normcase(os.path.abspath(app_dir)))
+        except Exception:
+            pass
+    inside = any(sp == r or sp.startswith(r + os.sep) for r in allowed)
+    if not inside:
+        logger.warning("screenshot save_path 越界被拒（回落默认）：%r", save_path)
+        try:
+            os.makedirs(default_base, exist_ok=True)
+        except Exception:
+            pass
+        return os.path.join(default_base, f"{prefix}_{ts}.png")
+
+    # 已存在 → 加时间戳后缀，禁止静默覆盖
+    if os.path.exists(sp):
+        _root, _ext = os.path.splitext(sp)
+        sp = f"{_root}_{ts}{_ext}"
+    return sp
 
 
 # ---------- 审计修复 C4：截图必须在 GUI 线程执行 ----------

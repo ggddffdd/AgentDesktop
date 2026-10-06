@@ -142,22 +142,22 @@ case("PA2 risk 加一个没有声明的僵尸键（反方向）",
 # B 组 G2：system_control 可中断
 # ---------------------------------------------------------------------------
 _mut_b1, _n_b1 = _STOP_BLOCK.subn("", SCT_SRC)
-print("PA3 锚点命中 %d 处入口检查（期望 14）" % _n_b1)
-assert _n_b1 == 14, "PA3 锚点失配"
-case("PA3 整段删掉 14 处入口检查（签名留着）",
+print("PA3 锚点命中 %d 处入口检查（期望 15）" % _n_b1)
+assert _n_b1 == 15, "PA3 锚点失配"
+case("PA3 整段删掉 15 处入口检查（签名留着）",
      {"SCT_PATH": ("sct_mut_", _mut_b1)},
-     ["should_stop=True → 全部 14 个工具入口即停",
-      "stop_event 已 set → 全部 14 个工具入口即停",
-      "★ 14 处入口检查一处不少",
+     ["should_stop=True → 全部 15 个工具入口即停",
+      "stop_event 已 set → 全部 15 个工具入口即停",
+      "★ 15 处入口检查一处不少",
       "TOOL_REGISTRY 包装器把停止信号透传到底"])
 
 _mut_b2, _n_b2 = _SIG_OLD.subn(r"def \1(cfg, app_dir, args):", SCT_SRC)
-print("PA4 锚点命中 %d 处新签名（期望 14）" % _n_b2)
-assert _n_b2 == 14, "PA4 锚点失配"
+print("PA4 锚点命中 %d 处新签名（期望 15）" % _n_b2)
+assert _n_b2 == 15, "PA4 锚点失配"
 case("PA4 只回退签名三参数（入口检查留着）",
      {"SCT_PATH": ("sct_mut_", _mut_b2)},
-     ["全部 14 个工具签名都声明了三个扩展参数",
-      "should_stop=True → 全部 14 个工具入口即停",
+     ["全部 15 个工具签名都声明了三个扩展参数",
+      "should_stop=True → 全部 15 个工具入口即停",
       "TOOL_REGISTRY 包装器把停止信号透传到底"])
 
 # ---------------------------------------------------------------------------

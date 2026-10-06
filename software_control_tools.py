@@ -135,11 +135,28 @@ SOFTWARE_CONTROL_TOOL_DEFS = [
                     "title": {"type": "string", "description": "窗口标题，模糊匹配。"},
                     "action": {
                         "type": "string",
-                        "enum": ["maximize", "minimize", "restore", "topmost_on", "topmost_off", "close"],
+                        "enum": ["maximize", "minimize", "restore", "topmost_on", "topmost_off"],
                         "description": "要执行的操作。",
                     },
                 },
                 "required": ["title", "action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "app_close",
+            "description": "关闭指定窗口/应用。⚠️ 可能导致未保存内容丢失，执行前必须确认（含窗口标题与进程名）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "窗口标题，模糊匹配；也可用进程名。关闭前会展示匹配到的窗口标题与进程名供确认。",
+                    },
+                },
+                "required": ["title"],
             },
         },
     },
@@ -747,6 +764,35 @@ def tool_app_window_state(cfg, app_dir, args, progress=None, stop_event=None, sh
         return (f"操作失败：{e}", [], None)
 
 
+def tool_app_close(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    """关闭指定窗口/应用（v4.218 从 app_window_state 拆分出的独立工具）。
+
+    归 EXEC + 强制确认（risk.py: ALWAYS_CONFIRM），关窗前必须人点一次，
+    避免 app_window_state 当初被标 READ 导致的「无确认关窗、丢未保存内容」。
+    """
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
+    title = args["title"]
+    try:
+        from pywinauto import Application
+        w = _connect_window(title)
+        w_title = w.window_text()
+        try:
+            import psutil
+            pid = w.process_id()
+            proc_name = psutil.Process(pid).name() if pid else "未知"
+        except Exception:
+            proc_name = "未知"
+        if should_stop and should_stop():
+            return ("⏹ 已停止（用户请求）", [], None)
+        w.close()
+        return (f"已关闭窗口 '{w_title}'（进程：{proc_name}）。⚠️ 如有未保存内容将丢失。", [], None)
+    except ImportError:
+        return ("缺少依赖：pywinauto", [], None)
+    except Exception as e:
+        return (f"关闭窗口失败：{e}", [], None)
+
+
 # ---------- 控件定位 ----------
 
 def tool_app_list_controls(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
@@ -1028,6 +1074,7 @@ SOFTWARE_CONTROL_TOOL_TABLE = {
     "app_kill":            tool_app_kill,
     "app_focus":           tool_app_focus,
     "app_window_state":    tool_app_window_state,
+    "app_close":           tool_app_close,
     "app_list_controls":   tool_app_list_controls,
     "app_click":           tool_app_click,
     "app_type":            tool_app_type,

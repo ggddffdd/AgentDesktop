@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v4.217.0 进包核验：新增 clean_recycle_bin 系统控制工具后的产物必须随包。
+"""v4.218.0 进包核验：新增 app_close 软件控制工具 + 截图路径围栏后的产物必须随包。
 
 本轮 = 纯搬移 + re-export，THEME 下沉到叶子模块 theme_tokens.py：
 ui.py 12804 → 9591 行，agent.py 2833 → 2165 行。
@@ -181,7 +181,7 @@ def _load_entry_script(exe: Path, name: str = "main"):
 
 
 def main():
-    print("v4.217.0 进包核验（新增 clean_recycle_bin 系统控制工具随包 + 前几轮钉子复验）")
+    print("v4.218.0 进包核验（新增 app_close 软件控制工具随包 + 截图路径围栏 + 前几轮钉子复验）")
     print("-" * 62)
     if not EXE.is_file():
         print(f"未找到产物：{EXE}")
@@ -225,11 +225,12 @@ def main():
     if "config" in names:
         consts = _str_consts(_load(za, "config"))
         old = sorted(s for s in consts if s.startswith("v4.213.") or s.startswith("v4.214.")
-                     or s.startswith("v4.215.") or s.startswith("v4.216."))
-        check("PYZ 内 config 的版本常量 == v4.217.0",
-              "v4.217.0" in consts, f"包内出现的版本串={old}")
-        check("PYZ 内不含上一版旧版本常量 v4.216.0",
-              "v4.216.0" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
+                     or s.startswith("v4.215.") or s.startswith("v4.216.")
+                     or s.startswith("v4.217."))
+        check("PYZ 内 config 的版本常量 == v4.218.0",
+              "v4.218.0" in consts, f"包内出现的版本串={old}")
+        check("PYZ 内不含上一版旧版本常量 v4.217.0",
+              "v4.217.0" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
 
     print("\n-- 3) 本轮能力的回归钉子（防重启打包时被丢掉）--")
     if "system_control_tools" in names:
@@ -259,6 +260,10 @@ def main():
         check("★ tool_clean_recycle_bin 执行前后都数回收站计数（反编造硬证据）",
               any("清空前" in s for s in sct_consts),
               "成功/失败结果不带清空前/后计数 → 又可能谎报")
+        # ---- v4.218.0 新钉子：截图 save_path 越界围栏 ----
+        check("★ _resolve_save_path 含越界回落默认目录的护栏（v4.218 截图路径围栏）",
+              any("越界被拒" in s for s in sct_consts),
+              "save_path 越界不拦 → 可写到任意目录")
 
         # ---- v4.211.3 新钉子 ----
         check("system_control_tools 定义 _require（必填参数校验入口）",
@@ -278,6 +283,8 @@ def main():
             risk_consts = _str_consts(_load(za, "risk"))
             check("★ risk 的 RISK_MAP 含 clean_recycle_bin（走 EXEC 确认框）",
                   "clean_recycle_bin" in risk_consts, "风险没登记 → 不可逆操作无确认")
+            check("★ risk 的 RISK_MAP 含 app_close（v4.218：关闭窗口走 EXEC + manual 档，需确认，不进 ALWAYS_CONFIRM）",
+                  "app_close" in risk_consts, "风险没登记 → 关窗无确认可能丢未保存内容")
         if "config" in names:
             cfg_consts = _str_consts(_load(za, "config"))
             check("★ config 不含幽灵工具名 system_clean_recycle_bin（已改真实名）",
@@ -301,8 +308,13 @@ def main():
         check("software_control_tools 仍定义 _find_control / _connect_window",
               {"_find_control", "_connect_window"} <= swn, "控件定位链断裂")
         swt = _func_codes(co_sw, "tool_app_")
-        check(f"software_control 的 tool_app_* 数量未变（实际 {len(swt)}）", len(swt) == 10,
+        check(f"software_control 的 tool_app_* 数量（含 app_close，实际 {len(swt)}）", len(swt) == 11,
               f"{sorted(swt)}")
+        sc_consts = _str_consts(co_sw)
+        check("★ software_control_tools 定义 tool_app_close（v4.218 从 app_window_state 拆分）",
+              "tool_app_close" in swn, "关闭窗口独立工具没编进去")
+        check("★ app_close 在 SOFTWARE_CONTROL_TOOL_TABLE（否则分发层查不到）",
+              "app_close" in sc_consts, "工具没注册进路由表")
     else:
         check("software_control_tools 在 PYZ 里", False,
               "缺失 → 软件控制工具集体消失")

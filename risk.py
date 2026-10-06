@@ -97,7 +97,6 @@ RISK_MAP = {
     "legion_get_sources": RiskClass.READ,
     "legion_list_outputs": RiskClass.READ,
     "legion_read_log": RiskClass.READ,
-    "webhook_events": RiskClass.READ,          # 查 webhook 事件记录
     # ── WRITE_LOCAL（本地生成 / 修改，无外发）──
     "director_confirm": RiskClass.WRITE_LOCAL,        # 确认并推进导演台流程
     "director_gen_clues": RiskClass.WRITE_LOCAL,
@@ -128,6 +127,7 @@ RISK_MAP = {
     "app_click": RiskClass.EXEC,
     "app_focus": RiskClass.EXEC,
     "app_kill": RiskClass.EXEC,
+    "app_close": RiskClass.EXEC,  # v4.218：关闭应用窗口，可能丢未保存内容，强制确认
     "app_launch": RiskClass.EXEC,
     "app_type": RiskClass.EXEC,
     "app_wait_for": RiskClass.EXEC,

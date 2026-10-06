@@ -1,6 +1,7 @@
 regression.py
 test_agent_node_failure.py
 test_anti_fabrication_189.py
+test_app_close_218.py
 test_attachment_and_director_gates.py
 test_audio_regress.py
 test_automation_fire_order.py
@@ -60,8 +61,10 @@ test_radius_norm.py
 test_readability_197.py
 test_receipt_copy_209.py
 test_risk_policy_single_table.py
+test_risk_webhook_events_218.py
 test_robust_fix_186.py
 test_route_injection_guard.py
+test_screenshot_path_fence_218.py
 test_session_goal_automation.py
 test_skill_and_route_gates.py
 test_software_control_2b.py

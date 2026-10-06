@@ -1,10 +1,10 @@
-# 小臭玩AI
+﻿# 小臭玩AI
 
 一个常驻 Windows 桌面的**本地 AI Agent 工作台**：系统托盘常驻 + 全局快捷键一键呼出 + 多步推理 Agent 循环 + 45+ 内置工具 + 多模型智能路由 + MCP 可扩展。
 
 技术栈：**Python + PySide6 + OpenAI 兼容 API + Chroma 向量库**，配合 pyautogui / pywinauto 做系统与软件自动化。免费可跑、代码可改可练手。
 
-> 当前版本 **v4.217.0**。本项目由个人桌面助手迭代而来，经脱敏后开源，供学习参考与二次开发。
+> 当前版本 **v4.218.0**。本项目由个人桌面助手迭代而来，经脱敏后开源，供学习参考与二次开发。
 >
 > 版本变更与发布说明见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -23,8 +23,8 @@
 - **知识库**：`rag_index` / `rag_search`（Chroma 本地向量库）、Obsidian 异步冷启动
 - **多模态**：`image_gen` / `video_gen` / `analyze_image`（生图、生视频、识图）
 - **自动化**：`schedule`、`create/list/delete_automation`（一次性/每日/每周/间隔定时任务）
-- **系统操控**（14 个）：截屏、鼠标、键盘、剪贴板、窗口、进程
-- **软件操控**（10 个）：应用启动/强杀/聚焦、控件树枚举、UI 自动化
+- **系统操控**（15 个）：截屏、鼠标、键盘、剪贴板、窗口、进程
+- **软件操控**（11 个）：应用启动/强杀/聚焦、控件树枚举、UI 自动化
 - **浏览器**：`browser_open/read/click/fill`（带确认机制）
 - **其他**：邮件发送、数据库增删改查、Webhook 收发、图表生成、系统信息、上下文压缩/摘要
 - **记忆**：`remember` / `search_memory`（会话级与长期记忆）
@@ -103,7 +103,7 @@ python main.py
 ├── risk.py                 # 权限引擎（风险分级）
 ├── permissions.py          # 权限决策
 ├── system_control_tools.py # 系统操控（15 工具）
-├── software_control_tools.py # 软件操控（10 工具）
+├── software_control_tools.py # 软件操控（11 工具）
 ├── browser_control_tools.py  # 浏览器自动化
 ├── automation.py           # 定时/自动化任务
 ├── task_graph.py           # 子代理并行 DAG

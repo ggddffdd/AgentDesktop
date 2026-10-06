@@ -705,8 +705,18 @@ def test_helpers():
           sp("-a\\b") == ["-a\\b"], f"got={_got_bs!r}")
     check("_split_win_args 单引号同样剥离", sp("'D:\\a b\\c.txt'") == ["D:\\a b\\c.txt"])
 
+    # v4.218 路径围栏：越界路径不再原样返回，而是回落默认产物目录
     p = sct._resolve_save_path("X:/tmp/a.png", app_dir=APP_DIR)
-    check("_resolve_save_path 显式路径原样尊重", p == "X:/tmp/a.png", f"p={p!r}")
+    check("_resolve_save_path 越界路径被拒（不原样写任意位置）",
+          p != "X:/tmp/a.png", f"p={p!r}")
+    check("_resolve_save_path 越界回落路径落在允许根内（产物目录）",
+          "截图" in p, f"p={p!r}")
+    # 落允许根（app_dir=ROOT 树内）的路径原样返回
+    inside = os.path.join(APP_DIR, "allowed_by_root.png")
+    p_in = sct._resolve_save_path(inside, app_dir=APP_DIR)
+    check("_resolve_save_path 根内路径原样尊重",
+          os.path.normcase(os.path.abspath(p_in)) == os.path.normcase(os.path.abspath(inside)),
+          f"p_in={p_in!r} inside={inside!r}")
     p = sct._resolve_save_path(None, app_dir=APP_DIR)
     check("_resolve_save_path 默认落「截图」子目录", "截图" in p, f"p={p!r}")
     check("_resolve_save_path 默认文件名带前缀与时间戳",
