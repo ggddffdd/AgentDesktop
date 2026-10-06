@@ -291,17 +291,17 @@ SAMPLE = {
 def test_triple_consistency():
     print("== A 组 声明/实现/分发三向一致 ==")
     names = [d["function"]["name"] for d in sct.SYSTEM_CONTROL_TOOL_DEFS]
-    check("schema 声明 14 个工具", len(names) == 14, f"n={len(names)}")
+    check("schema 声明 15 个工具", len(names) == 15, f"n={len(names)}")
     check("schema 无重名", len(set(names)) == len(names), f"names={names}")
 
     table = set(sct.SYSTEM_CONTROL_TOOL_TABLE)
     check("路由表键集合 == schema 名集合", set(names) == table,
           f"only_schema={sorted(set(names) - table)} only_table={sorted(table - set(names))}")
-    check("路由表 14 个目标都是可调用", all(callable(v) for v in sct.SYSTEM_CONTROL_TOOL_TABLE.values()))
+    check("路由表 15 个目标都是可调用", all(callable(v) for v in sct.SYSTEM_CONTROL_TOOL_TABLE.values()))
 
     import tools
     miss = [n for n in table if n not in tools.TOOL_REGISTRY]
-    check("14 个工具都进了 tools.TOOL_REGISTRY（否则分发层查不到）", not miss, f"缺={miss}")
+    check("15 个工具都进了 tools.TOOL_REGISTRY（否则分发层查不到）", not miss, f"缺={miss}")
 
     # 分发层必须能透传三个停止参数（G2 的另一半：注册侧）
     bad = []
@@ -313,7 +313,7 @@ def test_triple_consistency():
         for w in ("progress", "stop_event", "should_stop"):
             if w not in ps:
                 bad.append(f"{n}:缺{w}")
-    check("★ 分发层 14 个 handler 都声明了三停止参数", not bad, f"bad={bad}")
+    check("★ 分发层 15 个 handler 都声明了三停止参数", not bad, f"bad={bad}")
 
 
 def test_required_parity():
@@ -367,7 +367,7 @@ def test_universal_contract():
                 continue
             if out[2] is not None:
                 bad_shape.append(f"{n}/{label}:schedule={out[2]!r}")
-    check("★ 14 个工具 × 3 种畸形入参：恒返回 (str, list, None)，一处不抛",
+    check("★ 15 个工具 × 3 种畸形入参：恒返回 (str, list, None)，一处不抛",
           not bad_shape, f"bad={bad_shape[:6]}")
 
     # 空入参单独再看一次「不抛」（缺参是最常见的模型失误）
@@ -376,7 +376,7 @@ def test_universal_contract():
         _out, exc = call(n, {})
         if exc is not None:
             raised.append(f"{n}:{type(exc).__name__}:{exc}")
-    check("★ 空入参 14 个工具全部不抛异常（文件头承诺『永不抛异常』）",
+    check("★ 空入参 15 个工具全部不抛异常（文件头承诺『永不抛异常』）",
           not raised, f"raised={raised}")
 
 
@@ -782,10 +782,10 @@ def test_helpers():
 def test_source_contracts():
     print("== F 组 源码契约防回退 ==")
     n_sig = len(re.findall(r"^def tool_\w+\(", SCT_SRC, re.M))
-    check("14 个 def tool_*", n_sig == 14, f"n={n_sig}")
+    check("15 个 def tool_*", n_sig == 15, f"n={n_sig}")
     for w in ("progress", "stop_event", "should_stop"):
         n = SCT_SRC.count(f"{w}=None")
-        check(f"14 个工具签名含 {w}", n >= 14, f"n={n}")
+        check(f"15 个工具签名含 {w}", n >= 15, f"n={n}")
 
     check("★ 有统一的必填参数校验 helper（_require）", "def _require(" in SCT_SRC)
     n_req = len(re.findall(r"^\s+_miss = _require\(args,", SCT_SRC, re.M))

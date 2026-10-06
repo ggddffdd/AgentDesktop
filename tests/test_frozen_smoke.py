@@ -124,7 +124,7 @@ def mod_consts(name):
 toc = sorted(za.toc)
 want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         "video_pipeline", "vision_qc", "director_panel", "director_web",
-        "legion_worker", "agent_node", "agent", "ui", "tools", "core_agnes",
+        "legion_worker", "agent_node", "agent", "agent_text", "ui", "tools", "core_agnes",
         "core.agnes", "legion", "permissions", "risk", "route_log", "config",
         # v4.211.4：主对话决策审计的公共件（permissions 顶层 import，必在包里）
         "tool_audit",
@@ -278,9 +278,7 @@ def main():
                # v4.212.0：原「节点画布收尾轮」色键 canvas_status_text /
                # canvas_final_bg 随画布模块一并移除；版本钉子由上面的行为字面量
                # 与 ③ APP_VERSION 断言承担，不另设替代键。
-        "agent": ["is_non_action_message", "_internal",
-                  # v4.168.1：程序化抓取否决 + 裸 URL 判据
-                  "_prog_fetch_intent", "_is_bare_url", "_PROG_FETCH_KW",
+        "agent": ["_internal",
                   # v4.168.2：assistant 消息带上思考过程
                   "reasoning_content",
                   # v4.169.0：run_workflow 过闸 + 硬确认档 force 通道
@@ -289,6 +287,12 @@ def main():
                   "log_tool_decision",
                   # v4.175.0：400 时把接口原文一起显示给用户
                   "_api_body", "接口原文"],
+        # v4.216.0：意图分类判据族（_prog_fetch_intent/_is_bare_url/_PROG_FETCH_KW
+        # + is_non_action_message 调用）已迁到 agent_text.py（agent 改调 agent_text._x）。
+        # 校验随之跟到 agent_text 模块，否则误报 agent 缺符号（假红）。
+        "agent_text": ["is_non_action_message",
+                  # v4.168.1：程序化抓取否决 + 裸 URL 判据
+                  "_prog_fetch_intent", "_is_bare_url", "_PROG_FETCH_KW"],
         "digital_twin_panel": [
                   # v4.178.0：分镜抗失败（单段失败不再吞掉后续段）+ 断点续跑
                   "_twin_fingerprint", "_job_seg_ok", "_save_job_state",

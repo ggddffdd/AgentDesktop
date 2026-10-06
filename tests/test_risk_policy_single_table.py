@@ -109,15 +109,19 @@ def part_c_behavior_unchanged():
         sys.modules["old_risk_c"] = old
         spec.loader.exec_module(old)
 
-        check("C1 RISK_MAP 键集合一致",
-              set(old.RISK_MAP) == set(risk.RISK_MAP),
-              f"差 {sorted(set(risk.RISK_MAP) ^ set(old.RISK_MAP))[:5]}")
-        d_cls = [n for n in risk.RISK_MAP
+        # v4.217.0 起：风险表允许合法演进（新增工具），判据只守两条硬边界——
+        # ① 不丢旧键（删键必红）；② 共有键的 classify/tier 不变（降级必红）。
+        # 不再要求「键集合相等」，否则每加一个工具都要去动 git 历史标签 v4.170.0。
+        check("C1 RISK_MAP 不丢失旧键（允许合法新增工具）",
+              set(old.RISK_MAP) <= set(risk.RISK_MAP),
+              f"丢失的键 {sorted(set(old.RISK_MAP) - set(risk.RISK_MAP))[:5]}")
+        shared = set(risk.RISK_MAP) & set(old.RISK_MAP)
+        d_cls = [n for n in shared
                  if old.classify(n) != risk.classify(n)]
-        d_tier = [n for n in risk.RISK_MAP
+        d_tier = [n for n in shared
                   if old.tier_of(n) != risk.tier_of(n)]
-        check("C2 全部工具的 classify 一致", not d_cls, f"{d_cls[:6]}")
-        check("C3 全部工具的 tier_of 一致", not d_tier, f"{d_tier[:6]}")
+        check("C2 共有工具的 classify 一致（降级必红）", not d_cls, f"{d_cls[:6]}")
+        check("C3 共有工具的 tier_of 一致（降级必红）", not d_tier, f"{d_tier[:6]}")
         check("C4 ALWAYS_CONFIRM 一致",
               set(old.ALWAYS_CONFIRM) == set(risk.ALWAYS_CONFIRM),
               f"{sorted(old.ALWAYS_CONFIRM)} vs {sorted(risk.ALWAYS_CONFIRM)}")

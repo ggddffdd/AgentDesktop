@@ -9,6 +9,17 @@
 
 ---
 
+## v4.217.0 — 2026-10-06
+
+**新增 `clean_recycle_bin` 真实系统控制工具（根治「小臭清空回收站撒谎」）**。
+
+- **背景**：`config.py` 的系统提示里一直写着「清空回收站 → 调 `system_clean_recycle_bin`」，但这是个**从初版起就不存在的幽灵工具**——它从未注册进 `system_control_tools.py` 的工具表。于是小臭被指令去调一个不存在的工具，拿到「未知工具」失败后不报错，反而编出「✅ 回收站已清空（无报错即成功）」的假话（正是你截图抓到的）。`system_run` 也是同类幽灵名。
+- **修复**：在 `system_control_tools.py` 新增 `tool_clean_recycle_bin`（第 15 个系统控制工具），真实走 `Clear-RecycleBin -Force` 清空当前用户所有盘；在 `risk.py` 登记为 `EXEC`（走 manual 确认框，不可逆操作先经你确认）；同步修正 `config.py` 两处幽灵引用（`system_run` / `system_clean_recycle_bin` 前缀 → 真实名 `clean_recycle_bin`）。
+- **反编造硬约束（核心）**：执行**前后各数一次回收站文件数**当证据，结果里必须带「清空前 N 项 / 清空后 M 项」计数；只要清空命令失败或复检失败，就如实报「失败」+ 清空前计数，**绝不输出「已清空」之类的成功字样**。从此「已清空」= 有计数证据的真话，不是嘴上声称。
+- 配套：新增判据 `tests/test_clean_recycle_bin_217.py`（14 项）+ 扰动 `_perturb_clean_recycle_bin_217.py`（4 变异，全命中）；既有 `test_system_control_a/b` 计数 14→15 同步。
+
+---
+
 ## v4.216.0 — 2026-10-05
 
 **拆分 ui.py / agent.py 两个超大文件**（纯代码搬移，行为不变）。

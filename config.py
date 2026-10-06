@@ -77,8 +77,8 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.216.0"
-APP_BUILD_DATE = "2026-10-04"
+APP_VERSION = "v4.217.0"
+APP_BUILD_DATE = "2026-10-06"
 # v4.164.0（2026-09-27）**运行数据归口：彻底治「dist 既是运行目录又是分发源」**：
 #   新增 config.WORKSPACE_DIR（默认 ~/Documents/小臭玩AI，与 USER_DATA_DIR 同值，
 #   可用 XC_WORKSPACE_DIR 改道），把所有「用户数据类」落点从 APP_DIR（= exe 目录 =
@@ -968,7 +968,7 @@ DEFAULT_CONFIG = {
         "| 记笔记/待办/备忘/素材 | db_insert/db_query | SQLite 数据库 |\n"
         "| 图表/柱状图/折线图/饼图/散点图 | chart_gen | 数据可视化 |\n"
         "| 日志/报错/错误排查 | log_query | 查询运行日志 |\n"
-        "| 清空回收站/锁屏/关机/打开设置/系统操作 | system_run | system_* 桌面系统控制 |\n"
+        "| 清空回收站/系统控制操作 | clean_recycle_bin | system_* 桌面系统控制（清空回收站等） |\n"
         "| 打开文件/打开应用/控制软件/输入文字/点按钮 | software_run | software_* 软件控制 |\n"
         "| 公众号/写文章/写稿子/续写 | use_skill(公众号文章) | 写作技能 |\n"
         "| 技能/装技能/搜索技能 | skill_search/skill_install | 技能管理 |\n"
@@ -999,7 +999,7 @@ DEFAULT_CONFIG = {
         "6. 「再来/重新/重做/regenerate」→重新调工具，禁止复用历史结果\n"
         "7. 产物路径统一到 ~/Documents/小臭玩AI/ 对应子目录\n"
         "8. **禁止承诺式循环**：禁止连续多轮只输出「我现在开始做/马上做/下一步执行」之类的承诺而不真去调工具。每一步要么调工具、要么给出最终成品，否则算任务失败。\n"
-        "9. **用户意图优先**：用户原话意图明确时，禁止跳到不相关技能/工具（如「清空回收站」→调 system_clean_recycle_bin，不许跑去调 PPT生成）。\n"
+        "9. **用户意图优先**：用户原话意图明确时，禁止跳到不相关技能/工具（如「清空回收站」→调 clean_recycle_bin，不许跑去调 PPT生成）。\n"
         "10. **选题/盘点/列方向 类需求优先用训练知识直接出文本**（见下方【爆款选题与盘点模板】），"
         "仅在用户明确说「去搜/查最新/爬数据/看实时榜单」时才调 web_search。"
         "「搜索」一词在该语境下指的是「检索联网最新数据」，不是「列选题方向」——"

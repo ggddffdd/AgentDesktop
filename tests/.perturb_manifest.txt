@@ -12,6 +12,7 @@ _perturb_216.py
 _perturb_automation_fire.py
 _perturb_automation_isolation.py
 _perturb_browser_control.py
+_perturb_clean_recycle_bin_217.py
 _perturb_critical_proc_deny.py
 _perturb_evidence_mask.py
 _perturb_hitarea_2103.py

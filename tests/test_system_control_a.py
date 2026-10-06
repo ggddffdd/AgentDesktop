@@ -92,7 +92,7 @@ SYS_TOOLS = (
     "keyboard_type", "keyboard_press",
     "clipboard_read", "clipboard_write",
     "window_list", "window_focus", "window_get_info",
-    "process_list", "process_kill", "process_start",
+    "process_list", "process_kill", "process_start", "clean_recycle_bin",
 )
 
 
@@ -184,7 +184,7 @@ def _stopped(fn, args=None, **kw):
 
 
 def test_system_control_stop_signal():
-    print("== B 组（G2）system_control 入口即停（14 个工具）==")
+    print("== B 组（G2）system_control 入口即停（15 个工具）==")
     _install_safety_stubs()
 
     # B1 should_stop 回调
@@ -197,7 +197,7 @@ def test_system_control_stop_signal():
         ok, det = _stopped(fn, should_stop=lambda: True)
         if not ok:
             bad.append(f"{n}:{det}")
-    check("should_stop=True → 全部 14 个工具入口即停", not bad, f"没停住={bad}")
+    check("should_stop=True → 全部 15 个工具入口即停", not bad, f"没停住={bad}")
 
     # B2 stop_event
     ev = threading.Event()
@@ -211,7 +211,7 @@ def test_system_control_stop_signal():
         ok, det = _stopped(fn, stop_event=ev)
         if not ok:
             bad2.append(f"{n}:{det}")
-    check("stop_event 已 set → 全部 14 个工具入口即停", not bad2, f"没停住={bad2}")
+    check("stop_event 已 set → 全部 15 个工具入口即停", not bad2, f"没停住={bad2}")
 
     # B3 签名契约（静态，防回退到 (cfg, app_dir, args)）
     lack = []
@@ -222,7 +222,7 @@ def test_system_control_stop_signal():
         ps = set(inspect.signature(fn).parameters)
         if not {"progress", "stop_event", "should_stop"} <= ps:
             lack.append(n)
-    check("全部 14 个工具签名都声明了三个扩展参数", not lack, f"缺={lack}")
+    check("全部 15 个工具签名都声明了三个扩展参数", not lack, f"缺={lack}")
 
     # B4 不误停：不传停止信号时不该停在入口（用只读且无副作用的 process_list）
     ok4, det4 = _stopped(sct.tool_process_list)
@@ -396,10 +396,10 @@ def test_find_control_no_type_fallback():
 def test_source_contracts():
     print("== D 组 源码契约防回退 ==")
     n_sig = len(re.findall(r"^def tool_\w+\(", SCT_SRC, re.M))
-    check("system_control 有 14 个 def tool_*", n_sig == 14, f"n={n_sig}")
+    check("system_control 有 15 个 def tool_*", n_sig == 15, f"n={n_sig}")
     check("system_control 定义了 _aborted helper", "def _aborted(" in SCT_SRC)
     n_guard = SCT_SRC.count("    if _aborted(should_stop, stop_event):")
-    check("★ 14 处入口检查一处不少", n_guard == 14, f"n={n_guard}")
+    check("★ 15 处入口检查一处不少", n_guard == 15, f"n={n_guard}")
 
     # 第 4 级兜底：不许再出现「裸 child_window(control_type=...) 取第一个」
     check("software_control 定义了 _list_candidates", "def _list_candidates(" in SWC_SRC)

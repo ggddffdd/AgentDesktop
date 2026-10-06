@@ -291,6 +291,16 @@ SYSTEM_CONTROL_TOOL_DEFS = [
             },
         },
     },
+    # ---- 回收站 ----
+    {
+        "type": "function",
+        "function": {
+            "name": "clean_recycle_bin",
+            "description": "清空 Windows 回收站（当前登录用户，跨所有盘）。不可逆操作，执行前会请你确认；"
+                           "执行前后都会统计文件数作为证据，结果如实回报删除数量，绝不谎报。",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 
 # ============================================================
@@ -933,6 +943,85 @@ def tool_process_start(cfg, app_dir, args, progress=None, stop_event=None, shoul
         return (f"启动失败: {e}", [], None)
 
 
+# ---------------------------------------------------------------------------
+# 回收站清空（v4.217.0）—— 系统控制级、不可逆、EXEC 须确认；核心反编造：
+# 执行前后各数一次文件数当证据，失败/复检失败如实报、绝不输出「已清空」成功字样。
+# ---------------------------------------------------------------------------
+
+def _ps_run(cmd, timeout=30):
+    """无窗口执行 PowerShell 命令，返回 CompletedProcess。调用方自行判定成败。"""
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    return subprocess.run(
+        ["powershell.exe", "-NoProfile", "-Command", cmd],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        startupinfo=si, timeout=timeout,
+    )
+
+
+def _current_user_sid():
+    """当前登录用户 SID（回收站目录名）。取不到抛异常，由调用方如实汇报。"""
+    p = _ps_run("[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value")
+    sid = (p.stdout or "").strip()
+    if p.returncode != 0 or not sid:
+        raise RuntimeError("无法获取当前用户 SID：" + (p.stderr or "").strip())
+    return sid
+
+
+def _count_recycle_items():
+    """统计当前用户回收站文件数（跨所有固定盘）。
+
+    反编造硬约束的「证据来源」：清空前后各数一次，差值即真实删除数。
+    不可用时抛异常 —— 调用方据此如实汇报、绝不谎报已清空（fail-closed）。
+    """
+    import string
+    sid = _current_user_sid()
+    total = 0
+    for d in string.ascii_uppercase:
+        base = "{0}:\\$Recycle.Bin\\{1}".format(d, sid)
+        if not os.path.isdir(base):
+            continue
+        for _root, _dirs, files in os.walk(base):
+            total += len(files)
+    return total
+
+
+def _empty_recycle_bin():
+    """真实执行清空：清当前用户所有盘的回收站。非零退出视为失败抛异常。"""
+    _ps_run("Clear-RecycleBin -Force -ErrorAction Stop")
+
+
+def tool_clean_recycle_bin(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    """清空 Windows 回收站（当前用户，跨盘）。
+
+    反编造核心：执行前后都数文件数作证据，结果里必须带上 before/after 计数；
+    只要清空命令失败或复检失败，就如实报失败，绝不输出「已清空」之类的成功字样。
+    """
+    if _aborted(should_stop, stop_event):
+        return ("⏹ 已停止（用户请求）", [], None)
+    try:
+        before = _count_recycle_items()
+    except Exception as e:
+        return (f"清空中止：回收站计数失败（无法提供清空证据，按 fail-closed 不执行）: {e}", [], None)
+    try:
+        _empty_recycle_bin()
+    except Exception as e:
+        return (f"清空回收站失败（未确认已清空，清空前计数={before}）: {e}", [], None)
+    try:
+        after = _count_recycle_items()
+    except Exception as e:
+        return (f"清空已执行但回收站复检失败（无法出证据，清空前计数={before}）: {e}", [], None)
+    deleted = before - after
+    if deleted < 0:
+        deleted = 0
+    if after == 0:
+        msg = f"回收站已清空。清空前 {before} 项，清空后 0 项，本次删除 {deleted} 项。"
+    else:
+        msg = (f"回收站清空命令已执行，但清空后仍有 {after} 项（清空前 {before} 项）。"
+               f"可能含其他账户/被锁定的条目，请确认。")
+    return (msg, [], None)
+
+
 # ============================================================
 # 3. 路由表 — tools.py 中的 exec_tool() 通过此表分发
 # ============================================================
@@ -952,4 +1041,5 @@ SYSTEM_CONTROL_TOOL_TABLE = {
     "process_list":     tool_process_list,
     "process_kill":     tool_process_kill,
     "process_start":    tool_process_start,
+    "clean_recycle_bin": tool_clean_recycle_bin,
 }

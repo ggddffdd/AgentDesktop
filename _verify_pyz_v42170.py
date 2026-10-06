@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v4.216.0 进包核验：拆分 ui.py / agent.py 后的新模块必须随包。
+"""v4.217.0 进包核验：新增 clean_recycle_bin 系统控制工具后的产物必须随包。
 
 本轮 = 纯搬移 + re-export，THEME 下沉到叶子模块 theme_tokens.py：
 ui.py 12804 → 9591 行，agent.py 2833 → 2165 行。
@@ -9,7 +9,7 @@ ui_msg / ui_audit_mixin / agent_text）字节码指纹与当前源码一致，�
 就运行期 ImportError（打包后没有追溯报错那么友好）；② THEME 单源 ——
 theme_tokens 有 THEME 字典、ui 仍是 re-export 方；③ ui_audit_mixin /
 agent_text 的关键成员在包里（审计族靠继承接入、17 个判据函数搬到模块级）；
-④ 版本号 v4.216.0 且不含 v4.215.0；⑤ 前几轮钉子（系统控制 14 tool_*、
+④ 版本号 v4.217.0 且不含 v4.216.0；⑤ 前几轮钉子（系统控制 15 tool_*、
 画布模块反向钉子、不漏测试不漏扰动）一并复验。
 """
 import hashlib
@@ -181,7 +181,7 @@ def _load_entry_script(exe: Path, name: str = "main"):
 
 
 def main():
-    print("v4.216.0 进包核验（ui/agent 拆分后新模块随包 + 前几轮钉子复验）")
+    print("v4.217.0 进包核验（新增 clean_recycle_bin 系统控制工具随包 + 前几轮钉子复验）")
     print("-" * 62)
     if not EXE.is_file():
         print(f"未找到产物：{EXE}")
@@ -225,11 +225,11 @@ def main():
     if "config" in names:
         consts = _str_consts(_load(za, "config"))
         old = sorted(s for s in consts if s.startswith("v4.213.") or s.startswith("v4.214.")
-                     or s.startswith("v4.215."))
-        check("PYZ 内 config 的版本常量 == v4.216.0",
-              "v4.216.0" in consts, f"包内出现的版本串={old}")
-        check("PYZ 内不含上一版旧版本常量 v4.215.0",
-              "v4.215.0" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
+                     or s.startswith("v4.215.") or s.startswith("v4.216."))
+        check("PYZ 内 config 的版本常量 == v4.217.0",
+              "v4.217.0" in consts, f"包内出现的版本串={old}")
+        check("PYZ 内不含上一版旧版本常量 v4.216.0",
+              "v4.216.0" not in consts, "残留旧版本串（可能是增量打包的旧模块）")
 
     print("\n-- 3) 本轮能力的回归钉子（防重启打包时被丢掉）--")
     if "system_control_tools" in names:
@@ -239,17 +239,26 @@ def main():
               "_aborted" in scn, "可中断的判定函数丢失")
         tools_co = _func_codes(co_sc, "tool_")
         n_tools = len(tools_co)
-        _want14 = {"screenshot", "mouse_move", "mouse_click", "mouse_scroll",
+        _want15 = {"screenshot", "mouse_move", "mouse_click", "mouse_scroll",
                    "keyboard_type", "keyboard_press", "clipboard_read",
                    "clipboard_write", "window_list", "window_focus",
                    "window_get_info", "process_list", "process_kill",
-                   "process_start"}
+                   "process_start", "clean_recycle_bin"}
         lack = sorted(n for n, c in tools_co.items()
                       if not {"progress", "stop_event", "should_stop"} <= set(c.co_varnames))
-        check(f"system_control 共 14 个 tool_*（实际 {n_tools}）", n_tools == 14,
-              f"漏={sorted(_want14 - set(tools_co))}")
-        check("★ 全部 14 个 tool_* 形参表都含 should_stop（漏一个信号就传不进来）",
+        check(f"system_control 共 15 个 tool_*（实际 {n_tools}）", n_tools == 15,
+              f"漏={sorted(_want15 - set(tools_co))}")
+        check("★ 全部 15 个 tool_* 形参表都含 should_stop（漏一个信号就传不进来）",
               not lack, f"缺形参的={lack}")
+        # ---- v4.217.0 新钉子：clean_recycle_bin 真实系统控制工具 ----
+        sct_consts = _str_consts(co_sc)
+        check("★ system_control_tools 定义 tool_clean_recycle_bin（真实工具，非幽灵）",
+              "tool_clean_recycle_bin" in scn, "清空回收站真实工具没编进去")
+        check("★ clean_recycle_bin 在 SYSTEM_CONTROL_TOOL_TABLE（否则分发层查不到）",
+              "clean_recycle_bin" in sct_consts, "工具没注册进路由表")
+        check("★ tool_clean_recycle_bin 执行前后都数回收站计数（反编造硬证据）",
+              any("清空前" in s for s in sct_consts),
+              "成功/失败结果不带清空前/后计数 → 又可能谎报")
 
         # ---- v4.211.3 新钉子 ----
         check("system_control_tools 定义 _require（必填参数校验入口）",
@@ -264,6 +273,19 @@ def main():
         check("★ 解析 tasklist 走 csv.reader（不是按逗号裸切）",
               "csv" in scn and "StringIO" in scn,
               "退回裸切 → 内存列又被千分位逗号切碎、1.2G 的进程显示 0 MB")
+        # ---- v4.217.0 钉子续：risk 层登记 + config 删幽灵名 ----
+        if "risk" in names:
+            risk_consts = _str_consts(_load(za, "risk"))
+            check("★ risk 的 RISK_MAP 含 clean_recycle_bin（走 EXEC 确认框）",
+                  "clean_recycle_bin" in risk_consts, "风险没登记 → 不可逆操作无确认")
+        if "config" in names:
+            cfg_consts = _str_consts(_load(za, "config"))
+            check("★ config 不含幽灵工具名 system_clean_recycle_bin（已改真实名）",
+                  "system_clean_recycle_bin" not in cfg_consts,
+                  "幽灵工具名还在 → 小臭又被骗去调不存在的工具")
+            check("★ config 不含幽灵工具名 system_run",
+                  "system_run" not in cfg_consts,
+                  "幽灵工具名还在 → 能力地图误导 LLM")
     else:
         check("system_control_tools 在 PYZ 里", False,
               "缺失 → 键鼠/进程工具集体消失")

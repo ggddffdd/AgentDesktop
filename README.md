@@ -4,7 +4,7 @@
 
 技术栈：**Python + PySide6 + OpenAI 兼容 API + Chroma 向量库**，配合 pyautogui / pywinauto 做系统与软件自动化。免费可跑、代码可改可练手。
 
-> 当前版本 **v4.216.0**。本项目由个人桌面助手迭代而来，经脱敏后开源，供学习参考与二次开发。
+> 当前版本 **v4.217.0**。本项目由个人桌面助手迭代而来，经脱敏后开源，供学习参考与二次开发。
 >
 > 版本变更与发布说明见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -102,7 +102,7 @@ python main.py
 ├── tool_defs.py            # 工具 schema 定义
 ├── risk.py                 # 权限引擎（风险分级）
 ├── permissions.py          # 权限决策
-├── system_control_tools.py # 系统操控（14 工具）
+├── system_control_tools.py # 系统操控（15 工具）
 ├── software_control_tools.py # 软件操控（10 工具）
 ├── browser_control_tools.py  # 浏览器自动化
 ├── automation.py           # 定时/自动化任务

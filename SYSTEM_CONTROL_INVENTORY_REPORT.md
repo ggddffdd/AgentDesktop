@@ -14,7 +14,7 @@
 
 | 通道 | 文件 | 行数 | 工具数 | 声明位置 |
 |---|---|---|---|---|
-| 系统控制 | `system_control_tools.py` | 741 | 14 | `SYSTEM_CONTROL_TOOL_DEFS` + `SYSTEM_CONTROL_TOOL_TABLE` |
+| 系统控制 | `system_control_tools.py` | 741 | 15 | `SYSTEM_CONTROL_TOOL_DEFS` + `SYSTEM_CONTROL_TOOL_TABLE` |
 | 软件控制 | `software_control_tools.py` | 988 | 10 | `SOFTWARE_CONTROL_TOOL_DEFS` + `SOFTWARE_CONTROL_TOOL_TABLE` |
 | 浏览器控制 | `browser_control_tools.py` | 856 | 4 | `BROWSER_CONTROL_TOOL_DEFS` + `BROWSER_CONTROL_TOOL_TABLE` |
 | 浏览器执行器 | `browser_runner.py` | 304 | —（子进程侧） | 由 `browser_control_tools` 经 subprocess 调用 |
@@ -124,7 +124,7 @@ v4.169.0 那轮手工补的 16 个漏登记工具，**没有回退**。
 
 | 模块 | 行数 | 工具数 | 引用它的判据套件 |
 |---|---|---|---|
-| `system_control_tools.py` | 741 | 14 | **0 个** ← 裸奔 |
+| `system_control_tools.py` | 741 | 15 | **1 个**（`test_system_control_a/b` + `test_clean_recycle_bin_217`） |
 | `browser_runner.py` | 304 | — | **0 个** ← 裸奔 |
 | `software_control_tools.py` | 988 | 10 | 1 个（`test_software_control_2b.py`，只覆盖截断/中断/启动健壮性） |
 | `browser_control_tools.py` | 856 | 4 | 2 个（但都是 profile 路径 / workspace 路由，**非**点击填表逻辑） |

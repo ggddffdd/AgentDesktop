@@ -124,6 +124,7 @@ RISK_MAP = {
     "window_focus": RiskClass.EXEC,
     "process_kill": RiskClass.EXEC,
     "process_start": RiskClass.EXEC,
+    "clean_recycle_bin": RiskClass.EXEC,       # v4.217.0：清空回收站，不可逆，须手动确认
     "app_click": RiskClass.EXEC,
     "app_focus": RiskClass.EXEC,
     "app_kill": RiskClass.EXEC,
