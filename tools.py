@@ -40,7 +40,8 @@ from database_tools import DatabaseTools
 db_tools = DatabaseTools()
 # v4.220：工具调用统一契约（结构化返回 + 脱敏 + 影响范围）
 from tool_contract import (ToolResult, _mask_sensitive, _mask_recursive,
-                           compute_impact_scope)
+                           compute_impact_scope,
+                           validate_for_tool)  # v4.223：统一参数校验入口
 
 
 # v4.155 fix2：图生视频轮询超时上限（默认 240s，< Agent 回合上限 445s，刻意留余量）。
@@ -891,6 +892,15 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
             _LAST_CFG = cfg
     except Exception:
         pass
+    # v4.223：统一参数校验（副作用前先拦）。未登记 schema 的工具原样放行，
+    # 已登记的按 schema 校验：类型/必填/范围/枚举 + 路径标准化/长度上限/超时上限。
+    if isinstance(args, dict):
+        _va, _ve = validate_for_tool(name, args)
+        if _ve:
+            log.warning("工具 %s 参数校验失败：%s", name, _ve)
+            _trace_fetch(name, args, f"参数校验未通过：{_ve}", ok=False)
+            return _reject(f"工具 {name} 参数校验未通过：{_ve}")
+        args = _va
     deliverables = []
     schedule = None
     # v4.31 统一注册中心：优先查 registry（扩展模块已注册；核心工具逐步迁移中）
@@ -907,7 +917,8 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
             if "should_stop" in _sig.parameters:
                 _hk["should_stop"] = should_stop
             _r = _entry["handler"](cfg, app_dir, args, **_hk)
-            _tr = ToolResult.from_legacy(_r)
+            # v4.223：传 name/args，让已登记结局契约的工具按真实信号判定成败
+            _tr = ToolResult.from_legacy(_r, name=name, args=args)
             _trace_fetch(name, args, _tr.msg, ok=_tr.ok)
             _tr.msg = _mask_sensitive(_tr.msg)
             _tr.data = _mask_recursive(_tr.data)
@@ -938,7 +949,8 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
             pass
         result_str = f"工具执行异常：{e}"
 
-    _tr = ToolResult.from_legacy((result_str, deliverables, schedule))
+    _tr = ToolResult.from_legacy((result_str, deliverables, schedule),
+                                 name=name, args=args)
     _trace_fetch(name, args, _tr.msg, ok=_tr.ok)
     _tr.msg = _mask_sensitive(_tr.msg)
     return _tr

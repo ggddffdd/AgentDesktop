@@ -131,6 +131,8 @@ want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         "digital_twin_panel",
         # v4.222.0：技能子系统不可信边界（元数据 + 包边界）
         "skill_loader",
+        # v4.223.0：参数校验补全 + 结构化返回根治（契约注册表 / 超时 / schema 注册表）
+        "tool_contract",
         ]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
@@ -237,7 +239,9 @@ def main():
         "route_log": ["log_tool_decision", "event=tool"],
         "tool_audit": ["AUDIT_LOCK", "build_record", "args_preview", "origin",
                        "tool_audit.jsonl", "legion_tool_audit.jsonl"],
-        "tools": ["is_skill_enabled", "__getattr__", "TOOL_TIER"],
+        "tools": ["is_skill_enabled", "__getattr__", "TOOL_TIER",
+                  # v4.223.0：exec_tool 统一参数校验接入 + 契约化归一传 name
+                  "validate_for_tool", "参数校验未通过", "from_legacy"],
         "legion_permissions": ["grant_wave", "LegionPermissionAdapter"],
         "task_graph": ["incomplete", "__incomplete__"],
         "vision_qc": ["qc_skipped_no_key", "qc_pass", "encode_image_for_qc",
@@ -298,6 +302,12 @@ def main():
         "skill_loader": ["allow_tools", "allow_network", "allow_system",
                   "allow_dir", "audited_at", "wrap_skill_prompt",
                   "<untrusted skill"],
+        # v4.223.0：参数校验补全 + 结构化返回根治（契约优先于文案 / 猜的必须标注）
+        "tool_contract": ["register_outcome", "resolve_ok", "normalize_timeout",
+                  "register_tool_schema", "validate_for_tool",
+                  "_normalize_path", "_within_base", "_TOOL_SCHEMAS",
+                  "ARG_MAX_LEN_CAP", "TOOL_TIMEOUT_CAP",
+                  "INFERRED", "UNVERIFIED_OUTCOME", "TOOL_FAILED"],
         # v4.216.0：意图分类判据族（_prog_fetch_intent/_is_bare_url/_PROG_FETCH_KW
         # + is_non_action_message 调用）已迁到 agent_text.py（agent 改调 agent_text._x）。
         # 校验随之跟到 agent_text 模块，否则误报 agent 缺符号（假红）。

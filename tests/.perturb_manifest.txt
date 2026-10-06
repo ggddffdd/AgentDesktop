@@ -23,12 +23,14 @@ _perturb_impact_scope_220.py
 _perturb_log_redirect_hyg.py
 _perturb_memory_meta.py
 _perturb_param_validation_220.py
+_perturb_param_validation_223.py
 _perturb_probe_graphics.py
 _perturb_resume_api_error_221.py
 _perturb_resume_idempotent_222.py
 _perturb_screenshot_fence_218.py
 _perturb_sensitive_mask_220.py
 _perturb_structured_return_220.py
+_perturb_structured_return_223.py
 _perturb_system_control_a.py
 _perturb_system_control_b.py
 _perturb_system_prompt_routing_221.py

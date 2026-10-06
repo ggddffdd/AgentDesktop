@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import getpass
+import os
 import re
 import socket
 from dataclasses import dataclass, field
@@ -26,6 +27,16 @@ from typing import Any, Dict, List, Optional
 __all__ = [
     "ToolResult",
     "ToolResultError",
+    # v4.223：显式结局契约（根治 string-match）+ 参数校验补全
+    "register_outcome",
+    "resolve_ok",
+    "normalize_timeout",
+    "register_tool_schema",
+    "validate_for_tool",
+    "registered_tool_schemas",
+    "TOOL_TIMEOUT_DEFAULT",
+    "TOOL_TIMEOUT_CAP",
+    "ARG_MAX_LEN_CAP",
     "_validate_args",
     "_mask_sensitive",
     "_mask_recursive",
@@ -48,6 +59,10 @@ class ToolResult:
     deliverables: List[Any] = field(default_factory=list)
     schedule: Any = None
     impact_scope: Optional[str] = None
+    # v4.223：结构化返回补全——机器可读错误码 / 是否可重试 / 结论是否经过真实验证
+    error_code: Optional[str] = None
+    retryable: bool = False
+    verified: bool = False
 
     def __iter__(self):
         # 向后兼容：result_str, deliverables, schedule = exec_tool(...)
@@ -60,28 +75,55 @@ class ToolResult:
         return (self.msg, self.deliverables, self.schedule)
 
     @classmethod
-    def from_legacy(cls, val, ok: Optional[bool] = None):
+    def from_legacy(cls, val, ok: Optional[bool] = None,
+                    name: Optional[str] = None, args=None):
+        """归一为 ToolResult。
+
+        v4.223 优先顺序（根除「按中文前缀猜成败」）：
+          ① 本身就是 ToolResult → 直接采用（ok 由工具显式给出，权威）；
+          ② 调用方显式给 ok → 采用；
+          ③ 该工具登记了显式结局契约（register_outcome）→ 契约判定（看真实信号，不看文案）；
+          ④ 以上都没有 → 退回 _infer_ok 兜底，并标 verified=False +
+             error_code="INFERRED"，把「猜出来的结论」显式暴露给下游，不再冒充已验证。
+        """
         if isinstance(val, ToolResult):
             return val
         if isinstance(val, tuple):
             msg = val[0] if len(val) > 0 else ""
             dl = val[1] if len(val) > 1 else []
             sc = val[2] if len(val) > 2 else None
+            _ok = ok
+            _verified = True
+            _ecode = None
+            if _ok is None and name:
+                _ok = resolve_ok(name, msg, args)
+                if _ok is not None:
+                    _verified = True
+            if _ok is None:
+                _ok = _infer_ok(msg)
+                _verified = False
+                _ecode = "INFERRED" if _ok else "UNVERIFIED_OUTCOME"
             return cls(
-                ok=_infer_ok(msg) if ok is None else ok,
+                ok=_ok,
                 msg=msg,
                 deliverables=list(dl) if dl else [],
                 schedule=sc,
+                error_code=_ecode,
+                verified=_verified,
             )
-        return cls(ok=False, msg=str(val))
+        return cls(ok=False, msg=str(val), verified=False,
+                   error_code="BAD_RESULT_TYPE")
 
     @classmethod
-    def fail(cls, msg: str, error: Optional[str] = None, **kw):
-        return cls(ok=False, msg=msg, error=error or msg, **kw)
+    def fail(cls, msg: str, error: Optional[str] = None,
+             error_code: Optional[str] = None, retryable: bool = False, **kw):
+        return cls(ok=False, msg=msg, error=error or msg,
+                   error_code=error_code or "TOOL_FAILED",
+                   retryable=retryable, verified=True, **kw)
 
     @classmethod
     def ok_result(cls, msg: str, **kw):
-        return cls(ok=True, msg=msg, **kw)
+        return cls(ok=True, msg=msg, verified=kw.pop("verified", True), **kw)
 
 
 _SUCCESS_PREFIXES = (
@@ -97,6 +139,13 @@ _FAILURE_PREFIXES = (
 
 
 def _infer_ok(msg: str) -> bool:
+    """【legacy 兜底，v4.223 起不用于有契约的工具】
+
+    按中文前缀猜成败。这是 v4.218 审查报告点名的反模式：工具改一句文案就会
+    翻转结论（"已终止"判成功、"失败"判失败）。保留仅为兼容尚未登记契约的
+    老工具；凡调用它的路径都会被打上 verified=False + error_code="INFERRED"。
+    新工具请走 register_outcome 提供真实信号判定。
+    """
     if not isinstance(msg, str):
         return False
     s = msg.strip()
@@ -109,16 +158,121 @@ def _infer_ok(msg: str) -> bool:
     return "失败" not in s and "错误" not in s
 
 
-def _validate_args(args, schema):
+# ============================================================
+# v4.223：显式结局契约（根治 string-match 成败判定）
+# ============================================================
+
+_OUTCOME_REGISTRY: Dict[str, Any] = {}
+
+
+def register_outcome(name: str, fn):
+    """登记工具的显式结局判定契约。
+
+    fn(msg, args) -> True / False / None
+      · True/False：契约表态，from_legacy 直接采用（不看文案，改文案不会翻结论）
+      · None：契约不表态（如缺参数、无法取真信号），交由下一级兜底
+    契约必须基于**可观测的真实信号**判定（文件是否落地、进程是否还活着…），
+    不得再对中文文案做前缀匹配，否则等于把反模式换个地方复活。
+    """
+    _OUTCOME_REGISTRY[name] = fn
+
+
+def resolve_ok(name, msg, args=None) -> Optional[bool]:
+    """按登记契约判定成败；无契约/契约不表态/契约异常 → 返回 None（不表态）。"""
+    fn = _OUTCOME_REGISTRY.get(name or "")
+    if fn is None:
+        return None
+    try:
+        r = fn(msg, args or {})
+    except Exception:
+        return None
+    return r if isinstance(r, bool) else None
+
+
+def _outcome_write_file(msg, args) -> Optional[bool]:
+    """write_file 契约：不看文案，看文件是否真的落地且非空。"""
+    p = (args or {}).get("path")
+    if not p or not isinstance(p, str):
+        return None
+    try:
+        ap = p
+        if not os.path.isabs(ap):
+            try:
+                import tools as _tools
+                ap = os.path.join(_tools.WORKSPACE_DIR, p)
+            except Exception:
+                ap = os.path.abspath(p)
+        return os.path.isfile(ap) and os.path.getsize(ap) > 0
+    except Exception:
+        return None
+
+
+register_outcome("write_file", _outcome_write_file)
+
+
+# ============================================================
+# 参数校验（v4.223 补全：路径标准化 / 长度上限 / 未知字段策略 / 超时限制）
+# ============================================================
+
+TOOL_TIMEOUT_DEFAULT = 30
+TOOL_TIMEOUT_CAP = 600
+ARG_MAX_LEN_CAP = 4_000_000
+
+
+def normalize_timeout(v, default: int = TOOL_TIMEOUT_DEFAULT,
+                      cap: int = TOOL_TIMEOUT_CAP) -> int:
+    """把任意入参收敛为合法超时秒数：非法/非正 → default，超出 → cap。"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    if f <= 0:
+        return default
+    return int(min(f, cap))
+
+
+def _normalize_path(p: str) -> str:
+    """路径标准化：展开 ~ / 环境变量、折叠 . 与 ..。
+
+    相对路径**保持相对**（只 normpath，不 abspath）——各工具解析相对路径的基准
+    目录不同（工作区 / 应用目录 / cwd），此处贸然 abspath 会改变落点。
+    """
+    try:
+        s = os.path.expandvars(os.path.expanduser(str(p)))
+    except Exception:
+        return str(p)
+    if os.path.isabs(s):
+        return os.path.abspath(s)
+    return os.path.normpath(s)
+
+
+def _within_base(p: str, base: str) -> bool:
+    """p 是否位于 base 目录树内（用于路径越界围栏）。"""
+    try:
+        ap = os.path.abspath(p)
+        ab = os.path.abspath(base)
+        return os.path.commonpath([ap, ab]) == ab
+    except Exception:
+        return False
+
+
+def _validate_args(args, schema, unknown: str = "ignore"):
     """按 schema 校验工具参数。
 
     schema: list of dict，每项：
         key       参数名（必填字段）
-        type      'int' | 'float' | 'bool' | 'str'
+        type      'int' | 'float' | 'bool' | 'str' | 'path'  (v4.223 增 path)
         required  是否必填
         enum      允许值集合
         min/max   数值范围（type 为 int/float 时）
         allow_empty 字符串是否允许为空（默认不允许）
+        max_len   长度上限（v4.223；str 取字符数，其余取 str() 长度）
+        pattern   正则约束（v4.223；不匹配即拒）
+        base_dir  路径围栏（v4.223；仅 type='path' 生效，越界即拒）
+    unknown  (v4.223) 未知字段策略：
+        'ignore' 原样放行（默认，保持既有行为，零破坏）
+        'strip'  丢弃未在 schema 中声明的字段（防下游误用拼错的参数）
+        'reject' 出现未声明字段即拒绝（严格模式，防「参数名写错被静默忽略」）
     返回 (cleaned_args, None) 或 (None, err_msg)。
     """
     if not isinstance(args, dict):
@@ -160,8 +314,40 @@ def _validate_args(args, schema):
             out[k] = str(v)
             if not spec.get("allow_empty") and out[k] == "":
                 errs.append(f"参数「{k}」不能为空")
+        elif t == "path":
+            # v4.223：路径标准化 + 可选越界围栏（相对路径保持相对，不篡改落点基准）
+            out[k] = _normalize_path(v)
+            if not spec.get("allow_empty") and out[k] == "":
+                errs.append(f"参数「{k}」不能为空")
+            _base = spec.get("base_dir")
+            if _base and not _within_base(out[k], _base):
+                errs.append(f"参数「{k}」路径越界（必须位于 {_base} 内）")
+        # v4.223：长度上限（防超大 payload 打爆上下文 / 子进程）
+        if "max_len" in spec:
+            _cur = out.get(k)
+            _L = len(_cur) if isinstance(_cur, str) else len(str(_cur))
+            if _L > spec["max_len"]:
+                errs.append(f"参数「{k}」长度 {_L} 超过上限 {spec['max_len']}")
+        # v4.223：正则约束
+        if "pattern" in spec:
+            _cur = out.get(k)
+            try:
+                if not re.search(spec["pattern"], str(_cur)):
+                    errs.append(f"参数「{k}」不符合格式要求")
+            except re.error:
+                pass
         if "enum" in spec and out.get(k) not in spec["enum"]:
             errs.append(f"参数「{k}」必须是 {spec['enum']} 之一，收到：{out.get(k)}")
+    # v4.223：未知字段策略
+    if unknown in ("reject", "strip"):
+        _known = {s.get("key") for s in schema if isinstance(s, dict)}
+        _extra = [k for k in list(out.keys()) if k not in _known]
+        if _extra:
+            if unknown == "reject":
+                errs.append("未知参数：" + "、".join(sorted(map(str, _extra))))
+            else:
+                for k in _extra:
+                    out.pop(k, None)
     if errs:
         return None, "；".join(errs)
     return out, None
@@ -226,3 +412,60 @@ def compute_impact_scope(name: str, args) -> Optional[str]:
         return fn(args or {})
     except Exception:
         return None
+
+
+# ============================================================
+# v4.223：工具级 schema 注册表（一处接入，覆盖全部登记工具）
+# ============================================================
+
+_TOOL_SCHEMAS: Dict[str, Any] = {}
+
+
+def register_tool_schema(name: str, schema, unknown: str = "ignore"):
+    """登记某工具的参数 schema（含未知字段策略）。"""
+    _TOOL_SCHEMAS[name] = (list(schema), unknown)
+
+
+def validate_for_tool(name: str, args):
+    """按登记 schema 校验参数；**未登记 schema 的工具原样放行**（零破坏）。
+
+    返回 (cleaned_args, None) 或 (None, err_msg)。
+    """
+    ent = _TOOL_SCHEMAS.get(name or "")
+    if ent is None:
+        return (dict(args) if isinstance(args, dict) else args), None
+    return _validate_args(args, ent[0], unknown=ent[1])
+
+
+def registered_tool_schemas():
+    """返回已登记 schema 的工具名集合（供判据/审计用）。"""
+    return dict(_TOOL_SCHEMAS)
+
+
+# 登记：先覆盖「已确认参数名且已有同等校验」的高危工具，避免改变既有行为。
+# required 只在原实现已强制必填时才标 True（process_kill/app_kill/app_close）。
+register_tool_schema("process_kill", [
+    {"key": "name", "type": "str", "required": True, "max_len": 512},
+    {"key": "force", "type": "bool"},
+])
+register_tool_schema("app_kill", [
+    {"key": "target", "type": "str", "required": True, "max_len": 512},
+])
+register_tool_schema("app_close", [
+    {"key": "title", "type": "str", "required": True, "max_len": 512},
+])
+register_tool_schema("clean_recycle_bin", [])
+register_tool_schema("read_file", [
+    {"key": "path", "type": "path", "max_len": 2000},
+    {"key": "offset", "type": "int", "min": 0},
+    {"key": "limit", "type": "int", "min": 0},
+])
+register_tool_schema("write_file", [
+    {"key": "path", "type": "path", "max_len": 2000},
+    {"key": "content", "type": "str", "max_len": ARG_MAX_LEN_CAP},
+])
+register_tool_schema("run_command", [
+    {"key": "command", "type": "str", "max_len": ARG_MAX_LEN_CAP},
+    {"key": "timeout", "type": "int", "min": 1, "max": TOOL_TIMEOUT_CAP},
+    {"key": "cwd", "type": "path", "max_len": 2000},
+])

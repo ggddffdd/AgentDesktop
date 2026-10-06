@@ -1,22 +1,23 @@
 # -*- coding: utf-8 -*-
-"""v4.222.0 进包核验：审查报告收口（P1 任务级产物验收 / P2 断点恢复幂等 / P1 不可信内容边界）。
+"""v4.223.0 进包核验：契约补全（P2 参数校验补全 / P2 结构化返回根治 string-match）。
 
-本轮改动（审查报告 P1 任务验收 / P2 断点幂等 / P1 不可信边界）：
-  · P1 任务验收：`agent._infer_outcome` 接产物级验收 —— 本轮若声明了交付物
-   （`deliverables`），必须真实落地（文件存在且非空）才算 success，否则降级 partial。
-    新增 `_deliverable_satisfied` / `_FILE_KINDS` 谓词，累积 `_deliverables`。
-  · P2 断点幂等：每次工具执行登记进 `_exec_ledger`（落 checkpoint）；恢复时从
-    checkpoint 取历史 ledger 构建 `_resume_done_hashes`，`_exec_tool_calls` 对不可幂等
-    工具（`_NON_IDEMPOTENT_TOOLS`）已执行过的跳过（fail-closed）。新增 `_is_resume_dup`
-    / `_record_exec_ledger` / `_tool_args_hash` 辅助。
-  · P1 不可信边界：`agent.wrap_untrusted` / `_wrap_tool_content` 把 web_fetch /
-    web_search / read_file / download 等不可信产出包进 `<untrusted_tool_output>`；
-    `skill_loader.Skill` 增 source/version/hash/audited_at/allow_* 元数据，
-    `load_skill_prompt` 返回内容包 `<untrusted skill>`；`config.system_prompt` 加边界规则。
+本轮改动（审查报告 P2 参数统一校验 + P2 工具失败判定）：
+  · P2 参数校验补全：`tool_contract._validate_args` 原只覆盖 type/required/enum/
+    min/max，且只接了 3 处工具。本轮补齐：路径标准化（type="path"，相对路径保持
+    相对）、长度上限 max_len、未知字段策略 unknown(ignore/strip/reject)、超时限制
+    （normalize_timeout：非法回落 30s、封顶 600s）；并改为工具级 schema 注册表
+    （register_tool_schema / validate_for_tool），exec_tool 一处统一接入，未登记
+    工具原样放行。
+  · P2 结构化返回根治：原 `tool_contract._infer_ok` 靠中文前缀猜成败（"已终止"=
+    成功、"失败"=失败），改文案即可翻转结论。本轮加显式结局契约
+    （register_outcome / resolve_ok，write_file 按「文件是否真落地且非空」判定），
+    from_legacy 优先采信契约；无契约的老工具仍走兜底但标 verified=False +
+    error_code="INFERRED"；ToolResult 补 error_code / retryable / verified。
 
-核验重点：① 版本号 v4.222.0 且不含 v4.221.0；② 本轮改动模块字节码指纹一致
-（真进包，不是改了个寂寞）；③ 三块新增符号/边界标签确在 agent / skill_loader 包内；
-④ 复用关键历史钉子（ALWAYS_CONFIRM 四工具 / tool_contract / 系统控制 15 tool_* /
+核验重点：① 版本号 v4.223.0 且不含 v4.222.0；② 本轮改动模块字节码指纹一致
+（真进包，不是改了个寂寞）；③ tool_contract 新符号在位（契约/超时/schema 注册表/
+INFERRED 标注）；④ tools 侧 exec_tool 统一校验接入串在位；⑤ 复用关键历史钉子
+（v4.221 硬确认 / v4.222 验收与边界 / tool_contract / 系统控制 15 tool_* /
 画布反向 / 测试不随包）防重打包回归。
 """
 import hashlib
@@ -166,10 +167,10 @@ def main():
     print("\n-- 2) 版本一致性 --")
     if "config" in names:
         consts = _str_consts(_load(za, "config"))
-        check("PYZ 内 config 版本常量 == v4.222.0",
-              "v4.222.0" in consts, f"包内版本串={sorted(s for s in consts if s.startswith('v4.22'))}")
-        check("PYZ 内不含上一版旧版本常量 v4.221.0",
-              "v4.221.0" not in consts, "残留旧版本串（可能是增量打包旧模块）")
+        check("PYZ 内 config 版本常量 == v4.223.0",
+              "v4.223.0" in consts, f"包内版本串={sorted(s for s in consts if s.startswith('v4.22'))}")
+        check("PYZ 内不含上一版旧版本常量 v4.222.0",
+              "v4.222.0" not in consts, "残留旧版本串（可能是增量打包旧模块）")
     else:
         check("config 在 PYZ 里", False, "缺失 → 启动崩")
 
@@ -261,6 +262,46 @@ def main():
         check("★ 包内 skill_loader 常量含 <untrusted skill 边界标签",
               any("<untrusted skill" in s for s in sls),
               "技能边界标签没编进去")
+
+    print("\n-- 3k) 本轮钉子：P2 参数校验补全 + P2 结构化返回根治（v4.223）--")
+    if "tool_contract" in names:
+        co_tc2 = _load(za, "tool_contract")
+        tcn = _code_names(co_tc2)
+        tcs = _str_consts(co_tc2)
+        # 结构化返回根治：契约注册表 + 「猜的」标注 + 机器可读错误码
+        for sym in ("register_outcome", "resolve_ok"):
+            check(f"★ 包内 tool_contract 定义 {sym}（显式结局契约）",
+                  sym in tcn, f"{sym} 没编进去 → 成败仍会退回按文案猜")
+        for mark in ("INFERRED", "UNVERIFIED_OUTCOME", "TOOL_FAILED"):
+            check(f"★ 包内 tool_contract 常量含 {mark}",
+                  any(mark in s for s in tcs),
+                  f"{mark} 没编进去 → 猜出来的结论会冒充已验证")
+        for sym in ("error_code", "retryable", "verified"):
+            check(f"★ 包内 tool_contract 含 ToolResult 机器可读字段 {sym}",
+                  (sym in tcn) or any(sym in s for s in tcs),
+                  f"{sym} 没编进去 → 结构化返回补全缺失")
+        # 参数校验补全：路径/长度/未知字段/超时 + schema 注册表
+        for sym in ("normalize_timeout", "register_tool_schema",
+                    "validate_for_tool", "_normalize_path", "_within_base",
+                    "_TOOL_SCHEMAS"):
+            check(f"★ 包内 tool_contract 定义 {sym}（参数校验补全）",
+                  sym in tcn, f"{sym} 没编进去 → 参数校验补全没进包")
+        check("★ 包内 tool_contract 常量含未知字段策略串 reject/strip",
+              any("reject" in s and "strip" in s for s in tcs),
+              "未知字段策略没编进去")
+        check("★ 包内 tool_contract 常量含参数校验报错串（越界/超过上限）",
+              any(("越界" in s) or ("超过上限" in s) for s in tcs),
+              "路径围栏/长度上限报错串没编进去")
+    if "tools" in names:
+        co_ts = _load(za, "tools")
+        tsn = _code_names(co_ts)
+        tss = _str_consts(co_ts)
+        check("★ 包内 tools 调用 validate_for_tool（exec_tool 统一校验接入）",
+              "validate_for_tool" in tsn,
+              "validate_for_tool 没被调用 → 参数校验只覆盖老 3 处")
+        check("★ 包内 tools 常量含「参数校验未通过」拦截串",
+              any("参数校验未通过" in s for s in tss),
+              "exec_tool 拦截串没编进去")
 
     print("\n-- 3d) 关键历史钉子：tool_contract 契约真进包（v4.220 收口）--")
     if "tool_contract" in names:

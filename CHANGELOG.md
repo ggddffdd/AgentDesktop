@@ -8,6 +8,26 @@
 - 新版本在上。
 
 ---
+## v4.223.0 — 2026-10-06
+
+**契约补全：P2 参数统一校验补全（四个缺失维度 + 一处统一入口）／ P2 工具结构化返回根治 string-match。**
+
+- **P2 参数校验补全**：v4.220 的 `_validate_args` 只覆盖 type/required/enum/min/max，且只接了 3 处工具。本轮补齐四项并统一入口：
+  - 路径标准化 `type="path"`：展开 `~`／环境变量、折叠 `.` 与 `..`；**相对路径保持相对**（各工具落点基准不同，贸然 abspath 会改落点）；可选 `base_dir` 越界围栏（越界即拒）。
+  - 长度上限 `max_len`：超限即拒（防超大 payload 打爆上下文／子进程）。
+  - 未知字段策略 `unknown`：默认 `ignore`（零破坏）、可选 `strip`（丢弃未声明字段）、`reject`（出现即拒，防「参数名拼错被静默忽略」）。
+  - 超时限制：`normalize_timeout`（非法／非正回落默认 30s、超出封顶 600s）+ schema `max`。
+  - 覆盖方式改为**工具级 schema 注册表**（`register_tool_schema` / `validate_for_tool`），`exec_tool` 一处统一接入：已登记工具在副作用前拦截，**未登记工具原样放行**（零破坏）。首批登记 7 个（process_kill / app_kill / app_close / clean_recycle_bin / read_file / write_file / run_command）。
+  - 验收：判据 `tests/test_param_validation_223.py`（18 项 PV1–PV7，含 exec_tool 端到端拦截）+ 扰动 `_perturb_param_validation_223.py`（6 变异：路径归一／越界围栏／长度上限／未知字段策略／超时封顶／exec 接入各退化一次）全命中（哑弹 0）。
+- **P2 结构化返回根治 string-match**：`tool_contract._infer_ok` 靠中文前缀猜成败（"已终止"=成功、"失败"=失败）—— 工具改一句文案就能翻转结论，模型可用话术伪装成功。修复分三层：
+  - ① 新增**显式结局契约** `register_outcome(name, fn)`：契约必须基于真实信号判定（如 write_file = 文件是否真的落地且非空），`from_legacy` 优先采信契约，**文案翻不动结论**。
+  - ② 无契约的老工具仍需 `_infer_ok` 兜底，但结论被显式标注 `verified=False` + `error_code="INFERRED"`（失败时 `UNVERIFIED_OUTCOME`），不再把猜出来的结论冒充已验证。
+  - ③ `ToolResult` 补全机器可读字段 `error_code` / `retryable` / `verified`；`fail()`／`ok_result()` 两个工厂正确填充。
+  - 验收：判据 `tests/test_structured_return_223.py`（16 项 SR1–SR6，含 exec_tool 端到端：真写入 ok=True、写入未落地即便谎报成功文案仍 ok=False）+ 扰动 `_perturb_structured_return_223.py`（3 变异：退回按文案猜／摘掉 INFERRED 标注／工厂不填错误码）全命中（哑弹 0）。
+- 兼容：v4.220 两套既有判据（`test_param_validation_220` PASS=10、`test_structured_return_220` PASS=7）全绿零回归。
+- 验收：本轮 2 套件 34 项判据全绿 + 2 扰动（6+3=9 变异）全命中（哑弹 0）。（全量门禁见发布列车。）
+
+---
 ## v4.222.0 — 2026-10-06
 
 **审查报告收口（P1 任务验收 / P2 断点幂等 / P1 不可信内容边界）：产物级结局判定、断点恢复不可幂等工具查重跳过、外部/工具/技能产出显式不可信边界。**
