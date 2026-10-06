@@ -508,8 +508,136 @@ def _fit_history_to_budget(msgs, budget_chars, min_keep=1):
     if i == 0:
         return msgs, 0, total
     return msgs[i:], i, total
+# ============================================================
+# v4.224：单条消息硬上限（P2 单条消息预算）
+# ============================================================
+# 为什么要有它：v4.177 的字符预算闸 `_fit_history_to_budget` 是**整条丢**——
+# 为了不丢掉本轮提问，它刻意保住最后 `min_keep` 条。于是：一条 264KB 的巨消息
+# （实测事故）只要它是最后一条，就**绕过全部预算**——预算闸形同虚设。
+# 本层补的是「单条内部」的上限：**最后一条照样截断内容，只是不整条丢**。
+#
+# 各维度 0 = 该维度关闭；传空 dict = 全部关闭（可逆）。
+MSG_BUDGET_DEFAULTS = {
+    # 单条正文（user/assistant 文本、vision 里的 text part）上限
+    "text_max_chars": 12000,
+    # 单条工具结果上限（Agent 长循环里一条结果能到几十 KB）
+    "tool_result_max_chars": 12000,
+    # 单条 assistant.tool_calls 里 arguments 的上限
+    "args_max_chars": 8000,
+    # 单条消息最多带几张图
+    "max_images_per_msg": 4,
+    # 单张图的 base64 长度上限（超了直接丢图，不截断——截断的图是废字节）
+    "max_image_chars": 900000,
+}
+
+_TRUNC_SUFFIX = "\u2026[\u5df2\u622a\u65ad {n} \u5b57\u7b26]"
+_IMG_DROP_NOTE = "[\u5df2\u7701\u7565 {n} \u5f20\u56fe]"
+
+def _cap_text(s, cap):
+    """把字符串截到 cap，并**留可见的截断标记**（模型得知道内容被砍过）。"""
+    if not isinstance(s, str) or not cap or cap <= 0 or len(s) <= cap:
+        return s, False
+    n = len(s) - cap
+    return s[:cap] + _TRUNC_SUFFIX.format(n=n), True
+
+def _cap_message_to_budget(m, caps=None):
+    """v4.224：对**单条**消息施加硬上限（含最后一条，见上方说明）。
+
+    覆盖四个维度：正文 / 工具结果 / tool_calls 的 arguments / 图片（张数与单张体积）。
+    只削内容、**不删消息**（删消息仍归 `_fit_history_to_budget`），所以不破坏
+    assistant.tool_calls ↔ tool 的配对。
+
+    返回 (new_msg, changed)。纯函数，不改传入对象。
+    """
+    if not isinstance(m, dict):
+        return m, False
+    caps = caps or {}
+    changed = False
+    out = dict(m)
+    role = m.get("role")
+    text_cap = int(caps.get("text_max_chars") or 0)
+
+    # 1) 工具结果：单条 tool 消息的 content
+    if role == "tool":
+        c = out.get("content")
+        if isinstance(c, str):
+            nc, ch = _cap_text(c, int(caps.get("tool_result_max_chars") or 0))
+            if ch:
+                out["content"] = nc
+                changed = True
+        return out, changed
+
+    # 2) 正文：纯字符串，或视觉模型的 parts list
+    c = out.get("content")
+    if isinstance(c, str):
+        nc, ch = _cap_text(c, text_cap)
+        if ch:
+            out["content"] = nc
+            changed = True
+    elif isinstance(c, list):
+        parts = []
+        imgs = 0
+        dropped_imgs = 0
+        max_imgs = int(caps.get("max_images_per_msg") or 0)
+        max_img_chars = int(caps.get("max_image_chars") or 0)
+        for p in c:
+            if isinstance(p, str):
+                np_, ch = _cap_text(p, text_cap)
+                if ch:
+                    changed = True
+                parts.append(np_)
+                continue
+            if not isinstance(p, dict):
+                parts.append(p)
+                continue
+            if p.get("type") == "image_url":
+                url = ((p.get("image_url") or {}).get("url") or "")
+                if max_img_chars and len(url) > max_img_chars:
+                    dropped_imgs += 1
+                    changed = True
+                    continue
+                if max_imgs and imgs >= max_imgs:
+                    dropped_imgs += 1
+                    changed = True
+                    continue
+                imgs += 1
+                parts.append(p)
+                continue
+            if p.get("type") == "text":
+                nt, ch = _cap_text(p.get("text") or "", text_cap)
+                if ch:
+                    p = dict(p)
+                    p["text"] = nt
+                    changed = True
+            parts.append(p)
+        if dropped_imgs:
+            parts.append({"type": "text",
+                          "text": _IMG_DROP_NOTE.format(n=dropped_imgs)})
+        out["content"] = parts
+
+    # 3) assistant.tool_calls 里的 arguments（模型拼超长参数同样要封顶）
+    tcs = out.get("tool_calls")
+    if isinstance(tcs, list) and tcs:
+        acap = int(caps.get("args_max_chars") or 0)
+        if acap > 0:
+            new_tcs = []
+            for tc in tcs:
+                if isinstance(tc, dict):
+                    fn = tc.get("function")
+                    if isinstance(fn, dict):
+                        a = fn.get("arguments")
+                        if isinstance(a, str) and len(a) > acap:
+                            fn = dict(fn)
+                            fn["arguments"], _ = _cap_text(a, acap)
+                            tc = dict(tc)
+                            tc["function"] = fn
+                            changed = True
+                new_tcs.append(tc)
+            out["tool_calls"] = new_tcs
+    return out, changed
+
 def _build_api_history(messages, vision_ok=False, max_history=None,
-                        char_budget=None):
+                        char_budget=None, msg_budget=None):
     """v4.125 N-01：会话保真压缩——把 session 历史构造成 API 可接受的 messages。
 
     与 _sanitize_msg_for_api 的区别（为什么要有这个函数）：
@@ -563,6 +691,22 @@ def _build_api_history(messages, vision_ok=False, max_history=None,
             sm = dict(sm)
             sm.setdefault("reasoning_content", m.get("reasoning_content") or "")
         cleaned.append(sm)
+    # v4.224：单条硬上限（**含最后一条**）—— 整条丢弃保不住的那条巨消息，
+    # 在这一层被削内容。只削不删，配对不受影响，后面照旧修一遍。
+    if msg_budget:
+        _new_cleaned = []
+        _capped = 0
+        for _m in cleaned:
+            _nm, _ch = _cap_message_to_budget(_m, msg_budget)
+            if _ch:
+                _capped += 1
+            _new_cleaned.append(_nm)
+        cleaned = _new_cleaned
+        if _capped:
+            try:
+                log.info("单条消息超预算已裁剪：%d 条", _capped)
+            except Exception:
+                pass
     cleaned = _repair_tool_pairs(cleaned)
     if max_history and len(cleaned) > int(max_history):
         cleaned = _repair_tool_pairs(cleaned[-int(max_history):])

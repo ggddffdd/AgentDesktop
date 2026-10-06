@@ -8,6 +8,25 @@
 - 新版本在上。
 
 ---
+## v4.224.0 — 2026-10-07
+
+**验证 + 预算：P2 执行后验证（副作用真生效才有脸报成功）／ P2 单条消息预算硬上限（堵住「最后一条绕过全部预算」的洞）。**
+
+- **P2 执行后验证**：写文件/系统控制这类有副作用的工具，以前跑完照着返回值就报成功，从不回头查副作用是否真生效。新增验证层 `tool_contract.register_verifier` / `verify_after` / `apply_post_verification`，并在 `exec_tool` 两条返回路径统一接入。首批登记两个真信号验证器：`process_kill`（按名字终止后查同名进程是否清零）、`clean_recycle_bin`（清完后复查是否真空）。
+  - 语义硬约束：**只降级不升级** —— 验证不通过把 ok 打成 False 并换 `error_code=POST_VERIFY_FAILED` + 证据尾巴；验证通过**绝不**把原本失败的调用翻成成功（否则「工具不存在」也能被验成成功）。
+  - fail-open：无验证器 / 验证器不表态（查不到真信号）/ 验证器抛异常 → 结论一字不动。
+  - 形态豁免：`process_kill` 按 PID 终止时不表态（同名进程可能仍有多实例，查总数会假红 —— 那不是失败，是我们验错了）。
+  - 验收：判据 `tests/test_post_exec_verify_224.py`（26 项 PV1–PV5，含 exec_tool 端到端降级）+ 扰动 `_perturb_post_exec_verify_224.py`（3 变异：不验证 / 允许升级 / 破坏 fail-open）全命中（哑弹 0）。
+- **P2 单条消息预算硬上限**：历史预算只有「整条丢弃」一道闸（v4.177 `_fit_history_to_budget`），而它为了不丢本轮提问**刻意保住最后 `min_keep` 条** → 只要那条巨消息是最后一条就**绕过全部预算**（实测见过单条 264KB）。新增 `ui_msg.MSG_BUDGET_DEFAULTS` + `_cap_message_to_budget`，补「单条内部」上限，**最后一条照样削内容，只是不整条丢**：
+  - 正文 `text_max_chars`（12000）／ 工具结果 `tool_result_max_chars`（12000）／ `tool_calls` 的 `arguments` 上限 `args_max_chars`（8000）／ 单条图片数 `max_images_per_msg`（4）／ 单张图体积 `max_image_chars`（900000）。
+  - 截断**必留可见标记**（`…[已截断 N 字符]`），丢图插「已省略 N 张图」—— 模型得知道内容被砍过，不能假装完整。
+  - 只削内容、不删消息 → 不破坏 `assistant.tool_calls ↔ tool` 配对。各维度 0 = 关闭、空 dict = 全部关闭（可逆）。
+  - 验收：判据 `tests/test_msg_budget_cap_224.py`（29 项 MB1–MB8，含「最后一条不再免疫」与旧行为对照组）+ 扰动 `_perturb_msg_budget_cap_224.py`（4 变异：豁免最后一条 / 去掉截断标记 / 放开图片数 / 放开单图体积）全命中（哑弹 0）。
+- 兼容：既有历史/视觉/思考通道与 v4.220、v4.223 判据全绿零回归（`test_history_budget` PASS=35、`test_image_payload_guard` PASS=30、`test_vision_channel` PASS=34、`test_thinking_channel_reasoning` PASS=50、`test_param_validation_220` PASS=10、`test_structured_return_220` PASS=7、`test_param_validation_223` PASS=18、`test_structured_return_223` PASS=16）。
+- 验收：本轮 2 套件 55 项判据全绿 + 2 扰动（3+4=7 变异）全命中（哑弹 0）。（全量门禁见发布列车。）
+- 已知尾巴：浏览器类工具（browser_*）不在 `exec_tool` 注册表内、且无廉价真实信号可取，执行后验证**未覆盖**；可随后续引入 CDP 状态查询再补。
+
+---
 ## v4.223.0 — 2026-10-06
 
 **契约补全：P2 参数统一校验补全（四个缺失维度 + 一处统一入口）／ P2 工具结构化返回根治 string-match。**

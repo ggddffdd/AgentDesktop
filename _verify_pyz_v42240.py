@@ -1,24 +1,22 @@
 # -*- coding: utf-8 -*-
-"""v4.223.0 进包核验：契约补全（P2 参数校验补全 / P2 结构化返回根治 string-match）。
+"""v4.224.0 进包核验：验证 + 预算（P2 执行后验证 / P2 单条消息预算硬上限）。
 
-本轮改动（审查报告 P2 参数统一校验 + P2 工具失败判定）：
-  · P2 参数校验补全：`tool_contract._validate_args` 原只覆盖 type/required/enum/
-    min/max，且只接了 3 处工具。本轮补齐：路径标准化（type="path"，相对路径保持
-    相对）、长度上限 max_len、未知字段策略 unknown(ignore/strip/reject)、超时限制
-    （normalize_timeout：非法回落 30s、封顶 600s）；并改为工具级 schema 注册表
-    （register_tool_schema / validate_for_tool），exec_tool 一处统一接入，未登记
-    工具原样放行。
-  · P2 结构化返回根治：原 `tool_contract._infer_ok` 靠中文前缀猜成败（"已终止"=
-    成功、"失败"=失败），改文案即可翻转结论。本轮加显式结局契约
-    （register_outcome / resolve_ok，write_file 按「文件是否真落地且非空」判定），
-    from_legacy 优先采信契约；无契约的老工具仍走兜底但标 verified=False +
-    error_code="INFERRED"；ToolResult 补 error_code / retryable / verified。
+本轮改动（审查报告 P2 两项）：
+  · P2 执行后验证：有副作用的工具（写文件/系统控制）跑完就照返回值报成功，从不
+    回头查副作用是否真生效。新增验证层 tool_contract.register_verifier /
+    verify_after / apply_post_verification，并在 exec_tool 两条返回路径统一接入。
+    首批登记 2 个真信号验证器：process_kill（按名字终止后查同名进程清零）、
+    clean_recycle_bin（清完复查是否真空）。语义：只降级不升级 + fail-open。
+  · P2 单条消息预算硬上限：v4.177 整条丢弃闸刻意保住最后 min_keep 条 → 巨消息
+    只要在最后一条就绕过全部预算。新增 ui_msg.MSG_BUDGET_DEFAULTS +
+    _cap_message_to_budget，_build_api_history 加 msg_budget 参数，最后一条照样
+    削内容只是不整条丢；截断必留可见标记。
 
-核验重点：① 版本号 v4.223.0 且不含 v4.222.0；② 本轮改动模块字节码指纹一致
-（真进包，不是改了个寂寞）；③ tool_contract 新符号在位（契约/超时/schema 注册表/
-INFERRED 标注）；④ tools 侧 exec_tool 统一校验接入串在位；⑤ 复用关键历史钉子
-（v4.221 硬确认 / v4.222 验收与边界 / tool_contract / 系统控制 15 tool_* /
-画布反向 / 测试不随包）防重打包回归。
+核验重点：① 版本号 v4.224.0 且不含 v4.223.0；② 本轮改动模块字节码指纹一致
+（真进包，不是改了个寂寞）；③ tool_contract 执行后验证符号在位；④ ui_msg 单条
+预算符号与截断标记在位；⑤ config 带 msg_budget 默认；⑥ 复用关键历史钉子
+（v4.221 硬确认 / v4.222 验收与边界 / v4.223 契约 / tool_contract / 系统控制
+15 tool_* / 画布反向 / 测试不随包）防重打包回归。
 """
 import hashlib
 import marshal
@@ -31,7 +29,8 @@ EXE = ROOT / "dist" / "小臭玩AI" / "小臭玩AI.exe"
 
 MODULES = ["tools", "agent", "agent_node", "risk", "permissions",
            "system_control_tools", "software_control_tools", "config",
-           "tool_contract", "skill_loader"]
+           "tool_contract", "skill_loader",
+           "ui_msg"]
 
 _n_pass = _n_fail = 0
 
@@ -167,10 +166,10 @@ def main():
     print("\n-- 2) 版本一致性 --")
     if "config" in names:
         consts = _str_consts(_load(za, "config"))
-        check("PYZ 内 config 版本常量 == v4.223.0",
-              "v4.223.0" in consts, f"包内版本串={sorted(s for s in consts if s.startswith('v4.22'))}")
-        check("PYZ 内不含上一版旧版本常量 v4.222.0",
-              "v4.222.0" not in consts, "残留旧版本串（可能是增量打包旧模块）")
+        check("PYZ 内 config 版本常量 == v4.224.0",
+              "v4.224.0" in consts, f"包内版本串={sorted(s for s in consts if s.startswith('v4.22'))}")
+        check("PYZ 内不含上一版旧版本常量 v4.223.0",
+              "v4.223.0" not in consts, "残留旧版本串（可能是增量打包旧模块）")
     else:
         check("config 在 PYZ 里", False, "缺失 → 启动崩")
 
@@ -302,6 +301,51 @@ def main():
         check("★ 包内 tools 常量含「参数校验未通过」拦截串",
               any("参数校验未通过" in s for s in tss),
               "exec_tool 拦截串没编进去")
+
+    print("\n-- 3l) 本轮钉子：P2 执行后验证 + P2 单条消息预算硬上限（v4.224）--")
+    if "tool_contract" in names:
+        co_tc3 = _load(za, "tool_contract")
+        tcn3 = _code_names(co_tc3)
+        tcs3 = _str_consts(co_tc3)
+        for sym in ("register_verifier", "verify_after",
+                    "apply_post_verification"):
+            check(f"★ 包内 tool_contract 定义 {sym}（执行后验证）",
+                  sym in tcn3, f"{sym} 没编进去 → 副作用没人回头验")
+        check("★ 包内 tool_contract 常量含 POST_VERIFY_FAILED",
+              any("POST_VERIFY_FAILED" in s for s in tcs3),
+              "验证失败错误码没编进去 → 降级无法被机器识别")
+        check("★ 包内 tool_contract 常量含执行后验证证据串",
+              any("执行后验证未通过" in s for s in tcs3),
+              "证据尾巴没编进去 → 模型看不到验证结论")
+    else:
+        check("tool_contract 在 PYZ 里", False, "缺失 → 契约层空转")
+    if "system_control_tools" in names:
+        co_sc = _load(za, "system_control_tools")
+        scn = _code_names(co_sc)
+        scs = _str_consts(co_sc)
+        for sym in ("_verify_process_kill", "_verify_clean_recycle_bin",
+                    "register_verifier"):
+            check(f"★ 包内 system_control_tools 定义 {sym}（真信号验证器）",
+                  sym in scn, f"{sym} 没编进去 → 验证器没接上")
+        check("★ 包内 system_control_tools 常量含验证证据串（残留/已空）",
+              any(("残留" in s) or ("已空" in s) for s in scs),
+              "验证证据串没编进去")
+    if "ui_msg" in names:
+        co_um = _load(za, "ui_msg")
+        umn = _code_names(co_um)
+        ums = _str_consts(co_um)
+        for sym in ("MSG_BUDGET_DEFAULTS", "_cap_message_to_budget",
+                    "_cap_text"):
+            check(f"★ 包内 ui_msg 定义 {sym}（单条消息预算）",
+                  sym in umn, f"{sym} 没编进去 → 最后一条仍能绕过预算")
+        for mark in ("已截断", "已省略", "text_max_chars",
+                     "tool_result_max_chars", "args_max_chars",
+                     "max_images_per_msg", "max_image_chars"):
+            check(f"★ 包内 ui_msg 常量含 {mark}",
+                  any(mark in s for s in ums),
+                  f"{mark} 没编进去 → 预算维度缺失")
+    else:
+        check("ui_msg 在 PYZ 里", False, "缺失 → 消息拼装崩")
 
     print("\n-- 3d) 关键历史钉子：tool_contract 契约真进包（v4.220 收口）--")
     if "tool_contract" in names:

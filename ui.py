@@ -7391,7 +7391,8 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         # 保留 tool_calls+tool 配对，续跑/继续时模型看得见工具调用记录，不再失忆重干。
         hist = _build_api_history(session.messages, vision_ok=_vision_ok,
                                   max_history=self.cfg["max_history"],
-                                  char_budget=self.cfg.get("history_char_budget", 0))
+                                  char_budget=self.cfg.get("history_char_budget", 0),
+                                  msg_budget=self.cfg.get("msg_budget"))
         messages = [sys_msg] + hist
 
         all_tools = config.get_all_tools(self.cfg)
@@ -8793,7 +8794,8 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         # tool_calls/tool 配对保留（配对修复防 400），视觉/截断在函数内处理。
         others = _build_api_history(session.messages[:-1], vision_ok=_vision_ok,
                                     max_history=self.cfg["max_history"],
-                                    char_budget=self.cfg.get("history_char_budget", 0))
+                                    char_budget=self.cfg.get("history_char_budget", 0),
+                                    msg_budget=self.cfg.get("msg_budget"))
         api_messages = [sys_msg] + others
         if search_context:
             api_messages.append({"role": "system", "content": search_context})

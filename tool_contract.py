@@ -42,6 +42,11 @@ __all__ = [
     "_mask_recursive",
     "register_impact_scope",
     "compute_impact_scope",
+    # v4.224：执行后验证（只降级不升级）
+    "register_verifier",
+    "registered_verifiers",
+    "verify_after",
+    "apply_post_verification",
 ]
 
 
@@ -208,6 +213,92 @@ def _outcome_write_file(msg, args) -> Optional[bool]:
 
 
 register_outcome("write_file", _outcome_write_file)
+
+
+# ============================================================
+# v4.224：执行后验证（post-exec verification）
+# ============================================================
+# 与「结局契约」的分工：
+#   · 结局契约（v4.223）：**判定**这次调用算成功还是失败（基于真实信号）。
+#   · 执行后验证（本轮）：调用**已经跑完**，再回头查一次副作用是否真的生效
+#     （进程真没了？回收站真空了？），把证据写进 ToolResult。
+# 语义硬约束：**验证只降级、不升级** —— 验证不通过必须把 ok 打成 False；
+# 验证通过也**不许**把原本失败的调用翻成成功（否则工具不存在/报错也能被"验证"成成功）。
+# 无验证器、或验证器查询失败（取不到真信号）→ 返回 None，fail-open 不动结论。
+
+_VERIFY_REGISTRY: Dict[str, Any] = {}
+
+
+def register_verifier(name: str, fn):
+    """登记工具的执行后验证器。
+
+    fn(args, result) -> None / bool / (bool, evidence_str)
+      · None：不表态（查不到真信号 / 该调用形态不适用）→ fail-open，结论不动
+      · bool 或 (bool, evidence)：表态；False 会把 ok 降级为 False
+    """
+    if not name or not callable(fn):
+        return False
+    _VERIFY_REGISTRY[str(name)] = fn
+    return True
+
+
+def registered_verifiers():
+    return sorted(_VERIFY_REGISTRY)
+
+
+def verify_after(name, args=None, result=None):
+    """跑执行后验证；无验证器/不表态/异常 → None。否则 (ok: bool, evidence: str)。"""
+    fn = _VERIFY_REGISTRY.get(name or "")
+    if fn is None:
+        return None
+    try:
+        r = fn(args or {}, result)
+    except Exception:
+        return None
+    if r is None:
+        return None
+    if isinstance(r, tuple):
+        return (bool(r[0]), str(r[1]) if len(r) > 1 else "")
+    return (bool(r), "")
+
+
+def apply_post_verification(tr, name, args=None):
+    """把执行后验证结论落到 ToolResult 上。返回是否被降级。
+
+    只降级不升级：验证不通过 → ok=False + error_code + 证据尾巴；
+    验证通过 → 只补 verified/evidence，**不动 ok**（原本失败仍失败）。
+    """
+    if tr is None:
+        return False
+    v = verify_after(name, args, tr)
+    if v is None:
+        return False
+    vok, ev = v
+    try:
+        tr.verified = True
+    except Exception:
+        pass
+    if vok:
+        # 验证通过：只留证据，绝不把失败翻成成功
+        try:
+            if ev and not getattr(tr, "evidence", None):
+                tr.evidence = ev
+        except Exception:
+            pass
+        return False
+    # 验证不通过：证据必留；只有原本「判成功」的才打成失败，并换成
+    # POST_VERIFY_FAILED（此刻它就是失败的权威理由）；原本已失败的保留原始错误码，
+    # 不让验证结论盖掉工具真正的报错。
+    was_ok = bool(getattr(tr, "ok", False))
+    try:
+        if was_ok:
+            tr.ok = False
+            tr.error_code = "POST_VERIFY_FAILED"
+        if ev:
+            tr.msg = (getattr(tr, "msg", "") or "") + "\n[执行后验证未通过] " + ev
+    except Exception:
+        pass
+    return was_ok
 
 
 # ============================================================

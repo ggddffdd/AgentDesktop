@@ -1131,3 +1131,36 @@ def _scope_process_start(args):
     return f"将启动新进程：{target}（启动后不可自动撤销）"
 
 register_impact_scope("process_start", _scope_process_start)
+
+
+# v4.224：执行后验证 —— 调用跑完后回头查副作用是否真的生效（只降级不升级）
+from tool_contract import register_verifier
+
+def _verify_process_kill(args, result=None):
+    """按名字终止后查同名进程是否真的清零。
+
+    只验证「按名字」这一种形态：按 PID 终止时同名进程可能仍有若干（多实例），
+    查总数会假红 —— 那不是失败，是我们验错了。所以 PID 形态直接不表态。
+    """
+    name = str((args or {}).get("name") or "").strip()
+    if not name or name.isdigit():
+        return None
+    n = _count_processes(name)
+    if n is None:
+        return None
+    return (n == 0, ("同名进程仍残留 %d 个" % n) if n else "已无同名进程")
+
+
+def _verify_clean_recycle_bin(args, result=None):
+    """清空回收站后复查是否真的空了（反编造：残留就如实说残留）。"""
+    try:
+        n = _count_recycle_items()
+    except Exception:
+        return None
+    if not isinstance(n, int):
+        return None
+    return (n == 0, ("回收站仍残留 %d 项" % n) if n else "回收站已空")
+
+
+register_verifier("process_kill", _verify_process_kill)
+register_verifier("clean_recycle_bin", _verify_clean_recycle_bin)

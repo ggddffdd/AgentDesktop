@@ -77,7 +77,7 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.223.0"
+APP_VERSION = "v4.224.0"
 APP_BUILD_DATE = "2026-10-06"
 # v4.164.0（2026-09-27）**运行数据归口：彻底治「dist 既是运行目录又是分发源」**：
 #   新增 config.WORKSPACE_DIR（默认 ~/Documents/小臭玩AI，与 USER_DATA_DIR 同值，
@@ -1027,6 +1027,16 @@ DEFAULT_CONFIG = {
     #   单位用字符而不是 token：引 tokenizer 要加依赖和打包体积，不划算（见
     #   ui._fit_history_to_budget 的说明）。
     "history_char_budget": 80000,
+    # v4.224：单条消息硬上限（P2 单条消息预算）。整条丢弃那道闸（`history_char_budget`）
+    #   刻意保住最后一条，于是「一条巨消息」能绕过全部预算。这一层补**单条内部**上限：
+    #   最后一条照样削内容，只是不整条丢。各维度 0 = 该维度关闭；空 dict = 全部关闭。
+    "msg_budget": {
+        "text_max_chars": 12000,
+        "tool_result_max_chars": 12000,
+        "args_max_chars": 8000,
+        "max_images_per_msg": 4,
+        "max_image_chars": 900000,
+    },
     "search_enabled": True,
     "search_provider": "auto",
     "search_top_k": 5,

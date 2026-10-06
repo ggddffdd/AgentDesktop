@@ -41,7 +41,8 @@ db_tools = DatabaseTools()
 # v4.220：工具调用统一契约（结构化返回 + 脱敏 + 影响范围）
 from tool_contract import (ToolResult, _mask_sensitive, _mask_recursive,
                            compute_impact_scope,
-                           validate_for_tool)  # v4.223：统一参数校验入口
+                           validate_for_tool,  # v4.223：统一参数校验入口
+                           apply_post_verification)  # v4.224：执行后验证
 
 
 # v4.155 fix2：图生视频轮询超时上限（默认 240s，< Agent 回合上限 445s，刻意留余量）。
@@ -923,6 +924,11 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
             _tr.msg = _mask_sensitive(_tr.msg)
             _tr.data = _mask_recursive(_tr.data)
             _tr.evidence = _mask_recursive(_tr.evidence)
+            # v4.224：执行后验证（查副作用是否真生效；只降级不升级）
+            try:
+                apply_post_verification(_tr, name, args)
+            except Exception:
+                pass
             return _tr
         except Exception as e:
             log.warning("工具 %s 执行异常: %s", name, e)
@@ -953,6 +959,11 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
                                  name=name, args=args)
     _trace_fetch(name, args, _tr.msg, ok=_tr.ok)
     _tr.msg = _mask_sensitive(_tr.msg)
+    # v4.224：执行后验证（查副作用是否真生效；只降级不升级）
+    try:
+        apply_post_verification(_tr, name, args)
+    except Exception:
+        pass
     return _tr
 
 

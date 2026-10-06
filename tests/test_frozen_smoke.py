@@ -133,6 +133,8 @@ want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         "skill_loader",
         # v4.223.0：参数校验补全 + 结构化返回根治（契约注册表 / 超时 / schema 注册表）
         "tool_contract",
+        # v4.224.0：单条消息预算硬上限（消息拼装与历史压缩都在这）
+        "ui_msg",
         ]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
@@ -307,7 +309,14 @@ def main():
                   "register_tool_schema", "validate_for_tool",
                   "_normalize_path", "_within_base", "_TOOL_SCHEMAS",
                   "ARG_MAX_LEN_CAP", "TOOL_TIMEOUT_CAP",
-                  "INFERRED", "UNVERIFIED_OUTCOME", "TOOL_FAILED"],
+                  "INFERRED", "UNVERIFIED_OUTCOME", "TOOL_FAILED",
+                  # v4.224.0：执行后验证（只降级不升级）
+                  "register_verifier", "verify_after",
+                  "apply_post_verification", "POST_VERIFY_FAILED"],
+        # v4.224.0：单条消息预算硬上限（最后一条不再免疫 + 截断必留标记）
+        "ui_msg": ["MSG_BUDGET_DEFAULTS", "_cap_message_to_budget", "_cap_text",
+                  "已截断", "已省略", "text_max_chars", "tool_result_max_chars",
+                  "args_max_chars", "max_images_per_msg", "max_image_chars"],
         # v4.216.0：意图分类判据族（_prog_fetch_intent/_is_bare_url/_PROG_FETCH_KW
         # + is_non_action_message 调用）已迁到 agent_text.py（agent 改调 agent_text._x）。
         # 校验随之跟到 agent_text 模块，否则误报 agent 缺符号（假红）。
