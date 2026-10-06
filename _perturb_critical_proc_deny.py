@@ -115,7 +115,7 @@ def case(name, env_src, expects):
 _DENY_BLOCK = ("    # G4 第二步：系统关键进程一律硬拒绝（在任何 spawn 之前）。\n"
                "    _deny = _critical_process_deny(name)\n"
                "    if _deny:\n"
-               "        return (_deny, [], None)\n\n")
+               "        return ToolResult.fail(_deny)\n\n")
 
 # PC1：整段删掉判定（helper 留着 → 死代码，杀 lsass 照常执行）
 _mut = sub(SCT_SRC, _DENY_BLOCK, "", "PC1 drop deny block")
@@ -134,7 +134,7 @@ case("PC1 整段删掉 process_kill 的关键进程判定（helper 变死代码�
 _mut = sub(SCT_SRC,
            "    _deny = _critical_process_deny(name)\n"
            "    if _deny:\n"
-           "        return (_deny, [], None)\n",
+           "        return ToolResult.fail(_deny)\n",
            "    _deny = _critical_process_deny(name)\n",
            "PC2 drop deny return")
 assert "_deny = _critical_process_deny(name)" in _mut, "PC2 变异未生效"
@@ -172,7 +172,7 @@ case("PC4 只删归一化补 .exe（'lsass' 这种写法漏网）",
 _APP_DENY = ("    from system_control_tools import _critical_process_deny\n"
              "    _deny = _critical_process_deny(target)\n"
              "    if _deny:\n"
-             "        return (_deny, [], None)\n\n")
+             "        return ToolResult.fail(_deny)\n\n")
 _mut = sub(SWC_SRC, _APP_DENY, "", "PC5 drop app_kill deny")
 case("PC5 删掉 app_kill 的关键进程判定（第二个入口失守）",
      {"SWC_PATH": ("swc_mut_", _mut)},

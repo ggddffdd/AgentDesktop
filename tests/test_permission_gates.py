@@ -183,6 +183,11 @@ def part_d_run_workflow_gate():
         def _confirm_text(self, name, args):
             return ("t", "d")
 
+        def _build_confirm_detail(self, name, args):
+            # v4.220：_run_workflow_guarded 现会调 _build_confirm_detail 注入影响范围，
+            # 抽出来的真实方法源码在 fake self 上跑时也需要这个方法（与 _confirm_text 同性质）。
+            return ("t", "d")
+
         def _maybe_confirm(self, t, d, force=False):
             return False          # 用户拒绝
 

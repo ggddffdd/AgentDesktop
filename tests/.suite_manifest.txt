@@ -36,6 +36,7 @@ test_history_budget.py
 test_hitarea_2103.py
 test_hotfix15.py
 test_image_payload_guard.py
+test_impact_scope_220.py
 test_intent_guard_negation.py
 test_intent_routing.py
 test_intent_scope.py
@@ -53,6 +54,7 @@ test_no_stall_186.py
 test_outcome_honesty_195.py
 test_p0p1_runcmd_fix_186.py
 test_p2_210.py
+test_param_validation_220.py
 test_permission_gates.py
 test_perturb_harness.py
 test_popup_clamp.py
@@ -66,11 +68,13 @@ test_risk_webhook_events_218.py
 test_robust_fix_186.py
 test_route_injection_guard.py
 test_screenshot_path_fence_218.py
+test_sensitive_mask_220.py
 test_session_goal_automation.py
 test_skill_and_route_gates.py
 test_software_control_2b.py
 test_split_216.py
 test_status_len_2091.py
+test_structured_return_220.py
 test_system_control_a.py
 test_system_control_b.py
 test_task_graph_cancel.py

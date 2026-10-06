@@ -25,6 +25,7 @@ from task_graph import TaskGraph      # v4.60 任务图引擎
 from agent_node import AgentNode      # v4.60 多Agent节点
 from token_compressor import compress # v4.60 Token 压缩
 from risk import command_danger_level  # ①-B 高危命令护栏：确认文案标记
+from tool_contract import compute_impact_scope  # v4.220：确认弹窗影响范围（P1#5）
 
 # v4.168.0：顶层 import 统一判据（与 UI / 模型调用层同源）。
 # 显式声明而非只在函数内 import —— 这条判据漏打包会导致评价句误触生成工具。
@@ -1255,7 +1256,7 @@ class AgentWorker(QThread):
                 # 危险/外部操作 → 弹确认框
                 # v4.169.0：硬确认档（装/建技能、删数据）要 force —— 它必须真的问一次，
                 # 不能被"本次会话已全部信任"短路掉。
-                title, detail = self._confirm_text(name, args)
+                title, detail = self._build_confirm_detail(name, args)
                 ok = self._maybe_confirm(title, detail,
                                          force=(dec.rule in FORCE_CONFIRM_RULES))
                 if not ok:
@@ -1356,6 +1357,15 @@ class AgentWorker(QThread):
                 f"动作：{name}\n{json.dumps(args, ensure_ascii=False)[:300]}")
         return "确认执行操作", (
             f"工具：{name}\n{json.dumps(args, ensure_ascii=False)[:300]}")
+
+    @staticmethod
+    def _build_confirm_detail(name, args):
+        """生成确认弹窗文案，并附上「影响范围」（若工具登记了预检，P1#5）。"""
+        title, detail = AgentWorker._confirm_text(name, args)
+        _scope = compute_impact_scope(name, args)
+        if _scope:
+            detail = detail + "\n\n影响范围：\n" + _scope
+        return title, detail
 
     def _run_concurrent(self, tool_calls, mw, APP_DIR):
         """并发执行工具调用（所有 tools 无数据依赖）"""
@@ -1488,7 +1498,7 @@ class AgentWorker(QThread):
             if not dec.allowed:
                 return f"（子代理工作流未执行：{dec.reason}）"
             if dec.needs_user:
-                title, detail = self._confirm_text("run_workflow", args or {})
+                title, detail = self._build_confirm_detail("run_workflow", args or {})
                 if not self._maybe_confirm(title, detail,
                                            force=(dec.rule in FORCE_CONFIRM_RULES)):
                     return "（你取消了子代理工作流）"

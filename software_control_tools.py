@@ -17,6 +17,9 @@ import time
 
 logger = logging.getLogger(__name__)
 
+# v4.220：统一返回结构 ToolResult + 参数校验
+from tool_contract import ToolResult, _validate_args
+
 # ②-B.1：控件树硬上限，防极长控件树撑爆 LLM 上下文（与命令大输出同隐患）
 MAX_CONTROL_TREE_LINES = 400
 
@@ -626,9 +629,13 @@ def tool_app_launch(cfg, app_dir, args, progress=None, stop_event=None, should_s
 
 
 def tool_app_kill(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    from tool_contract import ToolResult, _validate_args
     if _aborted(should_stop, stop_event):
-        return ("⏹ 已停止（用户请求）", [], None)
-    target = args["target"]
+        return ToolResult(ok=False, msg="⏹ 已停止（用户请求）")
+    _v, _verr = _validate_args(args, [{"key": "target", "type": "str", "required": True}])
+    if _v is None:
+        return ToolResult.fail(_verr)
+    target = _v["target"]
 
     # G4 第二步：系统关键进程一律硬拒绝（在任何 spawn 之前）。
     # 判定 + 文案从 system_control_tools 取 —— 单一事实源，别在这里抄一份
@@ -637,7 +644,7 @@ def tool_app_kill(cfg, app_dir, args, progress=None, stop_event=None, should_sto
     from system_control_tools import _critical_process_deny
     _deny = _critical_process_deny(target)
     if _deny:
-        return (_deny, [], None)
+        return ToolResult.fail(_deny)
 
     try:
         # 1) 数字 PID 直杀（最精确）
@@ -645,28 +652,30 @@ def tool_app_kill(cfg, app_dir, args, progress=None, stop_event=None, should_sto
             r = subprocess.run(["taskkill", "/PID", target, "/F"],
                                capture_output=True, text=True, encoding="gbk", errors="replace")
             if r.returncode == 0:
-                return (f"已强制终止 PID={target}", [], None)
-            return (f"未找到 PID={target} 的进程（或无权终止）", [], None)
+                return ToolResult.ok_result(f"已强制终止 PID={target}", data={"target": target, "pid": target})
+            return ToolResult.fail(f"未找到 PID={target} 的进程（或无权终止）", data={"target": target})
 
         # 2) 按镜像名（taskkill /IM，自动补 .exe）
         name = target if target.lower().endswith(".exe") else target + ".exe"
         r1 = subprocess.run(["taskkill", "/IM", name, "/F"],
                             capture_output=True, text=True, encoding="gbk", errors="replace")
         if _taskkill_ok(r1):
-            return (f"已强制终止 {name}", [], None)
+            return ToolResult.ok_result(f"已强制终止 {name}", data={"target": target, "name": name})
 
         # 3) 按窗口标题模糊匹配（注意：/FI 未匹配时仍返回 returncode 0，必须看 SUCCESS 标记）
         r2 = subprocess.run(["taskkill", "/F", "/FI", f"WINDOWTITLE eq {target}"],
                             capture_output=True, text=True, encoding="gbk", errors="replace")
         if _taskkill_ok(r2):
-            return (f"已强制终止匹配窗口『{target}』的进程", [], None)
+            return ToolResult.ok_result(f"已强制终止匹配窗口『{target}』的进程", data={"target": target})
 
         # 4) WMI 兜底（镜像名精确/模糊，覆盖 taskkill /IM 漏掉的变体）
         # P2-4 修：name 会被拼进 PowerShell 的 WQL 字符串字面量（Name='{name}'），
         # 引号/反引号/分号/$ 可注入。Windows 镜像名本身不可能含这些字符——
         # 直接拒绝并引导用 PID，比转义更稳（转义漏一种就是新洞）。
         if any(ch in name for ch in ("'", '"', "`", ";", "$", "\n", "\r")):
-            return (f"进程名『{name}』含引号/分号等非法字符，已拒绝 WMI 查询（防注入）；请改用 PID 精确终止", [], None)
+            return ToolResult.fail(
+                f"进程名『{name}』含引号/分号等非法字符，已拒绝 WMI 查询（防注入）；请改用 PID 精确终止",
+                data={"target": target})
         try:
             ps = subprocess.run(
                 ["powershell", "-NoProfile", "-Command",
@@ -683,13 +692,17 @@ def tool_app_kill(cfg, app_dir, args, progress=None, stop_event=None, should_sto
                     if kr.returncode == 0:
                         killed.append(pid)
                 if killed:
-                    return (f"已通过 WMI 兜底强制终止 {name}（PID={'/'.join(killed)}）", [], None)
+                    return ToolResult.ok_result(
+                        f"已通过 WMI 兜底强制终止 {name}（PID={'/'.join(killed)}）",
+                        data={"target": target, "name": name, "killed": killed})
         except Exception:
             pass
 
-        return (f"未找到匹配的进程：『{target}』（请确认进程名/窗口标题，或用 PID 精确终止）", [], None)
+        return ToolResult.fail(
+            f"未找到匹配的进程：『{target}』（请确认进程名/窗口标题，或用 PID 精确终止）",
+            data={"target": target})
     except Exception as e:
-        return (f"终止失败：{e}", [], None)
+        return ToolResult.fail(f"终止失败：{e}", data={"target": target})
 
 
 # ---------- 窗口状态 ----------
@@ -771,8 +784,11 @@ def tool_app_close(cfg, app_dir, args, progress=None, stop_event=None, should_st
     避免 app_window_state 当初被标 READ 导致的「无确认关窗、丢未保存内容」。
     """
     if _aborted(should_stop, stop_event):
-        return ("⏹ 已停止（用户请求）", [], None)
-    title = args["title"]
+        return ToolResult(ok=False, msg="⏹ 已停止（用户请求）")
+    _v, _verr = _validate_args(args, [{"key": "title", "type": "str", "required": True}])
+    if _v is None:
+        return ToolResult.fail(_verr)
+    title = _v["title"]
     try:
         from pywinauto import Application
         w = _connect_window(title)
@@ -784,13 +800,15 @@ def tool_app_close(cfg, app_dir, args, progress=None, stop_event=None, should_st
         except Exception:
             proc_name = "未知"
         if should_stop and should_stop():
-            return ("⏹ 已停止（用户请求）", [], None)
+            return ToolResult(ok=False, msg="⏹ 已停止（用户请求）")
         w.close()
-        return (f"已关闭窗口 '{w_title}'（进程：{proc_name}）。⚠️ 如有未保存内容将丢失。", [], None)
+        return ToolResult.ok_result(
+            f"已关闭窗口 '{w_title}'（进程：{proc_name}）。⚠️ 如有未保存内容将丢失。",
+            data={"title": w_title, "pid": pid, "proc_name": proc_name})
     except ImportError:
-        return ("缺少依赖：pywinauto", [], None)
+        return ToolResult.fail("缺少依赖：pywinauto")
     except Exception as e:
-        return (f"关闭窗口失败：{e}", [], None)
+        return ToolResult.fail(f"关闭窗口失败：{e}", data={"title": title})
 
 
 # ---------- 控件定位 ----------
@@ -1082,3 +1100,44 @@ SOFTWARE_CONTROL_TOOL_TABLE = {
     "app_wait_for":        tool_app_wait_for,
     "app_screenshot":      tool_app_screenshot,
 }
+
+
+# v4.220：影响范围预检（确认弹窗展示波及面，P1#5）
+from tool_contract import register_impact_scope
+
+def _scope_app_kill(args):
+    target = (args or {}).get("target")
+    if not target:
+        return None
+    if target.isdigit():
+        return f"将强制终止 PID={target}（精确 1 个进程）"
+    return f"将强制终止『{target}』匹配的所有进程（按镜像名/窗口标题，可能多个）"
+
+register_impact_scope("app_kill", _scope_app_kill)
+
+def _scope_app_close(args):
+    title = (args or {}).get("title")
+    if not title:
+        return None
+    return f"将关闭标题含『{title}』的窗口——⚠️ 若有未保存内容将丢失，且不可自动撤销"
+
+register_impact_scope("app_close", _scope_app_close)
+
+def _scope_app_window_state(args):
+    title = (args or {}).get("title")
+    action = (args or {}).get("action")
+    if not title:
+        return None
+    if action == "close":
+        return f"将关闭标题含『{title}』的窗口——⚠️ 若有未保存内容将丢失，且不可自动撤销"
+    return f"将对标题含『{title}』的窗口执行「{action}」操作"
+
+register_impact_scope("app_window_state", _scope_app_window_state)
+
+def _scope_app_launch(args):
+    target = (args or {}).get("target")
+    if not target:
+        return None
+    return f"将启动新进程：{target}（启动后不可自动撤销）"
+
+register_impact_scope("app_launch", _scope_app_launch)

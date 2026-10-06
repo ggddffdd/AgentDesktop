@@ -99,7 +99,7 @@ _REQ_DEF_END = '    return "缺少必填参数：" + "、".join(missing) + "。�
 
 _MUST = "★ 每个必填键缺失时都返回『缺少必填参数：<键>』（不是 KeyError）"
 _NO_RAISE = "★ 空入参 15 个工具全部不抛异常（文件头承诺『永不抛异常』）"
-_SHAPE = "★ 15 个工具 × 3 种畸形入参：恒返回 (str, list, None)，一处不抛"
+_SHAPE = "★ 15 个工具 × 3 种畸形入参：恒返回 (str, list, None) 或结构化 ToolResult，一处不抛"
 _PERMILLE = "★ 千分位内存不被逗号切碎：12,345 K → 12 MB"
 
 # ---------------------------------------------------------------------------
@@ -226,8 +226,13 @@ case("PB11 整段删掉 /IM 的影响面计数调用（helper 变死代码）",
 # PB12：只删后缀分支（计数照查、结果不回报）
 _mut = sub(SCT_SRC,
            '            if n_same:\n'
-           '                return (f"已终止进程: {name}（同名进程共 {n_same} 个，已一并终止）", [], None)\n',
-           "",
+           '                return ToolResult.ok_result(\n'
+           '                    f"已终止进程: {name}（同名进程共 {n_same} 个，已一并终止）",\n'
+           '                    data={"name": name, "killed": n_same, "force": bool(force)})\n',
+           '            if n_same:\n'
+           '                return ToolResult.ok_result(\n'
+           '                    f"已终止进程: {name}",\n'
+           '                    data={"name": name, "killed": n_same, "force": bool(force)})\n',
            "PB12 drop impact suffix")
 case("PB12 只删影响面后缀分支（照查进程数、不回报）",
      {"SCT_PATH": ("sct_mut_", _mut)},

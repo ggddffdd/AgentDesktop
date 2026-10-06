@@ -42,7 +42,7 @@ FAILED_CASES = []
 
 _STOP_BLOCK = re.compile(
     r'    if _aborted\(should_stop, stop_event\):\n'
-    r'        return \("\u23f9 已停止（用户请求）", \[\], None\)\n')
+    r'        return [^\n]*\n')
 
 _SIG_OLD = re.compile(
     r"def (tool_\w+)\(cfg, app_dir, args, progress=None, "

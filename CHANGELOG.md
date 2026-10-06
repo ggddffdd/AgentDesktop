@@ -8,6 +8,18 @@
 - 新版本在上。
 
 ---
+## v4.220.0 — 2026-10-06
+
+**工具调用契约统一：参数校验 / 结构化返回 / 输出脱敏 / 确认弹窗影响范围（审查第二优先级 + P1#5）。**
+
+- **工具返回契约不统一、调用方靠中文 string-match 判成败**（审查第二优先级）：新增 `tool_contract.py` 统一契约——`ToolResult` dataclass（`ok/msg/error/data/evidence/deliverables/schedule/impact_scope`），`__iter__` 兼容旧三元组解包、`__str__` 返 `msg`、`from_legacy` 把 tuple/str 归一、`fail`/`ok_result` 工厂；`exec_tool` 出口统一归一为 `ToolResult` 并对 `msg`/`data`/`evidence` 递归脱敏。关键工具（`tool_process_kill`/`tool_clean_recycle_bin`/`tool_app_kill`/`tool_app_close`）改为原生 `ToolResult` 并填充 `data` 载荷。验收：判据 24 项（参数校验 10 + 结构化返回 7 + 脱敏 9 + 影响范围 4）全绿。
+- **缺参数 / 非法类型会崩或静默错**（审查第二优先级）：`tool_contract._validate_args` 按 schema（`key/type/required/enum/min/max/allow_empty`）做入口校验，`process_kill`/`app_kill`/`app_close` 接入，缺必填 / 类型错返回结构化 `ok=False` 而非抛异常 / `KeyError`。验收：判据 PV1~PV4 全绿 + 扰动移除校验必红（哑弹 0）。
+- **输出泄露本地路径 / 用户名 / 机器名 / IP**（审查第二优先级）：`_mask_sensitive` 统一脱敏（路径→`<路径已脱敏>`、用户名→`<用户>`、机器名→`<主机>`、IPv4→`<IP>`），`exec_tool` 出口对 `msg`/`data`/`evidence` 递归脱敏。验收：判据 MK1~MK4 全绿 + 扰动移除 msg 脱敏必红（哑弹 0）。
+- **确认弹窗不展示影响范围**（审查 P1#5）：`agent._build_confirm_detail` 调 `compute_impact_scope` 预检并把「影响范围：预计影响 N 个」注入确认文案；已登记 `process_kill`/`clean_recycle_bin`/`process_start`/`app_kill`/`app_close`/`app_window_state`/`app_launch` 七类 scope。验收：判据 IS1~IS3 全绿 + 扰动移除 scope 注入必红（哑弹 0）。
+- 验收：4 套件 30 项判据全绿 + 4 扰动（2+1+1+1=5 变异）全命中（哑弹 0）；全量门禁 103 套件 + 35 扰动全绿。
+
+---
+
 ## v4.219.0 — 2026-10-06
 
 **exec_tool 成为不可绕过的最终权限闸门（审查 P1-4）。**

@@ -359,15 +359,18 @@ def test_universal_contract():
             if exc is not None:
                 bad_shape.append(f"{n}/{label}:抛 {type(exc).__name__}: {exc}")
                 continue
-            if not (isinstance(out, tuple) and len(out) == 3):
+            # v4.220：工具可返回结构化 ToolResult，其 __iter__ 兼容旧三元组解包；
+            # 归一成 (msg, deliverables, schedule) 再做形状校验（意图不变：永不抛、恒返可用结构）。
+            triple = out if isinstance(out, tuple) else (tuple(out) if hasattr(out, "__iter__") else out)
+            if not (isinstance(triple, tuple) and len(triple) == 3):
                 bad_shape.append(f"{n}/{label}:形状={type(out).__name__}")
                 continue
-            if not isinstance(out[0], str) or not isinstance(out[1], list):
-                bad_shape.append(f"{n}/{label}:类型={type(out[0]).__name__}/{type(out[1]).__name__}")
+            if not isinstance(triple[0], str) or not isinstance(triple[1], list):
+                bad_shape.append(f"{n}/{label}:类型={type(triple[0]).__name__}/{type(triple[1]).__name__}")
                 continue
-            if out[2] is not None:
-                bad_shape.append(f"{n}/{label}:schedule={out[2]!r}")
-    check("★ 15 个工具 × 3 种畸形入参：恒返回 (str, list, None)，一处不抛",
+            if triple[2] is not None:
+                bad_shape.append(f"{n}/{label}:schedule={triple[2]!r}")
+    check("★ 15 个工具 × 3 种畸形入参：恒返回 (str, list, None) 或结构化 ToolResult，一处不抛",
           not bad_shape, f"bad={bad_shape[:6]}")
 
     # 空入参单独再看一次「不抛」（缺参是最常见的模型失误）
@@ -797,9 +800,12 @@ def test_source_contracts():
         n = SCT_SRC.count(f"{w}=None")
         check(f"15 个工具签名含 {w}", n >= 15, f"n={n}")
 
-    check("★ 有统一的必填参数校验 helper（_require）", "def _require(" in SCT_SRC)
+    check("★ 有统一的必填参数校验 helper（_require 或 _validate_args）",
+          ("def _require(" in SCT_SRC) and ("_validate_args" in SCT_SRC))
     n_req = len(re.findall(r"^\s+_miss = _require\(args,", SCT_SRC, re.M))
-    check("★ 8 个缺参工具都走了 _require（一处不少）", n_req == 8, f"n={n_req}")
+    n_val = len(re.findall(r"^\s+_v, _verr = _validate_args\(", SCT_SRC, re.M))
+    check("★ 8 个缺参工具都做了参数校验（_require 或 _validate_args，一处不少）",
+          (n_req + n_val) == 8, f"n={n_req + n_val}")
 
     # 只看非注释行：源码里那句「原 shell=True 拼接…」是解释性注释，不是代码。
     # （判据扫字符不扫意图 —— 首版写成全文件 not in，被注释骗红了一次。）

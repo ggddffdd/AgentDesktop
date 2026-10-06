@@ -38,6 +38,9 @@ except Exception:      # 旁路模块缺失绝不能拖垮工具模块（冻结�
 from context_manager import get_context_manager
 from database_tools import DatabaseTools
 db_tools = DatabaseTools()
+# v4.220：工具调用统一契约（结构化返回 + 脱敏 + 影响范围）
+from tool_contract import (ToolResult, _mask_sensitive, _mask_recursive,
+                           compute_impact_scope)
 
 
 # v4.155 fix2：图生视频轮询超时上限（默认 240s，< Agent 回合上限 445s，刻意留余量）。
@@ -867,16 +870,20 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
     白名单外的工具（run_python/send_email 等）仍会被真实执行。军团成员
     调用时必须传角色 tools，双层防线。
     """
+    def _reject(msg, ok=False):
+        _m = _mask_sensitive(msg) if isinstance(msg, str) else msg
+        return ToolResult(ok=ok, msg=_m)
+
     if allowed_tools is not None and name not in allowed_tools:
         log.warning("工具 %s 不在执行端白名单内，已拒绝（M-04）", name)
-        return (f"工具 {name} 不在本角色可用工具列表内，已拒绝执行。"
-                "请只使用角色卡声明的工具。", [], None)
+        return _reject(f"工具 {name} 不在本角色可用工具列表内，已拒绝执行。"
+                       "请只使用角色卡声明的工具。")
     # P1 #4（v4.219）：exec_tool 成为不可绕过的最终权限闸门。
     # 未携带合法权限决策时，写入/执行/外发/桌面控制类操作一律拒绝。
     _gate_ok, _gate_msg = _permission_gate(name, args, perm_ctx)
     if not _gate_ok:
         log.warning("exec_tool 最终闸门拒绝 %s：%s", name, _gate_msg)
-        return (_gate_msg, [], None)
+        return _reject(_gate_msg)
     # v4.129：缓存 cfg，供无 cfg 参数的落盘函数读 products_layout 开关
     global _LAST_CFG
     try:
@@ -900,12 +907,12 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
             if "should_stop" in _sig.parameters:
                 _hk["should_stop"] = should_stop
             _r = _entry["handler"](cfg, app_dir, args, **_hk)
-            if isinstance(_r, tuple) and len(_r) == 3:
-                _trace_fetch(name, args, _r[0])
-                return _r
-            _out = str(_r)
-            _trace_fetch(name, args, _out)
-            return (_out, [], None)
+            _tr = ToolResult.from_legacy(_r)
+            _trace_fetch(name, args, _tr.msg, ok=_tr.ok)
+            _tr.msg = _mask_sensitive(_tr.msg)
+            _tr.data = _mask_recursive(_tr.data)
+            _tr.evidence = _mask_recursive(_tr.evidence)
+            return _tr
         except Exception as e:
             log.warning("工具 %s 执行异常: %s", name, e)
             try:
@@ -916,7 +923,7 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
             except Exception:
                 pass
             _trace_fetch(name, args, f"工具执行异常：{e}", ok=False)
-            return (f"工具执行异常：{e}", [], None)
+            return _reject(f"工具执行异常：{e}")
 
     try:
         get_logger().info(f"执行工具: {name}", module="tools", extra={"tool": name})
@@ -931,7 +938,10 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
             pass
         result_str = f"工具执行异常：{e}"
 
-    return (result_str, deliverables, schedule)
+    _tr = ToolResult.from_legacy((result_str, deliverables, schedule))
+    _trace_fetch(name, args, _tr.msg, ok=_tr.ok)
+    _tr.msg = _mask_sensitive(_tr.msg)
+    return _tr
 
 
 def _try_mcp_tool(name, args):

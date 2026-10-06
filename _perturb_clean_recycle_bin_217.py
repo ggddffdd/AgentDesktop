@@ -73,8 +73,12 @@ CASES = [
 
     ("失败路径谎报成功（把『失败』改成『已清空』）",
      "system_control_tools.py",
-     '        return (f"清空回收站失败（未确认已清空，清空前计数={before}）: {e}", [], None)',
-     '        return (f"回收站已清空（清空前计数={before}）: {e}", [], None)  # 扰动：谎报成功',
+     '        return ToolResult.fail(\n'
+     '            f"清空回收站失败（未确认已清空，清空前计数={before}）: {e}",\n'
+     '            evidence={"before": before})',
+     '        return ToolResult.ok_result(\n'
+     '            f"回收站已清空（清空前计数={before}）: {e}",\n'
+     '            evidence={"before": before})  # 扰动：谎报成功',
      ["失败"]),
 
     ("成功消息抹掉计数证据（只留『已清空』空话）",

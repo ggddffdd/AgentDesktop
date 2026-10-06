@@ -918,18 +918,21 @@ def _count_processes(name):
 
 
 def tool_process_kill(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
+    from tool_contract import ToolResult, _validate_args
     if _aborted(should_stop, stop_event):
-        return ("⏹ 已停止（用户请求）", [], None)
-    _miss = _require(args, "name")
-    if _miss:
-        return (_miss, [], None)
-    name = args["name"]
-    force = args.get("force", False)
+        return ToolResult(ok=False, msg="⏹ 已停止（用户请求）")
+    _v, _verr = _validate_args(
+        args, [{"key": "name", "type": "str", "required": True},
+               {"key": "force", "type": "bool", "required": False}])
+    if _v is None:
+        return ToolResult.fail(_verr)
+    name = _v["name"]
+    force = _v.get("force", False)
 
     # G4 第二步：系统关键进程一律硬拒绝（在任何 spawn 之前）。
     _deny = _critical_process_deny(name)
     if _deny:
-        return (_deny, [], None)
+        return ToolResult.fail(_deny)
 
     try:
         # 判断是 PID 还是进程名
@@ -945,12 +948,17 @@ def tool_process_kill(cfg, app_dir, args, progress=None, stop_event=None, should
         result = subprocess.run(cmd, capture_output=True, text=True, encoding="gbk", errors="replace")
         if result.returncode == 0:
             if n_same:
-                return (f"已终止进程: {name}（同名进程共 {n_same} 个，已一并终止）", [], None)
-            return (f"已终止进程: {name}", [], None)
+                return ToolResult.ok_result(
+                    f"已终止进程: {name}（同名进程共 {n_same} 个，已一并终止）",
+                    data={"name": name, "killed": n_same, "force": bool(force)})
+            return ToolResult.ok_result(
+                f"已终止进程: {name}", data={"name": name, "killed": 1, "force": bool(force)})
         else:
-            return (f"终止失败: {result.stderr.strip() or result.stdout.strip()}", [], None)
+            return ToolResult.fail(
+                f"终止失败: {result.stderr.strip() or result.stdout.strip()}",
+                data={"name": name})
     except Exception as e:
-        return (f"终止进程失败: {e}", [], None)
+        return ToolResult.fail(f"终止进程失败: {e}", data={"name": name})
 
 
 def tool_process_start(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
@@ -1034,20 +1042,26 @@ def tool_clean_recycle_bin(cfg, app_dir, args, progress=None, stop_event=None, s
     反编造核心：执行前后都数文件数作证据，结果里必须带上 before/after 计数；
     只要清空命令失败或复检失败，就如实报失败，绝不输出「已清空」之类的成功字样。
     """
+    from tool_contract import ToolResult
     if _aborted(should_stop, stop_event):
-        return ("⏹ 已停止（用户请求）", [], None)
+        return ToolResult(ok=False, msg="⏹ 已停止（用户请求）")
     try:
         before = _count_recycle_items()
     except Exception as e:
-        return (f"清空中止：回收站计数失败（无法提供清空证据，按 fail-closed 不执行）: {e}", [], None)
+        return ToolResult.fail(
+            f"清空中止：回收站计数失败（无法提供清空证据，按 fail-closed 不执行）: {e}")
     try:
         _empty_recycle_bin()
     except Exception as e:
-        return (f"清空回收站失败（未确认已清空，清空前计数={before}）: {e}", [], None)
+        return ToolResult.fail(
+            f"清空回收站失败（未确认已清空，清空前计数={before}）: {e}",
+            evidence={"before": before})
     try:
         after = _count_recycle_items()
     except Exception as e:
-        return (f"清空已执行但回收站复检失败（无法出证据，清空前计数={before}）: {e}", [], None)
+        return ToolResult.fail(
+            f"清空已执行但回收站复检失败（无法出证据，清空前计数={before}）: {e}",
+            evidence={"before": before})
     deleted = before - after
     if deleted < 0:
         deleted = 0
@@ -1056,7 +1070,10 @@ def tool_clean_recycle_bin(cfg, app_dir, args, progress=None, stop_event=None, s
     else:
         msg = (f"回收站清空命令已执行，但清空后仍有 {after} 项（清空前 {before} 项）。"
                f"可能含其他账户/被锁定的条目，请确认。")
-    return (msg, [], None)
+    return ToolResult(
+        ok=(after == 0),
+        msg=msg,
+        evidence={"before": before, "after": after, "deleted": deleted})
 
 
 # ============================================================
@@ -1080,3 +1097,37 @@ SYSTEM_CONTROL_TOOL_TABLE = {
     "process_start":    tool_process_start,
     "clean_recycle_bin": tool_clean_recycle_bin,
 }
+
+
+# v4.220：影响范围预检（确认弹窗展示波及面，P1#5）
+from tool_contract import register_impact_scope
+
+def _scope_process_kill(args):
+    name = (args or {}).get("name")
+    if not name:
+        return None
+    if name.isdigit():
+        return f"将终止 PID={name}（精确 1 个进程）"
+    n = _count_processes(name)
+    if n is None:
+        return f"将终止所有名为「{name}」的进程（影响面统计不可用）"
+    return f"将终止所有名为「{name}」的进程，预计影响 {n} 个"
+
+register_impact_scope("process_kill", _scope_process_kill)
+
+def _scope_clean_recycle_bin(args):
+    try:
+        n = _count_recycle_items()
+    except Exception:
+        return "将清空当前用户回收站（计数不可用）"
+    return f"将清空当前用户回收站，清空前约 {n} 项"
+
+register_impact_scope("clean_recycle_bin", _scope_clean_recycle_bin)
+
+def _scope_process_start(args):
+    target = (args or {}).get("target")
+    if not target:
+        return None
+    return f"将启动新进程：{target}（启动后不可自动撤销）"
+
+register_impact_scope("process_start", _scope_process_start)
