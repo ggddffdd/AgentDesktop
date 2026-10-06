@@ -31,6 +31,7 @@ test_evidence_registry_195.py
 test_exec_tool_gate_219.py
 test_frozen_smoke.py
 test_guardrail_conflicts.py
+test_hard_confirm_bypass_221.py
 test_high_risk_guard.py
 test_history_budget.py
 test_hitarea_2103.py
@@ -63,6 +64,8 @@ test_probe_graphics.py
 test_radius_norm.py
 test_readability_197.py
 test_receipt_copy_209.py
+test_resume_api_error_221.py
+test_resume_idempotent_222.py
 test_risk_policy_single_table.py
 test_risk_webhook_events_218.py
 test_robust_fix_186.py
@@ -77,8 +80,10 @@ test_status_len_2091.py
 test_structured_return_220.py
 test_system_control_a.py
 test_system_control_b.py
+test_system_prompt_routing_221.py
 test_task_graph_cancel.py
 test_task_graph_incomplete.py
+test_task_outcome_acceptance_222.py
 test_task_status.py
 test_task_status_ui.py
 test_task_wiring.py
@@ -92,6 +97,7 @@ test_ui_a11y_2102.py
 test_ui_hex_guard_fallback.py
 test_uidecision_fix_186.py
 test_uncertainty_gate_196.py
+test_untrusted_boundary_222.py
 test_v4102_1021_twin_bg.py
 test_v4102_image_compress.py
 test_v4102_twin_v2.py
@@ -101,6 +107,3 @@ test_vision_channel.py
 test_vision_qc.py
 test_welcome_ia_199.py
 test_workspace_routing.py
-test_hard_confirm_bypass_221.py
-test_resume_api_error_221.py
-test_system_prompt_routing_221.py

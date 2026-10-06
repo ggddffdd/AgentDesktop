@@ -83,6 +83,76 @@ FORCE_CONFIRM_RULES = (
 )
 
 
+_FILE_KINDS = ("file", "image", "video", "audio", "doc", "text",
+               "pdf", "zip", "xlsx", "csv", "pptx", "md")
+
+
+def _deliverable_satisfied(d, app_dir=""):
+    """v4.222：产物级验收 —— 声明交付物是否真实落地。
+
+    d = (path, kind, name)。返回 True=已满足。
+    - 本地文件类：文件存在且大小 > 0；
+    - web url / 无路径 / 非文件类：视为满足（无法本地验证，不误杀）。
+    """
+    try:
+        p = str(d[0]) if d else ""
+    except Exception:
+        return True
+    if not p:
+        return True
+    kind = str(d[1]).lower() if len(d) > 1 else ""
+    if "://" in p:                       # 远程资源，本地无法验证
+        return True
+    if kind and kind not in _FILE_KINDS:
+        return True                      # 非文件类交付物，不强制本地校验
+    ap = p
+    if not os.path.isabs(ap) and app_dir:
+        ap = os.path.join(app_dir, p)
+    if not os.path.isabs(ap):
+        ap = os.path.abspath(ap)
+    try:
+        return os.path.isfile(ap) and os.path.getsize(ap) > 0
+    except Exception:
+        return False
+
+
+# v4.222：断点幂等——不可幂等工具名单（恢复时需查重，避免副作用翻倍）。
+_NON_IDEMPOTENT_TOOLS = frozenset({
+    "write_file", "run_python", "exec_shell", "process_kill", "process_start",
+    "app_kill", "app_close", "clean_recycle_bin", "send_email", "image_gen",
+    "video_gen", "browser_open", "browser_navigate", "download_file",
+})
+
+
+def _tool_args_hash(name, args_sig):
+    """工具调用的稳定指纹（name + 参数签名）。"""
+    import hashlib
+    return hashlib.sha256((name + ":" + (args_sig or "")).encode("utf-8")).hexdigest()[:16]
+
+
+# v4.222：不可信内容边界——外部/工具产出的内容可能含注入指令，必须显式标记。
+_UNTRUSTED_TOOLS = frozenset({
+    "web_fetch", "web_search", "search", "browse", "read_file",
+    "read_file_text", "download_file", "rag_search",
+})
+
+
+def wrap_untrusted(content, source, evidence_id=None):
+    """v4.222：把不可信来源内容包进显式边界，模型须当作数据而非指令。"""
+    if content is None:
+        content = ""
+    cid = (' evidence_id="%s"' % evidence_id) if evidence_id else ""
+    return ('<untrusted_tool_output source="%s"%s>\n%s\n</untrusted_tool_output>'
+            % (source, cid, content))
+
+
+def _wrap_tool_content(name, content, evidence_id=None):
+    """v4.222：不可信工具产出包边界；可信工具原样返回。"""
+    if name in _UNTRUSTED_TOOLS:
+        return wrap_untrusted(content, name, evidence_id)
+    return content
+
+
 class _AllowAllDecision:
     """无权限引擎时的兜底决策（保持旧行为：放行）。仅用于 exec_tool 最终闸门。
 
@@ -681,6 +751,18 @@ class AgentWorker(QThread):
         # 续传模式：注入「继续上次任务」提示，强制模型从断点接着干。
         # 注意 _seq=-1 哨兵：_sync_to_session 不会把它回写进会话（system 角色本就不该持久化）。
         if self.resume:
+            # v4.222：断点幂等——从 checkpoint 恢复执行 ledger，构建不可幂等工具
+            # 的「已执行」哈希集，供 _exec_tool_calls 跳过重复执行（防副作用翻倍）。
+            try:
+                _cp = task_resume.load_checkpoint(mw.cfg, self.task_id)
+                self._exec_ledger = list(_cp.get("exec_ledger", [])) if _cp else []
+            except Exception:
+                self._exec_ledger = []
+            self._resume_done_hashes = {
+                e.get("args_hash") for e in (self._exec_ledger or [])
+                if e.get("side_effect_status") == "done"
+                and e.get("name") in _NON_IDEMPOTENT_TOOLS
+            }
             _goal = self._goal_hint() or "（未知原始目标）"
             if len(_goal) > 400:
                 _goal = _goal[:400] + "…"
@@ -1512,6 +1594,27 @@ class AgentWorker(QThread):
 
     def _exec_tool_calls(self, tool_calls, mw, APP_DIR):
         """执行一批工具调用（串行/并发由权限引擎决策），供主循环与续跑共用。"""
+        self._app_dir = APP_DIR  # v4.222：缓存，供 _handle_tool_result 绝对化交付物路径
+        # v4.222：断点幂等——恢复模式下，已执行过的不可幂等操作不再重复触发
+        if getattr(self, "_resume_done_hashes", None):
+            _kept, _skipped = [], []
+            for _tc in tool_calls:
+                _fn = _tc.get("function", {})
+                _nm = _fn.get("name", "")
+                _as = _fn.get("arguments", "")
+                if self._is_resume_dup(_nm, _as):
+                    _skipped.append(_tc)
+                    self.messages.append({
+                        "role": "tool",
+                        "tool_call_id": _tc.get("id", ""),
+                        "content": "（恢复检测：该不可幂等操作已在断点前执行过，已跳过重复执行以避免副作用翻倍）",
+                    })
+                else:
+                    _kept.append(_tc)
+            if _skipped and not _kept:
+                self._guard_blocked = True
+                return
+            tool_calls = _kept
         # v4.93：run_workflow 是「子代理并行」入口——不走通用 exec_tool，直接触发任务图，
         # 把工作流最终结果作为 tool 结果喂回，让模型基于子代理产出整合最终回答。
         _wf_tc = next((tc for tc in tool_calls
@@ -1798,6 +1901,7 @@ class AgentWorker(QThread):
                 "sid": _sid,
                 "task": self._goal_hint()[:200],
                 "messages": recent,
+                "exec_ledger": getattr(self, "_exec_ledger", []),
             })
         except Exception:
             pass
@@ -1861,6 +1965,29 @@ class AgentWorker(QThread):
         except Exception:
             pass
 
+
+
+    # v4.222：断点幂等——执行 ledger 登记 + 恢复查重（实例方法）
+    def _record_exec_ledger(self, name, args_sig, ok):
+        """v4.222：登记一次工具执行，供断点恢复时幂等查询（防重复执行副作用）。"""
+        if not hasattr(self, "_exec_ledger"):
+            self._exec_ledger = []
+        self._exec_ledger.append({
+            "name": name,
+            "args_hash": _tool_args_hash(name, args_sig),
+            "side_effect_status": "done" if ok else "failed",
+            "finished_at": time.time(),
+        })
+
+    def _is_resume_dup(self, name, args_sig):
+        """v4.222：恢复时查询——该不可幂等工具是否已在前次执行过（同参数）。"""
+        if name not in _NON_IDEMPOTENT_TOOLS:
+            return False
+        _done = getattr(self, "_resume_done_hashes", None)
+        if not _done:
+            return False
+        return _tool_args_hash(name, args_sig) in _done
+
     def _infer_outcome(self, steps=0, duration_s=0, max_steps=0):
         """v4.195 批⑪：**九态**结局推断 —— 取代原先「四种之外一律 success」。
 
@@ -1916,6 +2043,14 @@ class AgentWorker(QThread):
         #      此时即便没有任何异常也不能算「跑通」，否则轨迹库会被灌满空成功。
         if _tool_calls == 0:
             return "partial"
+        # v4.222：产物级验收 —— 「调过工具」不再等同「任务成功」。
+        # 本轮若声明了交付物，必须真实落地（文件存在且非空）才算 success，
+        # 否则降级为 partial，避免「模型说写完了但文件没生成」被记入成功轨迹。
+        _dlv = getattr(self, "_deliverables", None) or []
+        if _dlv:
+            _unmet = [d for d in _dlv if not _deliverable_satisfied(d)]
+            if _unmet:
+                return "partial"
         return "success"
 
     @classmethod
@@ -1965,6 +2100,20 @@ class AgentWorker(QThread):
                     log.warning("跳过格式异常的交付物（非字符串/元组）: %r", d)
             except Exception as e:
                 log.warning("交付物发射失败（已忽略，避免卡死 Agent）: %r -> %s", d, e)
+            # v4.222：累积进本次运行产物清单（路径绝对化，供 _infer_outcome 做产物级验收）
+            try:
+                if isinstance(d, (tuple, list)) and len(d) >= 1 and d[0]:
+                    _p = str(d[0])
+                    if not os.path.isabs(_p) and getattr(self, "_app_dir", ""):
+                        _p = os.path.join(self._app_dir, _p)
+                    _kind = str(d[1]) if len(d) > 1 else ""
+                    _nm = str(d[2]) if len(d) > 2 else os.path.basename(_p)
+                    if not hasattr(self, "_deliverables"):
+                        self._deliverables = []
+                    if not any(_x[0] == _p for _x in self._deliverables):
+                        self._deliverables.append((_p, _kind, _nm))
+            except Exception:
+                pass
         # 定时提醒
         if schedule:
             msg, delay_secs = schedule[0], schedule[1]
@@ -1993,6 +2142,11 @@ class AgentWorker(QThread):
                 ok=_ok, err=_err)
         except Exception as e:
             log.warning("证据登记异常（已忽略，不影响主流程）: %s", e)
+        # v4.222：登记执行 ledger（供断点恢复时幂等查询）
+        try:
+            self._record_exec_ledger(name, fn.get("arguments", ""), _ok)
+        except Exception:
+            pass
 
         self.tool_log.emit({
             "name": name,
@@ -2026,7 +2180,7 @@ class AgentWorker(QThread):
             "name": name,
             # v4.60：先 Token 压缩（去HTML/去重/智能截断），再取上限
             # v4.195 批⑨：压缩后套证据编号首尾钉
-            "content": _content,
+            "content": _wrap_tool_content(name, _content, _eid),
         })
 
     def _auto_remember(self, mw):

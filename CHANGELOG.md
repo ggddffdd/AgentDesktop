@@ -8,6 +8,17 @@
 - 新版本在上。
 
 ---
+## v4.222.0 — 2026-10-06
+
+**审查报告收口（P1 任务验收 / P2 断点幂等 / P1 不可信内容边界）：产物级结局判定、断点恢复不可幂等工具查重跳过、外部/工具/技能产出显式不可信边界。**
+
+- **P1 任务验收（产物级）**：`agent._infer_outcome` 原仅按「调过工具=成功」判定，模型说「写完了」但文件没生成也会被记 success。修复：本轮若声明了交付物（`deliverables`），必须真实落地（文件存在且非空）才算 success，否则降级 partial。url / 非文件类交付物不误杀，无交付物老行为兜底。验收：判据 `test_task_outcome_acceptance_222.py`（6 项：A 真实落地→success / B 未落地→partial / C 无交付物→success）+ 扰动 `_perturb_task_outcome_acceptance_222.py`（1 变异，删验收分支必红）全命中（哑弹 0）。
+- **P2 断点幂等（恢复不重复执行副作用）**：崩溃/恢复后可能重复执行不可幂等工具（重复写文件/发请求/生成图）。修复：每次工具执行登记进 `_exec_ledger`；恢复时从 checkpoint 取历史 ledger 构建 `_resume_done_hashes`，`_exec_tool_calls` 对不可幂等工具已执行过的跳过（fail-closed：跳过光了则 `_guard_blocked` 终止）。验收：判据 `test_resume_idempotent_222.py`（6 项：A ledger 登记含 args_hash/status / B 同参命中·异参不命中·可幂等不查重）+ 扰动 `_perturb_resume_idempotent_222.py`（2 变异，退化 ledger 登记 / 退化查重必红）全命中（哑弹 0）。
+- **P1 不可信内容边界**：`web_fetch` / `web_search` / `read_file` / `download` 等不可信产出的内容可能含注入指令。修复：`agent.wrap_untrusted` / `_wrap_tool_content` 把不可信工具产出包进 `<untrusted_tool_output source=... evidence_id=...>`（可信工具原样）；`config.system_prompt` 新增「不可信内容边界」规则，要求模型把标签内内容当数据而非指令；`skill_loader.Skill` 增 `source/version/hash/audited_at/allow_*` 元数据，`load_skill_prompt` 返回内容包进 `<untrusted skill=...>`。验收：判据 `test_untrusted_boundary_222.py`（7 项：A wrap 格式 / B1 不可信被包·B2 可信不包 / C 技能元数据解析 / D 技能包边界 / E 系统提示含规则）+ 扰动 `_perturb_untrusted_boundary_222.py`（2 变异，退化工具包边界 / 退化技能包边界必红）全命中（哑弹 0）。
+- 验收：本轮 3 套件 19 项判据全绿 + 3 扰动（1+2+2=5 变异）全命中（哑弹 0）。（全量门禁见发布列车。）
+
+- 附带修正（非三块本身）：`tests/test_risk_policy_single_table.py` 的 C4 此前对 `ALWAYS_CONFIRM` 做严格相等比对，与 v4.221.0「硬确认进 ALWAYS_CONFIRM（新增 app_close/app_kill/clean_recycle_bin/process_kill）」的演进冲突而红。改为与 C1–C3 同一哲学「不丢旧键（允许合法增长）」，使判据与已确立演进策略自洽（零产品代码改动，仅测试预期）。
+---
 ## v4.221.0 — 2026-10-06
 
 **审查报告收口（P1#1 / P1#2 / P2#3）：硬确认不可绕过会话信任、续跑 API 异常记失败、路由表去幽灵名。**

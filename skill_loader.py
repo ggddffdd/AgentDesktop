@@ -85,7 +85,7 @@ def normalize_skill_name(s):
 class Skill:
     """技能描述对象"""
 
-    def __init__(self, name="", description="", emoji="", prompt="", file_path="", category="", toolbar=False, body=""):
+    def __init__(self, name="", description="", emoji="", prompt="", file_path="", category="", toolbar=False, body="", source="", version="", hash_val="", audited_at="", allow_tools="", allow_dir="", allow_network="", allow_system=""):
         self.name = name                # 技能名称
         self.description = description  # 简短描述
         self.emoji = emoji              # 表情符号
@@ -94,9 +94,24 @@ class Skill:
         self.category = category        # 分类（来自 SKILL.md frontmatter，可能为空）
         self.toolbar = toolbar          # 是否上技能条（SKILL.md frontmatter toolbar: true）
         self.body = body                # frontmatter 之后的正文（去元数据）
+        self.source = source            # v4.222：技能来源（不可信边界元数据）
+        self.version = version          # v4.222：技能版本
+        self.hash = hash_val            # v4.222：技能内容哈希（审计用）
+        self.audited_at = audited_at    # v4.222：审计时间
+        self.allow_tools = allow_tools  # v4.222：允许调用的工具白名单
+        self.allow_dir = allow_dir      # v4.222：允许访问目录
+        self.allow_network = allow_network  # v4.222：是否允许联网
+        self.allow_system = allow_system    # v4.222：是否允许系统级操作
 
     def __repr__(self):
         return f"Skill(name={self.name!r}, file={self.file_path!r})"
+
+
+def wrap_skill_prompt(text, name):
+    """v4.222：技能指令包进不可信边界，模型须当数据而非指令。"""
+    if not text:
+        return text
+    return '<untrusted skill="%s">\n%s\n</untrusted skill>' % (name, text)
 
 
 # ---------- 注释头解析 ----------
@@ -269,8 +284,19 @@ def _parse_skill_md(md_path, folder_name):
         category = fm.get("category", "")
         raw_tb = fm.get("toolbar", "")
         toolbar = (isinstance(raw_tb, str) and raw_tb.strip().lower() in ("true", "1", "yes", "是")) or (raw_tb is True)
+        # v4.222：不可信边界元数据（技能来源/版本/审计/能力边界）
+        source = fm.get("source", "")
+        version = fm.get("version", "")
+        hash_val = fm.get("hash", "")
+        audited_at = fm.get("audited_at", "")
+        allow_tools = fm.get("allow_tools", "")
+        allow_dir = fm.get("allow_dir", "")
+        allow_network = fm.get("allow_network", "")
+        allow_system = fm.get("allow_system", "")
     else:
         toolbar = False
+        source = version = hash_val = audited_at = ""
+        allow_tools = allow_dir = allow_network = allow_system = ""
 
     # 回退：首行 # 名称
     if not name:
@@ -303,6 +329,14 @@ def _parse_skill_md(md_path, folder_name):
         category=category,
         toolbar=toolbar,
         body=text_body,
+        source=source,
+        version=version,
+        hash_val=hash_val,
+        audited_at=audited_at,
+        allow_tools=allow_tools,
+        allow_dir=allow_dir,
+        allow_network=allow_network,
+        allow_system=allow_system,
     )
 
 
@@ -378,7 +412,7 @@ def load_skill_prompt(name, skills_dir):
     skills = scan_skills(skills_dir)
     for sk in skills:
         if normalize_skill_name(sk.name) == target:
-            return sk.prompt
+            return wrap_skill_prompt(sk.prompt, sk.name)
     return None
 
 

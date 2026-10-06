@@ -1,21 +1,23 @@
 # -*- coding: utf-8 -*-
-"""v4.221.0 进包核验：审查报告收口（硬确认不可绕过会话信任 / 续跑 API 异常记失败 / 路由去幽灵名）。
+"""v4.222.0 进包核验：审查报告收口（P1 任务级产物验收 / P2 断点恢复幂等 / P1 不可信内容边界）。
 
-本轮改动（审查报告 P1#1 / P1#2 / P2#3）：
-  · P1#1：app_close / clean_recycle_bin / process_kill / app_kill 由单值
-    `RiskClass.EXEC` 改为三态 `(RiskClass.EXEC, None, True)`，第三元 True → 进
-    `ALWAYS_CONFIRM` 硬确认档（位于会话信任之前），任何模式/信任都免不了人工确认。
-  · P1#2：续跑循环 `for rstep in resume_steps` 的 except 块补
-    `self._note_exit("api_error")` + `self._resumable_stop = True`，API 异常被记失败、
-    断点保留（不再被误删成「成功」）。
-  · P2#3：config.py 系统提示「软件控制」路由表去掉不存在的 `software_run` 幽灵名，
-    换成 6 个真实工具（app_launch / app_close / app_click / app_type /
-    app_window_state / app_list_controls）。
+本轮改动（审查报告 P1 任务验收 / P2 断点幂等 / P1 不可信边界）：
+  · P1 任务验收：`agent._infer_outcome` 接产物级验收 —— 本轮若声明了交付物
+   （`deliverables`），必须真实落地（文件存在且非空）才算 success，否则降级 partial。
+    新增 `_deliverable_satisfied` / `_FILE_KINDS` 谓词，累积 `_deliverables`。
+  · P2 断点幂等：每次工具执行登记进 `_exec_ledger`（落 checkpoint）；恢复时从
+    checkpoint 取历史 ledger 构建 `_resume_done_hashes`，`_exec_tool_calls` 对不可幂等
+    工具（`_NON_IDEMPOTENT_TOOLS`）已执行过的跳过（fail-closed）。新增 `_is_resume_dup`
+    / `_record_exec_ledger` / `_tool_args_hash` 辅助。
+  · P1 不可信边界：`agent.wrap_untrusted` / `_wrap_tool_content` 把 web_fetch /
+    web_search / read_file / download 等不可信产出包进 `<untrusted_tool_output>`；
+    `skill_loader.Skill` 增 source/version/hash/audited_at/allow_* 元数据，
+    `load_skill_prompt` 返回内容包 `<untrusted skill>`；`config.system_prompt` 加边界规则。
 
-核验重点：① 版本号 v4.221.0 且不含 v4.220.0；② 本轮改动模块字节码指纹一致
-（真进包，不是改了个寂寞）；③ 四工具确实进 ALWAYS_CONFIRM（源码导入断言）；
-④ software_run 幽灵名已从 config 常量表消失；⑤ agent 续跑修复接线符号在位；
-⑥ 复用关键历史钉子（tool_contract / 系统控制 15 tool_* / 画布反向 / 测试不随包）防重打包回归。
+核验重点：① 版本号 v4.222.0 且不含 v4.221.0；② 本轮改动模块字节码指纹一致
+（真进包，不是改了个寂寞）；③ 三块新增符号/边界标签确在 agent / skill_loader 包内；
+④ 复用关键历史钉子（ALWAYS_CONFIRM 四工具 / tool_contract / 系统控制 15 tool_* /
+画布反向 / 测试不随包）防重打包回归。
 """
 import hashlib
 import marshal
@@ -28,7 +30,7 @@ EXE = ROOT / "dist" / "小臭玩AI" / "小臭玩AI.exe"
 
 MODULES = ["tools", "agent", "agent_node", "risk", "permissions",
            "system_control_tools", "software_control_tools", "config",
-           "tool_contract"]
+           "tool_contract", "skill_loader"]
 
 _n_pass = _n_fail = 0
 
@@ -164,10 +166,10 @@ def main():
     print("\n-- 2) 版本一致性 --")
     if "config" in names:
         consts = _str_consts(_load(za, "config"))
-        check("PYZ 内 config 版本常量 == v4.221.0",
-              "v4.221.0" in consts, f"包内版本串={sorted(s for s in consts if s.startswith('v4.22'))}")
-        check("PYZ 内不含上一版旧版本常量 v4.220.0",
-              "v4.220.0" not in consts, "残留旧版本串（可能是增量打包旧模块）")
+        check("PYZ 内 config 版本常量 == v4.222.0",
+              "v4.222.0" in consts, f"包内版本串={sorted(s for s in consts if s.startswith('v4.22'))}")
+        check("PYZ 内不含上一版旧版本常量 v4.221.0",
+              "v4.221.0" not in consts, "残留旧版本串（可能是增量打包旧模块）")
     else:
         check("config 在 PYZ 里", False, "缺失 → 启动崩")
 
@@ -211,6 +213,54 @@ def main():
               "_resumable_stop" in an, "_resumable_stop 没编进去 → 断点被误删")
     else:
         check("agent 在 PYZ 里", False, "缺失 → 主流程崩")
+
+    print("\n-- 3h) 本轮钉子：P1 任务验收（产物级结局判定）--")
+    if "agent" in names:
+        co_agent = _load(za, "agent")
+        an = _code_names(co_agent)
+        acs = _str_consts(co_agent)
+        check("★ 包内 agent 定义 _deliverable_satisfied（产物级验收谓词）",
+              "_deliverable_satisfied" in an, "_deliverable_satisfied 没编进去")
+        check("★ 包内 agent 定义 _FILE_KINDS（产物类型白名单）",
+              "_FILE_KINDS" in an, "_FILE_KINDS 没编进去")
+        check("★ 包内 agent 引用 _deliverables（累积声明交付物）",
+              "_deliverables" in an, "_deliverables 没编进去 → 验收无数据")
+    else:
+        check("agent 在 PYZ 里", False, "缺失 → 主流程崩")
+
+    print("\n-- 3i) 本轮钉子：P2 断点幂等（恢复不重复执行副作用）--")
+    if "agent" in names:
+        co_agent = _load(za, "agent")
+        an = _code_names(co_agent)
+        for sym in ("_exec_ledger", "_resume_done_hashes", "_NON_IDEMPOTENT_TOOLS",
+                    "_is_resume_dup", "_record_exec_ledger", "_tool_args_hash"):
+            check(f"★ 包内 agent 含断点幂等符号 {sym}",
+                  sym in an, f"{sym} 没编进去 → 恢复会重复执行副作用")
+
+    print("\n-- 3j) 本轮钉子：P1 不可信内容边界（工具/技能产出显式包边界）--")
+    if "agent" in names:
+        co_agent = _load(za, "agent")
+        an = _code_names(co_agent)
+        acs = _str_consts(co_agent)
+        check("★ 包内 agent 定义 wrap_untrusted（不可信内容包装）",
+              "wrap_untrusted" in an, "wrap_untrusted 没编进去")
+        check("★ 包内 agent 定义 _wrap_tool_content（工具产出包边界）",
+              "_wrap_tool_content" in an, "_wrap_tool_content 没编进去")
+        check("★ 包内 agent 常量含 <untrusted_tool_output 边界标签",
+              any("<untrusted_tool_output" in s for s in acs),
+              "不可信工具边界标签没编进去")
+    if "skill_loader" in names:
+        co_sl = _load(za, "skill_loader")
+        sln = _code_names(co_sl)
+        sls = _str_consts(co_sl)
+        for sym in ("allow_tools", "allow_network", "allow_system",
+                    "allow_dir", "audited_at", "wrap_skill_prompt"):
+            check(f"★ 包内 skill_loader 含技能元数据/边界符号 {sym}",
+                  (sym in sln) or any(sym in s for s in sls),
+                  f"{sym} 没编进去 → 技能边界缺元数据")
+        check("★ 包内 skill_loader 常量含 <untrusted skill 边界标签",
+              any("<untrusted skill" in s for s in sls),
+              "技能边界标签没编进去")
 
     print("\n-- 3d) 关键历史钉子：tool_contract 契约真进包（v4.220 收口）--")
     if "tool_contract" in names:

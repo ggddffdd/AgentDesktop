@@ -122,9 +122,11 @@ def part_c_behavior_unchanged():
                   if old.tier_of(n) != risk.tier_of(n)]
         check("C2 共有工具的 classify 一致（降级必红）", not d_cls, f"{d_cls[:6]}")
         check("C3 共有工具的 tier_of 一致（降级必红）", not d_tier, f"{d_tier[:6]}")
-        check("C4 ALWAYS_CONFIRM 一致",
-              set(old.ALWAYS_CONFIRM) == set(risk.ALWAYS_CONFIRM),
-              f"{sorted(old.ALWAYS_CONFIRM)} vs {sorted(risk.ALWAYS_CONFIRM)}")
+        # v4.221.0 起 ALWAYS_CONFIRM 允许合法增长（硬确认工具只增不减），
+        # 与 C1-C3 同一演进哲学（不要求键集合相等，只守「不丢旧键」硬边界）。
+        check("C4 ALWAYS_CONFIRM 不丢旧键（允许合法增长）",
+              set(old.ALWAYS_CONFIRM) <= set(risk.ALWAYS_CONFIRM),
+              f"丢失的硬确认键 {sorted(set(old.ALWAYS_CONFIRM) - set(risk.ALWAYS_CONFIRM))}")
         samples = ["browser_open", "app_get_text", "mouse_click", "system_sleep",
                    "mcp_call", "db_xxx", "clipboard_read", "rag_search_x",
                    "window_list_x", "process_kill", "unknown_zzz"]

@@ -129,6 +129,8 @@ want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         # v4.211.4：主对话决策审计的公共件（permissions 顶层 import，必在包里）
         "tool_audit",
         "digital_twin_panel",
+        # v4.222.0：技能子系统不可信边界（元数据 + 包边界）
+        "skill_loader",
         ]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
@@ -286,7 +288,16 @@ def main():
                   # v4.169.0 批次B：工具决策日志
                   "log_tool_decision",
                   # v4.175.0：400 时把接口原文一起显示给用户
-                  "_api_body", "接口原文"],
+                  "_api_body", "接口原文",
+                  # v4.222.0：任务级产物验收 / 断点幂等 / 不可信内容边界
+                  "_deliverable_satisfied", "_FILE_KINDS", "_deliverables",
+                  "_exec_ledger", "_resume_done_hashes", "_NON_IDEMPOTENT_TOOLS",
+                  "_is_resume_dup", "_record_exec_ledger", "_tool_args_hash",
+                  "wrap_untrusted", "_wrap_tool_content", "<untrusted_tool_output"],
+        # v4.222.0：技能子系统不可信边界（skill_loader 元数据 + 包边界）
+        "skill_loader": ["allow_tools", "allow_network", "allow_system",
+                  "allow_dir", "audited_at", "wrap_skill_prompt",
+                  "<untrusted skill"],
         # v4.216.0：意图分类判据族（_prog_fetch_intent/_is_bare_url/_PROG_FETCH_KW
         # + is_non_action_message 调用）已迁到 agent_text.py（agent 改调 agent_text._x）。
         # 校验随之跟到 agent_text 模块，否则误报 agent 缺符号（假红）。
