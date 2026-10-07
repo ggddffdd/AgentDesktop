@@ -118,6 +118,7 @@ test_v4102_1021_twin_bg.py
 test_v4102_image_compress.py
 test_v4102_twin_v2.py
 test_video_core_home.py
+test_video_dialogue_229.py
 test_video_director_fix_188.py
 test_vision_channel.py
 test_vision_qc.py

@@ -2282,7 +2282,12 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
 
         self.video_prompt = QTextEdit()
         self.video_prompt.setFixedHeight(90)
-        self.video_prompt.setPlaceholderText("描述视频画面与镜头…（口播台词请填下方「台词/口播」框，不要写这里）")
+        # v4.229.0：不再提示「下方台词框」——那个框本就不存在（口播归数字人模块）。
+        # 台词直接写在这里即可：单独一行以「台词：」开头，或用中文引号包住整句，
+        # 会被识别出来交给内核配音（音画同出）。
+        self.video_prompt.setPlaceholderText(
+            "描述视频画面与镜头…（要口播就把台词另起一行，写成「台词：你好，欢迎来到我的直播间」"
+            "或用中文引号包住整句）")
         self.video_prompt.setStyleSheet(
             f"QTextEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
             f"border-radius:10px;padding:12px 12px;font-size:13px;color:{THEME['text']};}}"
@@ -2406,7 +2411,9 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         lay.addWidget(self.video_ref_list)
 
         hint = QLabel("模式：① 加了参考图→参考图模式（≤5 张，模型参考其人物/场景/画风，多图优先）"
-                      "；② 只加首帧或首尾帧→关键帧模式（首帧锁定/首尾过渡）；③ 都没加→纯文生视频。")
+                      "；② 只加首帧或首尾帧→关键帧模式（首帧锁定/首尾过渡）；③ 都没加→纯文生视频。\n"
+                      "口播：台词另起一行写成「台词：要说的话」或用中文引号包整句，"
+                      "会自动交给配音（画面里不要再重复一遍）。")
         hint.setStyleSheet(label_second())
         hint.setWordWrap(True)
         lay.addWidget(hint)
@@ -2428,6 +2435,15 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         if not prompt:
             self.video_status.setText("请输入视频描述")
             return
+        # v4.229.0：提示词里带台词 → 拆成「画面描述」+「台词」，台词交给内核配音注入点
+        # （tool_video_gen(dialogue=) → core._inject_dialogue），实现**音画同出**。
+        # 此前台词整段混在 prompt 里被当画面语义处理，模型不会念 —— 面板又没有台词框，
+        # 于是「写在提示词里的台词不起作用」。
+        scene, dialogue = tools_mod.extract_video_dialogue(prompt)
+        if dialogue and not scene:
+            # 只写了台词、没写画面：给一句中性画面，避免空 prompt（模型会自由发挥）
+            scene = "人物面对镜头说话的中近景画面"
+        submit_prompt = scene or prompt
         res = self.video_resolution.currentData() or "768x1152"
         # 画幅从选定分辨率推导（宽>高=横版）。此前 UI 恒传 None → 永远走默认竖版，
         # 选了「横屏 1920×1080」却仍出竖版，是个静默 bug（2026-09-06 顺手修）。
@@ -2441,6 +2457,8 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         refs = list(self._video_refs) if getattr(self, "_video_refs", None) else None
         mode_txt = ("参考图模式" if refs else
                     ("首尾帧模式" if (first or last) else "文生视频"))
+        if dialogue:
+            mode_txt += "·口播配音"
         self.video_status.setText(f"提交任务中…（{mode_txt}；可能需数分钟）")
         # 审计修复 B3：视频线程同图——运行中不得被替换
         _vt = getattr(self, "_video_thread", None)
@@ -2454,9 +2472,10 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         except Exception:
             self._task_video = ""
         self._video_thread = _GenThread(
-            tools_mod.tool_video_gen, self.cfg, APP_DIR, prompt,
+            tools_mod.tool_video_gen, self.cfg, APP_DIR, submit_prompt,
             self.video_duration.value(), aspect, resolution=res,
-            first_frame=first, last_frame=last, images=refs)
+            first_frame=first, last_frame=last, images=refs,
+            dialogue=dialogue)
         self._spawn_thread(self._video_thread)
         self._video_thread.result.connect(self._on_video_result)
         self._video_thread.start()

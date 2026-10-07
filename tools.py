@@ -2551,6 +2551,62 @@ def _clean_dialogue(line, max_len=60):
     return d
 
 
+# v4.229.0：生视频面板「提示词内带台词」的拆分规则。
+# 生视频面板本就没有台词输入框（口播/数字人归 digital_twin_panel 管），但大哥的实际
+# 用法是把台词一起写进提示词框 —— 此前这些台词被当作**画面描述**送进 prompt，
+# agnes-video-2.5-flash 不会念，只会把它理解成场景文字（甚至渲染成画面字幕）。
+# tool_video_gen 的 dialogue= 参数本就能让内核配音（core 内唯一注入点），
+# 面板却从未传过 —— 这就是「提示词里写台词不起作用」的根因。
+_DLG_LINE_RE = re.compile(
+    r"^\s*[\[【（(]?\s*(?:台词|对白|旁白|口播|line|dialogue)"
+    r"\s*[】）)\]]?\s*[:：]?\s*(.+?)\s*$",
+    re.I)
+# 整行被中文引号包住 = 用户把它当成「说出来的话」而非画面（如 “大家好，今天聊聊…”）
+_DLG_QUOTED_RE = re.compile(r'^\s*["“「『]\s*(.+?)\s*["”」』]\s*$')
+# 这些是运镜/画面术语，即便被引号包住也不是台词
+_DLG_SCENE_WORDS = ("镜头", "画面", "运镜", "特写", "中景", "近景", "全景", "俯拍", "跟拍",
+                    "光线", "色调", "构图", "场景")
+
+
+def extract_video_dialogue(prompt, max_len=60):
+    """把视频提示词拆成「画面描述」+「要念出来的台词」。
+
+    返回 (画面描述, 台词 or None)。无台词时原样返回输入、台词为 None。
+
+    识别规则（保守优先，宁可漏也别把画面描述当台词念出来）：
+      ① 前缀标记行：`台词：` / `【对白】` / `line:` / `dialogue:` 等 —— 明确声明
+      ② 整行被中文引号包住、且不含运镜类术语 —— 用户在引号里写的是口播内容
+
+    台词被摘出后**不再留在画面描述里**：prompt 里的中文若未被本处摘走，
+    内核也只会当画面语义处理；留在两处反而让模型既念又把它当画面文字。
+    """
+    if not prompt or not str(prompt).strip():
+        return "", None
+    scene_lines, dlg_lines = [], []
+    for raw in str(prompt).splitlines():
+        line = (raw or "").strip()
+        if not line:
+            continue
+        m = _DLG_LINE_RE.match(line)
+        if m:
+            body = m.group(1).strip()
+            if body:
+                dlg_lines.append(body)
+            continue
+        m = _DLG_QUOTED_RE.match(line)
+        if m and not any(w in line for w in _DLG_SCENE_WORDS):
+            dlg_lines.append(m.group(1).strip())
+            continue
+        scene_lines.append(line)
+    if not dlg_lines:
+        return str(prompt).strip(), None
+    cleaned = _clean_dialogue("，".join(dlg_lines), max_len=max_len)
+    if not cleaned:
+        # 洗完什么都没剩（如写的是英文）→ 退回「没有台词」，别传空串给内核
+        return str(prompt).strip(), None
+    return "\n".join(scene_lines).strip(), cleaned
+
+
 def _build_video_prompt(prompt, dialogue=None):
     """把口播/台词包进视频 prompt（逻辑与 video-agent/core/agnes._inject_dialogue 对齐）。
 
