@@ -135,6 +135,8 @@ want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         "tool_contract",
         # v4.224.0：单条消息预算硬上限（消息拼装与历史压缩都在这）
         "ui_msg",
+        # v4.225.0：统一意图对象 + 任务状态机（路由收口 + 任务账本）
+        "intent", "task_state", "agent_task_mixin",
         ]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
@@ -291,6 +293,13 @@ def main():
                   "reasoning_content",
                   # v4.169.0：run_workflow 过闸 + 硬确认档 force 通道
                   "_run_workflow_guarded", "explicit_intent", "_confirm_force",
+                  # v4.225.0：统一意图 + 任务状态机接线
+                  # 注：钉**方法名**（_tstate_* 走 LOAD_METHOD 在 co_names 里），
+                  # 不钉 `_tstate`/`_tstate_nudged` 属性名——CPython 3.12 的
+                  # LOAD_ATTR 走 inline cache，属性名既不在 co_names 也不在
+                  # co_consts，只有 dis 看得到，静态扫描永远扫不到（假红）。
+                  "_intent", "_tstate_init", "_tstate_record",
+                  "_tstate_step", "_tstate_nudge_now",
                   # v4.169.0 批次B：工具决策日志
                   "log_tool_decision",
                   # v4.175.0：400 时把接口原文一起显示给用户
@@ -323,6 +332,22 @@ def main():
         "agent_text": ["is_non_action_message",
                   # v4.168.1：程序化抓取否决 + 裸 URL 判据
                   "_prog_fetch_intent", "_is_bare_url", "_PROG_FETCH_KW"],
+        # v4.225.0：统一意图对象（Intent 值对象 + ROUTE_REGISTRY 注册表
+        # + classify 唯一入口 + 路由段自动生成）
+        "intent": ["Intent", "classify", "ROUTE_REGISTRY", "_route_hint_text",
+                  "KIND_ACTION", "KIND_NEGATED", "KIND_REFERENCE",
+                  "工具路由", "requested_tools", "force_tool"],
+        # v4.225.0：任务状态机（账本 + 硬要求提取 + 四道 gate + nudge 文案）
+        "task_state": ["TaskState", "required_from_text", "record_tool",
+                  "missing_tools", "missing_artifacts", "is_complete",
+                  "should_nudge", "nudge_instruction", "mark_nudged",
+                  "note_artifact", "任务未完成检查"],
+        # v4.225：账本接线 mixin（记账/闸门/步号，从 agent.py 抽出）
+        "agent_task_mixin": ["AgentTaskMixin", "_tstate_init", "_tstate_record",
+                  "_tstate_step", "_tstate_resume_step",
+                  "_tstate_resume_reset_nudge", "_tstate_nudge_now",
+                  "_tstate_trace_nudge", "_last_user_text",
+                  "任务要求未完成"],
         "digital_twin_panel": [
                   # v4.178.0：分镜抗失败（单段失败不再吞掉后续段）+ 断点续跑
                   "_twin_fingerprint", "_job_seg_ok", "_save_job_state",

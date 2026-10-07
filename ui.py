@@ -6512,7 +6512,17 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
             return "\n\n【工具能力概览】生成失败，请重试。\n"
         if not tools:
             return "\n\n【工具能力概览】暂无可用工具。\n"
-        lines = ["\n\n【工具能力概览】以下工具可在 Agent 模式下调用："]
+        # v4.225（P3 统一意图）：工具路由段从 intent.ROUTE_REGISTRY **自动生成**，
+        # 替代此前 agent.py 里手写的「跑代码用 run_python、搜索用 web_search、
+        # 生图用 image_gen」那句 —— 以前加新工具要记得手改，忘了模型就不知道有这工具。
+        # 现在加工具 = 在 ROUTE_REGISTRY 加一行，本段自动跟着变。
+        try:
+            import intent as _intent_mod
+            base = "\n\n" + _intent_mod._route_hint_text() + "\n"
+        except Exception as e:
+            log.warning("工具路由段生成失败（不影响工具概览）: %s", e)
+            base = ""
+        lines = [base.rstrip("\n"), ""]
         for t in tools:
             fn = t.get("function", {}) if isinstance(t, dict) else {}
             name = fn.get("name", "")

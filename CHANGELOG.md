@@ -8,6 +8,30 @@
 - 新版本在上。
 
 ---
+## v4.225.0 — 2026-10-07
+
+**结构化执行：P3 统一意图 Intent（路由规则五处散落→单一真源）／ P2 主Agent 轻量任务状态机（任务做完没有，从「模型不说话了」变成可判定）。**
+
+- **P3 统一意图对象**新增 `intent.py`：「这句话到底想干什么、该调哪个工具」此前散在**五处**各自维护 —— `agent_text._route_force_tool`、`agent_text._detect_action_intent`、`agent_text._content_creation_only`、`intent_guard` 散词表、以及 `agent.py` 系统提示里**手写**的路由句。现收成**一个对象 + 一张注册表**：
+  - `Intent` 值对象（`kind` / `confidence` / `explicit` / `target` / `requested_tools` / `force_tool` / `needs_action` / `text_only` / `reason`，`__slots__` 固定 + 可序列化 + 可判等 + 可hash）。`kind` 八态：`action` / `content` / `question` / `discuss` / `status` / `negated` / `reference` / `unknown`。
+  - `ROUTE_REGISTRY` —— 「工具 → 关键词 + 描述」**单一真源**。系统提示的【工具路由】段由 `_route_hint_text()` **自动生成**（`ui.py` `_build_tool_overview`），替代此前 `agent.py` 里手写的那句；以后**加工具只需登记一行**，不必记得手改提示。
+  - `classify(text, prev_text)` 是**唯一**对外分类入口。**只做壳、不改行为**：`force_tool` / `needs_action` / `text_only` 三个结论**逐条等于** `agent_text` 既有判据原始输出（判据 IN2用 13 条真实句逐条对拍）。已有的几十项判据一行未动 —— 改判据=重排行为=事故。
+  - kind归类补了三个此前没人有的口径：① 状态追问必须**结合产物语境**才算（「视频好了吗」✓ / 「今天天气怎么样」✗ —— 词表里的「怎么样/如何」是通用疑问词，原会词面撞车）；② 评价句式（「这个封面做的漂亮」）归 `discuss` 而非 `action`；③ 疑问句优先于关键词命中（「做视频需要什么工具」要的是答案不是执行）。
+  - fail-open：`agent_text` 不可用 → 返回 `KIND_UNKNOWN` 不抛；非 str 入参（None/int）归一为字符串。
+  - 判据 `tests/test_unified_intent_225.py` PASS=59；含一条**幽灵工具检查**（注册表每个名字必须能在 tools 注册表找到）——立判即抓到 `download_file`：它在 `agent.py` 两处名单被引用，实际 83 个工具里根本没注册，已从注册表移除。
+- **P2 主 Agent 轻量任务状态机**新增 `task_state.py`：此前判断「任务做完没有」只有一个信号 —— **模型这轮是不是输出了纯文本**。模型说「我先帮你搜一下」→文本→直接收尾→一件没干（靠`_idle_steps` 泛化启发式兜，但不看任务到底要求了什么）；调了 3 个工具第 3 个失败也照样收尾。现给主循环一份结构化任务账本：
+  - `TaskState`：子目标（`required_tools`）/ 当前步 / 已完成（`used_tools`）/ 失败（`failed_tools`）/ 待验证产物（`artifacts`，按**磁盘真实存在性**判定）。每次工具调用在 `_handle_tool_result` 里记账，失败口径**复用**既有 `_tool_result_looks_failed`（不另立判据，避免漂移）。
+  - 收尾闸门插在所有旧 nudge 分支**之后**、真正 `break` 之前：只有老逻辑都不打算再给机会时，才做最后一道「你确定做完了？」核查。四道 gate 全过才补一轮**定向** nudge（说清缺什么 + 反空泛交差约束 + 允许客观说明做不到）：有硬要求 + 确有未达标 + 步数有余量 + 本轮未注入过。**任一不满足 → 完全按旧路径收尾（零行为变化）**。续跑轮允许再补一轮（仍受「本轮注入过」闸约束 → 不会无限补做）。
+  - 硬要求口径刻意收紧为「用户**字面点名**工具名」（`required_from_text`，带 `(?<![A-Za-z0-9_])` 词边界，`my_image_genner` 不误伤）。**不用关键词命中** —— 否则「帮我写一段口播文案」会因命中「口播」被逼去调 `video_gen`，那是制造新事故。
+  - 产物路径只认闭集键（`path`/`output_path`/...），**不做**「扫参数找像路径的值」—— 开集扫描会把描述里的路径字样当产物，等一个永不出现的文件 → 永远 pending → 卡死。
+  - 接线代码外移到新模块 `agent_task_mixin.py`（`AgentTaskMixin`，203 行）。起因：本轮给 agent.py 接线净增 **121 行**，把文件推到 **2468 行**，撞了 v4.216 拆分时立的**拆分红线**（`test_split_216.py` 的 `D2 agent.py < 2400`）。处理方式沿用 v4.216 拆 `ChatAuditMixin` 的同一思路（接线搬出、主类只留调用点），**阈值一个数字都没动** —— 抬阈值等于把红线挪到自己脚下，测不出真回弹。抽出后 agent.py **2381 行**（守住 <2400）。
+  - 判据 `tests/test_task_state_machine_225.py` PASS=96，分**四层**钉接线：① agent.py 调用点 ② mixin 内实现 ③ mixin 内动作（`record_tool`/`should_nudge`/`nudge_instruction`/`mark_nudged`/`note_artifact` 真被调）④ **行为级**（用 stub 真跑一遍 mixin 方法，看是否真注入 messages / 真返回 True）。第④ 层是必需的 —— 前两层钉字面，抓不住 `if False and _ts.should_nudge(...)` 这类「串还在、条件被短路」的变异。
+- 兼容零回归：`test_intent_guard_negation` 84 / `test_intent_scope` 76 / `test_route_injection_guard` 60 / `test_intent_routing` 57 / `test_high_risk_guard` 57 / `test_skill_and_route_gates` 50 / `test_guardrail_conflicts` 18 / `test_task_outcome_acceptance_222` 6 / `test_post_exec_verify_224` 26 / `test_msg_budget_cap_224` 29 全绿。其中 `test_route_injection_guard` 有 1 条 v4.216 时代的判据（「agent.py 必须出现 `agent_text._route_force_tool(`」）因架构收口而失效 —— 按「改判据不删判据」升级为两条更强断言：agent.py 经 `intent.classify` 间接接线 + `intent.py` 内部真调 `_route_force_tool`（**保住原意：路由接线不许弄丢**）。
+- 验收：本轮 2 套件 **155 项**判据全绿（intent 59 + task_state 96）+ 扰动 `_perturb_unified_intent_225.py`（**10 变异**：整段删 4 + 只删动作留条件 6）全命中（哑弹 0）。（全量门禁见发布列车。）
+- 连带修判据 3 处（按「改判据不删判据」升级，不删断言、不抬阈值）：`test_route_injection_guard` 的「agent.py 必须出现 `agent_text._route_force_tool(`」升级为「agent.py 经 `intent.classify` 间接接线 + intent.py 内真调 `_route_force_tool`」；`test_split_216` 的 `B2` 精确计数从 7 处调为 5 处并**新增 `B2b/B2c/B2d`**（intent.py 侧 3 函数精确计数 + step1 读 `Intent.force_tool` + `_detect_action_intent` 未被顶掉）；`D2` 阈值 2400 **不动**。
+- 已知尾巴：`kind=discuss` 与 `KIND_QUESTION` 在「有命中关键词 + 是疑问句」时按疑问句优先，二者边界依赖 `_is_question` 的闭集词表，尚未交叉验证全部组合；`confidence` 是**未校准的启发式**（无标注集），只用于日志与状态栏展示，**任何下游决策不得只凭它做阈值判断**。
+
+---
 ## v4.224.0 — 2026-10-07
 
 **验证 + 预算：P2 执行后验证（副作用真生效才有脸报成功）／ P2 单条消息预算硬上限（堵住「最后一条绕过全部预算」的洞）。**

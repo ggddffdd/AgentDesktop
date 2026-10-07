@@ -1,0 +1,297 @@
+# -*- coding: utf-8 -*-
+"""task_state.py —— v4.225 主 Agent 轻量任务状态机（审查报告 P2「主 Agent 任务状态机」）
+
+为什么要有它
+------------
+v4.225 之前，Agent 主循环判断「任务做完没有」只有一个信号：**模型这一轮
+是不是输出了纯文本**。只要模型停下来说话，循环就认为可以收尾了。于是：
+
+* 模型说「我先帮你搜一下资料」→ 文本 → 直接收尾 → **一件没干**（这靠
+  `_idle_steps` / `_nudged` 兜着，但那是有话就 nudge 的**泛化**启发式，
+  不看任务到底要求了什么）。
+* 模型调了 3 个工具、第 3 个失败了 → 照样收尾 → 「已完成」结论里混着失败。
+* 用户要「生成视频**并保存到 D 盘**」，模型生成了视频但没存盘 → 收尾，
+  交付物清单里有产物吗？没有，但没人查。
+
+本模块给主循环一个**结构化的任务账本**，让「做完了吗」变成可判定的事：
+
+    TaskState
+      ├─ required_tools   用户点名/明确要求的工具（硬要求）
+      ├─ used_tools       本轮实际调用过的工具
+      ├─ artifacts        待验证产物（路径 + 是否真实落盘）
+      ├─ failed_tools     调用失败的工具
+      └─ current_step     当前步号（供状态栏/日志）
+
+    is_complete() / pending() → 未达标清单 → agent 注入一轮定向 nudge。
+
+**关键纪律：不改变「模型停下就收尾」这个主语义。**
+本模块只在满足下面**全部**条件时才介入（gate 严）：
+  1. 本轮确实有硬要求（用户点名了工具，或声明了产物）；
+  2. 存在未满足项；
+  3. 步数预算**还有余量**；
+  4. 本轮**还没注入过**本模块的 nudge（只补一轮，防死循环）；
+否则一律 `pending()` 返回空 → agent 完全按旧路径收尾（零行为变化）。
+
+fail-open：任何异常 → `record_*` / `pending` 返回安全值，绝不阻断 Agent 主循环。
+"""
+import logging
+import os
+
+log = logging.getLogger("dsdesktop")
+
+VERSION = "v4.225.0"
+
+# ============================================================
+# 会产出实物的工具（按工具名 → 产物是否应当落盘到磁盘）
+# ============================================================
+# 值为 True = 该工具成功后应有磁盘产物；False = 该工具本身不产文件
+# （如 web_search 只是拿数据）。用于「待验证产物」检查。
+_FILE_PRODUCING = {
+    "write_file": True,
+    "video_gen": True,
+    "image_gen": True,
+    "chart_gen": True,
+    "download_file": True,
+    "rag_index": True,
+}
+
+# 反向：会「改外部状态」但明确不产文件的工具。
+# 排除它们是为了不把它们误当产物等待（等一个永远不会出现的文件 = 卡死）。
+_NO_FILE_TOOLS = frozenset((
+    "web_search", "web_fetch", "read_file", "run_python", "run_command",
+    "sys_info", "remember", "search_memory", "analyze_image", "use_skill",
+    "send_email", "db_query", "log_query", "context_compress",
+    "context_summary", "webhook_start", "webhook_stop", "webhook_events",
+    "list_automation", "create_automation", "delete_automation",
+    "create_skill", "legion_board", "legion_find_asset", "legion_get_output",
+    "legion_get_sources", "legion_list_outputs", "legion_read_log",
+    "legion_report_issue", "schedule", "run_workflow",
+    "process_kill", "app_kill", "app_close", "clean_recycle_bin",
+    "system_info", "clipboard_read", "clipboard_write",
+))
+
+_ST_OK = "ok"
+_ST_PENDING = "pending"
+_ST_FAILED = "failed"
+_ST_SKIPPED = "skipped"
+
+
+def required_from_text(text):
+    """从用户原话里提取**字面点名**的工具名，作为任务的硬要求。
+
+    为什么只认「字面点名」，不认关键词命中
+    --------------------------------------
+    `intent.Intent.requested_tools` 是**关键词**命中来的，语义上宽得多：
+    「帮我写一段口播文案」会命中 video_gen（因为词表里有「口播」），
+    但用户要的是一段文字，**没让你生视频**。拿它当硬要求 =
+    逼模型为一个不存在的产物去调视频工具 = 制造新事故。
+
+    所以口径收紧到「用户在话里**直接把工具名当词写出来**」：
+      「用 video_gen 生成」「调web_search 查一下」→ 硬要求
+      「帮我写口播文案」「生成个视频」→ 不是硬要求（那是意图，不是点名）
+
+    返回 [(tool_name, 用户原文里的写法), ...]，去重保序。
+    """
+    import re
+    t = str(text or "")
+    if not t:
+        return []
+    low = t.lower()
+    out = []
+    try:
+        import intent as _intent_mod
+        names = [r["name"] for r in _intent_mod.ROUTE_REGISTRY]
+    except Exception:
+        names = []
+    for nm in sorted(set(list(_NO_FILE_TOOLS) + names)):
+        # 词边界：工具名带下划线，直接 in 可能命中更长标识符的一部分
+        #（如 image_gen 命中 my_image_genner）。用 (?<![A-Za-z0-9_]) 包住。
+        pat = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(nm.lower())
+                         + r"(?![A-Za-z0-9_])")
+        m = pat.search(low)
+        if m:
+            out.append((nm, t[m.start():m.end()]))
+    return out
+
+
+class TaskState(object):
+    """v4.225 任务账本（轻量、无外部依赖、可单测）。"""
+
+    __slots__ = ("goal", "required_tools", "used_tools", "artifacts",
+                 "failed_tools", "current_step", "nudge_injected", "steps")
+
+    def __init__(self, goal="", required_tools=()):
+        self.goal = goal or ""
+        # 去重且保序：required_tools 的顺序 = 用户话里提到的顺序，
+        # 补 nudge 时按这个顺序提示，读起来符合用户的心智模型。
+        seen = set()
+        self.required_tools = []
+        for t in (required_tools or ()):
+            t = str(t or "").strip()
+            if t and t not in seen:
+                seen.add(t)
+                self.required_tools.append(t)
+        self.used_tools = []
+        self.artifacts = []       # [(path, exists_bool, tool)]
+        self.failed_tools = []    # [tool]
+        self.current_step = 0
+        self.nudge_injected = False
+        self.steps = 0
+
+    # --------------------------------------------------------
+    # 记账
+    # --------------------------------------------------------
+    def record_tool(self, name, args=None, result=None, ok=True, step=0):
+        """一次工具调用后记账。
+
+        `ok` 由调用方判定（agent 已有 `_tool_result_looks_failed` 这类判据，
+        这里不重复判定，只接收结论）。产物路径优先从 args 取（write_file 的
+        path / video_gen 的 output_path 之类），取不到就不记产物 —— 宁可
+        少记不可错记（错记会让 pending 永远不为空 → 无休止 nudge）。
+        """
+        name = str(name or "").strip()
+        if not name:
+            return
+        self.steps = int(step or self.steps)
+        if name not in self.used_tools:
+            self.used_tools.append(name)
+        if not ok and name not in self.failed_tools:
+            self.failed_tools.append(name)
+        if ok and name in _FILE_PRODUCING:
+            p = self._artifact_path(name, args)
+            if p and not any(a[0] == p for a in self.artifacts):
+                self.artifacts.append((p, self._exists(p), name))
+
+    @staticmethod
+    def _artifact_path(name, args):
+        """从参数里提取产物路径（**闭集**，只认这几个键）。
+
+        刻意不做「扫全部参数找像路径的值」——开集扫描会把 prompt/描述里的
+        路径字样也当成产物，等一个不存在的文件 → 永远 pending → 卡死。
+        """
+        if not isinstance(args, dict):
+            return None
+        for k in ("path", "output_path", "file_path", "save_path", "out_path",
+                  "dest", "filepath", "filename", "output", "target_path"):
+            v = args.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return None
+
+    @staticmethod
+    def _exists(path):
+        try:
+            return bool(path) and os.path.exists(path)
+        except Exception:
+            return False
+
+    def note_artifact(self, path, tool=""):
+        """外部路径登记（agent 已算出绝对交付物时调用）。"""
+        p = str(path or "").strip()
+        if p and not any(a[0] == p for a in self.artifacts):
+            self.artifacts.append((p, self._exists(p), str(tool or "")))
+
+    # --------------------------------------------------------
+    # 判定
+    # --------------------------------------------------------
+    def has_requirements(self):
+        """本轮是否有「硬要求」——没有就完全不介入（gate 条件 1）。"""
+        return bool(self.required_tools)
+
+    def missing_tools(self):
+        """点名了但从没调过的工具。"""
+        used = set(self.used_tools)
+        return [t for t in self.required_tools if t not in used]
+
+    def missing_artifacts(self):
+        """声明了产物但磁盘上不存在的。"""
+        return [(p, t) for (p, ok, t) in self.artifacts if not ok]
+
+    def is_complete(self):
+        """全部硬要求满足。"""
+        return not self.missing_tools() and not self.missing_artifacts()
+
+    def pending(self):
+        """返回未达标清单（人类可读字符串列表）；空列表 = 达标。"""
+        out = []
+        for t in self.missing_tools():
+            out.append("还没调用工具 %s（用户点名要它）" % t)
+        for (p, tool) in self.missing_artifacts():
+            out.append("产物还没落地：%s（%s 声称成功但文件不存在）"
+                       % (p, tool or "工具"))
+        return out
+
+    # --------------------------------------------------------
+    # nudge 文案
+    # --------------------------------------------------------
+    def should_nudge(self, step, max_steps, already_injected=None):
+        """是否该注入补做提示。四个 gate 全过才 True。
+
+        `already_injected` 覆盖本对象记录的 nudge_injected（调用方更清楚
+        本轮是否已注入过）。**只补一轮** —— 多轮会与 _idle_steps / _nudged
+        那两个护栏叠加成死循环。
+        """
+        injected = self.nudge_injected if already_injected is None else already_injected
+        try:
+            if injected:
+                return False
+            if not self.has_requirements():
+                return False
+            if not self.pending():
+                return False
+            # 步数预算必须有余量，否则注入提示也没有下一轮可跑。
+            if max_steps and int(step) >= int(max_steps):
+                return False
+            return True
+        except Exception:
+            return False
+
+    def nudge_instruction(self):
+        """生成补做提示（追加到 messages 作为一条 user 侧纠正指令）。
+
+        措辞要点：说清**缺什么**（不是泛泛「继续努力」），并明确「不要复述
+        已完成的部分」——弱模型最常见的反应是把已做的事重述一遍当作交差。
+        """
+        items = self.pending()
+        if not items:
+            return ""
+        lines = [
+            "【任务未完成检查】你在给最终结论，但以下要求尚未满足：",
+        ]
+        for i, it in enumerate(items, 1):
+            lines.append("  %d) %s" % (i, it))
+        lines.append(
+            "请补做上面未完成的部分（真实调用工具，不要只在文字里声称做过）。"
+            "不要重复已经完成的内容，也不要输出空泛的『我已完成』——"
+            "若因客观原因确实做不到，请直接说明哪一条做不到、为什么。")
+        return "\n".join(lines)
+
+    def mark_nudged(self):
+        self.nudge_injected = True
+
+    # --------------------------------------------------------
+    def summary(self):
+        """一行状态（状态栏/日志用）。"""
+        return ("目标=%s | 步%d | 已用%s | 缺工具%s | 产物%d(缺%d)"
+                % (self.goal[:30] or "-", self.current_step,
+                   ",".join(self.used_tools[:4]) or "-",
+                   ",".join(self.missing_tools()) or "无",
+                   len(self.artifacts), len(self.missing_artifacts())))
+
+    def to_dict(self):
+        return {
+            "goal": self.goal,
+            "required_tools": list(self.required_tools),
+            "used_tools": list(self.used_tools),
+            "failed_tools": list(self.failed_tools),
+            "artifacts": [(p, ok, t) for (p, ok, t) in self.artifacts],
+            "current_step": self.current_step,
+            "nudge_injected": self.nudge_injected,
+            "status": _ST_FAILED if self.failed_tools else (
+                _ST_PENDING if self.pending() else _ST_OK),
+        }
+
+
+__all__ = ["VERSION", "TaskState", "required_from_text",
+           "_FILE_PRODUCING", "_NO_FILE_TOOLS",
+           "_ST_OK", "_ST_PENDING", "_ST_FAILED", "_ST_SKIPPED"]

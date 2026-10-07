@@ -57,6 +57,8 @@ _AGENT_SRC = (ROOT / "agent.py").read_text(encoding="utf-8-sig")
 _UI_SRC = (ROOT / "ui.py").read_text(encoding="utf-8-sig")
 # v4.216.0：判据族（路由方法 + 词表常量）从 AgentWorker 拆到 agent_text.py 模块级
 _ATEXT_SRC = (ROOT / "agent_text.py").read_text(encoding="utf-8-sig")
+# v4.225：新增 intent.py —— 路由判据的新收口位置
+_INTENT_SRC = (ROOT / "intent.py").read_text(encoding="utf-8-sig")
 
 _METHODS = ("_route_force_tool", "_ref_existing_artifact", "_gen_intent", "_gen_intent_span", "_ref_by_position",
             "_is_question", "_verb_near", "_phrase_hit", "_neg_hit",
@@ -159,8 +161,18 @@ def part_a():
     check("_is_bare_url 存在", "_is_bare_url" in _ATEXT_SRC)
     check("URL 分支要求打开意图或裸 URL",
           "or _is_bare_url(text)" in _ATEXT_SRC)
-    check("agent.py 主循环仍接线 agent_text._route_force_tool（搬移不丢调用）",
-          "agent_text._route_force_tool(" in _AGENT_SRC)
+    # v4.225（P3 统一意图）：agent.py 不再直接调 agent_text._route_force_tool ——
+    # 那一层已收进 intent.classify（step1 改读 Intent.force_tool）。所以本条判据
+    # 从「调用点必须在 agent.py」升级为「**路由判据必须真被调用**」：
+    #   agent.py 经 intent.classify 间接接线 + intent.py 内部真调 _route_force_tool。
+    # 这样保留了原意（搬移/重构都不许把路由接线弄丢），又不与新架构冲突。
+    check("agent.py 经 intent.classify 间接接线路由（v4.225 统一意图）",
+          "intent.classify(" in _AGENT_SRC
+          and "self._intent.force_tool" in _AGENT_SRC)
+    check("路由判据仍真被调用（intent.py 内调 agent_text._route_force_tool）",
+          "agent_text._route_force_tool(" in _AGENT_SRC
+          or ("agent_text._route_force_tool(" in _INTENT_SRC),
+          "intent.py 里找不到 agent_text._route_force_tool 调用 → 路由接线丢了")
 
 
 def part_b():

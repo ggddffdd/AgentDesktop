@@ -1,22 +1,23 @@
 # -*- coding: utf-8 -*-
-"""v4.224.0 进包核验：验证 + 预算（P2 执行后验证 / P2 单条消息预算硬上限）。
+"""v4.225.0 进包核验：结构化执行（P3 统一意图 Intent + P2 主 Agent 任务状态机）。
 
-本轮改动（审查报告 P2 两项）：
-  · P2 执行后验证：有副作用的工具（写文件/系统控制）跑完就照返回值报成功，从不
-    回头查副作用是否真生效。新增验证层 tool_contract.register_verifier /
-    verify_after / apply_post_verification，并在 exec_tool 两条返回路径统一接入。
-    首批登记 2 个真信号验证器：process_kill（按名字终止后查同名进程清零）、
-    clean_recycle_bin（清完复查是否真空）。语义：只降级不升级 + fail-open。
-  · P2 单条消息预算硬上限：v4.177 整条丢弃闸刻意保住最后 min_keep 条 → 巨消息
-    只要在最后一条就绕过全部预算。新增 ui_msg.MSG_BUDGET_DEFAULTS +
-    _cap_message_to_budget，_build_api_history 加 msg_budget 参数，最后一条照样
-    削内容只是不整条丢；截断必留可见标记。
+本轮改动（审查报告第三阶段 a 批）：
+  · P3 统一意图 Intent：路由规则此前散在五处（agent_text._route_force_tool /
+    _detect_action_intent / _content_creation_only、intent_guard 散词表、
+    agent.py 系统提示里手写的路由句）。新增 intent.py 收成「一个 Intent 对象 +
+    一张 ROUTE_REGISTRY」；系统提示的【工具路由】段由 _route_hint_text() 自动生成。
+    纪律：只做壳不改行为 —— force_tool / needs_action / text_only 三结论逐条
+    等于既有判据原始输出。
+  · P2 主 Agent 轻量任务状态机：新增 task_state.py 任务账本（子目标/当前步/
+    已完成/失败/待验证产物），在 _handle_tool_result 里记账，收尾 break 前做
+    四道 gate 的定向 nudge。四道 gate 任一不满足 → 完全按旧路径收尾。
 
-核验重点：① 版本号 v4.224.0 且不含 v4.223.0；② 本轮改动模块字节码指纹一致
-（真进包，不是改了个寂寞）；③ tool_contract 执行后验证符号在位；④ ui_msg 单条
-预算符号与截断标记在位；⑤ config 带 msg_budget 默认；⑥ 复用关键历史钉子
-（v4.221 硬确认 / v4.222 验收与边界 / v4.223 契约 / tool_contract / 系统控制
-15 tool_* / 画布反向 / 测试不随包）防重打包回归。
+核验重点：① 版本号 v4.225.0 且不含 v4.224.0；② intent / task_state 两个新模块
+真进包（PYZ toc 里有）；③ 注册表与系统提示生成符号在位；④ 状态机记账与
+gate 符号在位；⑤ agent 真引用两个新模块（接线没丢）；⑥ ui.py 真调
+_route_hint_text（系统提示不再手写）；⑦ 复用关键历史钉子（v4.221硬确认 /
+v4.222 验收与边界 / v4.223 契约 / v4.224 验证与预算 / tool_contract /
+系统控制 15 tool_* / 画布反向 / 测试不随包）防重打包回归。
 """
 import hashlib
 import marshal
@@ -166,10 +167,10 @@ def main():
     print("\n-- 2) 版本一致性 --")
     if "config" in names:
         consts = _str_consts(_load(za, "config"))
-        check("PYZ 内 config 版本常量 == v4.224.0",
-              "v4.224.0" in consts, f"包内版本串={sorted(s for s in consts if s.startswith('v4.22'))}")
-        check("PYZ 内不含上一版旧版本常量 v4.223.0",
-              "v4.223.0" not in consts, "残留旧版本串（可能是增量打包旧模块）")
+        check("PYZ 内 config 版本常量 == v4.225.0",
+              "v4.225.0" in consts, f"包内版本串={sorted(s for s in consts if s.startswith('v4.22'))}")
+        check("PYZ 内不含上一版旧版本常量 v4.224.0",
+              "v4.224.0" not in consts, "残留旧版本串（可能是增量打包旧模块）")
     else:
         check("config 在 PYZ 里", False, "缺失 → 启动崩")
 
@@ -425,6 +426,90 @@ def main():
               any("影响范围" in s for s in acs), "确认弹窗影响范围文案没编进去")
     else:
         check("agent 在 PYZ 里", False, "缺失 → 主流程崩")
+
+    print("\n-- 3m) 本轮钉子：P3 统一意图 Intent + P2 任务状态机（v4.225）--")
+    if "intent" in names:
+        co_it = _load(za, "intent")
+        itn = _code_names(co_it)
+        its = _str_consts(co_it)
+        for sym in ("Intent", "classify", "ROUTE_REGISTRY", "_route_hint_text"):
+            check(f"★ 包内 intent 定义 {sym}（统一意图对象）",
+                  sym in itn or sym in its,
+                  f"{sym} 没编进去 → 路由收口失效")
+        for k in ("KIND_ACTION", "KIND_NEGATED", "KIND_REFERENCE"):
+            check(f"★ 包内 intent 常量 {k}",
+                  any(k in s for s in its), f"{k} 缺失 → 意图分类降级")
+        check("★ 包内 intent 含系统提示路由段标题",
+              any("工具路由" in s for s in its),
+              "路由段标题没编进去 → 系统提示不会自动生成路由说明")
+        check("★ 包内 intent 真调 agent_text 的既有路由判据（只做壳不改行为）",
+              "_route_force_tool" in itn,
+              "intent 没引用 _route_force_tool → 不是收口是另起炉灶")
+    else:
+        check("intent 在 PYZ 里", False, "缺失 → 统一意图层不存在，exe 会 ModuleNotFoundError")
+    if "task_state" in names:
+        co_ts = _load(za, "task_state")
+        tsn = _code_names(co_ts)
+        tss = _str_consts(co_ts)
+        for sym in ("TaskState", "required_from_text", "record_tool",
+                    "should_nudge", "nudge_instruction", "missing_artifacts"):
+            check(f"★ 包内 task_state 定义 {sym}（任务状态机）",
+                  sym in tsn, f"{sym} 没编进去 → 任务账本残缺")
+        check("★ 包内 task_state 常量含补做提示串",
+              any("任务未完成检查" in s for s in tss),
+              "补做提示串没编进去 → 模型收不到定向指令")
+    else:
+        check("task_state 在 PYZ 里", False, "缺失 → 任务状态机不存在，exe 会 ModuleNotFoundError")
+    if "agent_task_mixin" in names:
+        co_mx = _load(za, "agent_task_mixin")
+        mxn = _code_names(co_mx)
+        mxs = _str_consts(co_mx)
+        for sym in ("AgentTaskMixin", "_tstate_init", "_tstate_record",
+                    "_tstate_step", "_tstate_resume_step",
+                    "_tstate_resume_reset_nudge", "_tstate_nudge_now",
+                    "_tstate_trace_nudge", "_last_user_text"):
+            check(f"★ 包内 agent_task_mixin 定义 {sym}（账本接线）",
+                  sym in mxn, f"{sym} 没编进去 → 接线方法缺失")
+        check("★ 包内 agent_task_mixin 含补做状态提示串",
+              any("任务要求未完成" in s for s in mxs),
+              "补做状态串没编进去 → 用户看不到为何中断")
+    else:
+        check("agent_task_mixin 在 PYZ 里", False,
+              "缺失 → 账本接线不存在，exe 会 ModuleNotFoundError")
+    if "agent" in names:
+        co_ag2 = _load(za, "agent")
+        ag2n = _code_names(co_ag2)
+        ag2s = _str_consts(co_ag2)
+        check("★ 包内 agent 引用 intent.classify（统一意图接线）",
+              "intent" in ag2n and "classify" in ag2n,
+              "agent 没引用 intent → 主循环仍在用分散路由")
+        check("★ 包内 agent 引用 task_state（任务状态机接线）",
+              "task_state" in ag2n, "task_state 没被编进去 → 账本不记账")
+        # 注意：这里**钉方法名而不是属性名**。CPython 3.12 的 `LOAD_ATTR`
+        # 走 inline cache —— `self._tstate` / `self._tstate_nudged` 这类
+        # 属性名既不在 `co_names` 也不在 `co_consts`（实测源码字节码同样
+        # 扫不到），只有 `dis` 能看到。方法名 `_tstate_init` 等走的是
+        # `LOAD_METHOD` → 在 `co_names` 里，稳定可扫。
+        for _m in ("_tstate_init", "_tstate_record", "_tstate_step",
+                   "_tstate_resume_step", "_tstate_resume_reset_nudge",
+                   "_tstate_nudge_now"):
+            check(f"★ 包内 agent 真调 {_m}（账本接线方法）",
+                  _m in ag2n,
+                  f"{_m} 没编进去 → 该处接线是死引用（任务账本形同虚设）")
+        check("★ 包内 agent 真 mixin 了 AgentTaskMixin（接线不是死引用）",
+              "AgentTaskMixin" in ag2n,
+              "agent 没引用 AgentTaskMixin → 记账/闸门全是死代码")
+        check("★ 包内 agent 调 _tstate_nudge_now（收尾闸门真接线）",
+              "_tstate_nudge_now" in ag2n,
+              "_tstate_nudge_now 没编进去 → 任务账本形同虚设")
+    if "ui" in names:
+        co_ui2 = _load(za, "ui")
+        ui2n = _code_names(co_ui2)
+        check("★ 包内 ui 真调 intent._route_hint_text（系统提示路由段自动生成）",
+              "_route_hint_text" in ui2n,
+              "ui 没调 _route_hint_text → 仍在用手写路由句（加工具会静默失配）")
+    else:
+        check("ui 在 PYZ 里", False, "缺失 → 主界面崩")
 
     print("\n-- 3g) 关键历史钉子：画布模块不得随包 + 测试不随包 --")
     for _cm in ("canvas_graph", "canvas_panel", "canvas_export", "executors"):

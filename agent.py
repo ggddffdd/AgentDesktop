@@ -18,6 +18,9 @@ import task_resume  # v4.101：断点续传检查点
 from config import MAX_AGENT_STEPS, TOOL_RESULT_LIMIT, get_all_tools
 import tools
 import agent_text  # v4.216.0：纯文本判据层（从本类拆出）
+import intent  # v4.225：统一意图对象（路由/是否动手/纯文本 三判据归一）
+import task_state  # v4.225：任务状态机（子目标/产物落地检查）
+from agent_task_mixin import AgentTaskMixin  # v4.225：任务账本接线（抽出以保住拆分红线 agent.py<2400）
 import memory_store
 import context_manager  # 审计修复 E1：context 工具按当前会话取管理器
 from step_tracer import StepTracer  # v4.59 步级追踪
@@ -165,7 +168,7 @@ class _AllowAllDecision:
     rule = "fallback"
 
 
-class AgentWorker(QThread):
+class AgentWorker(AgentTaskMixin, QThread):
     """后台线程跑 Agent 循环，所有 UI 更新通过信号抛回主线程，彻底避免卡死。
     
     支持多工具并发执行（ThreadPoolExecutor）+ MCP 工具。
@@ -705,7 +708,18 @@ class AgentWorker(QThread):
             "fake_tool_stopped": False, # 文字伪造工具调用达上限而停
             "tool_calls": 0,            # 本轮工具调用总数
         }
+        # v4.225（P3 统一意图）：先把用户意图归一成一个 Intent 对象存下来，
+        # 下面三处分散判据（_needs_action / step1 强制路由 / 状态栏）都读它。
+        # 注意 _needs_action 的**结论仍原样来自** _detect_action_intent ——
+        # Intent 只是壳，换壳不改行为（改判据 = 重排行为 = 事故）。
+        self._intent = intent.classify(self._last_user_text(), None)
+        # v4.225（P2 任务状态机）：建账本（接线在 agent_task_mixin）
+        self._tstate_init(task_state)
         self._needs_action = agent_text._detect_action_intent(self.messages)
+        if not self._needs_action and self._intent.needs_action:
+            # classify 走的是单条 user 消息口径，与 messages 口径可能不同；
+            # 取【或】而不是覆盖 —— 只放宽不收紧，且仅在两口径不一致时生效。
+            self._needs_action = True
         # v4.102 fix12：token 预算熔断状态。budget=0 即完全禁用（行为回退到 fix12 前）。
         (self._token_budget, self._token_warn_ratio,
          self._token_budget_ds) = config.get_agent_token_budget(getattr(mw, "cfg", None))
@@ -852,6 +866,7 @@ class AgentWorker(QThread):
             pass  # 纪律注入失败不阻断 Agent 主流程
 
         for step in range(1, self._max_steps + 1):
+            self._tstate_step(step)  # v4.225：账本同步步号
             # v4.60：超时保护——超过 3 分钟自动停止，防止慢模型无响应
             elapsed = time.time() - _t0
             if elapsed > MAX_DURATION:
@@ -878,7 +893,10 @@ class AgentWorker(QThread):
                     _ft = "sys_info"
             elif step == 1:
                 # v4.80b：意图路由——以当前句为主，能明确推断目标工具时直接指定，杜绝 sys_info 死循环
-                _ft = agent_text._route_force_tool(_cur_user, _prev_user)
+                # v4.225：改读统一 Intent（force_tool 结论仍由 _route_force_tool 产出，
+                # 这里只多走一层壳 + 顺带刷新 self._intent 供状态栏/日志用）。
+                self._intent = intent.classify(_cur_user, _prev_user)
+                _ft = self._intent.force_tool
             else:
                 _ft = None
             try:
@@ -1107,6 +1125,14 @@ class AgentWorker(QThread):
                     continue
                 if self._nudge_count >= MAX_FORCE_RETRIES:
                     self.stream_commit.emit("⚠️ 已多次尝试但 Agent 始终未调用工具。请明确指示具体操作（如：搜索XX、读取文件XX、运行Python代码XX）。")
+                # ── v4.225（P2 任务状态机）：收尾闸门 ──
+                # 放在所有 nudge 分支**之后**、真正 break 之前：只有老逻辑
+                # 都不打算再给一次机会时，这里才做最后一道「你确定做完了？」
+                # 核查。四道 gate 全过才补一轮（接线在 agent_task_mixin，
+                # 判定在 task_state.should_nudge）；任一不满足 → 旧路径 break。
+                if self._tstate_nudge_now(task_state, step, self._max_steps):
+                    self._tstate_trace_nudge(step, _tracer)
+                    continue
                 break
         else:
             # 单轮步数耗尽：不硬停，把当前进度回写会话，并自动续跑（最多 AGENT_RESUME_ROUNDS 轮）
@@ -1132,9 +1158,11 @@ class AgentWorker(QThread):
                 })
                 # 续跑：复用同一 worker 实例，重置步数计数器但保留 messages 上下文
                 self._force_next = True
+                self._tstate_resume_reset_nudge()  # v4.225：续跑轮可再补一轮
                 self._force_retries = 0
                 resume_steps = range(1, self._max_resume_steps + 1)
                 for rstep in resume_steps:
+                    self._tstate_resume_step(self._max_steps, rstep)  # v4.225：账本跨轮延续
                     if self._stop_requested:
                         self._emit_status("⏹ 已停止（用户请求）")
                         break
@@ -2114,6 +2142,10 @@ class AgentWorker(QThread):
                         self._deliverables.append((_p, _kind, _nm))
             except Exception:
                 pass
+        # v4.225（P2 任务状态机）：记账（接线在 agent_task_mixin；
+        # 失败判定复用本类既有的 _tool_result_looks_failed，不另立口径）
+        self._tstate_record(task_state, name, fn, result_str, deliverables,
+                            self._tool_result_looks_failed)
         # 定时提醒
         if schedule:
             msg, delay_secs = schedule[0], schedule[1]

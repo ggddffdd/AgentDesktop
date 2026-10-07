@@ -88,6 +88,7 @@ test_system_prompt_routing_221.py
 test_task_graph_cancel.py
 test_task_graph_incomplete.py
 test_task_outcome_acceptance_222.py
+test_task_state_machine_225.py
 test_task_status.py
 test_task_status_ui.py
 test_task_wiring.py
@@ -101,6 +102,7 @@ test_ui_a11y_2102.py
 test_ui_hex_guard_fallback.py
 test_uidecision_fix_186.py
 test_uncertainty_gate_196.py
+test_unified_intent_225.py
 test_untrusted_boundary_222.py
 test_v4102_1021_twin_bg.py
 test_v4102_image_compress.py

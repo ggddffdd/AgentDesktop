@@ -89,8 +89,18 @@ AGENT_CALLS = {
     "_audit_ref_needed": 1,
     "_looks_like_question": 1,
     "_looks_like_fake_tool_call": 1,
+    # v4.225（P3 统一意图）：_route_force_tool 的调用点从 agent.py 收口到
+    # intent.py —— step1 改读 Intent.force_tool，agent.py 不再直接调它。
+    # 所以这里从 agent.py 的精确计数里**移出**，改到下方 INTENT_CALLS 断言
+    # 「路由接线不许弄丢」（保住原意，不是删判据）。
+    "_detect_action_intent": 1,
+}
+
+# v4.225：路由判据的新收口位置（原 agent.py 的 _route_force_tool 调用点）
+INTENT_CALLS = {
     "_route_force_tool": 1,
     "_detect_action_intent": 1,
+    "_content_creation_only": 1,
 }
 
 
@@ -172,8 +182,23 @@ for fn_name, want in AGENT_CALLS.items():
     got = ag_src.count(f"agent_text.{fn_name}(")
     if got != want:
         bad_wiring.append(f"{fn_name}:{got}≠{want}")
-check("B2 agent.py 判据接线 = 7 处 agent_text._x 调用（6 函数精确计数）",
+check("B2 agent.py 判据接线 = 5 处 agent_text._x 调用（5 函数精确计数）",
       not bad_wiring, "; ".join(bad_wiring))
+
+# B2b v4.225：路由判据在 intent.py 里仍真被调用（搬家不许丢接线）
+intent_src = read("intent.py")
+bad_intent = []
+for fn_name, want in INTENT_CALLS.items():
+    got = intent_src.count(f"agent_text.{fn_name}(")
+    if got != want:
+        bad_intent.append(f"{fn_name}:{got}≠{want}")
+check("B2b intent.py 判据接线 = 3 处 agent_text._x 调用（3 函数精确计数）",
+      not bad_intent, "; ".join(bad_intent))
+check("B2c agent.py 改读 Intent.force_tool（收口真接线）",
+      "self._intent.force_tool" in ag_src,
+      "step1 没读 Intent.force_tool → 收口只做了一半")
+check("B2d agent.py 仍直接调 _detect_action_intent（未被 Intent 顶掉）",
+      ag_src.count("agent_text._detect_action_intent(") == 1)
 
 # B3 无残留：搬走的 17 个判据函数不许再以 self._x( 形态出现在 agent.py
 leftover = [f for f in MOVED_JUDGE_FUNCS if f"self.{f}(" in ag_src]
