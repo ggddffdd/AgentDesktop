@@ -119,6 +119,9 @@ from ui_msg import (  # noqa: F401
     _is_thinking_channel, _ensure_reasoning_content, _fit_history_to_budget,
     _build_api_history, VISION_MODEL_KW,
 )
+from ui_msg import (  # noqa: F401
+    is_transient_net_error, humanize_net_error,
+)
 from ui_audit_mixin import ChatAuditMixin
 
 # 交付物类型 → 彩色竖条配色
@@ -8624,6 +8627,25 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
                             _last = e3
                     _attach_api_body(_last)
                     _logging.getLogger("dsdesktop").error("Agent 流式调用重试仍失败: %s", _last)
+                    raise
+                # v4.228.0：连接层瞬时失败（WinError 10061 / 超时 / 连接重置）→
+                # 退避重试 **1 次**。这类失败与请求内容无关（实测把导演台那次请求
+                # 原样重发即 200），重发一次就能自愈，不必让整轮直接崩掉。
+                # 判据 `is_transient_net_error` 已把 400/401/429 排除在外 ——
+                # 那些重发必然同样失败，白等一个 RTT。
+                elif _backoff and is_transient_net_error(e):
+                    _last = e
+                    _logging.getLogger("dsdesktop").warning(
+                        "连接层瞬时失败（%s），2s 后重试一次: %s",
+                        humanize_net_error(e)[:80], _last)
+                    time.sleep(2)
+                    try:
+                        return _stream_once(body, strict=_strict)
+                    except Exception as e3:
+                        _last = e3
+                    _attach_api_body(_last)
+                    _logging.getLogger("dsdesktop").error(
+                        "Agent 流式调用瞬时失败重试后仍失败: %s", _last)
                     raise
                 else:
                     # v4.108 H-04：其余失败（超时/断流等）同样上抛，禁止静默返回空响应。

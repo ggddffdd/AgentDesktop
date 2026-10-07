@@ -438,6 +438,95 @@ def _attach_api_body(exc, limit=800):
         return _b
     except Exception:
         return ""
+
+
+# ---- v4.228.0：连接层瞬时失败（10061 等）的判定与文案 ----
+# 事故背景（2026-10-07 22:52）：导演台报 `<urllib.error.URLError:10061>`，
+# 且原文直接被渲染在「模型：」后面，普通用户既不知道哪个模型也不知道该干什么。
+# 横向对照历史上 3 次 10061，**全部**落在连接建立阶段，且每次重试即恢复；
+# 而同期走别的通道的调用全部成功。定性为**瞬时连接层失败**，不是配置/密钥问题。
+
+# 只认「连接建立阶段」的失败：这些重发一次有意义。
+# 刻意排除 400/401/403/404/422（请求本身有问题，重发必然同样失败，纯浪费一次往返），
+# 也排除 429（限流，要退避而不是立刻重发，且已有 v4.108 的 2s/4s 退避分支在管）。
+_TRANSIENT_ERR_TOKENS = (
+    "10061", "10054", "10060", "10065",
+    "connection refused", "connectionreset", "connection aborted",
+    "目标计算机积极拒绝", "远程主机强迫关闭", "连接被重置",
+    "timed out", "timeout", "temporarily unavailable", "eof occurred",
+)
+# 非瞬时：这些重发只会再失败一次，白等一个 RTT。
+# 刻意包含「带瞬时词的报文」——真实世界存在
+#   「HTTP Error 429: Too Many Requests」（限流）这类含 timeout/refused 字样的报文，
+# 排除表必须能压过瞬时表，否则会把限流误判成可立即重试。
+_NON_TRANSIENT_ERR_TOKENS = (
+    "400", "401", "403", "404", "405", "413", "415", "422", "429",
+    "unauthorized", "forbidden", "bad request", "not found",
+    "insufficient", "quota", "rate limit", "too many requests",
+)
+
+
+def is_transient_net_error(exc):
+    """该异常是否属于「同请求重发一次就有意义」的瞬时连接层失败。
+
+    只看异常文本，不看类型：`urllib` 把 WinError 10061 包成 `URLError`，
+    `requests` 包成 `ConnectionError`，`socket.timeout` 包成超时 ——
+    类型各不相同但语义同一类，用文本判定一处通吃（与 `tools.py:3213` 既有口径一致）。
+
+    排除 HTTP 4xx / 限流：请求本身不合法或被限流时重发必然同样失败。
+    **顺序不可颠倒**：必须先排非瞬时，否则
+    「HTTP Error 429: Too Many Requests（retry timeout）」这类混合报文会被误判。
+    """
+    try:
+        name = type(exc).__name__.lower()
+        raw = str(exc) or ""
+        txt = ("%s %s" % (name, raw)).lower()
+    except Exception:
+        return False
+    for bad in _NON_TRANSIENT_ERR_TOKENS:
+        if bad in txt:
+            return False
+    for good in _TRANSIENT_ERR_TOKENS:
+        if good in txt:
+            return True
+    return False
+
+
+def humanize_net_error(exc):
+    """把异常转成一句用户看得懂的话（不再把 `<urllib.error.URLError:...>` 抛给用户）。
+
+    要解决的具体问题：`f"{e}"` 直接把 Python 异常对象渲染进气泡，Windows 上界面显示成
+      `<urlopen error [Errno 10061] 由于目标计算机积极拒绝，无法连接。`
+    用户看到的是 Python 异常串，既不知道是哪个模型，也不知道能不能重试。
+    """
+    try:
+        raw = str(exc) or ""
+    except Exception:
+        raw = ""
+    low = raw.lower()
+    if "10061" in low or "目标计算机积极拒绝" in raw:
+        return ("连接被本机拒绝（10061）。这是瞬时网络抖动，"
+                "已自动重试过一次；若仍失败请检查网络/代理后重试。")
+    if "10054" in low or "远程主机强迫关闭" in raw or "connectionreset" in low:
+        return "连接被对方重置（网络抖动）。已自动重试过一次。"
+    if "timed out" in low or "timeout" in low:
+        return "请求超时（网络或服务端响应慢）。已自动重试过一次。"
+    if "ssl" in low:
+        return "HTTPS/证书握手失败。若开了代理或抓包工具，可能是它拦的。"
+    # 非网络类异常：剥掉 Python 的 `<类名: 正文>` 外壳，只留人话部分。
+    # 两种形态都要认：
+    #   str(SomeError("x"))      → 「<ValueError: x>」   （> 在**末尾**）
+    #   str(URLError(winerr,msg)) → 「<urlopen error [Errno 10061] …>」（同上）
+    # 早期只写 `r">\s*(.+)$"`（假设 > 在开头，如 "<x> 正文"），对真实形态**完全失效**
+    # —— 判据 B12~B14 是照真实 str() 造的，一跑就红。两种都收。
+    m = re.search(r"<\s*[^<>]{1,120}?\s*[:：]\s*(.+?)\s*>?\s*$", raw, re.S)
+    if m:
+        tail = m.group(1).strip()
+        if tail:
+            return tail[:200]
+    return (raw[:200] or "未知错误")
+
+
 def _is_thinking_channel(base_url, model):
     """该通道是否处于「思考模式」——即本轮必须回传 `reasoning_content`。
 

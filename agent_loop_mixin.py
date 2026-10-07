@@ -29,7 +29,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.227.0"
+VERSION = "v4.228.0"
 
 
 class AgentLoopMixin(object):

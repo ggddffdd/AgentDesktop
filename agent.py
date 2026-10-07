@@ -933,7 +933,16 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 self.tool_log.emit({"name": "错误", "args": "", "result": str(e)})
                 # v4.108 H-04：失败要让用户在气泡里看得见，不再静默结束装"完成"。
                 # v4.175.0：把 API 真实报文一并显示到气泡（与结构化日志同源）。
-                _notice = f"\n\n⚠️ 模型调用失败：{e}"
+                # v4.228.0：异常不再直接 `{e}` 渲染 —— 此前界面显示成
+                #   「模型：<urllib.error.URLError:10061> 由于目标计算机积极拒绝…」
+                # 用户既不知道是哪个模型、也不知道能不能重试。改成人话并点名本轮模型。
+                try:
+                    from ui_msg import humanize_net_error as _hne
+                    _friendly = _hne(e)
+                except Exception:
+                    _friendly = str(e)
+                _notice = (f"\n\n⚠️ 模型调用失败"
+                          f"（{getattr(self, '_last_model', '') or '当前模型'}）：{_friendly}")
                 if _api_b:
                     _notice += f"\n\n接口原文：{_api_b[:400]}"
                 self.stream_commit.emit(_notice)

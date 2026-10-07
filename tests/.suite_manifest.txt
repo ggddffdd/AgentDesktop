@@ -54,6 +54,7 @@ test_memory_gate_196.py
 test_memory_metadata.py
 test_msg_budget_cap_224.py
 test_nav_ia_198.py
+test_net_retry_228.py
 test_no_stall_186.py
 test_outcome_honesty_195.py
 test_p0p1_runcmd_fix_186.py

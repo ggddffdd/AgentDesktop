@@ -559,8 +559,38 @@ finally:
         os.remove(_bad)
     except Exception:
         pass
+# 防空负负得正：_ag_code() 若因任何原因读到空/截断内容，LP12-1~9 会**集体假绿**。
+# 原判据写死 `len(_ag) > 100000` —— 那个数字是「v4.226.0 当时文件大小」的经验值，
+# 却被当成硬编码阈值。此后 P1-2 等轮次把代码**外移到 agent_result_mixin.py** 等模块，
+# agent.py 合理地变小（100000 → 98679），于是这条「防假绿」的判据自己先红了，
+# 逼着人改判据 —— 恰好违背它自己的目的。
+# 现改为**自锚定**：下限用真实文件字节数（外移只会变小，但不会小到离谱），
+# 并且额外钉住「与 git HEAD 相比不得缩小超过 30%」，这样：
+#   ①真的读空了/读截断了 → 立刻红（原意保住）；
+#   ②正常的模块外移 → 不再误报（不再逼人改判据）；
+#   ③真把 agent.py 掏空一大半 → 仍会红（防「删功能顺便把判据调松」）。
+_AG_FILE = os.path.join(ROOT, "agent.py")
+try:
+    _ag_bytes = os.path.getsize(_AG_FILE)
+except OSError:
+    _ag_bytes = 0
 check("LP12-10 源码读取非空（防空负负得正）",
-      len(_ag) > 100000, "agent.py 仅 %d 字符" % len(_ag))
+      _ag_bytes > 60000, "agent.py 仅 %d 字节" % _ag_bytes)
+check("LP12-11 代码文本非空（_ag_code 真读到东西）",
+      len(_ag) > 30000, "_ag_code 仅 %d 字符" % len(_ag))
+# 自锚定：相对 HEAD 不得缩小超过 30%（HEAD 不可用时跳过，不因无 git 而红）
+try:
+    import subprocess as _sp
+    _head = _sp.run(["git", "show", "HEAD:agent.py"], cwd=ROOT,
+                    capture_output=True, timeout=60)
+    if _head.returncode == 0 and _head.stdout:
+        _hb = len(_head.stdout)
+        if _hb > 0:
+            check("LP12-12 agent.py 未被掏空（较 HEAD 缩小不超过 30%）",
+                  _ag_bytes >= _hb * 0.7,
+                  "HEAD=%d 字节, 现=%d 字节" % (_hb, _ag_bytes))
+except Exception:
+    pass
 
 print("\n" + "=" * 62)
 print("PASS=%d FAIL=%d" % (PASS, FAIL))
