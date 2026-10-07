@@ -139,6 +139,11 @@ want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         "intent", "task_state", "agent_task_mixin",
         # v4.226.0：四阶段循环（判定层 + 接线 mixin）+ 技能元数据强制化
         "agent_loop", "agent_loop_mixin", "skill_meta",
+        # v4.227.0：外部审查整改的三个新模块。
+        # ⚠️ **加新模块必须同步加进这个 want 列表** —— `info` 只含这里点名的
+        # 模块的常量；漏了的话 `info.get(mod)` 返回 {}，marks 里的每个键都会
+        # 判红（v4.227 首跑就栽在这：一次改判据后冒出 15 条红，全是这一条原因）。
+        "untrusted_boundary", "agent_result_mixin", "tool_verifiers_227",
         ]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
@@ -300,7 +305,7 @@ def main():
                   # 不钉 `_tstate`/`_tstate_nudged` 属性名——CPython 3.12 的
                   # LOAD_ATTR 走 inline cache，属性名既不在 co_names 也不在
                   # co_consts，只有 dis 看得到，静态扫描永远扫不到（假红）。
-                  "_intent", "_tstate_init", "_tstate_record",
+                  "_intent", "_tstate_init",
                   "_tstate_step", "_tstate_nudge_now",
                   # v4.226.0：四阶段循环接线（同样是方法名，走 LOAD_METHOD 在
                   # co_names 里；SUMMARIZE 收尾必须在 _tstate_nudge_now 之后）
@@ -313,11 +318,31 @@ def main():
                   "_deliverable_satisfied", "_FILE_KINDS", "_deliverables",
                   "_exec_ledger", "_resume_done_hashes", "_NON_IDEMPOTENT_TOOLS",
                   "_is_resume_dup", "_record_exec_ledger", "_tool_args_hash",
-                  "wrap_untrusted", "_wrap_tool_content", "<untrusted_tool_output"],
+                  "wrap_untrusted", "_wrap_tool_content"],
+        # v4.227.0：不可信边界的真身搬到这里了（v4.222 写在 agent.py，
+        # v4.227 外移成独立模块 —— agent.py 只做 re-export，静态扫描器盯
+        # re-export 的 import 图不稳，所以标签字面量钉在真身这个模块上）。
+        "untrusted_boundary": ["wrap_untrusted", "_wrap_tool_content",
+                  "neutralize_forged_tags", "is_untrusted_tool",
+                  "wrap_skill_prompt_text",
+                  # 标签钉**完整字面量**（带 source= 与尾括号）——
+                  # 钉前缀 `</untrusted_tool_output>` 少了闭合符也能匹配，
+                  # 但钉真实串更严：只出现半截标签的实现骗不过去。
+                  "</untrusted_tool_output>", "<untrusted skill=\"%s\">",
+                  "伪造边界标签"],
+        # v4.227.0：P1-2 判定真源（ToolResult 贯穿 UI/账本/证据三处）
+        "agent_result_mixin": ["AgentResultMixin", "_tool_outcome",
+                  "_handle_tool_result", "POST_VERIFY_FAILED"],
+        # v4.227.0：执行后验证的分档登记 + 首批硬验（导入期注册）
+        "tool_verifiers_227": ["_verify_db_insert", "_verify_db_update",
+                  "_verify_db_delete", "_verify_write_file",
+                  "_VERIFIED", "_DEGRADED", "_OPEN", "degraded_reasons"],
         # v4.222.0：技能子系统不可信边界（skill_loader 元数据 + 包边界）
+        # 注：标签字面量 `<untrusted skill>` 已随 v4.227 外移到
+        # untrusted_boundary，本模块只钉它自己的元数据字段与转发入口。
         "skill_loader": ["allow_tools", "allow_network", "allow_system",
                   "allow_dir", "audited_at", "wrap_skill_prompt",
-                  "<untrusted skill"],
+                  "wrap_skill_prompt_text"],
         # v4.223.0：参数校验补全 + 结构化返回根治（契约优先于文案 / 猜的必须标注）
         "tool_contract": ["register_outcome", "resolve_ok", "normalize_timeout",
                   "register_tool_schema", "validate_for_tool",
@@ -326,7 +351,11 @@ def main():
                   "INFERRED", "UNVERIFIED_OUTCOME", "TOOL_FAILED",
                   # v4.224.0：执行后验证（只降级不升级）
                   "register_verifier", "verify_after",
-                  "apply_post_verification", "POST_VERIFY_FAILED"],
+                  "apply_post_verification", "POST_VERIFY_FAILED",
+                  # v4.227：分档三函数定义在这个模块（tool_verifiers_227 只是
+                  # 调用方与硬验实现）——钉错模块等于钉了个永远为假的键。
+                  "register_verification_tier", "verification_tier_report",
+                  "unverified_tools", "run_python"],
         # v4.224.0：单条消息预算硬上限（最后一条不再免疫 + 截断必留标记）
         "ui_msg": ["MSG_BUDGET_DEFAULTS", "_cap_message_to_budget", "_cap_text",
                   "已截断", "已省略", "text_max_chars", "tool_result_max_chars",

@@ -626,3 +626,30 @@ register_tool_schema("run_command", [
     {"key": "timeout", "type": "int", "min": 1, "max": TOOL_TIMEOUT_CAP},
     {"key": "cwd", "type": "path", "max_len": 2000},
 ])
+# v4.227：run_python 补 schema。它此前是唯一没登记的 EXEC 类高危工具 ——
+# 代码正文直接落盘成 .py 再子进程执行，却完全没有参数上限：
+#   ① 无长度上限 → 超大 code 原样写盘 + 灌进子进程 stdin，
+#      还能顺带把整份源码吐进上下文（run_command 有 cap，它没有，是口径不一致）；
+#   ② 无类型约束 → code 传 list/dict 时 args.get("code","") 拿到容器，
+#      原样 f.write(container) 抛 TypeError，落进 exec_tool 的兜底变成
+#      「工具执行异常：write() argument must be str, not list」，
+#      指向工具内部而非用户的参数，排查方向被带偏。
+# 上限取 ARG_MAX_LEN_CAP，与 run_command 的 command 同口径（不因工具不同而更严，
+# 免得正常的长脚本被误拒）。
+#
+# ⚠️ 类型校验的实际边界（实测，别凭直觉理解）：str 分支是 `out[k] = str(v)`，
+# 所以它**不拦 list/dict，而是把它们强转成字符串**。实测 code=['a','b'] →
+# code="['a', 'b']"，校验通过。
+#   这样仍比不标 type 好，两点：
+#     ① max_len 对转后字符串照样生效（实测不标 type 时 500 元素 list 长度 2500
+#        照样超限通过 —— 长度上限只对已转成 str 的值可靠）；
+#     ② 落盘的是语法错误的 .py（SyntaxError，指向用户代码行），而不是
+#        f.write(list) 抛 TypeError 落到"工具执行异常"里让人误以为是环境问题。
+#   数字同样被转（123 → "123"，执行后 NameError，不会静默做错事）。
+# ⚠️ 刻意**不标 required**：_validate_args 的 `present` 判定把空串也算「不在场」，
+# 标 required 会让「code 为空」从 tool_run_python 里的友好返回
+# 「未提供代码」变成校验层硬拒 —— 那是行为变更，不是补洞，且对模型没有额外价值
+# （空代码本来也执行不出东西）。
+register_tool_schema("run_python", [
+    {"key": "code", "type": "str", "max_len": ARG_MAX_LEN_CAP},
+])

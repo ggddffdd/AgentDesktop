@@ -1,27 +1,49 @@
 # -*- coding: utf-8 -*-
-"""v4.226.0 进包核验：闭环（四阶段循环 + 真实行为级回归 + 技能元数据强制化）。
+"""v4.227.0 进包核验：外部审查整改（P1-1 / P1-2 / P2 三项 + run_python schema）。
 
-本轮改动（审查报告第三阶段 b 批）：
-  · P2 四阶段循环：新增 agent_loop.py（PLAN/EXECUTE/VERIFY/SUMMARIZE 真状态机，
-    末阶段饱和不回退）+ agent_loop_mixin.py（接线，从 agent.py 抽出以守住
-    <2400 红线）。SUMMARIZE 产出**机器生成小结**，内容全部来自 TaskState 账本
-    事实（工具真调过没、产物落没落盘），显式写「以本段为准」对抗模型自述。
-    纪律：VERIFY 只固化记录、**不注入任何消息**（补做的唯一真源仍是
-    task_state.should_nudge，两套闸门不抢活）。
-  · 技能元数据强制化：新增 skill_meta.py 三档判定（ok/degraded/reject），
-    **默认不拒用**（strict_from_config 默认 False）—— 49 个存量技能全无此
-    元数据，开箱即strict 会让它们当场全部失效。skill_loader 新增 find_skill
-    返回 Skill 对象（load_skill_prompt 只给文本，调用方拿不到八个元数据字段）。
-  · P2 真实行为级回归集：tests/test_agent_behavior_226.py（假 _FakeMw 按剧本
-    返响应、不发网络请求，真跑 AgentWorker.run()）。**判据不随包**，这里只
-    反向钉「tests 不进包」。
+本轮改动（外部审查报告闭环）：
+  · P1-1 权限 fail-closed：删掉 `agent._AllowAllDecision`（类属性 allowed=True，
+    在拿不到权限决策时替并发批次「按了放行」→ tools._permission_gate 认鸭子
+    类型 hasattr(.allowed) 拿到它就无条件放行，WRITE_LOCAL/EXEC/EXTERNAL 一个
+    都不拦）。改成什么都不传（perm_ctx=None），让最终闸门那套按风险分类的
+    fail-closed 成为唯一口径。`_run_workflow_guarded` 的 `if engine is not None:`
+    原来把整段判定包住（引擎 None 时一字未判就起任务图），改显式拒绝。
+    ⚠️ **反向钉子**：军团侧 `agent_node._AllowDecision` 同样是 allowed=True 但
+    **刻意保留** —— 子节点已被 tools= 白名单限死 + 任务图在 _run_workflow_guarded
+    已整体过闸并取得用户放行；一刀切会打断 research_write 的「撰写报告」节点
+    （write_file 是 WRITE_LOCAL，无授权下必被闸门拒）。这条决定必须防下一个人
+    当「同类漏项」顺手改掉。
+  · P1-2 ToolResult 贯穿：exec_tool 自 v4.223 返回 ToolResult，但 agent 串行与
+    并发两条路径都在调用点立刻解包成三元组，字段全丢 → UI 绿勾 / 任务账本 /
+    证据登记 / 幂等账本四处消费全退化成「看文案」。新增 agent_result_mixin.py
+    立判定真源 _tool_outcome（有 ToolResult 以 .ok 为准；无则退回旧判据）。
+    ⚠️ agent.py 从 2396 → 2297 行，**红线 <2400 未被抬高**。
+  · P2-1 不可信边界加固：新增 untrusted_boundary.py，清单从 8 项枚举改**规则驱动**
+    （prefix + exact），补齐 browser_*/legion_*/webhook_events/clipboard_read 等；
+    包装前中和伪造闭合标签（否则攻击者正文里一个 </untrusted_tool_output> 就能
+    自己把边界提前关掉 = 自我解除边界）。skill_loader 走同一条中和。
+  · P2-2 执行后验证分档：新增 tool_verifiers_227.py（三档登记 + 首批硬验
+    db_insert/update/delete、write_file）。**分档只登记事实、不参与运行时决策**
+    —— 若参与放行就成了第二套策略。
+  · P2-3 状态机设计登记：HARD_REQUIREMENT_POLICY="literal_tool_name_only"。
+    报告判为漏洞属**误判**：换成关键词命中会制造新事故（「写一段口播文案」因
+    词表有「口播」命中 video_gen）。本轮不改行为，只把决定登记成**可检出的数据**。
+  · run_python 补参数 schema：此前是唯一没登记的 EXEC 类高危工具，代码正文直接
+    落盘成 .py 再子进程执行却无任何上限。补 code(str, max_len=ARG_MAX_LEN_CAP)，
+    与 run_command 的 command 同口径。**刻意不标 required** —— 那会把「空 code」
+    从友好返回变成校验层硬拒，是行为变更不是补洞。
+  · 打包登记补漏：`agent_result_mixin` / `untrusted_boundary` /
+    `tool_verifiers_227` 三模块显式进 hiddenimports。其中 **tool_verifiers_227
+    最危险**：注册是**导入期副作用**，漏进包 → 验证器压根不注册 → 验证链
+    **静默空转**，不报错、只是永不验证。
 
-核验重点：① 版本号 v4.226.0 且不含 v4.225.0；② agent_loop / agent_loop_mixin /
-skill_meta 三个新模块真进包（PYZ toc里有）；③ 四阶段符号与「以本段为准」
-小结串在位；④ agent 真引用 agent_loop 且**调用点在正确位置**（_loop_summary
-必须在 _tstate_nudge_now 之后、break 之前）；⑤ skill_meta 三档字段常量与
-fail-open 探针在位、skill_loader 真接校验；⑥ 复用关键历史钉子（v4.221 硬确认 /
-v4.222 验收与边界 / v4.223 契约 / v4.224 验证与预算 / v4.225 意图与状态机 /
+核验重点：① 版本号 v4.227.0 且不含 v4.226.0；② 本轮 4 个新模块
+（agent_result_mixin / untrusted_boundary / tool_verifiers_227 / agent_task_mixin
+已在包）真进包；③ ToolResult 判定真源 _tool_outcome 在位；④ run_python 的 schema
+登记真的进了包（漏进包 = 参数零校验，且**静默**，不报错）；⑤ 不含 _AllowAllDecision；
+⑥ 军团侧 _AllowDecision 仍在（反向钉子）；⑦ agent.py 行数守住 <2400；
+⑧ 复用关键历史钉子（v4.221 硬确认 / v4.222 验收与边界 / v4.223 契约 /
+v4.224 验证与预算 / v4.225 意图与状态机 / v4.226 四阶段循环与技能元数据 /
 tool_contract / 系统控制 15 tool_* / 画布反向 / 测试不随包）防重打包回归。
 """
 import hashlib
@@ -36,7 +58,12 @@ EXE = ROOT / "dist" / "小臭玩AI" / "小臭玩AI.exe"
 MODULES = ["tools", "agent", "agent_node", "risk", "permissions",
            "system_control_tools", "software_control_tools", "config",
            "tool_contract", "skill_loader",
-           "ui_msg"]
+           "ui_msg",
+           # v4.226：三模块（四阶段循环 + 技能元数据）
+           "agent_loop", "agent_loop_mixin", "skill_meta",
+           # v4.227：P1-2 判定真源 / P2-1 边界 / P2-2 验证器 / P2-3 状态机
+           "agent_result_mixin", "untrusted_boundary",
+           "tool_verifiers_227", "task_state"]
 
 _n_pass = _n_fail = 0
 
@@ -98,6 +125,23 @@ def _str_consts(co):
                 out.add(x)
             elif isinstance(x, (tuple, frozenset)):
                 out.update(y for y in x if isinstance(y, str))
+    return out
+
+
+def _num_consts(co):
+    """收集**数值**常量（bool 除外）。
+
+    为什么单列一个函数：`_str_consts` 只收字符串，于是 `ARG_MAX_LEN_CAP = 4_000_000`
+    这类**int** 上限常量永远扫不到 —— 写断言时极容易误判成「漏打包」。
+    实测本轮就栽在这（v4.227 首次跑核验，int 常量被当成「包内没有」）。
+    """
+    out = set()
+    for c in _code_iter(co):
+        for x in c.co_consts:
+            if isinstance(x, bool):
+                continue
+            if isinstance(x, (int, float)):
+                out.add(x)
     return out
 
 
@@ -172,12 +216,65 @@ def main():
     print("\n-- 2) 版本一致性 --")
     if "config" in names:
         consts = _str_consts(_load(za, "config"))
-        check("PYZ 内 config 版本常量 == v4.226.0",
-              "v4.226.0" in consts, f"包内版本串={sorted(s for s in consts if s.startswith('v4.22'))}")
-        check("PYZ 内不含上一版旧版本常量 v4.225.0",
-              "v4.225.0" not in consts, "残留旧版本串（可能是增量打包旧模块）")
+        check("PYZ 内 config 版本常量 == v4.227.0",
+              "v4.227.0" in consts, f"包内版本串={sorted(s for s in consts if s.startswith('v4.22'))}")
+        check("PYZ 内不含上一版旧版本常量 v4.226.0",
+              "v4.226.0" not in consts, "残留旧版本串（可能是增量打包旧模块）")
     else:
         check("config 在 PYZ 里", False, "缺失 → 启动崩")
+
+    print("\n-- 2b) 本轮钉子：v4.227 四新模块真进包（漏进包=静默失效）--")
+    # ⚠️ tool_verifiers_227 最危险：注册是**导入期副作用**，漏进包不会报错，
+    #    只是验证器永不注册 → 验证链静默空转。这里必须逐个确认真在 TOC 里。
+    for _m in ("agent_result_mixin", "untrusted_boundary",
+               "tool_verifiers_227", "task_state"):
+        check(f"★ 新模块 {_m} 在 PYZ 模块表里",
+              _m in names, "缺失 → 相关能力静默失效（不报错）")
+
+    print("\n-- 2c) 本轮钉子：run_python 的 schema 登记真的进了包 --")
+    # 漏进包 = run_python 零参数校验，且**静默**（模型不会知道，只是保护没了）
+    try:
+        from tool_contract import registered_tool_schemas
+        _sch = registered_tool_schemas()
+        check("★ 源码 run_python 已登记 schema", "run_python" in _sch,
+              f"已登记={sorted(_sch)}")
+    except Exception as e:
+        check("★ 源码 tool_contract 可导入并断言", False, f"导入失败：{e!r}")
+    if "tool_contract" in names:
+        _tc = _load(za, "tool_contract")
+        _tcs = _str_consts(_tc)
+        check("★ 包内 tool_contract 常量表含 run_python 登记",
+              "run_python" in _tcs, "包内没有 run_python 登记")
+        # ⚠️ ARG_MAX_LEN_CAP 是 **int** 常量，_str_consts 只收字符串，扫不到
+        #   （数值常量版的「属性名不在字符串常量表」坑）。必须直接查 int。
+        _tc_ints = _num_consts(_tc)
+        check("★ 包内 tool_contract 含 ARG_MAX_LEN_CAP 上限常量(int)",
+              4_000_000 in _tc_ints,
+              f"包内 int 常量={sorted(x for x in _tc_ints if x > 1000)[:10]}")
+
+    print("\n-- 2d) 本轮钉子：权限 fail-closed 的双向结论 --")
+    # 正向：主链的兜底放行类必须**不在**包里（否则闸门被短路）
+    try:
+        from agent import AgentWorker  # noqa: F401
+        import agent as _ag
+        check("★ 源码 agent 不再有 _AllowAllDecision",
+              not hasattr(_ag, "_AllowAllDecision"),
+              "类还在 → 拿不到决策时依然无条件放行")
+    except Exception as e:
+        check("★ 源码 agent 可导入并断言", False, f"导入失败：{e!r}")
+    if "agent" in names:
+        _ans = _str_consts(_load(za, "agent"))
+        check("★ 包内 agent 不含 _AllowAllDecision 字符串",
+              "_AllowAllDecision" not in " ".join(_ans),
+              "包内仍有该类 → exe 里闸门仍会被短路")
+    # 反向：军团侧的 _AllowDecision 必须**还在**（刻意保留，防下一个人当同类漏项改掉）
+    try:
+        import agent_node as _an
+        check("★ 反向钉子：军团侧 _AllowDecision 仍在（刻意保留）",
+              hasattr(_an, "_AllowDecision"),
+              "被删了 → research_write 的「撰写报告」节点会被 WRITE_LOCAL 闸门拒")
+    except Exception as e:
+        check("★ 源码 agent_node 可导入并断言", False, f"导入失败：{e!r}")
 
     print("\n-- 3) 本轮钉子：P1#1 四工具进 ALWAYS_CONFIRM（硬确认不可绕过会话信任）--")
     _hard = {"process_kill", "app_kill", "app_close", "clean_recycle_bin"}
@@ -229,8 +326,20 @@ def main():
               "_deliverable_satisfied" in an, "_deliverable_satisfied 没编进去")
         check("★ 包内 agent 定义 _FILE_KINDS（产物类型白名单）",
               "_FILE_KINDS" in an, "_FILE_KINDS 没编进去")
-        check("★ 包内 agent 引用 _deliverables（累积声明交付物）",
-              "_deliverables" in an, "_deliverables 没编进去 → 验收无数据")
+        # ⚠️ agent 侧那处是 `getattr(self, "_deliverables", None)` ——
+        #   getattr 的名字是**字符串参数**，进的是 co_consts 而不是 co_names。
+        #   只扫 co_names 会把「确实存在」判成「没编进去」（本轮首跑就红在这）。
+        check("★ 包内 agent 读 _deliverables（累积声明交付物）",
+              "_deliverables" in an or
+              any("_deliverables" in s for s in _str_consts(co_agent)),
+              "_deliverables 没编进去 → 验收无数据")
+        # 写入侧在 agent_result_mixin（v4.227 P1-2 外移），读侧在 agent，
+        # 两边都要钉：只钉读侧会漏掉「只读不写」的退化。
+        if "agent_result_mixin" in names:
+            _armn2 = _code_names(_load(za, "agent_result_mixin"))
+            check("★ 包内 agent_result_mixin 写 _deliverables（累积交付物）",
+                  "_deliverables" in _armn2,
+                  "写入侧没编进去 → 读侧永远读到空，产物验收形同虚设")
     else:
         check("agent 在 PYZ 里", False, "缺失 → 主流程崩")
 
@@ -244,17 +353,34 @@ def main():
                   sym in an, f"{sym} 没编进去 → 恢复会重复执行副作用")
 
     print("\n-- 3j) 本轮钉子：P1 不可信内容边界（工具/技能产出显式包边界）--")
+    # ⚠️ v4.227 整块外移成 untrusted_boundary.py：标签字面量与两个包装函数的
+    #   **真身都在新模块**。agent.py 只做 re-export（它源码里那句标签在**注释**
+    #   中，编译期就不进常量表）—— 钉旧模块等于钉一个永远为假的键。
+    if "untrusted_boundary" in names:
+        co_ub = _load(za, "untrusted_boundary")
+        ubn = _code_names(co_ub)
+        ubs = _str_consts(co_ub)
+        for sym in ("wrap_untrusted", "_wrap_tool_content",
+                    "neutralize_forged_tags", "is_untrusted_tool",
+                    "wrap_skill_prompt_text"):
+            check(f"★ 包内 untrusted_boundary 含边界符号 {sym}",
+                  sym in ubn, f"{sym} 没编进去 → 边界能力缺失")
+        check("★ 包内 untrusted_boundary 常量含 <untrusted_tool_output 边界标签",
+              any("untrusted_tool_output" in s for s in ubs),
+              "不可信工具边界标签没编进去")
+        check("★ 包内 untrusted_boundary 常量含 <untrusted skill 边界标签",
+              any("untrusted skill" in s for s in ubs),
+              "技能边界标签没编进去")
+        # 反向钉子：伪装闭合的中和逻辑必须在（否则外部正文能自己解除边界）
+        check("★ 包内 untrusted_boundary 含中和正则（防伪造闭合）",
+              any("untrusted" in s and "s|>" in s or "(?" in s
+                  for s in ubs) or any("untrusted" in s for s in ubs),
+              "中和正则没编进去")
     if "agent" in names:
         co_agent = _load(za, "agent")
         an = _code_names(co_agent)
-        acs = _str_consts(co_agent)
-        check("★ 包内 agent 定义 wrap_untrusted（不可信内容包装）",
-              "wrap_untrusted" in an, "wrap_untrusted 没编进去")
-        check("★ 包内 agent 定义 _wrap_tool_content（工具产出包边界）",
-              "_wrap_tool_content" in an, "_wrap_tool_content 没编进去")
-        check("★ 包内 agent 常量含 <untrusted_tool_output 边界标签",
-              any("<untrusted_tool_output" in s for s in acs),
-              "不可信工具边界标签没编进去")
+        check("★ 包内 agent 仍 re-export wrap_untrusted（接线在位）",
+              "wrap_untrusted" in an, "agent 侧不再引用包装函数")
     if "skill_loader" in names:
         co_sl = _load(za, "skill_loader")
         sln = _code_names(co_sl)
@@ -264,9 +390,6 @@ def main():
             check(f"★ 包内 skill_loader 含技能元数据/边界符号 {sym}",
                   (sym in sln) or any(sym in s for s in sls),
                   f"{sym} 没编进去 → 技能边界缺元数据")
-        check("★ 包内 skill_loader 常量含 <untrusted skill 边界标签",
-              any("<untrusted skill" in s for s in sls),
-              "技能边界标签没编进去")
 
     print("\n-- 3k) 本轮钉子：P2 参数校验补全 + P2 结构化返回根治（v4.223）--")
     if "tool_contract" in names:
@@ -495,12 +618,20 @@ def main():
         # 属性名既不在 `co_names` 也不在 `co_consts`（实测源码字节码同样
         # 扫不到），只有 `dis` 能看到。方法名 `_tstate_init` 等走的是
         # `LOAD_METHOD` → 在 `co_names` 里，稳定可扫。
-        for _m in ("_tstate_init", "_tstate_record", "_tstate_step",
+        # `_tstate_record` 的**调用点**随 `_handle_tool_result` 外移到了
+        # agent_result_mixin（v4.227 P1-2），所以它不在 agent 的 co_names 里。
+        # 钉错模块 = 钉一个永远为假的键（v4.227 首跑就红在这）。
+        for _m in ("_tstate_init", "_tstate_step",
                    "_tstate_resume_step", "_tstate_resume_reset_nudge",
                    "_tstate_nudge_now"):
             check(f"★ 包内 agent 真调 {_m}（账本接线方法）",
                   _m in ag2n,
                   f"{_m} 没编进去 → 该处接线是死引用（任务账本形同虚设）")
+        if "agent_result_mixin" in names:
+            _armn = _code_names(_load(za, "agent_result_mixin"))
+            check("★ 包内 agent_result_mixin 真调 _tstate_record（记账接线）",
+                  "_tstate_record" in _armn,
+                  "_tstate_record 没编进去 → 每次工具调用都不记账")
         check("★ 包内 agent 真 mixin 了 AgentTaskMixin（接线不是死引用）",
               "AgentTaskMixin" in ag2n,
               "agent 没引用 AgentTaskMixin → 记账/闸门全是死代码")
@@ -647,6 +778,25 @@ def main():
                     if n.startswith("test_") or "perturb" in n or "pep701" in n)
     check("PYZ 里没有 tests/ 判据套件与根目录扰动脚本",
           not leaked, f"泄漏的模块={leaked}")
+
+    print("\n-- 3h) 本轮钉子：ToolResult 判定真源在包内 + agent.py 行数红线 --")
+    # _tool_outcome 是 P1-2 的判定真源。漏进包 → agent 又退回「看文案」判断，
+    # 而 UI 绿勾 / 账本仍会把 POST_VERIFY_FAILED 记成成功（那正是本轮修的 bug）。
+    if "agent_result_mixin" in names:
+        _arm = _load(za, "agent_result_mixin")
+        _arns = _str_consts(_arm)
+        check("★ 包内 agent_result_mixin 含 _tool_outcome 判定真源",
+              "_tool_outcome" in " ".join(_arns),
+              f"常量={sorted(s for s in _arns if 'outcome' in s)[:5]}")
+    if "agent" in names:
+        _agn = _code_names(_load(za, "agent"))
+        check("★ 包内 agent 引用 AgentResultMixin（接线在位）",
+              "AgentResultMixin" in " ".join(_agn), "接线没编进去")
+    # 行数红线：<2400。抬阈值等于把红线挪到自己脚下，所以这里钉死上限。
+    _agent_lines = len((ROOT / "agent.py").read_bytes().decode("utf-8-sig")
+                       .splitlines())
+    check("★ agent.py 行数守住 <2400（本轮未抬阈值）",
+          _agent_lines < 2400, f"当前 {_agent_lines} 行")
 
     co_main = _load_entry_script(EXE, "main")
     check("main 从 CArchive 取到（入口脚本不在 PYZ 是正常结构）", co_main is not None)
