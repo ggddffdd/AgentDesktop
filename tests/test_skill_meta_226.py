@@ -306,9 +306,28 @@ check("SM7-2 load_skill_prompt 支持 strict_meta 参数",
       "def load_skill_prompt(name, skills_dir, strict_meta=False)" in _sl)
 check("SM7-3 load_skill_prompt 真调 check_skill（校验真接线）",
       "skill_meta.check_skill(" in _sl)
+# ⚠️ v4.227：范围必须限定在 `load_skill_prompt` **函数体内**。
+# 原写法是全文 `_sl.find(...)` 取第一个出现位置，而
+# `wrap_skill_prompt_text`（v4.227 新增的技能包装转发）里那句
+# `return wrap_skill_prompt_text(text, name)` 以 `return wrap_skill_prompt`
+# 为前缀，排在文件前部 → 全文 find 命中的是它，不是 load_skill_prompt 的返回点，
+# 于是「拒用分支在返回之前」这条真约束被一个无关函数的字符串顶掉了。
+# 这类「全文 find 比较两个位置」的顺序断言，第二个串必须加尾随分隔符
+# （`(` 或空格），否则任何以它为前缀的新名字都会造成假红。
+def _fn_body(code, name):
+    """取 `def <name>(` 那一行起到下一个顶层 def 之间的代码文本。"""
+    key = "def %s(" % name
+    i = code.find(key)
+    if i < 0:
+        return ""
+    j = code.find("\ndef ", i + 1)
+    return code[i:j] if j > 0 else code[i:]
+
+
+_lsp = _fn_body(_sl, "load_skill_prompt")
 check("SM7-4 reject 时返回 None（真拒用，不是照常返回）",
-      ("VERDICT_REJECT" in _sl
-       and _sl.find("VERDICT_REJECT") < _sl.find("return wrap_skill_prompt")),
+      ("VERDICT_REJECT" in _lsp
+       and _lsp.find("VERDICT_REJECT") < _lsp.find("return wrap_skill_prompt")),
       "reject 分支必须在返回 prompt 之前")
 check("SM7-5 tools.tool_use_skill 真查元数据",
       "check_skill(" in _tl)

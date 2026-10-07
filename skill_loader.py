@@ -108,10 +108,14 @@ class Skill:
 
 
 def wrap_skill_prompt(text, name):
-    """v4.222：技能指令包进不可信边界，模型须当数据而非指令。"""
-    if not text:
-        return text
-    return '<untrusted skill="%s">\n%s\n</untrusted skill>' % (name, text)
+    """v4.222：技能指令包进不可信边界，模型须当数据而非指令。
+
+    v4.227（P2-1）：改走 `untrusted_boundary.wrap_skill_prompt_text` ——
+    技能文件同样是外部可写（用户装了别人写的技能），照样能用伪造闭合标签越狱，
+    必须和工具产出走**同一条**中和逻辑，不能各写一份。
+    """
+    from untrusted_boundary import wrap_skill_prompt_text
+    return wrap_skill_prompt_text(text, name)
 
 
 # ---------- 注释头解析 ----------

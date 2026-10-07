@@ -60,10 +60,12 @@ test_p0p1_runcmd_fix_186.py
 test_p2_210.py
 test_param_validation_220.py
 test_param_validation_223.py
+test_permission_failclosed_226.py
 test_permission_gates.py
 test_perturb_harness.py
 test_popup_clamp.py
 test_post_exec_verify_224.py
+test_post_exec_verify_227.py
 test_postref_fix_186.py
 test_probe_graphics.py
 test_radius_norm.py
@@ -91,6 +93,7 @@ test_system_prompt_routing_221.py
 test_task_graph_cancel.py
 test_task_graph_incomplete.py
 test_task_outcome_acceptance_222.py
+test_task_state_design_227.py
 test_task_state_machine_225.py
 test_task_status.py
 test_task_status_ui.py
@@ -108,6 +111,7 @@ test_uidecision_fix_186.py
 test_uncertainty_gate_196.py
 test_unified_intent_225.py
 test_untrusted_boundary_222.py
+test_untrusted_hardening_227.py
 test_v4102_1021_twin_bg.py
 test_v4102_image_compress.py
 test_v4102_twin_v2.py

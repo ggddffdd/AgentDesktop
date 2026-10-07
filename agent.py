@@ -136,40 +136,40 @@ def _tool_args_hash(name, args_sig):
     return hashlib.sha256((name + ":" + (args_sig or "")).encode("utf-8")).hexdigest()[:16]
 
 
-# v4.222：不可信内容边界——外部/工具产出的内容可能含注入指令，必须显式标记。
-_UNTRUSTED_TOOLS = frozenset({
-    "web_fetch", "web_search", "search", "browse", "read_file",
-    "read_file_text", "download_file", "rag_search",
-})
+# v4.227（P2-1）：不可信内容边界整块外移到 `untrusted_boundary.py`。
+# 这里只做 re-export —— `from agent import wrap_untrusted` 等既有调用点零改动可用，
+# 判据/进包核验里按 agent 查的名字也照旧成立（单点真源在 untrusted_boundary）。
+#
+# 为什么外移而不是就地改：agent.py 2309 行，红线是 <2400（test_split_216 D2），
+# 规则化清单 + 中和逻辑塞不进来。按既有纪律，外移不抬阈值。
+#
+# 本轮补的两个洞：
+#   1. 清单从 8 项枚举改为规则驱动（prefix + exact），漏掉的 browser_*/legion_*/
+#      webhook_events/clipboard_read/app_get_text/db_query 等一律纳入。
+#   2. 包装前中和内容里的伪造闭合标签 —— 否则攻击者控制的正文写一个
+#      `</untrusted_tool_output>` 就能把自己的边界提前关掉，等于自己解除边界。
+from untrusted_boundary import (  # noqa: F401
+    wrap_untrusted,
+    _wrap_tool_content,
+    wrap_tool_content,
+    is_untrusted_tool,
+    neutralize_forged_tags,
+)
 
 
-def wrap_untrusted(content, source, evidence_id=None):
-    """v4.222：把不可信来源内容包进显式边界，模型须当作数据而非指令。"""
-    if content is None:
-        content = ""
-    cid = (' evidence_id="%s"' % evidence_id) if evidence_id else ""
-    return ('<untrusted_tool_output source="%s"%s>\n%s\n</untrusted_tool_output>'
-            % (source, cid, content))
-
-
-def _wrap_tool_content(name, content, evidence_id=None):
-    """v4.222：不可信工具产出包边界；可信工具原样返回。"""
-    if name in _UNTRUSTED_TOOLS:
-        return wrap_untrusted(content, name, evidence_id)
-    return content
-
-
-class _AllowAllDecision:
-    """无权限引擎时的兜底决策（保持旧行为：放行）。仅用于 exec_tool 最终闸门。
-
-    模块级全局：并发批次若拿不到 permission_engine，沿用旧行为直接放行，
-    由 exec_tool 的 _permission_gate 通过鸭子类型 hasattr(.allowed) 识别。
-    """
-    allowed = True
-    needs_user = False
-    reason = "no-engine fallback"
-    rule = "fallback"
-
+# v4.226（P1-1）：**已删除** `_AllowAllDecision`。
+#
+# 它是个 `allowed = True` 的兜底决策，在拿不到权限决策时替并发批次「按了放行」。
+# 后果不是「少弹一次窗」，而是**整个最终闸门被短路**：exec_tool 的
+# _permission_gate 认鸭子类型 `hasattr(perm_ctx, "allowed")`，拿到这个对象
+# 就无条件放行 —— WRITE_LOCAL / EXEC / EXTERNAL 全部不拦。
+#
+# 为什么不改成 `allowed = False` 的拒绝对象，而是**什么都不传**（perm_ctx=None）：
+# tools._permission_gate 对「无权限上下文」已有按风险分类的 fail-closed
+# （READ 放行保兼容，其余一律拒，未登记工具落 EXTERNAL 天然被拒）。
+# 那才是这套代码里既定的唯一口径。再叠一个 agent.py 私有的兜底对象等于
+# 造第二套策略 —— 两套策略必然漂移，且这正是当初写下这个类的那一步。
+#
 
 class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                    AgentResultMixin, QThread):
@@ -1543,7 +1543,10 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 # 在任务函数内先注入默认 sid，并发执行的 context 工具同样命中当前会话。
                 _ctx_sid = self._ctx_sid
                 # P1 #4（v4.219）：并发批次同样携带权限决策，杜绝绕过最终闸门。
-                # 有引擎则取真实决策（allowed 受信任）；无引擎兜底放行（保持旧行为）。
+                # v4.226（P1-1）：拿不到决策时**不再伪造一个 allowed=True 的兜底**，
+                # 改为原样传 None —— 由 exec_tool 的 _permission_gate 按风险分类
+                # fail-closed（READ 放行 / WRITE_LOCAL·EXEC·EXTERNAL 拒绝）。
+                # decide() 抛异常同理：引擎自己出错了，绝不因此把权限放开。
                 _engine = getattr(self.mw, "permission_engine", None)
                 _dec = None
                 if _engine is not None:
@@ -1551,10 +1554,10 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                         _dec = _engine.decide(
                             name, args,
                             explicit_intent=getattr(self, "explicit_intent", True))
-                    except Exception:
+                    except Exception as _pe:
+                        # 决策异常必须留痕：否则「权限闸失效」这件事只有代码知道。
+                        log.warning("权限决策异常（并发批次 %s），按无授权处理: %s", name, _pe)
                         _dec = None
-                if _dec is None:
-                    _dec = _AllowAllDecision()
                 def _exec_with_ctx(_name=name, _args=args, _sid=_ctx_sid,
                                   _stop=lambda: self._stop_requested, _dec_ctx=_dec):
                     context_manager.set_default_sid(_sid)
@@ -1630,25 +1633,32 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         子节点自身仍有 agent_node 里的工具白名单与 perm 检查兜底。
         """
         engine = getattr(mw, "permission_engine", None)
-        if engine is not None:
+        # v4.226（P1-1）：缺引擎时**不再整条跳过闸门照样执行**。
+        # 原实现是 `if engine is not None:` 包住全部判定，于是引擎为 None 时
+        # 直接落到末尾的 `return self._run_workflow(...)` —— 一个字都没判就启动
+        # 子代理任务图（内含搜索/写文件）。这里显式拒绝，与 decide() 异常同口径。
+        if engine is None:
+            log.warning("run_workflow 缺权限引擎，按无授权拒绝")
+            return ("（子代理工作流未执行：权限引擎未启用，"
+                    "无法完成授权判定，按保守策略拒绝）")
+        try:
+            dec = engine.decide(
+                "run_workflow", args or {},
+                explicit_intent=getattr(self, "explicit_intent", True),
+                task_risk=(getattr(self, "_task_risk_ctx", None) or (lambda: None))())
+        except Exception as e:
+            return f"（子代理工作流未执行：权限判定异常 {e}）"
+        if not dec.allowed:
+            return f"（子代理工作流未执行：{dec.reason}）"
+        if dec.needs_user:
+            title, detail = self._build_confirm_detail("run_workflow", args or {})
+            if not self._maybe_confirm(title, detail,
+                                       force=(dec.rule in FORCE_CONFIRM_RULES)):
+                return "（你取消了子代理工作流）"
             try:
-                dec = engine.decide(
-                    "run_workflow", args or {},
-                    explicit_intent=getattr(self, "explicit_intent", True),
-                    task_risk=(getattr(self, "_task_risk_ctx", None) or (lambda: None))())
-            except Exception as e:
-                return f"（子代理工作流未执行：权限判定异常 {e}）"
-            if not dec.allowed:
-                return f"（子代理工作流未执行：{dec.reason}）"
-            if dec.needs_user:
-                title, detail = self._build_confirm_detail("run_workflow", args or {})
-                if not self._maybe_confirm(title, detail,
-                                           force=(dec.rule in FORCE_CONFIRM_RULES)):
-                    return "（你取消了子代理工作流）"
-                try:
-                    engine.trust_tool("run_workflow")
-                except Exception:
-                    pass
+                engine.trust_tool("run_workflow")
+            except Exception:
+                pass
         return self._run_workflow(wf_type, task)
 
     def _exec_tool_calls(self, tool_calls, mw, APP_DIR):

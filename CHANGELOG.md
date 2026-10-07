@@ -1,4 +1,4 @@
-﻿# 更新日志
+# 更新日志
 
 「小臭玩AI」桌面端（PySide6 + 多模型 API 的本地 AI 工作台）版本变更记录。
 
@@ -44,6 +44,15 @@
   - 扰动 `_perturb_toolresult_wiring_226.py` 6 条**全部命中、哑弹 0**：判定真源整段删 + **只删动作留条件**（`if hasattr(...)` 外壳还在、只把 `_ok` 换成恒真 —— 源码肉眼看不出问题的那种阴变）、账本退回字符串判据、串行当场解包、UI 绿勾改回看文案、记账不再透传。
   - **判据自身修掉一处恒真**：C9 原本只做静态字符串匹配，把整段换成 `if False: _ok = True` 后两个目标串都还在、照样照绿（扰动实测红 0 条）。已补**行为级**判据（真造一个记录器跑 `_tstate_record`，断言「ToolResult 说失败 → 账本必须记失败」，另配两条反向：不传 ToolResult 时退回字符串判据、文案判不出时按成功记）。
   - 顺带修一条因搬家而红的判据：`test_task_state_machine_225` 的 TS7-5 用 `_ag_code` 扫「记账接线存在」，方法搬走后扫不到 → **扩扫描源到两个 mixin**（判据只加强不放宽：仍要求接线真实存在，只是不再假设它一定写在 agent.py）。
+- **权限 fail-closed：拆掉一个会自己按下放行的兜底决策（修「闸门失效反而全放行」）**：外部审查 P1-1。`agent.py` 里有个 `_AllowAllDecision`，类属性 `allowed = True`，在拿不到权限决策时替并发批次「按了放行」。它的后果不是「少弹一次确认窗」，而是**整个最终闸门被短路** —— `tools._permission_gate` 认鸭子类型 `hasattr(perm_ctx, "allowed")`，拿到这个对象就无条件放行，于是 WRITE_LOCAL / EXEC / EXTERNAL **一个都不拦**。这与 v4.219 把 `exec_tool` 造成「不可绕过的最终闸门」的前提正好相反：闸门刚补上，紧接着被自己人从里面打开了。
+  - **真实触发路径不是「引擎为 None」**（那条在当前唯一入口会先 `AttributeError`，到不了并发兜底），而是**权限引擎存在但 `decide()` 抛异常** → `_dec = None` → 兜底放行。报告在这点上的前提有误，修法也随之不同。
+  - **修法不是把它改成 `allowed = False` 的拒绝对象，而是删掉、什么都不传**（`perm_ctx=None`）：`tools._permission_gate` 对「无权限上下文」已有按风险分类的 fail-closed（READ 放行保兼容，其余一律拒，未登记工具落 EXTERNAL 天然被拒）。那才是这套代码里既定的唯一口径；再叠一个 `agent.py` 私有的兜底对象等于造第二套策略 —— **两套策略必然漂移，且这正是当初写下这个类的那一步**。
+  - 第二处：`_run_workflow_guarded` 里 `if engine is not None:` 把整段判定包住，引擎为 None 时直接落到末尾的 `return self._run_workflow(...)` —— 一个字没判就启动子代理任务图（内含搜索 / 写文件）。已改为显式拒绝，与 `decide()` 异常同口径。
+  - 顺手给并发批次的 `decide()` 异常分支补 `log.warning`：原先异常被静默吞掉，「权限闸失效」这件事只有代码知道，事后无从查证。
+  - **军团侧 `agent_node._AllowDecision` 刻意不改**（它同样是 `allowed = True`，极易被下一个人当「同类漏项」顺手改掉）：它在 `AgentNode` 子节点上，工具集已由 `tools=` 白名单限死，而任务图本身在 `_run_workflow_guarded` 处**已整体过闸并取得用户放行** —— `agent.py` 对此有明文设计（「工作流一旦被用户放行，其内部步骤属于本次已授权动作的实施细节」）。真要收紧，正确做法是给 `AgentNode` 接权限适配器（军团侧已有 `perm` 钩子），而不是把这个兜底翻成拒绝：**一刀切会直接打断 `research_write` 的「撰写报告」节点**（`write_file` 是 WRITE_LOCAL，无授权上下文下必被闸门拒）。
+  - 判据 `tests/test_permission_failclosed_226.py` PASS=32，四组：**A 行为层**（真跑 `_permission_gate` / 真跑 `exec_tool` + 哨兵文件断言「确实没写盘」，含一条只读仍放行的对照，防「fail-closed 退化成全禁」）/ **B 接线层**（AST，且不是简单 find —— **解析 `perm_ctx` 的完整赋值来源链**，含闭包默认参数 `def f(..., _dec_ctx=_dec)` 要顺 `default` 的 Name 再追一层，只认 `None` 与 `decide()` 两个合法末端）/ **C 结构层** / **D 设计决定**（钉住军团侧刻意保持放行这条决定）。
+  - 扰动 `_perturb_permission_failclosed_226.py` 6 条**全部命中、哑弹 0**，其中三条是**照妖镜**（专门证明判据组不是恒真装饰）：把最终闸门改成恒放行 → A 组必须红；改成恒拒 → A 组必须红（证明不是「怎么改都红」的假红）；把军团侧兜底翻成拒绝 → D 组必须红。
+  - **判据自身在本轮修掉三处写错**（都是先撞红、再查判据，而不是改实现迁就判据）：`B9` 原写「AST dump 里含 `permission_engine`」——但 `engine is None` 条件体的 dump 只有 `engine`/`None` 两个名字，`permission_engine` 只在上一行 `getattr` 里；`B4` 原按「默认值必须字面是 None」判定，而实际是转发到 `_dec`，需追链；`B1` 原按方法名列表找并发方法，而真名（`_run_concurrent`）不在表里 —— 已改为按「含 `submit` 且调 `exec_tool`」这一定位特征找。
 - **顺带修掉两条历史哑弹和一个失效判据**（都是本轮改动暴露的）：
   - `test_skill_and_route_gates`的 B4 原钉死字符串 `load_skill_prompt(skill_name, d)`，本轮该调用加了第三参 `strict_meta=False` → 假红。按「改判据不删判据」升级为正则匹配「调用括号」，并**加强为三条**：B4（启用检查早于加载）+ B4b（strict 拒用分支也在开关之后）+ **B4c（启用判断不是恒真/恒假）**。B4c 是补B4/B4b 抓不到的那一半 —— 把 `if not is_skill_enabled(...)` 改成 `if not True:` 位置完全不变，两条位置断言都照绿，但「禁用技能照样能加载」已经成立。新增扰动 `_perturb_skill_gate_b4_226.py`（2 变异）证明三条都非恒真。
   - `_perturb_structured_return_220.py` 的原串停留在 v4.223 形态，v4.224 插入执行后验证段后不再匹配 → **整条变异白挂了一个版本**（真仓单跑才看得见，全量跑只显示 `PASS=0 FAIL=1`）。同步原串后恢复 1/1。
@@ -54,6 +63,33 @@
 - **发布门禁**（全量门禁实测）：`run_all.py --with-perturb` 全绿；打包 `build_safe.py` BUILD_EXIT=0；三道进包核验全绿 —— 密钥扫描 **0 泄露**（411271 条常量参与判定）/ 冻结冒烟 **PASS=280** FAIL=0 / `_verify_pyz_v42260.py` **PASS=193** FAIL=0（新增 3n 段把四阶段循环 + 技能元数据的钉子逐条钉进包内）。
   - **核验断言连错两次的教训**（写进工具注释）：v4.226 首版两条新断言当场假红 —— 先假设「`agent.py` 引用 `skill_meta`」（实为不引用，接线在 `tools.py`/`skill_loader.py`），再假设「`if not _got` 在常量表」（`_probe/_got` 是局部变量名，走 STORE_FAST，**与「属性名不在常量表」同源，扫不到**）。**核验 FAIL 时先怀疑断言本身，别急着改代码**；钉不出就临时打印包内 `co_names`/`co_consts` 实测，别猜。现改钉 docstring 里的真实说明串（`取不到任何字段`/`fail-open`、`未审`）+ `_get` 函数名。
   - 根目录核验工具按纪律收敛为**只留当前那一份**：旧三份 `_verify_pyz_v42180/v42190/v42200` 已 `git mv` 进 `_dev_history/`。
+- **不可信内容边界加固（外部审查 P2-1）**：v4.222 建了 `<untrusted_tool_output>` / `<untrusted skill>` 边界防提示注入，本轮补上两个洞。
+  - **洞一：清单是 8 项枚举**（`_UNTRUSTED_TOOLS` frozenset），83 个已注册工具里 `browser_read`（读网页正文）、`legion_*`（子代理产出，可能转述网页）、`webhook_events`（外部 POST 载荷）、`clipboard_read`、`app_get_text`（读别的应用的界面文字，那个应用可能正显示攻击者网页）、`db_query` **全都不在清单里** —— 每一个都是外部可控内容。枚举的失效方式很安静：将来再加一批浏览器工具，没人会记得回来补这个集合。
+  - 改为**规则驱动**（`_UNTRUSTED_PREFIXES` 按前缀 + `_UNTRUSTED_EXACT` 逐个点名并注明「攻击者从哪控制得了这段内容」），判定真源唯一为 `is_untrusted_tool()`。前缀层让将来新增的 `browser_*` / `legion_*` **自动覆盖**（判据 A4 用 `browser_brand_new_2099` 这种虚构名验证）。**刻意不全包**：`director_*`（改的是用户自己的剧本）、`db_insert`（返回本工具回执）、`sys_info`/`process_list`（返回值即查询结果，再验一次是自证）保持可信 —— 判据 A3 反向钉住，防「干脆全包了」这种偷懒修法。
+  - **洞二：固定标签可被内容自己闭合（越狱）**。若被读网页正文里**自己写了** `</untrusted_tool_output>`，后面那段就落在边界之外 = 攻击者等于自己解除边界（网页正文完全由攻击者控制，不是理论问题）。包装前统一**中和**内容里的伪造标签（`<untrusted` / `</untrusted` 开头的，ignorecase，含大写/空白/截断共七种形态），把 `<` 换成 `&lt;` 变惰性文本。**技能侧走同一条逻辑**（技能文件同样是外部可写），`skill_loader.wrap_skill_prompt` 改为薄转发，两处不许各写一份（判据 C4b 钉住）。命中即 `log.warning` 留痕 —— 「有内容在试图越狱」这件事不该只有包装器知道（**行为级**断言：真造越狱内容 + 挂 logging 捕获器看有没有真记下来）。
+  - 中和的边界**收紧到不误伤普通词**：`<untrusted` 之后必须紧跟非字母分隔符，`<untrustedx>` / `<untrustedness>` 一律放过（扰动 V9 专门把这条放宽，B3 立刻翻红）。这里踩过一次坑：两个真实标签是 `<untrusted_tool_output>` 与 `<untrusted skill=...>`，前者 `untrusted` 后面紧跟的是**下划线** —— 分隔符集合漏了 `_` 会导致真标签反而 neutralize 不到。
+  - 整块外移到新模块 `untrusted_boundary.py`，`agent.py` 只做 re-export（`from agent import wrap_untrusted` 等既有调用点零改动可用）。**外移不抬阈值**：`agent.py` 本轮已 2309 行，红线 `<2400` 只剩 91 行余量，规则化清单 + 中和塞不进去。
+  - 判据 `tests/test_untrusted_hardening_227.py` PASS=34，五组：A 行为层（16 个漏项覆盖 + 越狱实测全文只剩 1 个真闭合标签 + 证据不被删改）/ B 不变量（7 种伪造形态命中、正常 HTML 零改动、非边界词零误伤）/ C 结构层（判定真源唯一、`agent.py` 无第二份清单）/ **D 兼容性**（v4.222 契约逐条重放，旧名与新名同一函数）/ **E 判据自证**（含本轮修判据的根因留证）。
+  - 扰动 `_perturb_untrusted_hardening_227.py` **9/9 命中、哑弹 0**，含三条**照妖镜**：中和改成什么都不做 → B 组必须红；判定改成恒真（全包）→ A3 必须红；中和放宽到误伤普通词 → B3 必须红。
+  - **顺手修掉一条被本轮改动打红的既有判据**：`test_skill_meta_226` 的 SM7-4 用**全文** `find()` 比较「拒用分支」与「返回 prompt」两个位置，而新增的薄转发里那句 `return wrap_skill_prompt_text(text, name)` **以 `return wrap_skill_prompt` 为前缀**、排在文件前部 → 全文 find 命中的是它，这条真约束被一个无关函数的字符串顶掉了。已改为**函数体内查找**，且判据 E2/E3 双向自证「没改宽」（把拒用分支挪到返回之后，同逻辑必须给假）。
+- **执行后验证分档 + 首批硬验（外部审查 P2-2）**：v4.224 落地了 `register_verifier` / `verify_after` / `apply_post_verification` 这条链，但只登记 2 个验证器（process_kill / clean_recycle_bin），其余 81 个工具一律 fail-open。fail-open 本身是对的（查不到真信号时不该乱改结论），问题在**不可见**：「查不到信号所以不表态」与「压根没人想过这个工具」在代码里长得一模一样，都表现为「没有验证器」—— 没人能回答「哪些工具的副作用验过、哪些裸奔」。
+  - 新增三档登记（`register_verification_tier` / `verification_tier_report` / `unverified_tools`）：`verified`（有廉价真实信号可查）/ `degraded`（**刻意**不验，必须写清理由）/ `open`（有信号可查但还没写 = 待办清单本身）。**分档只登记事实、不参与运行时决策** —— 运行时判定仍只看 `_VERIFY_REGISTRY`。刻意不参与：分档表若参与放行/拒绝就成了第二套策略，必然与验证器漂移（与本版 P1-1 删掉 `_AllowAllDecision` 同一个道理）。判据 D1 用 AST 取 `verify_after` **真实函数体**断言它不引用分档表（首版按 `find("\ndef ")` 切段，把新加的分档函数算进了 `verify_after` 体内 → 假红）。
+  - **83 个工具零漏项、零幽灵名**。这一步当场抓出凭印象列的清单有 **11 个漏项**（`image_gen`/`video_gen` 名字就不对，还有 `create_automation`/`delete_automation`/`list_automation`/`rag_index`/`chart_gen`/`screenshot`/`search_memory`/`app_get_text`/`app_list_controls` 完全没列）与 **5 个幽灵名**（`image_generate`/`video_generate`/`browse`/`search`/`download_file` 在注册表里根本不存在）。**幽灵名必须删** —— 留着就是「登记了却从不改变结论」的条目，那正是失效的开始。最终 `verified 6 / degraded 37 / open 43`。
+  - 首批硬验 4 个（选型标准只有一条：**执行完之后能否用一次廉价查询拿到「副作用真的发生了吗」的信号**，拿不到就不登记 —— 登记一个必然 `return None` 的验证器是自欺欺人，还会让人误以为这工具验过了）：`db_insert`（按传入字段回查匹配行）、`db_update`（回查该 id 真在，**刻意不逐字段比对** —— 值可能有类型归一，逐字段比会假红，那不是失败是我们验错了）、`db_delete`（回查该 id 真不在）、`write_file`（复查文件真落地且非空）。
+  - 注册是**导入期副作用**，因此接线是硬要求：`tools.py` 里 `import tool_verifiers_227` 必须在 `exec_tool` 定义之前。判据 E4/E5 用干净子进程做**双向自证** —— 只 import `tool_contract` 时验证器必须尚未注册（证明 E2 不是恒真），import 之后立刻注册。
+  - 判据 `tests/test_post_exec_verify_227.py` PASS=42，六组：A 硬验行为（**真写文件**，含三条反例：文件不存在/空文件必须判不通过）/ B 只降级不升级（v4.224 语义硬约束不许被破，含「验证通过不得把失败翻成成功」与降级时错误码/证据必须落地）/ C 分档完整性 / D 分档不参与决策 / E 导入期接线 / F 判据自证。
+  - 扰动 `_perturb_post_exec_verify_227.py` **8/8 命中、哑弹 0**，含三条**照妖镜**：破坏只降级语义 → B 组必须红；分档表偷偷参与决策 → D1 必须红；验证器恒返回 None → A 组必须红。
+- **任务状态机「只认字面点名」登记为刻意设计（外部审查 P2-3）**：报告 P2 有一条「任务状态机只认工具名，不解析自然语言目标」，当缺陷提出。**核实结论：这是刻意设计，不是缺陷** —— 换成关键词/意图命中看起来更聪明，实际会制造新事故：「帮我写一段口播文案」会因词表里有「口播」而命中 `video_gen`，逼模型为一个**用户没要的产物**去调视频工具。「宁可漏（漏了顶多少收尾 nudge），不可错（错了逼出假产物）」。
+  - **本轮不改行为**，改为把这条决定**登记成可检出的事实**（`HARD_REQUIREMENT_POLICY` + `REJECTED_REQUIREMENT_POLICIES` 逐条写明为何不采用），配判据 + 扰动三处夹住，日后有人想「顺手改成关键词命中」会立刻被拦。手法与 P1-1 给 `agent_node._AllowDecision` 钉设计决定一致 —— 注释不会被人 grep 到，登记成数据才钉得住。
+  - 判据 `tests/test_task_state_design_227.py` PASS=21，A 组**核心反例**是报告点名的那个场景：「口播/文案/视频介绍词」四类文本请求**绝不能**命中 `video_gen`（这正是这条设计存在的全部理由）；D 组自证复刻「关键词命中」坏实现，证明同一句话在坏实现下确实会命中 → A2 非恒真。
+  - 扰动 `_perturb_task_state_design_227.py` **5/5 命中、哑弹 0**（V1 真把实现改成关键词命中 → A 组红 5 条；含两条照妖镜：词边界改裸 `in` → B1 红、否决理由被清空 → C3 红）。
+- **P2 三项共同的判据教训（都写进了对应工具/脚本注释）**：
+  - **扰动脚本必须前后各清一次 `__pycache__`**。被扰动的模块在判据里是 `import` 进来的，`.pyc` 比源码旧就直接用缓存 → **变异等于没发生** → 红 0 条 → 误判成「判据抓不住」。更隐蔽的是**跨用例污染**：只清在 `run_test` 开头时，上一条用例最后写下的 `.pyc` 成了下一条的起始状态，实测让 V2 读到 V1 的残留红点、V6 读到 V5 的残留 —— 两阶段都清才干净。两个新脚本都按此改。
+  - **判据与扰动的断言名必须逐字一致**。`test_untrusted_hardening_227` 的 B3 失败时打「B3 非边界形态不该命中」、成功时打「...不被误吃」，两个名字导致扰动按名字匹配时找不到 FAIL 行，把真 MISS 判成别的红。已改为两种情况用同一名字。
+  - **期望串里不能写「本来就该绿」的断言**。V2（删分档登记）里 `C4` 其实保持绿 —— 验证器还在、只是没分档；V6（破坏只降级语义）里 `B1` 也保持绿 —— 它走 `was_ok=False` 那条路，本变异碰不到。这类「把该绿的当红点」会把真 HIT 判成 MISS（本轮三处）。**拿不准就跑 `PERTURB_DEBUG=1` 看红明细，别猜。**
+  - **源码找串判据抓不住「缩进到 `if False` 底下」**。E1 原写 `"import tool_verifiers_227" in tsrc`，扰动把它缩进一层后那串字面量照样存在 → 判据照绿（红 0 条）。已改用 AST 只看**模块顶层**的 `ast.Import`。
+  - **别用 heredoc 临时脚本手工改源文件**：本轮一次 `\n` 双层转义失效把 `skill_loader.py` 写坏（`py_compile` 当场报 `unterminated string literal`），且还原顺序写错会把损坏版本写回磁盘。**改文件一律交给扰动脚本**（它有正确的 backup/finally 顺序）。
+  - **打包登记补漏（新模块必须显式进 hiddenimports）**：`agent_result_mixin` / `untrusted_boundary` / `tool_verifiers_227` 三个模块本轮都只被**顶层 import 或 re-export** 引用，静态分析有机会漏扫。漏登记的表现分三种，其中**最安静的是 `tool_verifiers_227`**：它的注册是**导入期副作用**，漏进包 → 验证器压根不注册 → 验证链静默空转，**不报错、只是永不验证**，比直接 ModuleNotFoundError 难查一个量级。已连同理由写入 `小臭玩AI.spec` hiddenimports 段。
 
 ## v4.225.0 — 2026-10-07
 

@@ -44,6 +44,12 @@ from tool_contract import (ToolResult, _mask_sensitive, _mask_recursive,
                            validate_for_tool,  # v4.223：统一参数校验入口
                            apply_post_verification)  # v4.224：执行后验证
 
+# v4.227（P2-2）：执行后验证的首批硬验 + 全量分档登记。
+# 必须在这里 import —— register_verifier / register_verification_tier 都是
+# **导入期**副作用：模块不被导入，注册就不会发生，验证链等于空转。
+# 放在 tool_contract 之后（本模块要从它拿注册函数），且在 exec_tool 定义之前。
+import tool_verifiers_227  # noqa: F401,E402
+
 
 # v4.155 fix2：图生视频轮询超时上限（默认 240s，< Agent 回合上限 445s，刻意留余量）。
 # 经 XIAOCHOU_VIDEO_TIMEOUT 可覆盖；替换原先写死的 120（原本只管 submit，轮询仍落 1800 默认）。

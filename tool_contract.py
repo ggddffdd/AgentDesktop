@@ -262,6 +262,72 @@ def verify_after(name, args=None, result=None):
     return (bool(r), "")
 
 
+# ============================================================
+# v4.227（P2-2）：验证分档 —— 让「没验证」变成一件可枚举、可审计的事
+# ============================================================
+# v4.224 只登记了 2 个验证器（process_kill / clean_recycle_bin），其余 81 个
+# 工具一律 fail-open。fail-open 本身是对的（查不到真信号时不该乱改结论），
+# 但它有个致命的不可见性：**「查不到信号所以不表态」和「压根没人想过这个工具」**
+# 在代码里长得一模一样，都表现为「没有验证器」。
+#
+# 后果：没人能回答「哪些工具的副作用是验过的、哪些是裸奔的」，也没法优先补。
+# 分档把这个事实显式化 —— 三档各自说清「为什么是这个档」：
+#
+#   verified  已登记验证器，副作用有廉价真实信号可查（写完复查落盘、杀完复查进程）
+#   degraded  刻意降级：验证不可靠或无意义，查了反而会假红（如 browser_* 的
+#             「页面有没有真的加载出来」没有廉价信号；CDP 状态查询是独立立项）
+#   open      尚未覆盖：有真实信号可查但还没写（这就是待办清单本身）
+#
+# 分档**不改变任何运行时行为** —— 它只登记事实。运行时判定仍只看
+# _VERIFY_REGISTRY（有没有验证器），分档表不参与放行/拒绝决策。
+# 这是刻意的：分档表若参与决策，就成了第二套策略，必然与验证器漂移
+# （与 v4.226 删掉 _AllowAllDecision 同一个道理）。
+
+_TIER_VERIFIED = "verified"
+_TIER_DEGRADED = "degraded"
+_TIER_OPEN = "open"
+
+_VERIFY_TIERS: Dict[str, str] = {}
+
+
+def register_verification_tier(name, tier, reason=""):
+    """登记工具的验证姿态。**只登记事实，不参与运行时决策。**"""
+    if not name or tier not in (_TIER_VERIFIED, _TIER_DEGRADED, _TIER_OPEN):
+        return False
+    _VERIFY_TIERS[str(name)] = tier
+    return True
+
+
+def verification_tier(name):
+    """查某工具的验证姿态；未登记 → None（区别于 open：open 是显式承认裸奔）。"""
+    return _VERIFY_TIERS.get(str(name or ""))
+
+
+def verification_tier_report():
+    """返回 (分档名 -> [工具名...])，按档位分组、组内排序。给判据与排障用。"""
+    out = {_TIER_VERIFIED: [], _TIER_DEGRADED: [], _TIER_OPEN: []}
+    for n, t in sorted(_VERIFY_TIERS.items()):
+        out.setdefault(t, []).append(n)
+    return out
+
+
+def unverified_tools(all_names=None):
+    """列出既没验证器、又没显式分档的工具 —— 这才是真正的「没人想过」。
+
+    `verification_tier_report()["open"]` 是「已承认待办」，
+    本函数多返回的是「连待办都没登记」—— 那是分档表自身的漏洞。
+    """
+    names = list(all_names or [])
+    out = []
+    for n in names:
+        if n in _VERIFY_REGISTRY:
+            continue
+        if _VERIFY_TIERS.get(n):
+            continue
+        out.append(n)
+    return sorted(out)
+
+
 def apply_post_verification(tr, name, args=None):
     """把执行后验证结论落到 ToolResult 上。返回是否被降级。
 

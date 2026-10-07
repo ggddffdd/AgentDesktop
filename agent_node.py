@@ -31,7 +31,29 @@ log = logging.getLogger("dsdesktop")
 
 
 class _AllowDecision:
-    """军团无权限适配器时的兜底决策（保持旧行为：放行）。仅用于 exec_tool 最终闸门。"""
+    """军团/主链子节点**无权限适配器**时的兜底决策（放行）。
+
+    v4.226（P1-1）复核：这一处**刻意不改**，与已删除的 agent._AllowAllDecision
+    是两件不同的事，不是同类漏项 ——
+
+      · agent._AllowAllDecision 所在的是**主链并发批次**：那里本就该有权限引擎
+        （v4.219 P1#4 的全部意义就是「并发批次也要过闸」），拿不到决策说明闸门
+        失效，放行等于把刚补上的闸门自己拆了。故已删除。
+      · 本类所在的是 **AgentNode 子节点**：它是任务图里的一个工序，
+        `tools=` 白名单已经限死了它能碰哪些工具，而任务图本身在
+        agent._run_workflow_guarded 处**已整体过闸并取得用户放行**。
+        agent.py 对此有明文设计：「工作流一旦被用户放行，其内部步骤属于
+        本次已授权动作的实施细节，不再逐项弹确认」（否则研究+写作三节点
+        会弹一串确认，没人受得了）。
+
+    若把这里也改成 fail-closed，`write_file`（WRITE_LOCAL）在
+    `research_write` 工作流的「撰写报告」节点会被直接拒掉 —— 工作流必然跑不通。
+    即真要收紧，正确做法是给 AgentNode 接权限适配器（军团侧已有 `perm` 钩子），
+    而不是把这个兜底翻成拒绝。
+
+    下方判据 tests/test_permission_failclosed_226.py 的 D 组把这条设计决定
+    钉住：改这个类会红，防止日后被当成「同类漏项」顺手改掉。
+    """
     allowed = True
     needs_user = False
     reason = "legion-no-perm fallback"

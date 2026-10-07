@@ -27,7 +27,9 @@ _perturb_memory_meta.py
 _perturb_msg_budget_cap_224.py
 _perturb_param_validation_220.py
 _perturb_param_validation_223.py
+_perturb_permission_failclosed_226.py
 _perturb_post_exec_verify_224.py
+_perturb_post_exec_verify_227.py
 _perturb_probe_graphics.py
 _perturb_resume_api_error_221.py
 _perturb_resume_idempotent_222.py
@@ -41,6 +43,7 @@ _perturb_system_control_a.py
 _perturb_system_control_b.py
 _perturb_system_prompt_routing_221.py
 _perturb_task_outcome_acceptance_222.py
+_perturb_task_state_design_227.py
 _perturb_toast_204.py
 _perturb_tool_audit_c.py
 _perturb_toolresult_wiring_226.py
@@ -48,4 +51,5 @@ _perturb_ui_a11y.py
 _perturb_ui_hex_guard_fallback.py
 _perturb_unified_intent_225.py
 _perturb_untrusted_boundary_222.py
+_perturb_untrusted_hardening_227.py
 _perturb_webhook_events_218.py

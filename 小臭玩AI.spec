@@ -50,6 +50,18 @@ hiddenimports = ['toast', 'empty_state', 'PySide6', 'PySide6.QtPrintSupport', 'P
                # 静态分析可能漏扫 —— 与 v4.225 同理显式登记，杜绝 exe 报
                # ModuleNotFoundError（源码能跑、打包后炸，是最难查的一类坑）。
                'agent_loop', 'agent_loop_mixin', 'skill_meta',
+               # v4.226~v4.227 新增模块，显式登记以杜绝 exe 报 ModuleNotFoundError
+               # （源码能跑、打包后炸，是最难查的一类坑）：
+               #   agent_result_mixin  —— agent.py 承接 _handle_tool_result 的 mixin，
+               #                          让完整 ToolResult 贯穿 UI/账本/证据三处判定。
+               #   untrusted_boundary   —— 不可信内容边界（规则驱动清单 + 伪造闭合标签中和）。
+               #                          agent.py 只做 re-export，但真实实现在此，
+               #                          PyInstaller 静态分析对 re-export 的追踪不稳。
+               #   tool_verifiers_227   —— 执行后验证器注册表（db 三写 / write_file 硬验）。
+               #                          由 tools.py 在**导入期** import 才生效
+               #                          （注册是模块级副作用，晚于首次 exec_tool 调用就失效），
+               #                          漏登记的表现是「验证链静默空转」——不报错，只是永不验证。
+               'agent_result_mixin', 'untrusted_boundary', 'tool_verifiers_227',
                ]
 
 
