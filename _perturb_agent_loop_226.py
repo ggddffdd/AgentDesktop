@@ -62,9 +62,13 @@ CASES = [
      "",
      ["LP9-1 agent.py import agent_loop"]),
 
+    # ⚠️ 原串必须**逐字等于**当前类声明（框架是纯字符串替换，且匹配前已把
+#    \r\n 归一化成 \n，故必须写 LF）。v4.226 下半轮新增第三个 mixin
+#    （AgentResultMixin）且类声明因行宽折成两行 → 原串同步（实测踩中静默 SKIP）。
     ("整段删：AgentWorker 不再 mixin AgentLoopMixin",
      "agent.py",
-     "class AgentWorker(AgentTaskMixin, AgentLoopMixin, QThread):",
+     "class AgentWorker(AgentTaskMixin, AgentLoopMixin,\n"
+     "                   AgentResultMixin, QThread):",
      "class AgentWorker(AgentTaskMixin, QThread):",
      ["LP9-3 AgentWorker 继承 AgentLoopMixin"]),
 

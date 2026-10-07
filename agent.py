@@ -23,6 +23,7 @@ import task_state  # v4.225：任务状态机（子目标/产物落地检查）
 import agent_loop  # v4.226：计划-执行-验证-总结 四阶段循环（判定层）
 from agent_task_mixin import AgentTaskMixin  # v4.225：任务账本接线（抽出以保住拆分红线 agent.py<2400）
 from agent_loop_mixin import AgentLoopMixin  # v4.226：四阶段循环接线（同上，抽出以保红线）
+from agent_result_mixin import AgentResultMixin  # v4.226: 工具结果结算接线（从 agent.py 整体搬出，一并稳住红线）
 import memory_store
 import context_manager  # 审计修复 E1：context 工具按当前会话取管理器
 from step_tracer import StepTracer  # v4.59 步级追踪
@@ -170,7 +171,8 @@ class _AllowAllDecision:
     rule = "fallback"
 
 
-class AgentWorker(AgentTaskMixin, AgentLoopMixin, QThread):
+class AgentWorker(AgentTaskMixin, AgentLoopMixin,
+                   AgentResultMixin, QThread):
     """后台线程跑 Agent 循环，所有 UI 更新通过信号抛回主线程，彻底避免卡死。
     
     支持多工具并发执行（ThreadPoolExecutor）+ MCP 工具。
@@ -1339,6 +1341,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, QThread):
             _seen_sigs.add(_sig)
             # v4.108 M-25：卡片 id 用全局单调序号；started/finished 同值配对
             idx = self._next_tool_index()
+            _tr = None
             if self._stop_requested:
                 self._emit_status("⏹ 已停止（用户请求）")
                 result_str = "⏹ 已停止（用户请求）"
@@ -1396,25 +1399,32 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, QThread):
                     # 确认过的安全参数给后续危险参数"背书"。
                     engine.trust_tool(name, args)
                     try:
-                        result_str, deliverables, schedule = tools.exec_tool(
+                        _tr = tools.exec_tool(
                             mw.cfg, APP_DIR, name, args,
                             should_stop=lambda: self._stop_requested,
                             perm_ctx=dec)
+                        result_str, deliverables, schedule = _tr
                     except Exception as _te:
                         result_str = f"工具执行崩溃：{_te}"
                         deliverables, schedule = [], None
+                        _tr = None
             else:
                 # 允许且无需确认（只读 / 半自主 / 自动模式 / 白名单 / 会话信任）
                 try:
-                    result_str, deliverables, schedule = tools.exec_tool(
+                    _tr = tools.exec_tool(
                         mw.cfg, APP_DIR, name, args,
                         should_stop=lambda: self._stop_requested,
                         perm_ctx=dec)
+                    result_str, deliverables, schedule = _tr
                 except Exception as _te:
                     result_str = f"工具执行崩溃：{_te}"
                     deliverables, schedule = [], None
+                    _tr = None
 
             dt = int((time.time() - t0) * 1000)
+            _okc = self._tool_outcome(
+                _tr, name, result_str,
+                self._tool_result_looks_failed)[0]
             # 发射工具完成信号
             self.tool_finished.emit({
                 "name": name,
@@ -1422,13 +1432,13 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, QThread):
                 "index": idx,
                 # v4.125 P2：失败判定从「前50字含'失败'」收窄为「开头就是失败模式」——
                 # 工具正文写"本次修复了失败原因"会被误标红叉（仅影响 UI 图标）。
-                "success": not str(result_str)[:20].startswith(
-                    ("失败", "错误", "工具执行异常", "未知工具",
-                     "不在本角色可用工具列表", "已取消", "取消")),
+                # v4.226: 改用 ToolResult.ok（不再看文案前缀）
+                "success": _okc,
                 "duration_ms": dt,
             })
-
-            self._handle_tool_result(tc, name, fn, result_str, deliverables, schedule)
+            self._handle_tool_result(
+                tc, name, fn, result_str, deliverables, schedule,
+                tool_result=_tr)
 
     @staticmethod
     def _confirm_text(name, args):
@@ -1520,6 +1530,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, QThread):
                 _seen_sigs.add(_sig)
                 # v4.108 M-25：卡片 id 用全局单调序号（并发批内各工具唯一）
                 idx = self._next_tool_index()
+                _tr = None
                 if self._stop_requested:
                     self._emit_status("⏹ 已停止（用户请求）")
                     break
@@ -1559,13 +1570,18 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, QThread):
                 fn = tc.get("function", {})
                 name = fn.get("name", "")
                 try:
-                    result_str, deliverables, schedule = future.result()
+                    _tr = future.result()
+                    result_str, deliverables, schedule = _tr
                 except Exception as e:
                     result_str = f"工具执行异常：{e}"
                     deliverables = []
                     schedule = None
+                    _tr = None
 
                 dt = int((time.time() - t0) * 1000)
+                _okc = self._tool_outcome(
+                    _tr, name, result_str,
+                    self._tool_result_looks_failed)[0]
                 # 发射工具完成信号
                 self.tool_finished.emit({
                     "name": name,
@@ -1573,13 +1589,13 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, QThread):
                     "index": idx,
                     # v4.125 P2：失败判定从「前50字含'失败'」收窄为「开头就是失败模式」——
                 # 工具正文写"本次修复了失败原因"会被误标红叉（仅影响 UI 图标）。
-                "success": not str(result_str)[:20].startswith(
-                    ("失败", "错误", "工具执行异常", "未知工具",
-                     "不在本角色可用工具列表", "已取消", "取消")),
+                # v4.226: 改用 ToolResult.ok（不再看文案前缀）
+                "success": _okc,
                     "duration_ms": dt,
                 })
-
-                self._handle_tool_result(tc, name, fn, result_str, deliverables, schedule)
+                self._handle_tool_result(
+                    tc, name, fn, result_str, deliverables, schedule,
+                    tool_result=_tr)
 
         # v4.108 H-03 修复：停止后为所有未拿到回执的 tool_calls 补占位 tool 消息——
         # assistant.tool_calls 已落库，缺回执会让下一轮 API 400（会话带毒）。
@@ -2114,121 +2130,6 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, QThread):
         except Exception:
             return False
 
-    def _handle_tool_result(self, tc, name, fn, result_str, deliverables, schedule):
-        """统一处理工具执行结果：发射信号、追加 tool message。
-
-        v4.103 修复：交付物必须标准化为 (rel, kind, name) 三元组再 emit。历史 bug——
-        browser_open 等工具返回裸路径字符串，emit(*d) 把路径字符串拆成数十个字符当
-        多个参数 → TypeError；该异常发生在 Agent 主循环内且未被捕获，直接冲出 run()
-        绕过末尾 finally 的 done.emit()，导致 _busy 永久 True、输入框锁死、「Agent 工作中」
-        永远转圈。现对交付物做防御性标准化 + 异常吞掉，任何工具返回异常格式都不再卡死。
-        """
-        # 交付物：统一标准化为 (rel, kind, name) 三元组，杜绝 emit(*d) 把字符串拆成多参数
-        for d in (deliverables or []):
-            try:
-                if isinstance(d, (tuple, list)) and len(d) >= 3:
-                    self.deliverable_added.emit(str(d[0]), str(d[1]), str(d[2]))
-                elif isinstance(d, (tuple, list)) and len(d) == 2:
-                    self.deliverable_added.emit(str(d[0]), str(d[1]),
-                                                os.path.basename(str(d[0])))
-                elif isinstance(d, str):
-                    _ext = d.lower()
-                    _kind = ("image" if _ext.endswith((".png", ".jpg", ".jpeg", ".gif",
-                                                       ".bmp", ".webp"))
-                             else "video" if _ext.endswith((".mp4", ".avi", ".mov",
-                                                            ".mkv", ".webm"))
-                             else "file")
-                    self.deliverable_added.emit(d, _kind, os.path.basename(d))
-                else:
-                    log.warning("跳过格式异常的交付物（非字符串/元组）: %r", d)
-            except Exception as e:
-                log.warning("交付物发射失败（已忽略，避免卡死 Agent）: %r -> %s", d, e)
-            # v4.222：累积进本次运行产物清单（路径绝对化，供 _infer_outcome 做产物级验收）
-            try:
-                if isinstance(d, (tuple, list)) and len(d) >= 1 and d[0]:
-                    _p = str(d[0])
-                    if not os.path.isabs(_p) and getattr(self, "_app_dir", ""):
-                        _p = os.path.join(self._app_dir, _p)
-                    _kind = str(d[1]) if len(d) > 1 else ""
-                    _nm = str(d[2]) if len(d) > 2 else os.path.basename(_p)
-                    if not hasattr(self, "_deliverables"):
-                        self._deliverables = []
-                    if not any(_x[0] == _p for _x in self._deliverables):
-                        self._deliverables.append((_p, _kind, _nm))
-            except Exception:
-                pass
-        # v4.225（P2 任务状态机）：记账（接线在 agent_task_mixin；
-        # 失败判定复用本类既有的 _tool_result_looks_failed，不另立口径）
-        self._tstate_record(task_state, name, fn, result_str, deliverables,
-                            self._tool_result_looks_failed)
-        # 定时提醒
-        if schedule:
-            msg, delay_secs = schedule[0], schedule[1]
-            repeat_secs = schedule[2] if len(schedule) > 2 else 0
-            self.schedule_reminder.emit(int(delay_secs * 1000), msg, repeat_secs)
-
-        # v4.195 批⑨：持久化工具记录 + **证据登记**。
-        #
-        # 现状（外部审查问题 7 的真身）：result 一共被存了三处，全是压过的——
-        #   ① 模型上下文 compress(…, TOOL_RESULT_LIMIT=6000)
-        #   ② UI tool_log → ui._on_tool_log 里 _clip(result, 500)
-        #   ③ 会话 store（同 ②）
-        # 等于**没有任何一处保留完整原文** → 事后无法回验「这个结论到底从哪来的」。
-        # 本批把完整原文登记进独立的 Evidence Registry（SQLite，
-        # 位于 USER_DATA_DIR/evidence/），后续 claim-evidence 回验只认这里的原文。
-        _eid = None
-        _ok = True
-        _err = None
-        try:
-            if self._tool_result_looks_failed(name, result_str):
-                _ok = False
-                _err = (str(result_str) or "")[:300]
-            import evidence
-            _eid = evidence.register(
-                str(name or ""), fn.get("arguments", ""), result_str,
-                ok=_ok, err=_err)
-        except Exception as e:
-            log.warning("证据登记异常（已忽略，不影响主流程）: %s", e)
-        # v4.222：登记执行 ledger（供断点恢复时幂等查询）
-        try:
-            self._record_exec_ledger(name, fn.get("arguments", ""), _ok)
-        except Exception:
-            pass
-
-        self.tool_log.emit({
-            "name": name,
-            "args": fn.get("arguments", ""),
-            "result": result_str,
-            # v4.195 批⑨：把证据编号带回 UI —— UI 侧不再只依赖被裁到 500 的 result
-            "evidence_id": _eid,
-            "evidence_ok": bool(_ok),
-        })
-        self.render.emit()
-
-        # v4.195 批⑨：给模型看的内容加 [EV#n] **首尾双钉**。
-        # 沿用批⑥（tool result 首尾双钉 + [RESULT NOT FOUND]）已被 v4.191.0
-        # 真机对照实验验证有效的同一手法：标记放在模型要读的文本里，
-        # 而不是指望它从 system prompt 里记住。
-        _content = compress(str(result_str), TOOL_RESULT_LIMIT)
-        if _eid:
-            try:
-                _n_lines = str(result_str).count("\n") + 1
-                _head = evidence.model_header(
-                    _eid, tool=str(name or ""),
-                    n_chars=len(str(result_str)), n_lines=_n_lines,
-                    ok=_ok, err=_err,
-                    args_head=str(fn.get("arguments", ""))[:90])
-                _content = _head + _content + evidence.model_footer(_eid)
-            except Exception as e:
-                log.warning("证据抬头拼装失败（降级为无标记）: %s", e)
-        self.messages.append({
-            "role": "tool",
-            "tool_call_id": tc.get("id", ""),
-            "name": name,
-            # v4.60：先 Token 压缩（去HTML/去重/智能截断），再取上限
-            # v4.195 批⑨：压缩后套证据编号首尾钉
-            "content": _wrap_tool_content(name, _content, _eid),
-        })
 
     def _auto_remember(self, mw):
         """对话结束后自动提取值得长期记忆的信息，写入 MEMORY.md。

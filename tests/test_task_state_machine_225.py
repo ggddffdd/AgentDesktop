@@ -249,6 +249,14 @@ _ag_code = "\n".join(ln for ln in _ag.split("\n")
 _mx = open(os.path.join(ROOT, "agent_task_mixin.py"), encoding="utf-8").read()
 _mx_code = "\n".join(ln for ln in _mx.split("\n")
                      if not ln.lstrip().startswith("#"))
+# v4.226：`_handle_tool_result` 连同记账接线一起搬进了 agent_result_mixin.py
+#（拆分红线要求，见 tests/test_split_216.py 的 D2）。接线扫描源随之扩到
+# **两个 mixin** —— 判据本身没放宽：仍要求「记账接线真实存在」，
+# 只是不再假设它一定写在 agent.py 里。
+_rm = open(os.path.join(ROOT, "agent_result_mixin.py"), encoding="utf-8").read()
+_rm_code = "\n".join(ln for ln in _rm.split("\n")
+                     if not ln.lstrip().startswith("#"))
+_wire_code = _ag_code + "\n" + _mx_code + "\n" + _rm_code
 
 # —— 第一层：agent.py 只留调用点（接线搬出是 v4.225 的规模红线要求）——
 check("TS7-1 agent.py import task_state", "import task_state" in _ag_code)
@@ -266,7 +274,8 @@ for _tag, _needle in [("TS7-2 run() 里建账本", "self._tstate_init(task_state
                       ("TS7-9 主循环同步步号", "self._tstate_step(step)"),
                       ("TS7-10 续跑轮步号延续",
                        "self._tstate_resume_step(self._max_steps, rstep)")]:
-    check(_tag, _needle in _ag_code)
+    # v4.226：接线分布在 agent.py + 两个 mixin（见 _wire_code 定义处的说明）
+    check(_tag, _needle in _wire_code)
 
 # —— 第二层：mixin 里真实现（调用点存在 ≠ 实现存在）——
 for _tag, _needle in [

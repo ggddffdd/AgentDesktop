@@ -43,6 +43,7 @@ _perturb_system_prompt_routing_221.py
 _perturb_task_outcome_acceptance_222.py
 _perturb_toast_204.py
 _perturb_tool_audit_c.py
+_perturb_toolresult_wiring_226.py
 _perturb_ui_a11y.py
 _perturb_ui_hex_guard_fallback.py
 _perturb_unified_intent_225.py

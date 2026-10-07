@@ -93,22 +93,31 @@ class AgentTaskMixin(object):
     # 2) 记账
     # --------------------------------------------------------
     def _tstate_record(self, task_state, name, fn, result_str,
-                       deliverables, failed_checker):
+                       deliverables, failed_checker, tool_result=None):
         """_handle_tool_result 里调：记一次工具调用。
 
         `failed_checker(name, result_str) -> bool` 由调用方注入（本项目用
         既有 `_tool_result_looks_failed`）—— **不重新判定失败**，避免与
         主类里那份判据漂移；注入方报错则按成功记（fail-open：宁可少提示，
         不可误报未完成）。
+
+        v4.226：`tool_result` 是 `tools.exec_tool()` 的原对象（ToolResult）。
+        传了就**以它的 `.ok` 为准** —— 执行后验证失败（`error_code=
+        POST_VERIFY_FAILED`）的信号追加在 msg 尾部、且不在任何字符串判据
+        里，只看文案会把「验证失败」记成「成功」。判定真源仍是
+        `agent_result_mixin._tool_outcome`，本方法不重复实现。
         """
         try:
             _ts = getattr(self, "_tstate", None)
             if _ts is None:
                 return
-            try:
-                _ok = not failed_checker(name, result_str)
-            except Exception:
-                _ok = True
+            if tool_result is not None and hasattr(tool_result, "ok"):
+                _ok = bool(tool_result.ok)
+            else:
+                try:
+                    _ok = not failed_checker(name, result_str)
+                except Exception:
+                    _ok = True
             _args = fn.get("arguments") if isinstance(fn, dict) else None
             if isinstance(_args, str):
                 try:
@@ -199,6 +208,96 @@ class AgentTaskMixin(object):
                          pending=(_ts.pending()[:4] if _ts else []))
         except Exception:
             pass
+
+    # --------------------------------------------------------
+    # 5) 结构化工具结果判定（v4.226）
+    # --------------------------------------------------------
+    def _tool_outcome(self, tool_result, name, result_str, failed_checker):
+        """判定一次工具调用**实质**成功与否 —— 返回 (ok, err_head)。
+
+        v4.226 存在的理由：`tools.exec_tool()` 自v4.223 起返回的是
+        `ToolResult`，带 `ok` / `verified` / `error_code` / `retryable`
+        这些**机器可读**字段；但调用方（agent.py 的串行与并发两条路径）
+        立刻 `result_str, deliverables, schedule = ...` 解包成三元组，
+        字段全丢。后续三处判断便退化成**看文案**：
+
+          · `tool_finished` 的 UI 绿勾/红叉 → `result_str[:20]` 前缀匹配
+          · 任务账本记账               → `_TOOL_FAIL_MARKS` 头 400 字匹配
+          · 证据登记 + 幂等账本        → 同上
+
+        而执行后验证（v4.224）把失败信号**追加在 msg 尾部**：
+
+            '已写入 5 字符到 x\\n[执行后验证未通过] 同名进程仍残留3个'
+
+        `error_code=POST_VERIFY_FAILED` 不在任何字符串判据里，标记又在尾部
+        —— 工具正文一旦超过 400 字，`_TOOL_FAIL_MARKS` 连头 400 字都扫不到，
+        于是**验证失败被记成成功**（实测：UI 绿勾 + 账本 ok=True）。
+        这不是理论风险，是已复现的数据丢失。
+
+        口径（优先级从高到低）：
+          1. `tool_result` 是 `ToolResult`（有 `.ok`）→ **以它为准**。
+             字符串一律不再参与判定，纯展示。
+          2. 不是 `ToolResult`（占位/ 去重 / 用户取消 / 异常兜底这些
+             根本没走 exec_tool 的分支）→ 退回注入的 `failed_checker`
+             旧口径，不改变它们原有的成败结论。
+
+        零行为变化：非 `ToolResult` 时与v4.225 完全一致。
+
+        返回的 `err_head` 供证据登记用（截到 300 字，与旧口径同长度）。
+        """
+        # ---- 1) 有结构化结果：以 .ok 为唯一权威 ----
+        if tool_result is not None and hasattr(tool_result, "ok"):
+            try:
+                _ok = bool(tool_result.ok)
+            except Exception:
+                _ok = True
+            _err = None
+            if not _ok:
+                #优先用机器可读原因，缺失才退回文案；都不好用完整 msg。
+                _parts = []
+                try:
+                    _ec = getattr(tool_result, "error_code", None)
+                    if _ec:
+                        _parts.append("[%s]" % _ec)
+                except Exception:
+                    pass
+                try:
+                    _em = getattr(tool_result, "error", None)
+                    if _em:
+                        _parts.append(str(_em))
+                except Exception:
+                    pass
+                if not _parts:
+                    _parts.append(str(getattr(tool_result, "msg", "") or ""))
+                _err = " ".join(_parts)[:300]
+            return (bool(_ok), _err)
+
+        # ---- 2) 非结构化：沿用注入的旧判据 ----
+        try:
+            _failed = bool(failed_checker(name, result_str))
+        except Exception:
+            # 注入方报错 → 按成功记（fail-open，与 v4.225 同口径）
+            return (True, None)
+        return (not _failed,
+                ((str(result_str) or "")[:300] if _failed else None))
+
+    def _tr_notable_flags(self, tool_result):
+        """取ToolResult 上值得记账的诊断字段（供日志/排障，不参与判定）。
+
+        刻意**不**返回 ok —— 成败判定只有 `_tool_outcome` 一个口径，
+        避免两处判据漂移（与 `_tstate_record` 注入判据的同一原则）。
+        """
+        if tool_result is None or not hasattr(tool_result, "ok"):
+            return {}
+        out = {}
+        for _f in ("verified", "error_code", "retryable"):
+            try:
+                _v = getattr(tool_result, _f, None)
+            except Exception:
+                continue
+            if _v not in (None, False):
+                out[_f] = _v
+        return out
 
 
 __all__ = ["VERSION", "AgentTaskMixin"]

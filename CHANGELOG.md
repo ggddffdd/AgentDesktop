@@ -30,6 +30,20 @@
 - **真实 Agent 行为级回归测试集**新增 `tests/test_agent_behavior_226.py`：此前整套回归里，agent 侧判据绝大多数是**静态探针**（源码里有没有这个词/这个调用）—— 抓得住「接线被删」，抓不住「接上了但动作没做」「时序错了」「两处互相抵消」。本轮起立**行为级套件**：假 `_FakeMw`（`_agent_call` 按剧本返回，**不发任何网络请求**）+ 假 store/权限引擎，替换 `_sync_to_session`/`_sync_agent_checkpoint`/`_auto_remember`/`_persist_task_memory`/`_exec_tool_calls` 后**真跑 `AgentWorker.run()`**，断言最终 messages/账本/summary 的真实内容。PASS=38，覆盖四阶段全链路、单硬要求不注入、补做轮不发小结、纯咨询不打扰、未达标 `verified=False`、有工具但没点名不出小结。
   - 其中 AB-5 是**自证项**：把 `_loop_start` 替换掉后小结必须消失，防止这套行为断言变成恒真。
 - 修一个**装饰性 gate**：`should_summarize` 里原有「必须有工具调用」这道门，实际被 `build_summary` 的「无事实→空串」兜住，扰动删它红 0 条 —— 判定为装饰性并**从实现里删掉**。登记了却从不改变结论的检查，失效方式恰恰是「删了没人发现」。
+- **ToolResult 贯穿 Agent状态判断（修复「验证失败被记成成功」）**：本轮头号问题。`tools.exec_tool()` 自 v4.223 起返回 `ToolResult`（带 `ok` / `verified` / `error_code` / `retryable` 等机器可读字段），但 agent.py 的串行与并发两条路径都在调用点**立刻** `result_str, deliverables, schedule = ...` 解包成三元组，**字段全丢** —— 于是四处消费（UI 绿勾、任务账本、证据登记、幂等账本）全部退化成「看文案」。而执行后验证（v4.224）的失败信号恰恰不在文案头部：
+  ```
+  ok=False
+  error_code='POST_VERIFY_FAILED'
+  msg='已写入 5 字符到 x\n[执行后验证未通过] 同名进程仍残留3个'
+  ```
+  `[执行后验证未通过]` 是**追加在尾部**的，`_TOOL_FAIL_MARKS` 只扫 `s[:400]` —— 工具正文一旦超过 400 字，标记连头 400 字符都进不去。**实测复现**：UI 打绿勾、账本记 `ok=True`，明明验证器已把这次调用降级为失败。
+  - 新增 `agent_result_mixin.py`（承接 `_handle_tool_result` 全116 行 + 判定真源 `_tool_outcome`），`AgentWorker` 混入之。**agent.py 从 2396 → 2297 行**，继续守住 v4.216 立的 `<2400` 红线，阈值一个数字没动。
+  - `_tool_outcome(tool_result, name, result_str, failed_checker)` 是**唯一判定真源**：有 `ToolResult`（鸭子类型，只要求有 `.ok`）就以 `.ok` 为准，字符串纯展示；不是 `ToolResult`（占位 / 批内去重 / 用户取消 / 异常兜底这些**根本没走 exec_tool** 的分支）则退回注入的旧判据，**结论与 v4.225 逐条一致**（零行为变化）。`err_head` 优先取 `error_code` / `error`，都没有才退回 msg。
+  - 并发路径的坑：`exec_tool` 在闭包 `_exec_with_ctx` 里，ToolResult 是经 `future.result()` 回流的 —— 接线漏了这一步，字段照样丢。
+  - 判据 `tests/test_toolresult_wiring_226.py` PASS=44，四层：A 行为层（四条口径 + **A3 前置自证**：先证明旧字符串判据在该场景本就判不出失败，否则「ToolResult 说失败」只是拿一个本来就红的判据凑数）/ B 接线层（**AST 钉**，非字符串 find）/ C 结构层 / D 端到端（真跑 `exec_tool` + 验证器降级）。
+  - 扰动 `_perturb_toolresult_wiring_226.py` 6 条**全部命中、哑弹 0**：判定真源整段删 + **只删动作留条件**（`if hasattr(...)` 外壳还在、只把 `_ok` 换成恒真 —— 源码肉眼看不出问题的那种阴变）、账本退回字符串判据、串行当场解包、UI 绿勾改回看文案、记账不再透传。
+  - **判据自身修掉一处恒真**：C9 原本只做静态字符串匹配，把整段换成 `if False: _ok = True` 后两个目标串都还在、照样照绿（扰动实测红 0 条）。已补**行为级**判据（真造一个记录器跑 `_tstate_record`，断言「ToolResult 说失败 → 账本必须记失败」，另配两条反向：不传 ToolResult 时退回字符串判据、文案判不出时按成功记）。
+  - 顺带修一条因搬家而红的判据：`test_task_state_machine_225` 的 TS7-5 用 `_ag_code` 扫「记账接线存在」，方法搬走后扫不到 → **扩扫描源到两个 mixin**（判据只加强不放宽：仍要求接线真实存在，只是不再假设它一定写在 agent.py）。
 - **顺带修掉两条历史哑弹和一个失效判据**（都是本轮改动暴露的）：
   - `test_skill_and_route_gates`的 B4 原钉死字符串 `load_skill_prompt(skill_name, d)`，本轮该调用加了第三参 `strict_meta=False` → 假红。按「改判据不删判据」升级为正则匹配「调用括号」，并**加强为三条**：B4（启用检查早于加载）+ B4b（strict 拒用分支也在开关之后）+ **B4c（启用判断不是恒真/恒假）**。B4c 是补B4/B4b 抓不到的那一半 —— 把 `if not is_skill_enabled(...)` 改成 `if not True:` 位置完全不变，两条位置断言都照绿，但「禁用技能照样能加载」已经成立。新增扰动 `_perturb_skill_gate_b4_226.py`（2 变异）证明三条都非恒真。
   - `_perturb_structured_return_220.py` 的原串停留在 v4.223 形态，v4.224 插入执行后验证段后不再匹配 → **整条变异白挂了一个版本**（真仓单跑才看得见，全量跑只显示 `PASS=0 FAIL=1`）。同步原串后恢复 1/1。
