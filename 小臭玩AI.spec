@@ -44,6 +44,12 @@ hiddenimports = ['toast', 'empty_state', 'PySide6', 'PySide6.QtPrintSupport', 'P
                'intent', 'task_state',
                # v4.225：任务账本接线 mixin（从 agent.py 抽出以守住 <2400 红线）
                'agent_task_mixin',
+               # v4.226.0 新增三个模块：agent_loop（四阶段循环判定层）+
+               # skill_meta（技能元数据分级校验）。agent.py 顶层 import agent_loop，
+               # 但 agent_loop 由 agent_loop_mixin 在运行时按需调用，混合场景下
+               # 静态分析可能漏扫 —— 与 v4.225 同理显式登记，杜绝 exe 报
+               # ModuleNotFoundError（源码能跑、打包后炸，是最难查的一类坑）。
+               'agent_loop', 'agent_loop_mixin', 'skill_meta',
                ]
 
 

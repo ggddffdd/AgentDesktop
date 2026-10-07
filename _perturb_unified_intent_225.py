@@ -135,9 +135,13 @@ CASES = [
       "TS7-31 行为级：步数耗尽时不注入",
       "TS7-33 行为级：续跑补完后再调被拦住"]),
 
+    # ⚠️ 原串必须**逐字等于**当前类声明（扰动框架是纯字符串替换，不支持正则）。
+    # v4.226 给 AgentWorker 加了第二个 mixin（AgentLoopMixin）→ 原串同步更新。
+    # 框架若日后支持正则，这里应改成 r"class AgentWorker\([^)]*AgentTaskMixin[^)]*\):"
+    # ——否则再加 mixin 时这条变异会静默 SKIP（哑弹），是本脚本唯一的失效方式。
     ("整段删：AgentWorker 不再 mixin（接线全成死引用）",
      "agent.py",
-     "class AgentWorker(AgentTaskMixin, QThread):",
+     "class AgentWorker(AgentTaskMixin, AgentLoopMixin, QThread):",
      "class AgentWorker(QThread):",
      ["TS7-1c AgentWorker 真的 mixin 了 AgentTaskMixin"]),
 ]

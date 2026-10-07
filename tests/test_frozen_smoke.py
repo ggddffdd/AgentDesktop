@@ -137,6 +137,8 @@ want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         "ui_msg",
         # v4.225.0：统一意图对象 + 任务状态机（路由收口 + 任务账本）
         "intent", "task_state", "agent_task_mixin",
+        # v4.226.0：四阶段循环（判定层 + 接线 mixin）+ 技能元数据强制化
+        "agent_loop", "agent_loop_mixin", "skill_meta",
         ]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
@@ -300,6 +302,9 @@ def main():
                   # co_consts，只有 dis 看得到，静态扫描永远扫不到（假红）。
                   "_intent", "_tstate_init", "_tstate_record",
                   "_tstate_step", "_tstate_nudge_now",
+                  # v4.226.0：四阶段循环接线（同样是方法名，走 LOAD_METHOD 在
+                  # co_names 里；SUMMARIZE 收尾必须在 _tstate_nudge_now 之后）
+                  "_loop_start", "_loop_step", "_loop_verify", "_loop_summary",
                   # v4.169.0 批次B：工具决策日志
                   "log_tool_decision",
                   # v4.175.0：400 时把接口原文一起显示给用户
@@ -348,6 +353,20 @@ def main():
                   "_tstate_resume_reset_nudge", "_tstate_nudge_now",
                   "_tstate_trace_nudge", "_last_user_text",
                   "任务要求未完成"],
+        # v4.226.0：四阶段循环判定层（PLAN/EXECUTE/VERIFY/SUMMARIZE + 末阶段饱和
+        # 不回退 + is_verified 真伪判据）
+        "agent_loop": ["PHASE_ORDER", "next_phase", "LoopState",
+                  "should_plan", "build_plan", "plan_instruction",
+                  "should_verify", "verify_report", "is_verified",
+                  "should_summarize", "build_summary", "PLAN_MIN_REQUIREMENTS",
+                  "以本段为准"],
+        # v4.226.0：四阶段循环接线 mixin（从 agent.py 抽出，守<2400 红线）
+        "agent_loop_mixin": ["AgentLoopMixin", "_loop_start", "_loop_step",
+                  "_loop_verify", "_loop_summary", "_loop_state_dict"],
+        # v4.226.0：技能元数据分级校验（三档 fail-open + 默认不拒用）
+        "skill_meta": ["REQUIRED_FIELDS", "OPTIONAL_FIELDS",
+                  "CAPABILITY_FIELDS", "MetaVerdict", "check_skill",
+                  "strict_from_config", "unverified_note", "rejection_text"],
         "digital_twin_panel": [
                   # v4.178.0：分镜抗失败（单段失败不再吞掉后续段）+ 断点续跑
                   "_twin_fingerprint", "_job_seg_ok", "_save_job_state",

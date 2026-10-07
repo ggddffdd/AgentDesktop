@@ -47,9 +47,19 @@ import _perturb_guard as _guard  # noqa: E402
 _guard.arm()
 
 CASES = [
+    # ⚠️ 原串必须逐字等于当前源码（框架是纯字符串替换）。
+    # v4.224 在「归一 → return」之间插入了 apply_post_verification 段，
+    # 原串停留在 v4.223 形态 → 原串未命中 → 这条变异**静默 SKIP 了一整个版本**
+    # （即「登记了却从未被消耗」的哑弹）。凡是拿源码片段当原串的，都要跟着
+    # 插入段一起更新，否则失效方式是「删了没人发现」。
     ("exec_tool 跳过 ToolResult 归一（直接 return 原始 _r）",
      "tools.py",
      "            _tr.evidence = _mask_recursive(_tr.evidence)\n"
+     "            # v4.224：执行后验证（查副作用是否真生效；只降级不升级）\n"
+     "            try:\n"
+     "                apply_post_verification(_tr, name, args)\n"
+     "            except Exception:\n"
+     "                pass\n"
      "            return _tr",
      "            _tr.evidence = _mask_recursive(_tr.evidence)\n"
      "            return _r  # 扰动：跳过 ToolResult 归一",

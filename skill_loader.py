@@ -398,22 +398,53 @@ def scan_skills(skills_dir, use_cache=True):
     return skills
 
 
-def load_skill_prompt(name, skills_dir):
-    """返回指定技能的 prompt 文本。
+def find_skill(name, skills_dir):
+    """按名找技能，**返回 Skill 对象**（不返回 prompt 文本）。
+
+    为什么需要它：`load_skill_prompt` 只给文本，调用方拿不到 `Skill` 上那八个
+    元数据字段（source/version/allow_*…），于是 v4.226 的元数据校验无从下手。
+    本函数是「找到 Skill」的唯一出口，校验与加载都基于它。
+    """
+    target = normalize_skill_name(name)
+    if not target:
+        return None
+    for sk in scan_skills(skills_dir):
+        if normalize_skill_name(sk.name) == target:
+            return sk
+    return None
+
+
+def load_skill_prompt(name, skills_dir, strict_meta=False):
+    """返回指定技能的 prompt 文本（已过 v4.226 元数据校验）。
 
     Args:
         name: 技能名称（自动归一化：剥 emoji/符号、空白转连字符、大小写不敏感）。
         skills_dir: 技能目录的绝对路径。
+        strict_meta: True 时缺关键元数据直接**拒绝返回**（返回 None），
+                     调用方据此给模型回拒用理由。默认 False = 降级放行
+                     （老技能不至于全部失效，见 skill_meta 模块头纪律 1）。
 
     Returns:
-        str 或 None
+        str 或 None（None = 没找到 **或** 被元数据校验拒用）
+
+    ⚠️ **不在 Skill 对象上挂 meta_verdict**：scan_skills 返回的是**缓存共享**
+    对象，两个调用方用不同 strict 调同��技能会互相覆盖那个字段（实测踩到：
+    先 strict=True 再 strict=False，挂在对象上的结论是后者的）。
+    需要核验结论的调用方自己调 `skill_meta.check_skill(sk, ...)`，
+    那是纯函数、无副作用 —— 单一真源也不必缓存。
     """
-    target = normalize_skill_name(name)
-    skills = scan_skills(skills_dir)
-    for sk in skills:
-        if normalize_skill_name(sk.name) == target:
-            return wrap_skill_prompt(sk.prompt, sk.name)
-    return None
+    sk = find_skill(name, skills_dir)
+    if sk is None:
+        return None
+    try:
+        import skill_meta
+        _v = skill_meta.check_skill(sk, strict=bool(strict_meta))
+        if _v.verdict == skill_meta.VERDICT_REJECT:
+            return None
+    except Exception as e:
+        # fail-open：校验链路异常 → 照常返回 prompt（校验器不得拖垮技能加载）
+        log.warning("技能元数据校验链路异常（已忽略，按放行处理）: %s", e)
+    return wrap_skill_prompt(sk.prompt, sk.name)
 
 
 def get_available_skills(skills_dir):

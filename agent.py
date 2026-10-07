@@ -20,7 +20,9 @@ import tools
 import agent_text  # v4.216.0：纯文本判据层（从本类拆出）
 import intent  # v4.225：统一意图对象（路由/是否动手/纯文本 三判据归一）
 import task_state  # v4.225：任务状态机（子目标/产物落地检查）
+import agent_loop  # v4.226：计划-执行-验证-总结 四阶段循环（判定层）
 from agent_task_mixin import AgentTaskMixin  # v4.225：任务账本接线（抽出以保住拆分红线 agent.py<2400）
+from agent_loop_mixin import AgentLoopMixin  # v4.226：四阶段循环接线（同上，抽出以保红线）
 import memory_store
 import context_manager  # 审计修复 E1：context 工具按当前会话取管理器
 from step_tracer import StepTracer  # v4.59 步级追踪
@@ -168,7 +170,7 @@ class _AllowAllDecision:
     rule = "fallback"
 
 
-class AgentWorker(AgentTaskMixin, QThread):
+class AgentWorker(AgentTaskMixin, AgentLoopMixin, QThread):
     """后台线程跑 Agent 循环，所有 UI 更新通过信号抛回主线程，彻底避免卡死。
     
     支持多工具并发执行（ThreadPoolExecutor）+ MCP 工具。
@@ -715,6 +717,9 @@ class AgentWorker(AgentTaskMixin, QThread):
         self._intent = intent.classify(self._last_user_text(), None)
         # v4.225（P2 任务状态机）：建账本（接线在 agent_task_mixin）
         self._tstate_init(task_state)
+        # v4.226（四阶段循环）：建阶段状态 + 门槛满足时注入任务清单
+        # （接线在 agent_loop_mixin；判定在 agent_loop）
+        self._loop_start(agent_loop)
         self._needs_action = agent_text._detect_action_intent(self.messages)
         if not self._needs_action and self._intent.needs_action:
             # classify 走的是单条 user 消息口径，与 messages 口径可能不同；
@@ -867,6 +872,7 @@ class AgentWorker(AgentTaskMixin, QThread):
 
         for step in range(1, self._max_steps + 1):
             self._tstate_step(step)  # v4.225：账本同步步号
+            self._loop_step(step)    # v4.226：四阶段循环同步步号
             # v4.60：超时保护——超过 3 分钟自动停止，防止慢模型无响应
             elapsed = time.time() - _t0
             if elapsed > MAX_DURATION:
@@ -1057,6 +1063,9 @@ class AgentWorker(AgentTaskMixin, QThread):
                 self._sync_to_session(mw)
                 # v4.108 H-05/M-15：同步后落盘检查点快照 + 心跳（原只有 run 开头一次）
                 self._sync_agent_checkpoint(mw)
+                # v4.226（四阶段循环）：工具批次执行完 → 进 VERIFY 固化核验记录。
+                # 只标注阶段+存记录，**不注入指令**（补做仍由 v4.225 收尾闸门独管）。
+                self._loop_verify(agent_loop)
             else:
                 # v4.98 撒谎检测器：模型用文字"演"工具调用（伪造 [工具]/✅ 已保存/
                 # run_python( 等）却不真发 tool_call，这种内容不能当最终结果展示，
@@ -1133,6 +1142,12 @@ class AgentWorker(AgentTaskMixin, QThread):
                 if self._tstate_nudge_now(task_state, step, self._max_steps):
                     self._tstate_trace_nudge(step, _tracer)
                     continue
+                # ── v4.226（四阶段循环）：SUMMARIZE 收尾 ──
+                # 位置在 tstate 闸门**之后**、break 之前：闸门放行是「再给一轮」，
+                # 那时还没收尾，发小结就成了半截结论里的注解。真正走到这里才追加。
+                # 小结内容全部来自账本事实（工具真调过没、产物落没落盘），
+                # 与模型自述冲突时以小结为准。
+                self._loop_summary(agent_loop)
                 break
         else:
             # 单轮步数耗尽：不硬停，把当前进度回写会话，并自动续跑（最多 AGENT_RESUME_ROUNDS 轮）

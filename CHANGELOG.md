@@ -8,6 +8,39 @@
 - 新版本在上。
 
 ---
+## v4.226.0 — 2026-10-07
+
+**闭环：计划-执行-验证-总结四阶段循环（收尾不再靠模型自述）／ 技能元数据强制化校验（无元数据即降级）／ 真实 Agent 行为级回归测试集（判据从「字面在不在」升级为「动作做没做」）。**
+
+- **四阶段循环**新增 `agent_loop.py` + `agent_loop_mixin.py`：此前主 Agent 的执行过程是「想到哪走到哪」—— 没有显式阶段，收尾时给不给结论全凭模型自己想不想总结，做完了没有也只看它说不说。本轮把 PLAN → EXECUTE → VERIFY → SUMMARIZE 四阶段**固化成代码里的真状态机**：
+  - `LoopState`（`__slots__`，可序列化）持有 `goal / phase / history / plan / verification / summary_emitted / step`。`next_phase` 按 `PHASE_ORDER` 顺序推进，且**末阶段饱和不回退** —— 回退即「验证完又回去执行」，那是打转模式不是循环。
+  - PLAN 阶段有门槛：`should_plan` 要求**硬要求 ≥2 项**且只在第一步注入一次。单硬要求的任务步骤唯一，注入清单纯属浪费一轮 prompt；纯咨询（无硬要求）**完全不打扰**。
+  - VERIFY 阶段**只固化记录、不注入任何消息** —— 核验结论写进账本（`verify_report`），但「要不要补做」的唯一真源仍是 v4.225 的 `task_state.should_nudge`，两套闸门不抢活。`is_verified` 额外要求账本 `is_complete()`：只有事实记录、没有真达标，一律判 False。
+  - SUMMARIZE 阶段产出**机器生成的小结**：三段式（做了什么 / 证据 / 未完成），内容**全部来自账本事实**（工具真调过没、产物落没落盘），并显式写入「以本段为准」对抗模型自述与真实状态不一致。
+  - 收尾时序是铁律：`_loop_summary` 排在 `_tstate_nudge_now` 的 `continue` 分支**之后**、`break` 之前 —— 补做轮还没结束就发小结，等于宣布「已完成」然后接着干活。
+  - 接线代码外移到 `AgentLoopMixin`（203 行），`agent.py` 只留调用点，从 **2381 → 2396 行**，继续守住 v4.216 立的 `<2400` 红线（阈值一个数字没动）。
+  - 判据 `tests/test_agent_loop_phases_226.py` PASS=113，分十二组：阶段推进/饱和、非法阶段静默忽略、PLAN 门槛、计划文案、**不臆造「第一步/第二步」**（用户没说的步骤不许编）、VERIFY 只记录、小结门槛、文案内容、agent.py 接线 + 位置钉子、规模红线、行为级 24 项、**判据自证**（含注释剔除器双向自证：`import agent_loop  # v4.226…` 这种「代码+行尾注释」写法不能被整行删掉）。
+- **技能元数据强制化**新增 `skill_meta.py`：v4.222 已把 `<untrusted skill>` 包起来防提示注入，但**技能能不能用仍只看描述文本** —— 一个来源不明、没声明能力的技能照样能被 `tool_use_skill` 调起。本轮给技能加了**三档判定**：
+  - 字段分三级：`REQUIRED_FIELDS`（description / source）/ `OPTIONAL_FIELDS`（version / hash / audited_at）/ `CAPABILITY_FIELDS`（allow_tools / allow_dir / allow_network / allow_system）。必填缺失 → **degraded**（挂提示、继续用）；strict 档下缺失 → **reject**（返回拒绝理由，调用方 `break` 不再回退）。
+  - **默认不拒用**（`strict_from_config` 默认 False）。这不是宽松，是必须的：仓库里 49 个存量技能全都没这套元数据，开箱即 strict 会让它们**当场全部失效**。判据 SM9 直接真扫全部存量技能，断言「零 reject」。
+  - **三层 fail-open 纵深防御**（这个设计是被判据逼出来的）：首版 `_get` 把异常吞掉返回空串，导致「取不到字段」与「字段为空」无法区分 —— 校验器自己一崩就把技能全打死，与纪律「失效方向必须是放行」正好相反。现改为 `_get` 返回 `(值, 取到吗)` 二元组，并加三道独立防线：① 函数级 `except` ② 探针 `_probe/_got` ③ 字段级 `if not ok`，**任一层失效都倒向放行**。相应地，「三层拆任一层会不会被其余两层兜住而抓不到」交给**静态判据** SM5-0a/0b/0c 逐层钉，扰动也逐层拆各钉一条。
+  - 修掉一个**共享可变副作用** bug：曾把 `meta_verdict` 挂在 `Skill` 对象上，但 `scan_skills` 返回的是缓存共享对象 —— 先 `strict=True` 再 `strict=False` 时读到的是后者的结论（SM8-8 实测踩到）。改为**不挂字段**、调用方自取纯函数 `check_skill`，两次不同 strict 互不污染。
+  - 接线：`skill_loader.find_skill()` 返回 `Skill` 对象（`load_skill_prompt` 只给文本，调用方拿不到八个元数据字段）；`load_skill_prompt(..., strict_meta=False)` 接入校验，reject 返回 `None`；`tool_use_skill` 的拒绝分支必须排在「未找到」分支**之前**。**元数据齐全时返回文本与 v4.225 逐字一致**（未审提示只挂 degraded）。
+  - 判据 `tests/test_skill_meta_226.py` PASS=88，含 SM5-0 三条源码断言、SM8 端到端（真造技能目录跑 `tool_use_skill`）、**SM9 存量技能实测不误伤**。
+- **真实 Agent 行为级回归测试集**新增 `tests/test_agent_behavior_226.py`：此前整套回归里，agent 侧判据绝大多数是**静态探针**（源码里有没有这个词/这个调用）—— 抓得住「接线被删」，抓不住「接上了但动作没做」「时序错了」「两处互相抵消」。本轮起立**行为级套件**：假 `_FakeMw`（`_agent_call` 按剧本返回，**不发任何网络请求**）+ 假 store/权限引擎，替换 `_sync_to_session`/`_sync_agent_checkpoint`/`_auto_remember`/`_persist_task_memory`/`_exec_tool_calls` 后**真跑 `AgentWorker.run()`**，断言最终 messages/账本/summary 的真实内容。PASS=38，覆盖四阶段全链路、单硬要求不注入、补做轮不发小结、纯咨询不打扰、未达标 `verified=False`、有工具但没点名不出小结。
+  - 其中 AB-5 是**自证项**：把 `_loop_start` 替换掉后小结必须消失，防止这套行为断言变成恒真。
+- 修一个**装饰性 gate**：`should_summarize` 里原有「必须有工具调用」这道门，实际被 `build_summary` 的「无事实→空串」兜住，扰动删它红 0 条 —— 判定为装饰性并**从实现里删掉**。登记了却从不改变结论的检查，失效方式恰恰是「删了没人发现」。
+- **顺带修掉两条历史哑弹和一个失效判据**（都是本轮改动暴露的）：
+  - `test_skill_and_route_gates`的 B4 原钉死字符串 `load_skill_prompt(skill_name, d)`，本轮该调用加了第三参 `strict_meta=False` → 假红。按「改判据不删判据」升级为正则匹配「调用括号」，并**加强为三条**：B4（启用检查早于加载）+ B4b（strict 拒用分支也在开关之后）+ **B4c（启用判断不是恒真/恒假）**。B4c 是补B4/B4b 抓不到的那一半 —— 把 `if not is_skill_enabled(...)` 改成 `if not True:` 位置完全不变，两条位置断言都照绿，但「禁用技能照样能加载」已经成立。新增扰动 `_perturb_skill_gate_b4_226.py`（2 变异）证明三条都非恒真。
+  - `_perturb_structured_return_220.py` 的原串停留在 v4.223 形态，v4.224 插入执行后验证段后不再匹配 → **整条变异白挂了一个版本**（真仓单跑才看得见，全量跑只显示 `PASS=0 FAIL=1`）。同步原串后恢复 1/1。
+  - `_perturb_unified_intent_225.py` 的类声明原串因本轮新增 `AgentLoopMixin` 而失效 → SKIP。同步后恢复 10/10。
+  - 新脚本第一版没接统一护栏，被 `test_perturb_harness`的 **C1** 当场抓到（「每个扰动脚本都接入统一护栏」）—— 这条判据存在的意义正在于此。
+- 兼容零回归：`test_intent_guard_negation` 84 / `test_intent_scope` 76 / `test_route_injection_guard` 60 / `test_task_state_machine_225` 96 / `test_unified_intent_225` 59 / `test_skill_and_route_gates` 52 / `test_perturb_harness` 26 / `test_untrusted_boundary_222` 全部全绿。`agent.py` 2396 行（守住 <2400）。
+- 验收：本轮 3 套件 **237 项**判据全绿（loop 113 + skill_meta 88 + behavior 36）+ 4 扰动脚本 **62 条变异全命中、哑弹 0**（loop 27 / skill_meta 21 / behavior 12 / skill_gate_b4 2）。
+- **发布门禁**（全量门禁实测）：`run_all.py --with-perturb` 全绿；打包 `build_safe.py` BUILD_EXIT=0；三道进包核验全绿 —— 密钥扫描 **0 泄露**（411271 条常量参与判定）/ 冻结冒烟 **PASS=280** FAIL=0 / `_verify_pyz_v42260.py` **PASS=193** FAIL=0（新增 3n 段把四阶段循环 + 技能元数据的钉子逐条钉进包内）。
+  - **核验断言连错两次的教训**（写进工具注释）：v4.226 首版两条新断言当场假红 —— 先假设「`agent.py` 引用 `skill_meta`」（实为不引用，接线在 `tools.py`/`skill_loader.py`），再假设「`if not _got` 在常量表」（`_probe/_got` 是局部变量名，走 STORE_FAST，**与「属性名不在常量表」同源，扫不到**）。**核验 FAIL 时先怀疑断言本身，别急着改代码**；钉不出就临时打印包内 `co_names`/`co_consts` 实测，别猜。现改钉 docstring 里的真实说明串（`取不到任何字段`/`fail-open`、`未审`）+ `_get` 函数名。
+  - 根目录核验工具按纪律收敛为**只留当前那一份**：旧三份 `_verify_pyz_v42180/v42190/v42200` 已 `git mv` 进 `_dev_history/`。
+
 ## v4.225.0 — 2026-10-07
 
 **结构化执行：P3 统一意图 Intent（路由规则五处散落→单一真源）／ P2 主Agent 轻量任务状态机（任务做完没有，从「模型不说话了」变成可判定）。**

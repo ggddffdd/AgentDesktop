@@ -33,6 +33,7 @@
 import ast
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -60,6 +61,60 @@ def check(name, cond, detail=""):
 
 def _src(name):
     return open(os.path.join(ROOT, name), encoding="utf-8-sig").read()
+
+
+def _first_load_pos(t):
+    """tools.py 里第一次真实调用 load_skill_prompt( 的位置（剔除注释后坐标系）。
+
+    v4.226 起该调用带第三参 `strict_meta=False`，早期版本把整串
+    `load_skill_prompt(skill_name, d)` 写死进位置断言 —— 签名一变就假红。
+    改为正则匹配「调用括号」而非参数字面量：**保住原意（启用检查必须早于
+    加载）**，且不再被参数增删打断。
+
+    ⚠️ 返回的是**剔除注释后**的坐标系。比较方必须用 `_strip_comments(t)`
+    里的位置，不能拿原文本的 `t.index(...)` 混着比 —— 剔除会缩短文本，
+    两个坐标系混用会得出「顺序颠倒」的假红（本轮实测踩到）。
+    """
+    m = re.search(r"load_skill_prompt\s*\(", _strip_once(t))
+    if not m:
+        raise AssertionError("tools.py 里找不到 load_skill_prompt( 调用")
+    return m.start()
+
+
+def _first_pos(t, needle):
+    """needle 在剔除注释后的文本里的首次出现位置。"""
+    return _strip_once(t).find(needle)
+
+
+# ⚠️ 剔除注释**必须只做一次并复用结果**。多次调用会让位置口径漂移：
+#    实测第二次剔除后同一个 pos 切出来的内容与预期完全无关（指到了别的段落），
+#    而断言会安静地给出错误结论。
+#    缓存键用**字符串的哈希+长度**而不是 id() —— id() 在临时字符串被回收后
+#    会被复用，两个不同文本可能撞同一个 id，缓存就会串（同样是安静地给错结论）。
+_STRIP_CACHE = {}
+
+
+def _strip_once(t):
+    key = (hash(t), len(t))
+    if key not in _STRIP_CACHE:
+        _STRIP_CACHE[key] = _strip_comments(t)
+    return _STRIP_CACHE[key]
+
+
+def _strip_comments(src):
+    """剔掉 # 注释，避免注释里的字面量被当成真调用（假红/假绿两向都坑）。"""
+    try:
+        import io
+        import tokenize
+        lines = src.splitlines(keepends=True)
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+            if tok.type == tokenize.COMMENT:
+                ln = lines[tok.start[0] - 1]
+                # 只挖注释那几列，保留「代码 + 行尾注释」那行的代码部分
+                lines[tok.start[0] - 1] = (ln[:tok.start[1]] + ln[tok.end[1]:])
+        return "".join(lines)
+    except Exception:
+        return src
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +148,27 @@ def part_b_skill_enabled():
     check("B3 tool_use_skill 加载前校验启用状态",
           "is_skill_enabled" in t and "当前处于**禁用**状态" in t)
     check("B4 校验在扫描目录之前（否则先加载再检查＝白检）",
-          t.index("is_skill_enabled") < t.index("load_skill_prompt(skill_name, d)"), "")
+          _first_pos(t, "is_skill_enabled") < _first_load_pos(t), "")
+    # v4.226：load_skill_prompt 加了第三参 strict_meta，位置断言改为正则匹配
+    # （保住原意「启用检查必须早于加载」，且不再被签名变动打断）。
+    # B4b 是升级后的加强项：strict 档的元数据拒用分支也必须排在开关之后 ——
+    # 否则「禁用」与「拒用」两条拒绝路径顺序颠倒，白检又回来了。
+    check("B4b strict_meta 拒用分支也在启用检查之后",
+          _first_load_pos(t) > _first_pos(t, "is_skill_enabled")
+          and ("reject_reason" in t or "strict_meta" in t), "")
+    # B4c 补上B4/B4b 抓不到的那一半：**位置没动但条件被打穿**。
+    # B4/B4b 都是位置断言 —— 把 `if not is_skill_enabled(...)` 改成 `if not True:`
+    # 位置完全不变，两条都照绿，但「禁用技能照样能加载」已经成立。
+    # 所以必须单独钉一条：启用判断必须真调用 is_skill_enabled，而不是恒真/恒假。
+    # ⚠️ 剔除注释**只做一次**并复用：多次调用会让位置口径漂移（本轮实测踩到
+    # —— 第二次剔除后 pos 指到了别的段落，切片内容与预期完全无关）。
+    _t_stripped = _strip_once(t)
+    _gp = _t_stripped.find("from config import is_skill_enabled")
+    _gate_seg = _t_stripped[_gp:_gp + 400] if _gp >= 0 else ""
+    check("B4c 启用判断真调用 is_skill_enabled（不是恒真/恒假条件）",
+          bool(re.search(r"if\s+not\s+is_skill_enabled\s*\(", _gate_seg))
+          and not re.search(r"if\s+not\s+(True|False|1|0)\s*:", _gate_seg),
+          "启用检查被改成恒真/恒假 → 禁用技能可绕过闸门")
 
     # 用临时 config.json 跑三种口径
     tmp = tempfile.mkdtemp(prefix="xc_skillcfg_")

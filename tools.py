@@ -3053,16 +3053,52 @@ def tool_use_skill(cfg, app_dir, skill_name):
         else:
             dirs = [os.path.join(app_dir, "skills")]
 
+    # v4.226：技能元数据强制化 —— strict 口径来自 config（默认 False=降级放行，
+    # 否则仓里 v4.226 之前写的 ~30 个老技能会因缺 source/description 当场全失效）。
+    _strict_meta = False
+    try:
+        import skill_meta
+        _strict_meta = skill_meta.strict_from_config(cfg)
+    except Exception:
+        pass
+
     # 跨多目录查找技能（.py 与 SKILL.md 两种形态）
     prompt = None
     skill_dir = None
+    reject_reason = ""
+    degraded_skill = None
     for d in dirs:
-        p = load_skill_prompt(skill_name, d)
-        if p:
-            prompt = p
-            _sub = os.path.join(d, skill_name)
-            skill_dir = _sub if os.path.isdir(_sub) else d
-            break
+        try:
+            import skill_meta as _sm
+            _sk = None
+            try:
+                from skill_loader import find_skill as _fs
+                _sk = _fs(skill_name, d)
+            except Exception:
+                _sk = None
+            if _sk is not None:
+                _v = _sm.check_skill(_sk, strict=_strict_meta)
+                if _v.verdict == _sm.VERDICT_REJECT:
+                    reject_reason = _sm.rejection_text(_v)
+                    _log_skill_hit(skill_name, ok=False)
+                    break
+                p = load_skill_prompt(skill_name, d, strict_meta=False)
+                if p:
+                    degraded_skill = _sk if _v.degraded else None
+            else:
+                p = load_skill_prompt(skill_name, d, strict_meta=False)
+            if p:
+                prompt = p
+                _sub = os.path.join(d, skill_name)
+                skill_dir = _sub if os.path.isdir(_sub) else d
+                break
+        except Exception:
+            # 单目录失败不能中断跨目录查找
+            continue
+
+    # v4.226：元数据不合格 → 明确拒用（理由要可执行，不能让模型当技能不存在）
+    if reject_reason:
+        return reject_reason
 
     if prompt is None:
         # 汇总所有目录的可用技能名
@@ -3081,6 +3117,17 @@ def tool_use_skill(cfg, app_dir, skill_name):
         return f"技能「{skill_name}」已加载，但未定义内容。"
 
     _log_skill_hit(skill_name, ok=True)
+    # v4.226：降级放行时追加「未审材料」提示，让模型知道它拿的不是权威指令。
+    # 这一句只挂在**未审**技能上；元数据齐全的技能返回文本与v4.225 完全一致
+    #（零行为变化）。
+    _note = ""
+    try:
+        import skill_meta as _sm2
+        if degraded_skill is not None:
+            _note = _sm2.unverified_note(_sm2.check_skill(degraded_skill,
+                                                          strict=False))
+    except Exception:
+        _note = ""
     return (
         f"【已加载技能：{skill_name}】\n"
         f"技能目录：{skill_dir}\n（如技能引用 references/ 下的文件，可用 read_file 读取该目录下的文件）\n"
@@ -3088,7 +3135,7 @@ def tool_use_skill(cfg, app_dir, skill_name):
         f"【执行要求】技能只服务**用户当前明确的目标**：\n"
         f"· 用户要产出时 → 动手做（调工具），不要只列计划/大纲；\n"
         f"· 用户只是在问、在讨论、在评估时 → **直接回答**，不要为了「用上技能」而写文件或执行动作。\n"
-        f"（要不要调工具由用户的请求决定，不是由「加载了技能」决定。）"
+        f"（要不要调工具由用户的请求决定，不是由「加载了技能」决定。）{_note}"
     )
 
 

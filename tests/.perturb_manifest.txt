@@ -9,6 +9,8 @@ _perturb_2091.py
 _perturb_2092.py
 _perturb_210.py
 _perturb_216.py
+_perturb_agent_behavior_226.py
+_perturb_agent_loop_226.py
 _perturb_app_close_218.py
 _perturb_automation_fire.py
 _perturb_automation_isolation.py
@@ -31,6 +33,8 @@ _perturb_resume_api_error_221.py
 _perturb_resume_idempotent_222.py
 _perturb_screenshot_fence_218.py
 _perturb_sensitive_mask_220.py
+_perturb_skill_gate_b4_226.py
+_perturb_skill_meta_226.py
 _perturb_structured_return_220.py
 _perturb_structured_return_223.py
 _perturb_system_control_a.py

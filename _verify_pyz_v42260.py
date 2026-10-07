@@ -1,23 +1,28 @@
 # -*- coding: utf-8 -*-
-"""v4.225.0 进包核验：结构化执行（P3 统一意图 Intent + P2 主 Agent 任务状态机）。
+"""v4.226.0 进包核验：闭环（四阶段循环 + 真实行为级回归 + 技能元数据强制化）。
 
-本轮改动（审查报告第三阶段 a 批）：
-  · P3 统一意图 Intent：路由规则此前散在五处（agent_text._route_force_tool /
-    _detect_action_intent / _content_creation_only、intent_guard 散词表、
-    agent.py 系统提示里手写的路由句）。新增 intent.py 收成「一个 Intent 对象 +
-    一张 ROUTE_REGISTRY」；系统提示的【工具路由】段由 _route_hint_text() 自动生成。
-    纪律：只做壳不改行为 —— force_tool / needs_action / text_only 三结论逐条
-    等于既有判据原始输出。
-  · P2 主 Agent 轻量任务状态机：新增 task_state.py 任务账本（子目标/当前步/
-    已完成/失败/待验证产物），在 _handle_tool_result 里记账，收尾 break 前做
-    四道 gate 的定向 nudge。四道 gate 任一不满足 → 完全按旧路径收尾。
+本轮改动（审查报告第三阶段 b 批）：
+  · P2 四阶段循环：新增 agent_loop.py（PLAN/EXECUTE/VERIFY/SUMMARIZE 真状态机，
+    末阶段饱和不回退）+ agent_loop_mixin.py（接线，从 agent.py 抽出以守住
+    <2400 红线）。SUMMARIZE 产出**机器生成小结**，内容全部来自 TaskState 账本
+    事实（工具真调过没、产物落没落盘），显式写「以本段为准」对抗模型自述。
+    纪律：VERIFY 只固化记录、**不注入任何消息**（补做的唯一真源仍是
+    task_state.should_nudge，两套闸门不抢活）。
+  · 技能元数据强制化：新增 skill_meta.py 三档判定（ok/degraded/reject），
+    **默认不拒用**（strict_from_config 默认 False）—— 49 个存量技能全无此
+    元数据，开箱即strict 会让它们当场全部失效。skill_loader 新增 find_skill
+    返回 Skill 对象（load_skill_prompt 只给文本，调用方拿不到八个元数据字段）。
+  · P2 真实行为级回归集：tests/test_agent_behavior_226.py（假 _FakeMw 按剧本
+    返响应、不发网络请求，真跑 AgentWorker.run()）。**判据不随包**，这里只
+    反向钉「tests 不进包」。
 
-核验重点：① 版本号 v4.225.0 且不含 v4.224.0；② intent / task_state 两个新模块
-真进包（PYZ toc 里有）；③ 注册表与系统提示生成符号在位；④ 状态机记账与
-gate 符号在位；⑤ agent 真引用两个新模块（接线没丢）；⑥ ui.py 真调
-_route_hint_text（系统提示不再手写）；⑦ 复用关键历史钉子（v4.221硬确认 /
-v4.222 验收与边界 / v4.223 契约 / v4.224 验证与预算 / tool_contract /
-系统控制 15 tool_* / 画布反向 / 测试不随包）防重打包回归。
+核验重点：① 版本号 v4.226.0 且不含 v4.225.0；② agent_loop / agent_loop_mixin /
+skill_meta 三个新模块真进包（PYZ toc里有）；③ 四阶段符号与「以本段为准」
+小结串在位；④ agent 真引用 agent_loop 且**调用点在正确位置**（_loop_summary
+必须在 _tstate_nudge_now 之后、break 之前）；⑤ skill_meta 三档字段常量与
+fail-open 探针在位、skill_loader 真接校验；⑥ 复用关键历史钉子（v4.221 硬确认 /
+v4.222 验收与边界 / v4.223 契约 / v4.224 验证与预算 / v4.225 意图与状态机 /
+tool_contract / 系统控制 15 tool_* / 画布反向 / 测试不随包）防重打包回归。
 """
 import hashlib
 import marshal
@@ -167,10 +172,10 @@ def main():
     print("\n-- 2) 版本一致性 --")
     if "config" in names:
         consts = _str_consts(_load(za, "config"))
-        check("PYZ 内 config 版本常量 == v4.225.0",
-              "v4.225.0" in consts, f"包内版本串={sorted(s for s in consts if s.startswith('v4.22'))}")
-        check("PYZ 内不含上一版旧版本常量 v4.224.0",
-              "v4.224.0" not in consts, "残留旧版本串（可能是增量打包旧模块）")
+        check("PYZ 内 config 版本常量 == v4.226.0",
+              "v4.226.0" in consts, f"包内版本串={sorted(s for s in consts if s.startswith('v4.22'))}")
+        check("PYZ 内不含上一版旧版本常量 v4.225.0",
+              "v4.225.0" not in consts, "残留旧版本串（可能是增量打包旧模块）")
     else:
         check("config 在 PYZ 里", False, "缺失 → 启动崩")
 
@@ -510,6 +515,130 @@ def main():
               "ui 没调 _route_hint_text → 仍在用手写路由句（加工具会静默失配）")
     else:
         check("ui 在 PYZ 里", False, "缺失 → 主界面崩")
+
+    print("\n-- 3n) 本轮钉子：四阶段循环 + 技能元数据强制化（v4.226）--")
+    # ① agent_loop 判定层：四阶段符号 + 机器小结串
+    if "agent_loop" in names:
+        co_al = _load(za, "agent_loop")
+        aln = _code_names(co_al)
+        als = _str_consts(co_al)
+        for sym in ("next_phase", "LoopState", "should_plan", "build_plan",
+                    "plan_instruction", "should_verify", "verify_report",
+                    "is_verified", "should_summarize", "build_summary"):
+            check(f"★ 包内agent_loop 定义 {sym}（四阶段循环判定层）",
+                  sym in aln or sym in als,
+                  f"{sym} 没编进去 → 四阶段状态机残缺")
+        for k in ("PHASE_ORDER", "PLAN_MIN_REQUIREMENTS"):
+            check(f"★ 包内 agent_loop 常量 {k}",
+                  any(k in s for s in aln) or any(k in s for s in als),
+                  f"{k} 缺失 → 阶段推进/门槛失效")
+        # 四阶段四个阶段名必须都在常量池里 —— 否则等于退回「没有显式阶段」
+        for ph in ("plan", "execute", "verify", "summarize"):
+            check(f"★ 包内 agent_loop 含阶段名 {ph}",
+                  any(ph in s for s in als),
+                  f"阶段名 {ph} 没编进去 → 阶段机不完整")
+        check("★ 包内 agent_loop 含机器小结「以本段为准」串",
+              any("以本段为准" in s for s in als),
+              "小结串没编进去 → 用户看到的结论没有真源声明")
+    else:
+        check("agent_loop 在 PYZ 里", False,
+              "缺失 → 四阶段循环不存在，exe 会ModuleNotFoundError")
+
+    # ② agent_loop_mixin 接线层：方法名在 co_names（LOAD_METHOD 稳定可扫）
+    if "agent_loop_mixin" in names:
+        co_lm = _load(za, "agent_loop_mixin")
+        lmn = _code_names(co_lm)
+        for sym in ("AgentLoopMixin", "_loop_start", "_loop_step",
+                    "_loop_verify", "_loop_summary", "_loop_state_dict"):
+            check(f"★ 包内 agent_loop_mixin 定义 {sym}（四阶段接线）",
+                  sym in lmn,
+                  f"{sym} 没编进去 → 接线方法缺失")
+    else:
+        check("agent_loop_mixin 在 PYZ 里", False,
+              "缺失 → 四阶段接线不存在，exe 会 ModuleNotFoundError")
+
+    # ③ skill_meta：三档字段常量 + fail-open 探针 + 默认不拒用
+    if "skill_meta" in names:
+        co_sm = _load(za, "skill_meta")
+        smn = _code_names(co_sm)
+        sms = _str_consts(co_sm)
+        for sym in ("REQUIRED_FIELDS", "OPTIONAL_FIELDS",
+                    "CAPABILITY_FIELDS", "check_skill",
+                    "strict_from_config", "unverified_note", "rejection_text"):
+            check(f"★ 包内 skill_meta 定义 {sym}（技能元数据三档判定）",
+                  sym in smn or any(sym in s for s in sms),
+                  f"{sym} 没编进去 → 元数据校验残缺")
+        check("★ 包内 skill_meta 含 MetaVerdict（三档结论载体）",
+              "MetaVerdict" in smn or any("MetaVerdict" in s for s in sms),
+              "MetaVerdict 缺失 → ok/degraded/reject 三档塌成一档")
+        # 八个元数据字段名（能力声明四件套是关键 —— 技能越权调用工具的围栏基础）
+        for fld in ("description", "source", "allow_tools", "allow_dir",
+                    "allow_network", "allow_system"):
+            check(f"★ 包内 skill_meta 含字段名 {fld}",
+                  any(fld in s for s in sms),
+                  f"{fld} 没编进去 → 该字段不参与校验")
+        # fail-open 纪律：`_probe, _got = _get(...)` 里的 `_probe/_got` 是**局部变量名**，
+        # 走 STORE_FAST，**既不在 co_names 也不在 co_consts**（与「属性名不在常量表」
+        # 同源，变量名同理）—— 实测包内 co_names 只有 `_get`，扫 `_got` 永远假红。
+        # 所以钉**真实存在于常量表的 fail-open 说明串**（来自模块/函数 docstring，
+        # docstring 是真字符串常量，进得了 co_consts）。
+        # ⚠️ 这条断言的教训：核验 FAIL 时先怀疑断言本身（v4.226 首版连错两次：
+        #    先假设 agent.py 引用 skill_meta、再假设 `if not _got` 在常量表）。
+        check("★ 包内 skill_meta 含 fail-open 放行纪律说明串",
+              any("取不到任何字段" in s and "fail-open" in s for s in sms),
+              "fail-open 说明串没编进去 → 无法证明放行纪律随包")
+        check("★ 包内 skill_meta 含「未审」明示串（degraded 要让模型知道）",
+              any("未审" in s for s in sms),
+              "未审明示串没编进去 → degraded 技能不会被告知未审")
+        check("★ 包内 skill_meta 含 _get（取字段二元组的实现）",
+              "_get" in smn,
+              "_get 没编进去 → 「取不到 vs 为空」无法区分，fail-open 失效")
+    else:
+        check("skill_meta 在 PYZ 里", False,
+              "缺失 → 技能元数据强制化不存在，exe 会 ModuleNotFoundError")
+
+    # ④ skill_loader 真接校验（find_skill 是接线入口）
+    if "skill_loader" in names:
+        co_sl = _load(za, "skill_loader")
+        sln = _code_names(co_sl)
+        for sym in ("find_skill", "check_skill", "load_skill_prompt"):
+            check(f"★ 包内 skill_loader 定义 {sym}（元数据校验接线）",
+                  sym in sln,
+                  f"{sym} 没编进去 → 元数据校验没接上")
+    else:
+        check("skill_loader 在 PYZ 里", False, "缺失 → 技能子系统不存在")
+
+    # ⑤ agent 接线：四循环方法名 + mixin 引用 + 调用点位置（时序铁律）
+    if "agent" in names:
+        co_ag3 = _load(za, "agent")
+        ag3n = _code_names(co_ag3)
+        for _m in ("_loop_start", "_loop_step", "_loop_verify", "_loop_summary"):
+            check(f"★ 包内 agent 真调 {_m}（四阶段接线方法）",
+                  _m in ag3n,
+                  f"{_m} 没编进去 → 四阶段循环是死接线")
+        check("★ 包内 agent 真 mixin 了 AgentLoopMixin（四阶段接线非死引用）",
+              "AgentLoopMixin" in ag3n,
+              "agent 没引用 AgentLoopMixin → 四阶段全是死代码")
+        check("★ 包内 agent 引用 agent_loop 模块（四阶段判定层接线）",
+              "agent_loop" in ag3n,
+              "agent 没引用 agent_loop → 判定层不存在")
+        # ⚠️ **不要**在这里断言 agent 引用 skill_meta —— 实测 agent.py 根本不引用
+        # （元数据校验的接线全在 tools.py 的 tool_use_skill 与 skill_loader 里，
+        # agent 侧只是间接受益）。v4.226 首版误加这条断言，当场假红：
+        # **核验断言 FAIL 时先怀疑断言本身**，别急着改代码。
+    if "tools" in names:
+        co_t3 = _load(za, "tools")
+        t3n = _code_names(co_t3)
+        check("★ 包内 tools 引用 skill_meta（tool_use_skill 接元数据校验）",
+              "skill_meta" in t3n,
+              "tools 没引用 skill_meta → 技能元数据校验被架空")
+
+    # ⑥ 时序铁律（源码侧）：_loop_summary 必须在 _tstate_nudge_now 之后、break 之前。
+    #    字节码常量池是**无序集合**，位置关系只能回源码查 —— 但源码不在包里，
+    #    所以这条钉在 tests/test_agent_loop_phases_226.py（LP9-9/LP9-10），
+    #    这里只钉「两个方法都被调用」，位置关系由源码判据守。
+    print("  （时序铁律「_loop_summary 在 _tstate_nudge_now 之后、break 之前」"
+          "由源码判据 LP9-9/LP9-10 守，字节码常量池无序、无法在此表达）")
 
     print("\n-- 3g) 关键历史钉子：画布模块不得随包 + 测试不随包 --")
     for _cm in ("canvas_graph", "canvas_panel", "canvas_export", "executors"):

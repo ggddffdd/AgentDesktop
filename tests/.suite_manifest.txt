@@ -1,4 +1,6 @@
 regression.py
+test_agent_behavior_226.py
+test_agent_loop_phases_226.py
 test_agent_node_failure.py
 test_anti_fabrication_189.py
 test_app_close_218.py
@@ -77,6 +79,7 @@ test_screenshot_path_fence_218.py
 test_sensitive_mask_220.py
 test_session_goal_automation.py
 test_skill_and_route_gates.py
+test_skill_meta_226.py
 test_software_control_2b.py
 test_split_216.py
 test_status_len_2091.py
