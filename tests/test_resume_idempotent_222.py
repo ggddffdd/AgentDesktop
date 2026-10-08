@@ -11,14 +11,20 @@ _resume_done_hashes，_exec_tool_calls 对不可幂等工具已执行过的跳�
 """
 import os
 import sys
+import json
+import tempfile
+import shutil
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from config import WORKSPACE_DIR  # noqa: E402
 from agent import AgentWorker, _tool_args_hash, _NON_IDEMPOTENT_TOOLS  # noqa: E402
 
 _p = _f = 0
+_tmp = None
+_absp = None
 
 
 def check(name, cond, detail=""):
@@ -37,8 +43,16 @@ def main():
 
     # A：登记执行 ledger
     w._exec_ledger = []
-    h = _tool_args_hash("write_file", '{"path":"x"}')
-    w._record_exec_ledger("write_file", '{"path":"x"}', True)
+    # v4.232：B1 需真实产物存在，故此处用真实临时文件（落在 WORKSPACE_DIR）。
+    global _tmp, _absp
+    _tmp = tempfile.mkdtemp(prefix="r222_")
+    _rel = "_r222_artifact.txt"
+    _absp = os.path.abspath(os.path.join(WORKSPACE_DIR, _rel))
+    with open(_absp, "w", encoding="utf-8") as f:
+        f.write("ok")
+    a = json.dumps({"path": _rel, "content": "ok"})
+    h = _tool_args_hash("write_file", a)
+    w._record_exec_ledger("write_file", a, True)
     _ok_a = (len(w._exec_ledger) == 1
               and w._exec_ledger[0]["name"] == "write_file"
               and w._exec_ledger[0]["args_hash"] == h
@@ -47,9 +61,9 @@ def main():
 
     # B：恢复查重
     w._resume_done_hashes = {h}
-    dup_same = w._is_resume_dup("write_file", '{"path":"x"}')
-    dup_diff = w._is_resume_dup("write_file", '{"path":"y"}')
-    dup_idem = w._is_resume_dup("read_file", '{"path":"x"}')
+    dup_same = w._is_resume_dup("write_file", a)
+    dup_diff = w._is_resume_dup("write_file", json.dumps({"path": "other.txt", "content": "x"}))
+    dup_idem = w._is_resume_dup("read_file", a)
     check("B1 不可幂等工具已执行 → 恢复查重命中", dup_same is True, "got=%r" % dup_same)
     check("B2 不同参数 → 不命中", dup_diff is False, "got=%r" % dup_diff)
     check("B3 可幂等工具 → 不查重", dup_idem is False, "got=%r" % dup_idem)
@@ -63,4 +77,14 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        _rc = main()
+    finally:
+        if _tmp:
+            shutil.rmtree(_tmp, ignore_errors=True)
+        try:
+            if os.path.exists(_absp):
+                os.remove(_absp)
+        except Exception:
+            pass
+    sys.exit(_rc)

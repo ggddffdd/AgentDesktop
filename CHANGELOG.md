@@ -8,6 +8,20 @@
 - 新版本在上。
 
 ---
+## v4.232.0 — 2026-10-08
+
+修「失败衔接扫描」发现的 D 点断点（上一轮 4 处断点之 D：续跑跳过缺失产物）。
+
+**问题**：`_is_resume_dup`（断点续传的不可幂等工具查重）只比对 `_resume_done_hashes`（已执行哈希集），从不核验产物是否仍在磁盘。于是 `write_file` 被记入「done」后若文件被删 / 未落盘，续跑会把它当成「已完成」跳过 → 任务带着缺失产物继续跑，下游静默出错（不是崩溃，是产出空洞）。
+
+**改法**：
+- `_is_resume_dup` 在哈希命中基础上，对 `write_file` 额外做产物存在性二次校验：按 `tools.tool_write_file` 同规则（`os.path.abspath(os.path.join(WORKSPACE_DIR, path))`）绝对化路径，`os.path.isfile` 缺失则视为「未 dup、必须重做」；
+- 新增 `_resolve_write_file_path(args_sig)` 解析助手（参数 JSON 解析 `path`，解析失败 / 无 `path` 返回 `None`，交由哈希逻辑回退，不影响 image_gen / video_gen 等路径不在参数内的工具）；
+- 旧判据 `test_resume_idempotent_222.py` 的 B1 改用真实临时文件（原 fake 路径 `x` 在修复后会误红），确保修复前后该判据保持绿；
+- 新判据 `test_resume_missing_artifact_232.py` 覆盖 D1（产物存在仍 dup）/ D2（产物已删判非 dup，核心 D 断点）/ D3（不同参数不命中）/ D4（非文件类工具哈希命中仍 dup）/ D5（write_file 无 path 回退哈希）；扰动脚本 `_perturb_resume_missing_artifact_232.py` 双 case 验证「改坏必红」、零哑弹。
+
+**影响面**：仅断点续传的不可幂等工具查重逻辑；正常首次执行、可幂等工具、image_gen / video_gen 等路径不在参数内的工具行为不变。
+
 ## v4.231.0 — 2026-10-08
 
 修「失败衔接扫描」发现的 A 点断点（上一轮 5 处断点之 A + C 一组，核心低风险组）。

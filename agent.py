@@ -15,7 +15,7 @@ from PySide6.QtCore import QThread, Signal
 
 import task_resume  # v4.101：断点续传检查点
 
-from config import MAX_AGENT_STEPS, TOOL_RESULT_LIMIT, get_all_tools
+from config import MAX_AGENT_STEPS, TOOL_RESULT_LIMIT, get_all_tools, WORKSPACE_DIR
 import tools
 import agent_text  # v4.216.0：纯文本判据层（从本类拆出）
 import intent  # v4.225：统一意图对象（路由/是否动手/纯文本 三判据归一）
@@ -134,6 +134,23 @@ def _tool_args_hash(name, args_sig):
     """工具调用的稳定指纹（name + 参数签名）。"""
     import hashlib
     return hashlib.sha256((name + ":" + (args_sig or "")).encode("utf-8")).hexdigest()[:16]
+
+
+def _resolve_write_file_path(args_sig):
+    """v4.232 断点 D：从 write_file 的参数 JSON 解析产物路径。
+
+    按 tools.tool_write_file 同规则绝对化（相对路径落 WORKSPACE_DIR），
+    供恢复查重时二次校验产物真实存在。解析失败/无 path → 返回 None（交由哈希回退）。
+    """
+    try:
+        import json
+        _a = json.loads(args_sig or "{}")
+        _p = _a.get("path")
+        if not _p:
+            return None
+        return os.path.abspath(os.path.join(WORKSPACE_DIR, _p))
+    except Exception:
+        return None
 
 
 # v4.227（P2-1）：不可信内容边界整块外移到 `untrusted_boundary.py`。
@@ -2058,13 +2075,23 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         })
 
     def _is_resume_dup(self, name, args_sig):
-        """v4.222：恢复时查询——该不可幂等工具是否已在前次执行过（同参数）。"""
+        """v4.222：恢复时查询——该不可幂等工具是否已在前次执行过（同参数）。
+        v4.232 断点 D：write_file 额外校验产物真实存在，避免「账本记 done 但文件被删」
+        被误判为已完成、跳过导致下游拿到缺失产物（任务带着空洞继续跑）。
+        """
         if name not in _NON_IDEMPOTENT_TOOLS:
             return False
         _done = getattr(self, "_resume_done_hashes", None)
         if not _done:
             return False
-        return _tool_args_hash(name, args_sig) in _done
+        if _tool_args_hash(name, args_sig) not in _done:
+            return False
+        # v4.232 断点 D：write_file 必须二次校验产物仍存在，缺失则视为未 dup、必须重做。
+        if name == "write_file":
+            _ap = _resolve_write_file_path(args_sig)
+            if _ap is not None and not os.path.isfile(_ap):
+                return False
+        return True
 
     def _infer_outcome(self, steps=0, duration_s=0, max_steps=0):
         """v4.195 批⑪：**九态**结局推断 —— 取代原先「四种之外一律 success」。
