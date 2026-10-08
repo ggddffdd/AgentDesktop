@@ -304,6 +304,24 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         _tasks = tg.task_list()
         _failed = [t["id"] for t in _tasks if t.get("status") == "failed"]
         _skipped = [t["id"] for t in _tasks if t.get("status") == "skipped"]
+        # v4.235.0（P25 修复）：本判定体曾随 v4.234.0 的提交被整段删掉——
+        # 扰动脚本被打断后源码留在变异态、随后被 commit 收进仓库，
+        # 使 v4.233 断点 E 退化成「算了 _failed/_skipped 却从不看」的装饰性 gate。
+        # 恢复判定体，并保留 _perturb_workflow_fail_visibility_233 的变异靶点。
+        if _failed or _skipped:
+            _n = len(_failed) + len(_skipped)
+            self._emit_status(
+                "⚠ 任务图未完整达成：%d 个节点未成功（失败 %d / 跳过 %d）"
+                % (_n, len(_failed), len(_skipped)))
+            self._workflow_incomplete = {"failed": _failed, "skipped": _skipped}
+            # 回写主账本（若有）—— fail-open：异常不影响主流程
+            try:
+                _ts = getattr(self, "_tstate", None)
+                if _ts is not None and hasattr(_ts, "note_workflow_incomplete"):
+                    _ts.note_workflow_incomplete(_failed, _skipped)
+            except Exception:
+                pass
+            return output
 
         self._workflow_incomplete = None
         self._emit_status("✅ 任务图完成")

@@ -8,6 +8,41 @@
 - 新版本在上。
 
 ---
+## v4.235.0 — 2026-10-08
+
+工程卫生：按 Codex 标准补齐工程契约，并根治版本号漂移。
+
+- **新增 `AGENTS.md`**：面向 AI agent 与贡献者的工程约定 —— 仓库布局、环境确认、
+  常用命令、11 条硬纪律、「做完了」的判定流程、Review guidelines、踩坑索引（P1~P24）。
+  此前这批纪律只存在于本机会话目录，**不随仓库移动**：换机器、换 agent 即全部丢失。
+- **根治版本号漂移**：`config.APP_VERSION` 是版本唯一真源，但另有 8 个模块各持一份
+  `VERSION = "..."` 常量且长期失同步 —— `agent_task_mixin` / `intent` / `task_state`
+  停在 v4.225.0，`intent_guard` 停在 v4.168.0（最多落后 66 个版本），
+  而发布门禁只核 config / README / exe 三方，管不到它们。本版全部对齐，
+  并在 `release_check.py` 新增**模块级 VERSION 漂移守卫**（纯函数
+  `_module_version_drift`）—— 此后 bump 忘改模块会被门禁直接拦下，
+  **规则交给基础设施执行，不靠记忆**。
+
+判据 `tests/test_version_single_source_235.py` PASS=5（含行为级反向用例，
+防「守卫函数恒返回空」的假绿）；扰动 `_perturb_version_single_source_235.py` 3/3 零哑弹。
+
+### 附带修复：v4.233 断点 E 被误删（真实回归，P25）
+
+跑全量回归时发现 `test_workflow_fail_visibility_233` 转红（PASS=1 FAIL=4）。查证：
+
+- `agent._finalize_workflow` 仍在算 `_failed` / `_skipped`，却**完全不看它们**——
+  无条件 `incomplete=None` + 报「✅ 任务图完成」，即 v4.233 断点 E 退化成装饰性 gate（P12）。
+- `git diff b52a0fc 55746b0 -- agent.py` 确认：**v4.234.0 的提交把该判定体整段删掉了**。
+  推定机制是扰动脚本被打断（沙箱删除配额杀进程）后源码留在变异态、随后被 commit 收进仓库 ——
+  `tests/run_all.py` 第 171 行注释描述的正是这个失效场景。
+- 本版恢复判定体（含 `note_workflow_incomplete` 回写主账本），判据转 **5/0** 绿，
+  扰动 `_perturb_workflow_fail_visibility_233.py` **2/2 零哑弹**。
+
+**新增纪律 P25**：「整段删除」型变异**不留 `# 扰动` 标记**，残留扫描扫不到，
+只能靠全量回归兜住 —— 故扰动批次结束后**必须跑一遍全量回归再 commit**，
+不得只凭「扰动脚本报零哑弹」就放行。
+
+---
 ## v4.234.1 — 2026-10-08
 
 哑弹清零：修复 4 个历史扰动哑弹，其中 1 个是**真实回归**。

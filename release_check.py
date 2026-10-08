@@ -418,6 +418,35 @@ def _read_exe_version(exe: Path):
         return None, f"{type(e).__name__}"
 
 
+def _module_version_drift(appv):
+    """v4.235.0：模块级 VERSION 漂移守卫（纯函数，便于判据行为级调用）。
+
+    config.APP_VERSION 是版本号唯一真源，但另有多个模块各持一个
+    `VERSION = "..."` 常量。④ 号门禁原来只核 config / README / exe 三方，
+    管不到模块级常量 —— 历史上 4 处漂移（三个停在 v4.225.0、一个停在
+    v4.168.0）长期无人发现。本函数把它们逐一比对真源。
+
+    返回漂移列表 ["file.py:33=v4.225.0", ...]；无漂移返回 []。
+    appv 为空时返回 []（真源都没读到，不该在这里刷一片假红）。
+    """
+    if not appv:
+        return []
+    drift = []
+    for p in sorted(ROOT.glob("*.py")):
+        if p.name == "config.py":
+            continue  # 真源自身不参与比对
+        try:
+            txt = p.read_text(encoding="utf-8-sig", errors="replace")
+        except Exception:
+            continue
+        for i, line in enumerate(txt.splitlines(), 1):
+            # 行首锚定：只认模块级 `VERSION = "..."`，不吃 config 的 APP_VERSION
+            m = re.match(r'^VERSION\s*=\s*"([^"]+)"', line)
+            if m and m.group(1) != appv:
+                drift.append("%s:%d=%s" % (p.name, i, m.group(1)))
+    return drift
+
+
 def check_version(scan_dist=True):
     appv = _read_app_version()
     check("config.APP_VERSION 可读", bool(appv), appv or "读取失败")
@@ -448,6 +477,14 @@ def check_version(scan_dist=True):
         # v4.188 P2-17：README 找不到版本号由 warn 升为 fail——
         # 发布门禁的意义就是挡住「README 忘了更新版本」，warn 等于没挡。
         check("README 版本可读", False, "README 中未找到 vX.Y / vX.Y.Z")
+
+    # v4.235.0：模块级 VERSION 漂移守卫 —— ④ 号门禁原来只核 config/README/exe
+    # 三方，管不到模块级常量，导致 4 处漂移长期存在。放在 exe 检查**之前**，
+    # 这样即使没打包（下面 early return 分支）也会执行。
+    drift = _module_version_drift(appv)
+    check("模块级 VERSION 与 config.APP_VERSION 一致（唯一真源）", not drift,
+          "、".join(drift[:6]) + ("…" if len(drift) > 6 else "")
+          if drift else "全部对齐 %s" % appv)
 
     exe = ROOT / "dist" / "小臭玩AI" / "小臭玩AI.exe"
     if not scan_dist or not exe.is_file():
