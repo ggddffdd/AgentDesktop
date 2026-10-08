@@ -49,6 +49,19 @@ Python 要求 3.10+；`requirements.txt` 全部 `==` 锁死（防构建漂移）
 | 打包 | `python build_safe.py` |
 | 发布门禁（五道） | `python release_check.py` |
 | 产物密钥扫描 | `python _scan_exe_secrets.py` |
+| 提交前自检（手动跑） | `python precommit_check.py` |
+
+**提交前自检（pre-commit）**：`git commit` 会自动跑 `precommit_check.py`，
+拦四样东西 —— PEP 701（3.12 才合法的 f-string）、疑似密钥、
+**扰动残留**（P25 事故的防线）、大段删除（warn，提醒人眼复核）。
+
+装一次即可，两种装法任选：
+```
+python -m pip install pre-commit && pre-commit install   # 标准框架
+python install_hooks.py                                   # 零依赖方案（不装包也能用）
+```
+`install_hooks.py` 不会覆盖已有 hook（本机 `.git/hooks/` 里有别的工具装的
+post-commit），会先备份再追加。
 
 `tests/run_all.py` 已内置 `QT_QPA_PLATFORM=offscreen`，并把测试日志改道到 `%TEMP%`，
 不会污染真实 `debug.log`。

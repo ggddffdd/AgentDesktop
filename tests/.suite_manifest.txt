@@ -70,6 +70,7 @@ test_popup_clamp.py
 test_post_exec_verify_224.py
 test_post_exec_verify_227.py
 test_postref_fix_186.py
+test_precommit_hooks_237.py
 test_probe_graphics.py
 test_radius_norm.py
 test_readability_197.py

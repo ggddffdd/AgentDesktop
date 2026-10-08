@@ -33,6 +33,7 @@ _perturb_param_validation_223.py
 _perturb_permission_failclosed_226.py
 _perturb_post_exec_verify_224.py
 _perturb_post_exec_verify_227.py
+_perturb_precommit_hooks_237.py
 _perturb_probe_graphics.py
 _perturb_resume_api_error_221.py
 _perturb_resume_idempotent_222.py

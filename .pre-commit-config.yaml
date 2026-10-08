@@ -1,0 +1,31 @@
+# pre-commit 配置 —— 与 `precommit_check.py` 配套。
+#
+# 装一次即可（之后每次 git commit 自动跑）：
+#     python -m pip install pre-commit
+#     pre-commit install
+#
+# 不想装框架也行，用零依赖降级安装器（把同一个检查器挂到 git hook 上）：
+#     python install_hooks.py
+#
+# 为什么 hooks 全部用 `repo: local` + `language: system`：
+#   pre-commit 默认会为每个 hook 联网拉仓库并建独立虚拟环境 —— 离线或内网环境
+#   直接挂，且首次提交要等好几分钟。本项目所有检查都是**自研脚本 + 纯标准库**，
+#   用 system 直呼本机 python 即可，零联网、零额外环境。
+#
+# 为什么检查逻辑放在 .py 而不是写在 yaml 里：
+#   判定逻辑要能被判据（tests/test_precommit_hooks_237.py）和扰动
+#   （_perturb_precommit_hooks_237.py）直接调用验证。塞进 yaml 的一行命令
+#   无法被单元测试，等于没有「改坏必红」的证明。
+repos:
+  - repo: local
+    hooks:
+      - id: xiaochou-precommit
+        name: 小臭玩AI 提交前自检（PEP 701 / 密钥 / 扰动残留 / 大段删除）
+        entry: python precommit_check.py
+        language: system
+        # 检查器自己从 git 取 staged 文件（含重命名/删除场景），
+        # 不让框架传文件名，避免「删掉的文件」被当成待检查文件传进来。
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+        verbose: true
