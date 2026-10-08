@@ -180,8 +180,8 @@ def part_e():
         check(f"状态机含 {st}", f'"{st}"' in src)
     check("all_done 把 incomplete 当终态",
           '"completed", "cancelled", "incomplete"' in src)
-    check("any_failed 把 incomplete 当阻断信号",
-          'in ("failed", "incomplete")' in src)
+    check("incomplete 仍被当阻断信号（独立分支，不误伤 failed）",
+          't.status == "incomplete"' in src)
     ast.parse(src)
 
 

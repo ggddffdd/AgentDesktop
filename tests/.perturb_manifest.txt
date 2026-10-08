@@ -44,6 +44,7 @@ _perturb_structured_return_223.py
 _perturb_system_control_a.py
 _perturb_system_control_b.py
 _perturb_system_prompt_routing_221.py
+_perturb_task_graph_break.py
 _perturb_task_outcome_acceptance_222.py
 _perturb_task_state_design_227.py
 _perturb_toast_204.py

@@ -93,6 +93,7 @@ test_system_control_a.py
 test_system_control_b.py
 test_system_prompt_routing_221.py
 test_task_graph_cancel.py
+test_task_graph_fail_skip.py
 test_task_graph_incomplete.py
 test_task_outcome_acceptance_222.py
 test_task_state_design_227.py

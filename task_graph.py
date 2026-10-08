@@ -235,6 +235,49 @@ class TaskGraph:
                     other.blocks.remove(task_id)
             return True
 
+    def _mark_dependents_of_failed_skipped(self):
+        """失败节点的下游（含多级传递闭包）永不可达 → 显式标 skipped。
+
+        只在 `failed` 节点上触发（incomplete 不在此列，见 run 里的 has_incomplete
+        分支）。用 `blocks` 反向邻接做 BFS：凡依赖链上游含 failed 的 pending 节点，
+        标 skipped 并给 result 说明原因，使终态可观测、调用方不会把下游误判成
+        「还没做完」去错误重试/nudge（修复 B 点：原实现把下游永远停在 pending）。
+        """
+        failed_ids = {tid for tid, t in self._tasks.items()
+                      if t.status == "failed"}
+        if not failed_ids:
+            return
+        affected = set()
+        stack = list(failed_ids)
+        while stack:
+            cur = stack.pop()
+            for down in self._tasks[cur].blocks:
+                if down not in affected:
+                    affected.add(down)
+                    stack.append(down)
+        for tid in affected:
+            t = self._tasks[tid]
+            if t.status == "pending":
+                t.status = "skipped"
+                t.result = {"skipped": True,
+                            "reason": "upstream_failed",
+                            "upstream": [f for f in failed_ids
+                                         if f in self._upstream_of(tid)]}
+
+    def _upstream_of(self, tid):
+        """返回 tid 的全部上游（blocked_by 传递闭包），用于 skipped 原因溯源。"""
+        seen = set()
+        stack = list(self._tasks[tid].blocked_by)
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            parent = self._tasks.get(cur)
+            if parent is not None:
+                stack.extend(parent.blocked_by)
+        return seen
+
     def run(self, state: Dict[str, Any], token=None) -> Dict[str, Any]:
         """自动推进：找到就绪的任务 → 执行 → 标记完成 → 循环直到全部完成。
 
@@ -275,14 +318,22 @@ class TaskGraph:
 
             if not ready:
                 # 检查是否全部完成（被取消 / 无产出的都算"已终态"，不再等待）
-                all_done = all(t.status in ("completed", "cancelled", "incomplete")
-                               for t in self._tasks.values())
-                any_failed = any(t.status in ("failed", "incomplete")
-                                 for t in self._tasks.values())
+                all_done = all(t.status in ("completed", "cancelled", "incomplete", "skipped", "failed") for t in self._tasks.values())
+                has_failed = any(t.status == "failed"
+                                for t in self._tasks.values())
+                has_incomplete = any(t.status == "incomplete"
+                                    for t in self._tasks.values())
                 if all_done:
                     break
-                if any_failed:
-                    # 有失败/无产出的不阻塞全局，跳过它们继续（但绝不当作成功）
+                if has_failed:
+                    # 失败节点的下游永不可达 → 显式标 skipped（不再停在含糊的
+                    # pending），然后回到循环顶部重新评估就绪/终态，绝不硬 break。
+                    self._mark_dependents_of_failed_skipped()
+                    continue
+                if has_incomplete:
+                    # 跑满轮次无正文（incomplete）的成员：下游保持 pending（不假装
+                    # 成功，也不空跑），图正常收尾。v4.168.0 既定语义，不可并入
+                    # failed 分支，否则下游会被误标 skipped 且整图会死循环。
                     break
                 # 没有就绪但有未完成的 → 可能有循环依赖
                 pending = [t for t in self._tasks.values() if t.status == "pending"]
