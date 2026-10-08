@@ -8,6 +8,19 @@
 - 新版本在上。
 
 ---
+## v4.230.0 — 2026-10-08
+
+修一处「任务失败后系统过早停住」的断点（上一轮失败衔接扫描发现的 5 处断点之 B 点）。
+
+**问题**：`task_graph.py` 的 `run` 循环里 `if any_failed: break` —— 只要一个子任务失败，整张工作流图直接退出，依赖它的下游节点永远停在含糊的 `pending`（既不显式终态化、也不报错）。注释写着「有失败/无产出的不阻塞全局，跳过它们继续」实为 `break`，注释与实现相反。后果：失败节点的下游被静默丢弃，主账本会误判「任务没做完」去错误 nudge，或漏报失败。
+
+**改法**：把 `any_failed` 拆成精确的 `has_failed` / `has_incomplete` 两条：
+- `has_failed` → 通过 `blocks` 传递闭包把依赖链（含多级）含失败节点的下游显式标 `skipped` 并 `continue` 继续其余就绪节点，不再硬 `break`；
+- `incomplete`（执行了但无产出，不算执行失败）维持原 `break` + 下游保持 `pending` 语义 —— 不并入 failed 分支，避免误标 `skipped` 与整图死循环；
+- `all_done` 终态集合纳入 `skipped` / `failed`，使图可正常收尾；新增 `_mark_dependents_of_failed_skipped` + `_upstream_of`（原因溯源）。
+
+**验证**：判据 `test_task_graph_fail_skip.py` 19/0（失败下游标 skipped、executor 不被调用、独立分支照常完成、可观测）；既有 `test_task_graph_incomplete.py` 36/0（incomplete 路径无回归）；扰动 `_perturb_task_graph_break.py` 3/3 零哑弹；全量回归 REGRESS_EXIT=0。
+
 ## v4.229.0 — 2026-10-08
 
 生视频面板「提示词里写台词不起作用」。面板提示词的占位文案原本写着「口播台词请填下方『台词/口播』框」——那个框压根不存在。

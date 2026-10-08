@@ -218,10 +218,10 @@ def main():
     print("\n-- 2) 版本一致性 --")
     if "config" in names:
         consts = _str_consts(_load(za, "config"))
-        check("PYZ 内 config 版本常量 == v4.229.0",
-              "v4.229.0" in consts, f"包内版本串={sorted(s for s in consts if s.startswith('v4.22'))}")
-        check("PYZ 内不含上一版旧版本常量 v4.228.0",
-              "v4.228.0" not in consts, "残留旧版本串（可能是增量打包旧模块）")
+        check("PYZ 内 config 版本常量 == v4.230.0",
+              "v4.230.0" in consts, f"包内版本串={sorted(s for s in consts if s.startswith('v4.23'))}")
+        check("PYZ 内不含上一版旧版本常量 v4.229.0",
+              "v4.229.0" not in consts, "残留旧版本串（可能是增量打包旧模块）")
     else:
         check("config 在 PYZ 里", False, "缺失 → 启动崩")
 
