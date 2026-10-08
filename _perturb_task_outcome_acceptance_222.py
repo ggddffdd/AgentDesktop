@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 """扰动验证 P1 任务验收：删掉 _infer_outcome 末段产物验收分支，看判据 B 是否翻红。
 
-手法：备份原字节 → 原位删除产物级验收分支（回到裸 return "success"）→
+手法：备份原字节 → 原位删除产物级验收分支（声明了交付物但没落地仍判 success）→
 跑 test_task_outcome_acceptance_222.py → 期望 B 翻红 → 恢复原字节。
+
+v4.234.1：v4.195 九态重构误删了该分支（判据 B 长期被哑弹 SKIP 掩盖成「绿」），
+本轮在 agent.py::_infer_outcome 恢复该闸门，本扰动锚点同步重定到恢复后的分支。
 """
 import os
 import re
@@ -47,16 +50,15 @@ _guard.arm()
 CASES = [
     ("_infer_outcome 产物验收分支被移除",
      "agent.py",
-     '        # v4.222：产物级验收 —— 「调过工具」不再等同「任务成功」。\n'
-     '        # 本轮若声明了交付物，必须真实落地（文件存在且非空）才算 success，\n'
-     '        # 否则降级为 partial，避免「模型说写完了但文件没生成」被记入成功轨迹。\n'
+     '        # v4.234.1（P1 回归修复）：声明了交付物但没真实落地 → partial。\n'
+     '        # v4.195 九态重构时误删了 v4.222 的产物级验收，导致「模型说写完了但文件没生成」\n'
+     '        # 被记入 success 轨迹。success 落地前补回该闸门。\n'
      '        _dlv = getattr(self, "_deliverables", None) or []\n'
      '        if _dlv:\n'
      '            _unmet = [d for d in _dlv if not _deliverable_satisfied(d)]\n'
      '            if _unmet:\n'
-     '                return "partial"\n'
-     '        return "success"',
-     '        return "success"',
+     '                return "partial"\n',
+     '',
      ["B 声明产物未落地"]),
 ]
 

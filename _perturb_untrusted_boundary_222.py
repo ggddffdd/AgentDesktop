@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
 """扰动验证 P1 不可信内容边界：退化工具包边界 / 技能包边界，看判据是否翻红。
 
-手法：备份原字节 → 退化 _wrap_tool_content（不包边界）/ wrap_skill_prompt（不包边界）→
+手法：备份原字节 → 退化 untrusted_boundary.wrap_tool_content（不包边界）/
+untrusted_boundary.wrap_skill_prompt_text（不包边界）→
 跑 test_untrusted_boundary_222.py → 期望 B1 / D 分别翻红 → 恢复原字节。
+
+v4.234.1：v4.227（P2-1）把边界逻辑整块外移到 untrusted_boundary.py（agent.py/skill_loader.py
+只做 re-export），原锚点（agent.py 的 _wrap_tool_content 定义 / skill_loader.py 的 wrap_skill_prompt
+内联包装）已不存在 → 重定锚到 untrusted_boundary.py 当前真身。
 """
 import os
 import re
@@ -12,7 +17,7 @@ import sys
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
 TEST = os.path.join(ROOT, "tests", "test_untrusted_boundary_222.py")
-FILES = ["agent.py", "skill_loader.py"]
+FILES = ["untrusted_boundary.py"]
 _backup = {}
 _crlf = {}
 
@@ -46,23 +51,13 @@ _guard.arm()
 
 CASES = [
     ("_wrap_tool_content 退化（不包边界）",
-     "agent.py",
-     'def _wrap_tool_content(name, content, evidence_id=None):\n'
-     '    """v4.222：不可信工具产出包边界；可信工具原样返回。"""\n'
-     '    if name in _UNTRUSTED_TOOLS:\n'
-     '        return wrap_untrusted(content, name, evidence_id)\n'
-     '    return content',
-     'def _wrap_tool_content(name, content, evidence_id=None):\n'
-     '    return content',
+     "untrusted_boundary.py",
+     '        return wrap_untrusted(content, name, evidence_id)',
+     '        return content',
      ["B1 不可信工具(web_fetch)产出被包边界"]),
     ("wrap_skill_prompt 退化（不包边界）",
-     "skill_loader.py",
-     'def wrap_skill_prompt(text, name):\n'
-     '    """v4.222：技能指令包进不可信边界，模型须当数据而非指令。"""\n'
-     '    if not text:\n'
-     '        return text\n'
-     '    return \'<untrusted skill="%s">\\n%s\\n</untrusted skill>\' % (name, text)',
-     'def wrap_skill_prompt(text, name):\n'
+     "untrusted_boundary.py",
+     '    return (_SKILL_OPEN % name) + "\\n" + text + "\\n" + _SKILL_CLOSE',
      '    return text',
      ["D load_skill_prompt 返回内容被 <untrusted skill> 包边界"]),
 ]

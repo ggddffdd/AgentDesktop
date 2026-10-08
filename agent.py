@@ -2116,6 +2116,11 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
             return False
         if _tool_args_hash(name, args_sig) not in _done:
             return False
+        # v4.232 断点 D：write_file 必须二次校验产物仍存在，缺失则视为未 dup、必须重做。
+        if name == "write_file":
+            _ap = _resolve_write_file_path(args_sig)
+            if _ap is not None and not os.path.isfile(_ap):
+                return False
         return True
 
     def _infer_outcome(self, steps=0, duration_s=0, max_steps=0):
@@ -2173,6 +2178,16 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         #      此时即便没有任何异常也不能算「跑通」，否则轨迹库会被灌满空成功。
         if _tool_calls == 0:
             return "partial"
+
+        # v4.234.1（P1 回归修复）：声明了交付物但没真实落地 → partial。
+        # v4.195 九态重构时误删了 v4.222 的产物级验收，导致「模型说写完了但文件没生成」
+        # 被记入 success 轨迹。success 落地前补回该闸门。
+        _dlv = getattr(self, "_deliverables", None) or []
+        if _dlv:
+            _unmet = [d for d in _dlv if not _deliverable_satisfied(d)]
+            if _unmet:
+                return "partial"
+
         return "success"
 
     @classmethod

@@ -8,6 +8,26 @@
 - 新版本在上。
 
 ---
+## v4.234.1 — 2026-10-08
+
+哑弹清零：修复 4 个历史扰动哑弹，其中 1 个是**真实回归**。
+
+### 根因（复验全量回归的 44 个 [BLKD] 时发现）
+- 4 个扰动脚本判据灭（哑弹）：`_perturb_untrusted_boundary_222`（2）、`_perturb_task_outcome_acceptance_222`（1）、`_perturb_toolresult_wiring_226`、`_perturb_unified_intent_225`。
+- 细查：**2 个是沙箱删除配额污染导致的环境性假红**（重跑即绿，与本版无关）；**1 个是锚点漂移**（v4.227 把边界逻辑外移到 `untrusted_boundary.py`，旧锚点字符串已不存在）；**1 个是真实回归**：`test_task_outcome_acceptance_222` 判据 B「声明产物未落地 → partial」长期被哑弹 SKIP 掩盖，**v4.195 九态重构误删了 v4.222 的产物级验收分支**，导致「模型说写完了但文件没生成」仍被记入 success。
+
+### 修复
+- **真实回归（task_outcome）**：在 `agent._infer_outcome` 恢复产物验收闸门——声明了交付物但没真实落地（文件存在且非空）即降级 `partial`，success 落地前补回该闸门；判据 B 由 `got='success'` 修正为 `partial`，6/0 绿。
+- **锚点漂移（untrusted_boundary）**：`_perturb_untrusted_boundary_222` 两处锚点重定到 `untrusted_boundary.py` 当前真身（`wrap_tool_content` / `wrap_skill_prompt_text`），退化「不包边界」仍能打红（B1/D）。
+- 另两个环境性假红脚本重跑确认稳定绿，无需改动。
+
+### 验收
+- `test_task_outcome_acceptance_222` 6/0；`test_untrusted_boundary_222` 7/0。
+- `_perturb_task_outcome_acceptance_222` 1/0、`_perturb_untrusted_boundary_222` 2/0 零哑弹；`toolresult_wiring_226` 6/0、`unified_intent_225` 10/0 稳定绿。
+- 依赖判据无回退：`test_outcome_honesty_195` 31/0、`test_task_state_machine_225` 96/0、`test_resume_api_error_221` 2/0。
+
+---
+
 ## v4.234.0 — 2026-10-08
 
 防空转三闸门修复（A/B/C 全覆盖），根治「每次都要追问、它不痛快做事」的空转现象。
