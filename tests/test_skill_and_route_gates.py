@@ -300,7 +300,12 @@ def part_e_route_log():
 
 def part_f_auto_memory():
     print("\n-- F) 自动记忆只看本轮 --")
-    ag = _src("agent.py")
+    # v4.236.0：自动记忆块从 agent.py 尾部外移到 agent_memory_mixin.py。
+    # 判据跟随新家；同时钉住接线，防「搬走了但没继承」的静默停摆。
+    ag = _src("agent_memory_mixin.py")
+    check("F0 agent.py 继承 AgentMemoryMixin（搬运后接线在位）",
+          "AgentMemoryMixin" in _src("agent.py"),
+          "主类没继承 → 自动记忆静默停摆")
     i = ag.index("has_tool_msg = any(")
     seg = ag[i:i + 400]
     check("F1 判定条件里含 _seq > 0（只看本轮新增）", 'msg["_seq"] > 0' in seg, seg[:200])

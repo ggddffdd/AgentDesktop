@@ -140,8 +140,10 @@ def group_c_pure():
 
 
 def group_d_agent_call():
-    print("== D 组：agent.py 落库调用点传齐治理字段 ==")
-    path = os.environ.get("AGENT_PATH") or os.path.join(ROOT, "agent.py")
+    print("== D 组：记忆落库调用点传齐治理字段 ==")
+    # v4.236.0：自动记忆块从 agent.py 尾部外移到 agent_memory_mixin.py（红线减压）。
+    # 判据跟随新家 —— 否则「本体还在、只是换了文件」会被误报成真实回归。
+    path = os.environ.get("AGENT_PATH") or os.path.join(ROOT, "agent_memory_mixin.py")
     with open(path, "r", encoding="utf-8-sig") as f:
         tree = ast.parse(f.read())
     call = None
@@ -158,6 +160,15 @@ def group_d_agent_call():
         need = {"source", "confidence", "evidence_id", "expires_at", "verified"}
         check("D1  五个治理字段全部传入",
               need <= kw, f"缺: {sorted(need - kw)}")
+
+    # D2：光「本体在新家」不够 —— 还得确认主类真的继承了它。
+    # 否则搬运漏了接线，自动记忆静默停摆（不报错、不落库），判据却全绿。
+    ag_path = os.path.join(ROOT, "agent.py")
+    with open(ag_path, "r", encoding="utf-8-sig") as f:
+        ag_src = f.read()
+    check("D2  agent.py 继承 AgentMemoryMixin（搬运后接线在位）",
+          "AgentMemoryMixin" in ag_src,
+          "主类没继承 → 记忆块成了孤儿模块，自动记忆静默停摆")
 
 
 def main():

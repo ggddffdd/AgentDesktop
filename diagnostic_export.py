@@ -117,7 +117,9 @@ def _collect_log(errors_only=False, tail=400):
     lines = []
     try:
         import config as _cfg
-        log_path = os.path.join(_cfg.APP_DIR, "debug.log")
+        # v4.236.0：debug.log 属运行数据，v4.164.0 起已归口工作区（不再落 APP_DIR=dist）。
+        # 这里若继续按 APP_DIR 找，等于永远只读到一份不存在的旧文件。
+        log_path = _cfg.app_log_path()
         if not os.path.exists(log_path):
             return ["（debug.log 不存在）"], ""
         with open(log_path, "r", encoding="utf-8", errors="replace") as f:

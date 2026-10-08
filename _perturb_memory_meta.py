@@ -30,7 +30,9 @@ import _perturb_guard as _guard  # noqa: E402
 _guard.arm()
 
 MS_SRC = open(os.path.join(ROOT, "memory_store.py"), encoding="utf-8").read()
-AGENT_SRC = open(os.path.join(ROOT, "agent.py"), encoding="utf-8").read()
+# v4.236.0：自动记忆块外移到 agent_memory_mixin.py，取材必须跟着走 ——
+# 否则 old 串失配、变异不生效，却因「文件里根本没有这段」让 D0 红，造成假命中。
+AGENT_SRC = open(os.path.join(ROOT, "agent_memory_mixin.py"), encoding="utf-8").read()
 
 PASS_N = 0
 FAIL_N = 0

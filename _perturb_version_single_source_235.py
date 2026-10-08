@@ -15,6 +15,7 @@
 原串均从真实字节取（Read 核对 + 脚本内 assert 唯一）。
 """
 import os
+import re
 import subprocess
 import sys
 
@@ -29,7 +30,14 @@ F_MIXIN = os.path.join(ROOT, "agent_task_mixin.py")
 F_RC = os.path.join(ROOT, "release_check.py")
 
 # ---- case 1：漂移本体（agent_task_mixin.py:33）----
-OLD_V1 = 'VERSION = "v4.235.0"'
+# v4.236：不再硬编码版本号。上一版把 'VERSION = "v4.235.0"' 写死在这里，
+# 结果升到 v4.236.0 后 old 串失配 → 该 case **静默 SKIP**（不报错、不算哑弹，
+# 就是少钉一道），属于「判据看着在、其实已经空转」。改为从真实文件取当前值，
+# 以后升版自动跟随，不再需要人手同步。
+_src_mixin = open(F_MIXIN, encoding="utf-8").read()
+_m = re.search(r'^VERSION = "(v[\d.]+)"', _src_mixin, re.M)
+assert _m, "agent_task_mixin.py 里找不到模块级 VERSION 定义"
+OLD_V1 = 'VERSION = "%s"' % _m.group(1)
 NEW_V1 = 'VERSION = "v4.225.0"'
 
 # ---- case 2：守卫恒空（release_check.py:432）----

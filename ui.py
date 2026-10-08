@@ -6472,7 +6472,9 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         lines.append("- 记忆库：memory.md + memory.db (SQLite FTS5)")
         ov = self.cfg.get("obsidian_vault_path", "")
         lines.append(f"- Obsidian Vault：{'未配置' if not ov else ov}")
-        rd = self.cfg.get("rag_data_dir", "") or os.path.join(config.APP_DIR, "rag_data")
+        # v4.236.0：rag_data 属运行数据，真实默认值就是 WORKSPACE_DIR（config 里
+        # 已这么归口），这里的 APP_DIR 兜底是 v4.164.0 迁移时的漏改残留。
+        rd = self.cfg.get("rag_data_dir", "") or os.path.join(WORKSPACE_DIR, "rag_data")
         lines.append(f"- RAG 目录：{rd}")
         try:
             import sqlite3

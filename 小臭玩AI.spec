@@ -62,6 +62,12 @@ hiddenimports = ['toast', 'empty_state', 'PySide6', 'PySide6.QtPrintSupport', 'P
                #                          （注册是模块级副作用，晚于首次 exec_tool 调用就失效），
                #                          漏登记的表现是「验证链静默空转」——不报错，只是永不验证。
                'agent_result_mixin', 'untrusted_boundary', 'tool_verifiers_227',
+               #   agent_memory_mixin    —— v4.236 自动记忆接线（从 agent.py 尾部抽出）。
+               #                          agent.py 顶层 import 就会带上类本体，但
+               #                          AUTO_REMEMBER_PROMPT 那段提示词是**模块级常量**，
+               #                          漏登记的表现最阴：不报错，只是提取提示词变空，
+               #                          自动记忆从此永远提炼不出任何条目。
+               'agent_memory_mixin',
                ]
 
 

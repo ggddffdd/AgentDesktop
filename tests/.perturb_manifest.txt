@@ -11,6 +11,7 @@ _perturb_210.py
 _perturb_216.py
 _perturb_agent_behavior_226.py
 _perturb_agent_loop_226.py
+_perturb_agent_memory_mixin_236.py
 _perturb_anti_stall_234.py
 _perturb_app_close_218.py
 _perturb_automation_fire.py
@@ -37,6 +38,7 @@ _perturb_resume_api_error_221.py
 _perturb_resume_idempotent_222.py
 _perturb_resume_missing_artifact_232.py
 _perturb_run_python_schema_227.py
+_perturb_runtime_dir_hygiene_236.py
 _perturb_screenshot_fence_218.py
 _perturb_sensitive_mask_220.py
 _perturb_skill_gate_b4_226.py

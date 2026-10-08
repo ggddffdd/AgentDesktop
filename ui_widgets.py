@@ -17,7 +17,7 @@ import os
 import re
 import sys
 import task_status
-from config import (APP_DIR)
+from config import (ensure_workspace)
 from datetime import (datetime)
 from empty_state import (empty_state)
 from pathlib import (Path)
@@ -491,8 +491,10 @@ class MultiLineInput(QTextEdit):
             image = source.imageData()
             if image and not image.isNull():
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                tmp_dir = Path(APP_DIR) / "temp" / "images"
-                tmp_dir.mkdir(parents=True, exist_ok=True)
+                # v4.236.0：粘贴图片属运行数据 → 落工作区，不再落 APP_DIR。
+                # APP_DIR = exe 所在目录 = dist = 分发源，落那儿会随包分发出去
+                # （v4.164.0 已统一归口到 WORKSPACE_DIR，此处是当时漏改的残留）。
+                tmp_dir = Path(ensure_workspace("temp", "images"))
                 img_path = tmp_dir / f"paste_{ts}.png"
                 image.save(str(img_path))
                 self.image_files.append(str(img_path))
