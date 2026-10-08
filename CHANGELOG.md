@@ -8,6 +8,20 @@
 - 新版本在上。
 
 ---
+## v4.231.0 — 2026-10-08
+
+修「失败衔接扫描」发现的 A 点断点（上一轮 5 处断点之 A + C 一组，核心低风险组）。
+
+**问题**：任务账本 `TaskState.pending()` 只读 `required_tools` / `used_tools` / `artifacts`，不读 `failed_tools`。一次「点名工具」调用失败后，`failed_tools` 里记了失败，但 `pending()` 认为它「已被调用过」=「已完成」，于是账本判定任务达标 → 静默收尾、不 nudge、不重试。C 点（resume 无法补做失败工具）是 A 的下游：因为 A 把失败误判成完成，resume 自然也不会重新注入失败工具。
+
+**改法**：
+- `TaskState` 新增 `succeeded_tools`（与 `failed_tools` 对称）：`record_tool(ok=False)` 进 `failed_tools`，`record_tool(ok=True)` 进 `succeeded_tools` 且若曾在 `failed_tools` 则移除（先败后成状态归正）；
+- `pending()` 末尾追加：遍历 `failed_tools`，凡属 `required_tools` 且未进 `succeeded_tools` 的，输出「工具 X 上次调用失败，需要重试或换方案」；
+- 非 `required_tools` 的自主失败（如后台探测）不污染 pending，避免误 nudge；
+- 死循环防护仍由 `should_nudge` 的 `injected` + `max_steps` 闸负责，不受影响。
+
+**判据**：`tests/test_task_state_failed_pending.py` 7 例全绿（含 C 点 resume 重注失败工具的钉子）；扰动 `_perturb_task_state_failed.py` 3 例零哑弹（删 failed 维度 / 删先败后成归正 / 删 required 限定 三处变异均被兜住）。
+
 ## v4.230.0 — 2026-10-08
 
 修一处「任务失败后系统过早停住」的断点（上一轮失败衔接扫描发现的 5 处断点之 B 点）。

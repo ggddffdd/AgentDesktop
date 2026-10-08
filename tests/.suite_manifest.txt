@@ -97,6 +97,7 @@ test_task_graph_fail_skip.py
 test_task_graph_incomplete.py
 test_task_outcome_acceptance_222.py
 test_task_state_design_227.py
+test_task_state_failed_pending.py
 test_task_state_machine_225.py
 test_task_status.py
 test_task_status_ui.py

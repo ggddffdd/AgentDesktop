@@ -155,7 +155,7 @@ class TaskState(object):
     """v4.225 任务账本（轻量、无外部依赖、可单测）。"""
 
     __slots__ = ("goal", "required_tools", "used_tools", "artifacts",
-                 "failed_tools", "current_step", "nudge_injected", "steps")
+                 "failed_tools", "succeeded_tools", "current_step", "nudge_injected", "steps")
 
     def __init__(self, goal="", required_tools=()):
         self.goal = goal or ""
@@ -171,6 +171,7 @@ class TaskState(object):
         self.used_tools = []
         self.artifacts = []       # [(path, exists_bool, tool)]
         self.failed_tools = []    # [tool]
+        self.succeeded_tools = []  # [tool]（与 failed 对称：先败后成时归正）
         self.current_step = 0
         self.nudge_injected = False
         self.steps = 0
@@ -194,6 +195,11 @@ class TaskState(object):
             self.used_tools.append(name)
         if not ok and name not in self.failed_tools:
             self.failed_tools.append(name)
+        if ok:
+            if name not in self.succeeded_tools:
+                self.succeeded_tools.append(name)
+            if name in self.failed_tools:  # 先败后成：状态归正，避免遗留失败标记
+                self.failed_tools.remove(name)
         if ok and name in _FILE_PRODUCING:
             p = self._artifact_path(name, args)
             if p and not any(a[0] == p for a in self.artifacts):
@@ -256,6 +262,13 @@ class TaskState(object):
         for (p, tool) in self.missing_artifacts():
             out.append("产物还没落地：%s（%s 声称成功但文件不存在）"
                        % (p, tool or "工具"))
+        # v4.231 A 断点修复：失败的"点名工具"也算未达标，否则账本会
+        # 把"调过但失败"误判成"已完成"（静默收尾、不 nudge、不重试）。
+        # 限定 required_tools 且排除已 succeeded（先败后成归正）的，避免对非点名
+        # 的自主失败误 nudge；防死循环由 should_nudge 的 injected+max_steps 闸覆盖。
+        for t in self.failed_tools:
+            if t in self.required_tools and t not in self.succeeded_tools:
+                out.append("工具 %s 上次调用失败，需要重试或换方案" % t)
         return out
 
     # --------------------------------------------------------
