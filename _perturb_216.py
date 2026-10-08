@@ -79,10 +79,10 @@ CASES = [
      "from ui import THEME  # 扰动：循环依赖复活",
      ["C2"]),
 
-    ("agent.py 一处接线被改坏（判据族调用断了）",
+    ("agent.py 接线被改坏（判据族调用断了，v4.234 迁到 _promise_nudge_should_fire）",
      "agent.py",
-     "                        and agent_text._looks_like_promise(content)):",
-     "                        and self._looks_like_promise(content)):  # 扰动",
+     "        return agent_text._looks_like_promise(content)",
+     "        return self._looks_like_promise(content)  # 扰动",
      ["B2", "B3"]),
 
     ("ChatWindow 不再继承 ChatAuditMixin（审计族全断）",

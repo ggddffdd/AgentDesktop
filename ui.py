@@ -8284,28 +8284,30 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         return ""
 
     def _is_reasoning_model(self, model, base_url=""):
-        """v4.102 fix10：判断当前模型是否为「思考/推理模式」模型。
-        DeepSeek 官方推理模型（例如 deepseek-flash）不支持 tool_choice="required"
-        ——一旦工具意图命中（如用户说「执行任务」「运行」）被 v4.98 强制设 required，
-        API 直接返回 400：`Thinking mode does not support this tool_choice`，
-        异常又被 _agent_call 的 except 吞掉 → 空 content → 界面「Agent 完成」但无任何输出。
-        判断依据：DeepSeek 官方 base_url + 模型含推理/v4 特征；模型名含 think/reason/r1 等。
-        命中时上层不再强制 required，改为让模型自由决定（默认/auto）。
+        """v4.102 fix10：判断当前模型是否为「思考/推理模式」模型——即不支持
+        tool_choice="required"/函数调用（会返回 400），上层应降级处理。
+        DeepSeek 官方推理模型（例如 deepseek-flash，api.deepseek.com）不支持 required；
+        agnes-3.x 经探针实测支持，不在豁免之列（详见 agent_text.model_rejects_tool_required）。
+
+        v4.234（C 修复）：判定核心已迁至 agent_text.model_rejects_tool_required。
+        实测（2026-10-08 探针）：agnes-3.0-flash 在 api.agnes-ai.cn / apihub.agnes-ai.cn
+        下，auto/required/specific_function 三种 tool_choice 均返回 200 并正常调工具，
+        **根本不 400**。v4.162 将其列入豁免是基于 DeepSeek 思考模式 400 的错误类推、
+        从未实测，本次撤销——agnes-3.x 现在正常走 required / 指定函数路径，
+        首步强制真正生效，模型被迫调工具，不再裸奔空转。
         """
-        m = (model or "").lower()
-        b = (base_url or "").lower()
-        # 明确推理/思考特征
-        if any(k in m for k in ("think", "reason", "-r1", "reasoning", "thinking")):
-            return True
-        # v4.162：Agnes 3.x 为思考/推理档（如 agnes-3.0-flash），同样不接受
-        # tool_choice="required"/函数调用，会返回 400「Thinking mode does not support
-        # this tool_choice」——与 DeepSeek 思考模式同病。Agnes 2.5 等旧档不受影响。
-        if "agnes" in b and "-3" in m:
-            return True
-        # DeepSeek 官方通道（api.deepseek.com）当前推理模型均为思考模式
-        if "api.deepseek.com" in b:
-            return True
-        return False
+        try:
+            from agent_text import model_rejects_tool_required
+            return model_rejects_tool_required(model, base_url)
+        except Exception:
+            # 兜底：与 model_rejects_tool_required 同口径，但去掉 agnes-3.x 误判段
+            m = (model or "").lower()
+            b = (base_url or "").lower()
+            if any(k in m for k in ("think", "reason", "-r1", "reasoning", "thinking")):
+                return True
+            if "api.deepseek.com" in b:
+                return True
+            return False
 
     def _agent_call(self, messages, tools, on_delta=None, force_required=False, force_tool=None, force_complex=False, model_override="", thinking=False):
         import urllib.request as urllib_req

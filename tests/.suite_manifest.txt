@@ -3,6 +3,7 @@ test_agent_behavior_226.py
 test_agent_loop_phases_226.py
 test_agent_node_failure.py
 test_anti_fabrication_189.py
+test_anti_stall_234.py
 test_app_close_218.py
 test_attachment_and_director_gates.py
 test_audio_regress.py

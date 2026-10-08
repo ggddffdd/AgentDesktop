@@ -8,6 +8,25 @@
 - 新版本在上。
 
 ---
+## v4.234.0 — 2026-10-08
+
+防空转三闸门修复（A/B/C 全覆盖），根治「每次都要追问、它不痛快做事」的空转现象。
+
+### 根因（三道闸门在 agnes-3.0-flash + 多步搜索下叠加失效）
+- **A｜承诺兜底死条件**：`agent.py` 承诺兜底带 `not self._any_tool_executed`——本轮只要跑过一次工具，兜底永久失效，导致「搜过一次后说『我直接…再补一次搜』」从缝里漏走。
+- **B｜词表过窄**：`agent_text._looks_like_promise` 承诺/动作词表过窄 + 短文本限制，截图三句原话 0 命中。
+- **C｜agnes-3.x 误判推理模型**：`ui.py _is_reasoning_model` 把 agnes-3.x 列进「拒 required」豁免（v4.162 基于 DeepSeek 思考模式 400 的错误类推、从未实测），首步 `tool_choice="required"` 整段被跳过 → 模型裸奔空转。
+
+### 修复
+- **A**：抽 `_promise_nudge_should_fire` 方法，去掉死条件，仅留「本轮未 nudged + 未到上限 + 像承诺空话」三道闸（`_nudge_count` 上限防死循环）。
+- **B**：`_looks_like_promise` 扩充承诺/动作词表，覆盖「再补一次搜」「直接查」「联网搜索」等真实空转语料。
+- **C**：实测探针（agnes-3.0-flash 的 auto/required/specific_function 三种 tool_choice 均 200 并正常调工具，**根本不 400**）→ 撤销 agnes-3.x 豁免，判定核心迁至 `agent_text.model_rejects_tool_required`，首步 required 真正生效。
+
+### 验收
+- 判据 `test_anti_stall_234.py`：A/B/C 三组 16/0（先红后绿）。
+- 扰动 `_perturb_anti_stall_234.py`：3/3 零哑弹。
+- 进包核验（新增 A/B/C 钉子）、密钥扫描 0、全量回归 0。
+
 ## v4.233.0 — 2026-10-08
 
 修「失败衔接扫描」发现的 E 点断点（上一轮 4 处断点之 E：分流失败不回写主账本）。

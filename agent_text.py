@@ -224,6 +224,27 @@ try:
 except Exception:
     pass
 
+def model_rejects_tool_required(model, base_url=""):
+    """v4.234（C 修复）：判定某模型是否**不支持** tool_choice=required / 指定函数调用。
+
+    返回 True = 该模型会 400，上层应降级（不强制 required，改指令注入）。
+
+    实测结论（v4.234 探针 2026-10-08）：
+      - agnes-3.0-flash（api.agnes-ai.cn / apihub.agnes-ai.cn）实测 *支持* required 与
+        指定函数调用，均返回 200 并正常调工具。v4.162 将其列入「推理模型豁免」是基于
+        DeepSeek 思考模式 400 的错误类推、从未实测，本次撤销。
+      - 仅 DeepSeek 官方推理模型（api.deepseek.com + 含 think/reason/r1 特征）及模型名
+        带思考特征的（think/reason/-r1/reasoning/thinking）才真拒 required。
+    """
+    m = (model or "").lower()
+    b = (base_url or "").lower()
+    if any(k in m for k in ("think", "reason", "-r1", "reasoning", "thinking")):
+        return True
+    if "api.deepseek.com" in b:
+        return True
+    return False
+
+
 def _looks_like_promise(text):
     """判断模型返回是否像『承诺执行却不行动』——收紧版（v4.186 接线兜底用）。
 
@@ -248,10 +269,15 @@ def _looks_like_promise(text):
                "开始自检", "开始检查", "开始排查", "开始诊断", "开始扫描",
                "继续自检", "继续检查", "继续排查", "继续诊断", "继续扫描",
                "先检查", "先排查", "先诊断", "先自检", "先扫一遍", "先查一下",
-               "我检查", "我排查", "我诊断", "我扫描", "我核验", "我复核")
+               "我检查", "我排查", "我诊断", "我扫描", "我核验", "我复核",
+               # v4.234（B 修复）：截断截图真实空转语料的承诺/意图特征
+               "再补", "接着", "继续补", "现在联网", "联网", "准备去",
+               "我去", "直接", "我准备", "打算去", "我这就去")
     action = ("搜索", "排查", "检查", "诊断", "巡检", "自检", "核验", "扫描",
               "复核", "抓取", "写入", "写文件", "执行", "读取", "调用工具",
-              "跑一下", "跑个")
+              "跑一下", "跑个",
+              # v4.234（B 修复）：覆盖「再补一次搜」「直接查」等单字动作
+              "搜", "查")
     return any(p in t for p in promise) and any(a in t for a in action)  # ③ 承诺 ∧ 动作
 def _audit_ref_needed(cur, prev):
     """v4.189 批②：判定本轮是否「对账/核对文件」类请求。

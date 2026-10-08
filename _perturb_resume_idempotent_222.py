@@ -63,13 +63,23 @@ CASES = [
     ("_is_resume_dup 退化（恒 False）",
      "agent.py",
      '    def _is_resume_dup(self, name, args_sig):\n'
-     '        """v4.222：恢复时查询——该不可幂等工具是否已在前次执行过（同参数）。"""\n'
+     '        """v4.222：恢复时查询——该不可幂等工具是否已在前次执行过（同参数）。\n'
+     '        v4.232 断点 D：write_file 额外校验产物真实存在，避免「账本记 done 但文件被删」\n'
+     '        被误判为已完成、跳过导致下游拿到缺失产物（任务带着空洞继续跑）。\n'
+     '        """\n'
      '        if name not in _NON_IDEMPOTENT_TOOLS:\n'
      '            return False\n'
      '        _done = getattr(self, "_resume_done_hashes", None)\n'
      '        if not _done:\n'
      '            return False\n'
-     '        return _tool_args_hash(name, args_sig) in _done',
+     '        if _tool_args_hash(name, args_sig) not in _done:\n'
+     '            return False\n'
+     '        # v4.232 断点 D：write_file 必须二次校验产物仍存在，缺失则视为未 dup、必须重做。\n'
+     '        if name == "write_file":\n'
+     '            _ap = _resolve_write_file_path(args_sig)\n'
+     '            if _ap is not None and not os.path.isfile(_ap):\n'
+     '                return False\n'
+     '        return True',
      '    def _is_resume_dup(self, name, args_sig):\n'
      '        return False',
      ["B1 不可幂等工具已执行"]),

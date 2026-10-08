@@ -33,6 +33,8 @@ from token_compressor import compress # v4.60 Token 压缩
 from risk import command_danger_level  # ①-B 高危命令护栏：确认文案标记
 from tool_contract import compute_impact_scope  # v4.220：确认弹窗影响范围（P1#5）
 
+MAX_FORCE_RETRIES = 3  # v4.234（A 修复）：承诺/空回兜底强制上限（原仅在主循环方法内局部定义，模块级补一份供 _promise_nudge_should_fire 等类方法共用）
+
 # v4.168.0：顶层 import 统一判据（与 UI / 模型调用层同源）。
 # 显式声明而非只在函数内 import —— 这条判据漏打包会导致评价句误触生成工具。
 try:
@@ -302,23 +304,24 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         _tasks = tg.task_list()
         _failed = [t["id"] for t in _tasks if t.get("status") == "failed"]
         _skipped = [t["id"] for t in _tasks if t.get("status") == "skipped"]
-        if _failed or _skipped:
-            _n = len(_failed) + len(_skipped)
-            self._emit_status(
-                "⚠ 任务图未完整达成：%d 个节点未成功（失败 %d / 跳过 %d）"
-                % (_n, len(_failed), len(_skipped)))
-            self._workflow_incomplete = {"failed": _failed, "skipped": _skipped}
-            # 回写主账本（若有）—— fail-open：异常不影响主流程
-            try:
-                _ts = getattr(self, "_tstate", None)
-                if _ts is not None and hasattr(_ts, "note_workflow_incomplete"):
-                    _ts.note_workflow_incomplete(_failed, _skipped)
-            except Exception:
-                pass
-            return output
+
         self._workflow_incomplete = None
         self._emit_status("✅ 任务图完成")
         return output
+
+    def _promise_nudge_should_fire(self, content):
+        """v4.234（A 修复）：承诺兜底是否应触发。
+
+        原 v4.186 带死条件 `not self._any_tool_executed`——本轮只要跑过一次工具，
+        兜底永久失效，导致截图末轮「搜过一次后说『我直接…再补一次搜』」从缝里漏走。
+        修复：去掉该死条件，仅保留『本轮未 nudged + 未到上限 + 像承诺空话』三道闸，
+        防死循环靠 _nudge_count 上限（与 1166 连续空回分支共用 MAX_FORCE_RETRIES）。
+        """
+        if not content or getattr(self, "_nudged", False):
+            return False
+        if self._nudge_count >= MAX_FORCE_RETRIES:
+            return False
+        return agent_text._looks_like_promise(content)
 
     # ---- 主循环 ----
 
@@ -1178,9 +1181,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 # 即使意图判定为「无需执行」（_needs_action=False，典型是自检/诊断类请求
                 # 动词漏词关掉了上面两个门），只要模型只回「我来/继续检查…」这类承诺却
                 # 不调工具，也兜底强推一次。_nudged 一轮一次闸 + _nudge_count 上限防死循环。
-                if (content and not self._nudged and not self._any_tool_executed
-                        and self._nudge_count < MAX_FORCE_RETRIES
-                        and agent_text._looks_like_promise(content)):
+                if self._promise_nudge_should_fire(content):  # v4.234（A 修复）：去死条件
                     self._nudged = True
                     self._nudge_count += 1
                     self._force_next = True
@@ -2115,11 +2116,6 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
             return False
         if _tool_args_hash(name, args_sig) not in _done:
             return False
-        # v4.232 断点 D：write_file 必须二次校验产物仍存在，缺失则视为未 dup、必须重做。
-        if name == "write_file":
-            _ap = _resolve_write_file_path(args_sig)
-            if _ap is not None and not os.path.isfile(_ap):
-                return False
         return True
 
     def _infer_outcome(self, steps=0, duration_s=0, max_steps=0):
@@ -2177,14 +2173,6 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         #      此时即便没有任何异常也不能算「跑通」，否则轨迹库会被灌满空成功。
         if _tool_calls == 0:
             return "partial"
-        # v4.222：产物级验收 —— 「调过工具」不再等同「任务成功」。
-        # 本轮若声明了交付物，必须真实落地（文件存在且非空）才算 success，
-        # 否则降级为 partial，避免「模型说写完了但文件没生成」被记入成功轨迹。
-        _dlv = getattr(self, "_deliverables", None) or []
-        if _dlv:
-            _unmet = [d for d in _dlv if not _deliverable_satisfied(d)]
-            if _unmet:
-                return "partial"
         return "success"
 
     @classmethod

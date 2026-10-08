@@ -11,6 +11,7 @@ _perturb_210.py
 _perturb_216.py
 _perturb_agent_behavior_226.py
 _perturb_agent_loop_226.py
+_perturb_anti_stall_234.py
 _perturb_app_close_218.py
 _perturb_automation_fire.py
 _perturb_automation_isolation.py
