@@ -126,4 +126,5 @@ test_video_director_fix_188.py
 test_vision_channel.py
 test_vision_qc.py
 test_welcome_ia_199.py
+test_workflow_fail_visibility_233.py
 test_workspace_routing.py

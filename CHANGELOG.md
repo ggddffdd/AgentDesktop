@@ -8,6 +8,16 @@
 - 新版本在上。
 
 ---
+## v4.233.0 — 2026-10-08
+
+修「失败衔接扫描」发现的 E 点断点（上一轮 4 处断点之 E：分流失败不回写主账本）。
+
+- **问题**：`_run_workflow` 收尾永远 `self._emit_status("✅ 任务图完成")` 并返回 output，`tg.run()` 只回节点**输出字典**、不含节点 status。于是任务图内部有 `failed`/`skipped` 节点时仍被误报为「完成」，主账本 `task_state` 无感知、不 nudge，下游静默拿到残缺结果。
+- **改法**：收尾逻辑抽成 `_finalize_workflow(tg, output)`——读 `tg.task_list()` 节点终态，含 `failed`/`skipped` 时发「⚠ 任务图未完整达成：N 节点未成功（失败 X / 跳过 Y）」并设 `self._workflow_incomplete`、回写主账本 `TaskState.note_workflow_incomplete`（fail-open 标记，不动 gate 判定）；全 `completed` 才报「✅ 任务图完成」。
+- **判据 + 扰动**：`test_workflow_fail_visibility_233`（E1 failed/E2 skipped 如实上报不谎报、E3 全完成正常、E4 计数、E5 主账本感知）全绿；`_perturb_workflow_fail_visibility_233` 双 case 改坏必红、零哑弹。
+
+---
+
 ## v4.232.0 — 2026-10-08
 
 修「失败衔接扫描」发现的 D 点断点（上一轮 4 处断点之 D：续跑跳过缺失产物）。

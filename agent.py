@@ -289,6 +289,34 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
             node_out = state.get(out_key, {})
             output = node_out.get(out_field, "") if isinstance(node_out, dict) else ""
 
+        return self._finalize_workflow(tg, output)
+
+    def _finalize_workflow(self, tg, output):
+        """v4.233 断点 E：按任务图节点终态如实上报，失败/跳过不得谎报「✅ 任务图完成」。
+
+        `tg.run()` 只回节点**输出字典**，不含节点 status（failed/skipped 只活在
+        `Task.status`）。所以必须从 `tg.task_list()` 查终态——有未成功节点就如实
+        上报「⚠ 未完整达成」并标 `self._workflow_incomplete`（主账本 task_state 经
+        `note_workflow_incomplete` 感知），全 completed 才报「✅ 任务图完成」。
+        """
+        _tasks = tg.task_list()
+        _failed = [t["id"] for t in _tasks if t.get("status") == "failed"]
+        _skipped = [t["id"] for t in _tasks if t.get("status") == "skipped"]
+        if _failed or _skipped:
+            _n = len(_failed) + len(_skipped)
+            self._emit_status(
+                "⚠ 任务图未完整达成：%d 个节点未成功（失败 %d / 跳过 %d）"
+                % (_n, len(_failed), len(_skipped)))
+            self._workflow_incomplete = {"failed": _failed, "skipped": _skipped}
+            # 回写主账本（若有）—— fail-open：异常不影响主流程
+            try:
+                _ts = getattr(self, "_tstate", None)
+                if _ts is not None and hasattr(_ts, "note_workflow_incomplete"):
+                    _ts.note_workflow_incomplete(_failed, _skipped)
+            except Exception:
+                pass
+            return output
+        self._workflow_incomplete = None
         self._emit_status("✅ 任务图完成")
         return output
 
@@ -319,6 +347,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         self.task_id = task_id or task_resume.new_task_id()
         self.resume = bool(resume)
         self.stopped_by_user = False  # 结束时回填：是否因用户停止而终止（供 UI 决定是否显示「继续」）
+        self._workflow_incomplete = None  # v4.233 断点 E：最近一次任务图未完整达成的节点集合（None=完整）
         # ④ 防御性：给 baseline（sys_msg + 清洗后的历史）打 _seq=0 哨兵，标记「已存在于
         # session、禁止回写」；运行内新生成的消息单调递增 _seq（种子取 session 已有最大
         # _seq 之上，避免跨运行 _seq 撞号）。_sync_to_session 据此按序号对齐回写，

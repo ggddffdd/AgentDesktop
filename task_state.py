@@ -155,7 +155,8 @@ class TaskState(object):
     """v4.225 任务账本（轻量、无外部依赖、可单测）。"""
 
     __slots__ = ("goal", "required_tools", "used_tools", "artifacts",
-                 "failed_tools", "succeeded_tools", "current_step", "nudge_injected", "steps")
+                 "failed_tools", "succeeded_tools", "current_step", "nudge_injected", "steps",
+                 "workflow_incomplete")
 
     def __init__(self, goal="", required_tools=()):
         self.goal = goal or ""
@@ -175,6 +176,7 @@ class TaskState(object):
         self.current_step = 0
         self.nudge_injected = False
         self.steps = 0
+        self.workflow_incomplete = None  # v4.233 断点 E：任务图未完整达成的节点集合（None=完整）
 
     # --------------------------------------------------------
     # 记账
@@ -227,6 +229,22 @@ class TaskState(object):
             return bool(path) and os.path.exists(path)
         except Exception:
             return False
+
+    def note_workflow_incomplete(self, failed, skipped):
+        """v4.233 断点 E：任务图内部有 failed/skipped 节点时，由 _run_workflow 回写。
+
+        仅记录未完整达成的节点集合（fail-open：异常也不影响主流程），作为
+        「工作流未完整达成」的可见标记。不动 gate 判定、不触发 nudge——
+        可见性修复（轻档），重档（把失败节点工具/产物回写 record_tool(ok=False)）
+        留作后续。
+        """
+        try:
+            self.workflow_incomplete = {
+                "failed": list(failed or []),
+                "skipped": list(skipped or []),
+            }
+        except Exception:
+            pass
 
     def note_artifact(self, path, tool=""):
         """外部路径登记（agent 已算出绝对交付物时调用）。"""
