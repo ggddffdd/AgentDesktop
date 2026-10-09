@@ -57,7 +57,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.242.0"
+VERSION = "v4.243.0"
 
 # ============================================================
 # 意图类别
@@ -306,12 +306,12 @@ def classify(text, prev_text=None):
     except Exception:
         pass
     # v4.225：状态追问必须**结合产物语境**才算。
-    # 词表里的「怎么样 / 如何」本身是通用疑问词——「今天天气怎么样」命中它
-    # 只是词面撞车，不是「在追问某个已生成任务」。所以额外要求：同时出现产物
-    # 对象词（「视频好了吗」✓ / 「天气怎么样」✗）。这条只影响 Intent.kind 的
-    # 归类口径，**不改动 force_tool**（`_route_force_tool` 内部照旧一律 None）。
+    # v4.243.0（审查报告 I-2）：状态词改走 agent_text._is_status_query（共现判据），
+    # 与 _route_force_tool 同源，消灭第二个真源。产物语境（tgt_early）仍保留：
+    # _is_status_query 只认「完成态词」或「裸状态词 + 疑问尾」，「今天天气怎么样」
+    # 即便带问号也无产物词，仍由 tgt_early 挡住（归 question 而非 status）。
     try:
-        if any(k in text for k in agent_text._STATUS_KW) and tgt_early:
+        if agent_text._is_status_query(text) and tgt_early:
             return Intent(kind=KIND_STATUS, confidence=0.55,
                           target=tgt_early, force_tool=None,
                           needs_action=False, reason="状态追问，不重复触发")

@@ -141,6 +141,22 @@ _FAILURE_PREFIXES = (
     "失败", "未找到", "错误", "异常", "拒绝", "不存在", "缺少", "不支持",
     "无法", "⏹", "缺", "不正确", "非法", "中止",
 )
+# v4.243.0（审查报告 T-1）：精确失败前缀 —— 覆盖真实返回串里「不含失败/错误字」
+# 却表失败的文案（未知工具 / MCP 调用异常 / 越界拒绝 / 空结果 / 参数缺失 / 依赖不可用 /
+# legion 空数据）。只认前缀（startswith），不用子串，避免「没有遗漏」「已处理异常」类
+# 正常文案被误伤。兜底（return "失败" not in s and "错误" not in s）刻意保留——
+# 82 个未登记契约的工具依赖它，翻白名单会大范围回归（见 SR2 基线）。
+_EXTRA_FAILURE_PREFIXES = (
+    "未知工具",         # tools._try_mcp_tool 未命中
+    "MCP 工具",         # tools._try_mcp_tool 异常分支（MCP 工具 [x] 调用异常）
+    "该路径不在",        # 越界拒绝（read_file 等）
+    "内容为空",          # 空结果
+    "未提供",            # 参数缺失
+    "搜索暂不可用",       # 依赖不可用
+    "当前没有军团",       # legion 空数据
+    "本次执行还没有",     # legion 空数据
+    "没有匹配到产出",     # legion 空数据
+)
 
 
 def _infer_ok(msg: str) -> bool:
@@ -157,6 +173,8 @@ def _infer_ok(msg: str) -> bool:
     if not s:
         return False
     if s.startswith(_FAILURE_PREFIXES):
+        return False
+    if s.startswith(_EXTRA_FAILURE_PREFIXES):
         return False
     if s.startswith(_SUCCESS_PREFIXES):
         return True

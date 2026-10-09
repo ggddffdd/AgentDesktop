@@ -398,6 +398,16 @@ def _phrase_hit(text):
     if _is_question(text):
         return False
     return any(p in text for p in _MEDIA_PHRASE)
+# v4.243.0（审查报告 I-1）：_neg_hit 的本地降级词表，与 intent_guard._NEG_PHRASES
+# 对齐（含「停一下/暂停」）。正常路径走 intent_guard.is_negation（含长度/约束闸），
+# 仅在 intent_guard 不可用时退回本表，绝不放过喊停。
+_NEG_HIT_FALLBACK = (
+    "别生成", "别做", "别搞", "别弄", "别画", "别拍", "别发", "别去",
+    "别再", "先别", "别急", "别管", "别碰", "别了", "不用", "不要",
+    "取消", "停止", "别理", "别动", "别提", "停一下", "暂停",
+    "不做", "不弄", "不搞", "不生成", "不剪", "不拍", "不画",
+    "不做了", "先不做了", "再想想", "以后再说", "算了", "先不做",
+)
 def _neg_hit(text):
     """否定一票否决（v4.159.2 引入；v4.159.4 重构裸『别』判据）：
         用户在取消/拒绝/喊停生成指令时，绝不路由生成工具。
@@ -416,12 +426,16 @@ def _neg_hit(text):
             （『出』在后向 3 字窗内把『别出心裁』命中）。绝不补短语（开集坑第五次警示）。"""
     if not text:
         return False
-    # 否定短语一票否决表（闭集、可枚举）
-    for k in ("别生成", "别做", "别搞", "别弄", "别画", "别拍", "别发", "别去",
-              "别再", "先别", "别急", "别管", "别碰", "别了", "不用", "不要",
-              "取消", "停止", "别理", "别动", "别提",
-              "不做", "不弄", "不搞", "不生成", "不剪", "不拍", "不画",
-              "不做了", "先不做了", "再想想", "以后再说", "算了", "先不做"):
+    # v4.243.0（审查报告 I-1）：委托 intent_guard.is_negation —— 唯一真源，含长度闸
+    # （>40 字不算喊停）与约束句式闸（任务祈使后的「不要」是加约束不是叫停）。
+    # intent_guard 不可用时退回下方本地词表（绝不放过喊停）。
+    try:
+        import intent_guard as _ig
+        return _ig.is_negation(text)
+    except Exception:
+        pass
+    # 否定短语一票否决表（闭集、可枚举）—— 降级兜底，与 intent_guard._NEG_PHRASES 对齐
+    for k in _NEG_HIT_FALLBACK:
         if k in text:
             return True
     # 裸『别』字【后向词法判据 + 前向复合词闭集豁免】（v4.159.5）：
@@ -541,6 +555,31 @@ def _is_bare_url(text):
         return len(rest) <= 4
     except Exception:
         return False
+def _is_status_query(text):
+    """是否「状态追问」（v4.243.0 审查报告 I-2 引入，替代 _STATUS_KW 裸词一票否决）。
+
+    旧判据 `any(k in text for k in _STATUS_KW)` 把「如何/怎么样/状态/进度」当裸词
+    一票否决，但它们在正常需求描述里大量出现（标题叫《如何用AI赚钱》、主题状态拉满、
+    项目进度汇报）——命中即丢强制路由，真指令被误判成「问进度」。
+
+    新判据按「追问语气」区分：
+      · 完成态词（好了吗/到哪了/怎么样了…）本身即追问，直接算状态追问；
+      · 裸状态词（进度/状态/如何/怎么样/咋样）必须句尾是疑问（吗/呢/？/？）才算追问。
+    这样「进度如何？」「视频好了吗？」仍判追问，而「标题叫《如何用AI赚钱》」
+    「状态拉满」「项目进度汇报」不再误判。
+    """
+    if not text:
+        return False
+    t = (text or "").strip()
+    _done = ("好了吗", "完成了吗", "完成没", "到哪", "到哪了", "做了吗",
+             "生成了没", "出来没", "出来了吗", "怎么样了", "进行到", "现在怎样",
+             "完了吧", "生成完了", "跑完了", "完了没", "还好吗", "还在吗", "啥情况")
+    if any(k in t for k in _done):
+        return True
+    _bare = ("进度", "状态", "如何", "怎么样", "咋样")
+    if any(k in t for k in _bare) and t.endswith(("吗", "呢", "?", "？")):
+        return True
+    return False
 def _route_force_tool(text, prev_text=None):
     """v4.80：依据用户【当前】原话推断最该调用的工具，返回工具名或 None。
         仅用于 step1 强制指定 tool_choice：视频优先于图片（『图生视频』含『图』但属视频）；
@@ -585,7 +624,9 @@ def _route_force_tool(text, prev_text=None):
     if any(k in text for k in _REF_KW):
         return None
     # 1) 状态追问优先拦截：进度/如何/好了吗/状态/完了吧 → 不强制工具，让模型正常汇报
-    if any(k in text for k in _STATUS_KW):
+    # v4.243.0（审查报告 I-2）：改用共现判据 _is_status_query，避免「如何/怎么样/状态/进度」
+    # 裸词在正常需求描述里误伤真指令（标题叫《如何用AI赚钱》、主题状态拉满、项目进度汇报）。
+    if _is_status_query(text):
         return None
     # 1.5) 位置判据的引用/分析语境（v4.159.3 / P2）：元话语动词辖制生成短语（如『分析下
     #      生成视频』）→ 生成短语是被分析的对象而非指令，前置拦截，避免强制生成。

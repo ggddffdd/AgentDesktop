@@ -8,6 +8,20 @@
 - 新版本在上。
 
 ---
+## v4.243.0 — 2026-10-09
+
+审查报告第一批修复（第三方代码审查，2026-10-09）：三条 P1 真问题，judge-first 落地。
+
+- **I-1 否定判据双实现只修一份**：`agent_text._neg_hit` 委托 `intent_guard.is_negation`（含长度闸 + 约束句式闸），消灭第二个真源。此前 v4.168.3 在 `is_negation` 加的两道闸被下游三处调用点（`classify` / `_route_force_tool` / `_detect_action_intent`）用无闸的 `_neg_hit` 绕过，含「不要」的长任务说明仍被判喊停。修复后长任务恢复 `action`，短喊停句仍 `negated`（本地词表降级兜底，intent_guard 不可用时绝不放过喊停）。
+- **I-2 状态词裸词误伤**：`_route_force_tool` 的 `_STATUS_KW` 含「状态/进度」等裸词，命中即丢强制路由。新增 `_is_status_query` 共现判据（完成态词即追问；裸状态词需句尾疑问才算），`classify` 状态分支同源复用。「状态拉满」「项目进度」类真指令恢复路由，真状态追问仍不强制。
+- **T-1 成败兜底误判**：`tool_contract._infer_ok` 黑名单兜底把「未知工具/调用异常/内容为空/未提供」等失败文案判成功。加 `_EXTRA_FAILURE_PREFIXES` 精确失败前缀（覆盖实测 9 条误判串），**保留兜底不翻白名单**（82 个未登记契约的工具依赖它，翻白名单会大范围回归）。
+- 判据 `tests/test_review_fix_243.py` 24/0（judge-first 红→绿）；扰动 `_perturb_review_fix_243.py` 3/3 零哑弹（委托失效 / 退回裸词表 / 失败前缀失效 三 case 全翻红）。
+- 既有 `tests/test_route_injection_guard.py` 一条断言随 I-1 更新（`_neg_hit` 不再侥幸救下长任务，旧 router 现暴露 browser_open 误判，反证 `_prog_fetch_intent` 必要性）。
+- 10 处 VERSION 对齐 v4.243.0（config.APP_VERSION 字节级无 BOM）。
+
+> 审查报告归因更正（核实后）：I-2「4/4 中招」实际只有「状态/进度」是 `_STATUS_KW` 问题；「如何/怎么样」真正拦路是 `_is_question` 的「如何/怎么」裸词（报告未提，共享面广，留待第二批）；「写项目进度汇报配图」因「写」非生成动词本就不会路由。T-1 比报告「埋着」更严重：83 个工具仅 `write_file` 登记契约，其余 82 个全走兜底。
+
+---
 ## v4.242.0 — 2026-10-09
 
 意图理解「多步指令 DAG 化」相C：把「漏落盘」从收尾救回提前到事中 nudge（设计稿 `DESIGN_intent_dag.md` §7）。

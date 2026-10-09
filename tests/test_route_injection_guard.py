@@ -303,8 +303,12 @@ def part_d():
           f"new={g_new} old={g_old}")
 
     n_new, n_old = route(AUTO_NEWS, None), old_route(AUTO_NEWS, None)
-    check("新闻抓取：旧判据被 _neg_hit 侥幸救下（说明原修法不可靠）",
-          n_old is None, f"旧={n_old}")
+    # v4.243.0（I-1）：_neg_hit 已委托 intent_guard.is_negation（长任务不再被「不要」
+    # 误拦喊停），故「旧判据被 _neg_hit 侥幸救下」的前提不再成立——旧 router 现在会
+    # **暴露** browser_open 误判（既无抓取否决、_neg_hit 也不再救下），这反而更有力地
+    # 说明 _prog_fetch_intent 显式否决是必需的。
+    check("新闻抓取：旧判据（无抓取否决）暴露 browser_open 误判",
+          n_old == "browser_open", f"旧={n_old}")
     check("新闻抓取：新判据靠显式否决拦住", n_new is None, f"新={n_new}")
 
     # 旧判据下"抓取 + URL"一律误判 → 证明否决是必需的
