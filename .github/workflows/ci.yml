@@ -39,10 +39,10 @@ jobs:
     name: 提交前自检（PEP 701 / 密钥 / 扰动残留）
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: 计算本次改动的 .py 文件
@@ -67,8 +67,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       # v4.239.1 删 pip 缓存步：① 缓存从未命中（每轮 Cache not found，零收益）；
