@@ -1,0 +1,88 @@
+# 小臭玩AI — 最小 CI（GitHub Actions）
+#
+# 对应 Codex 审核第 3 项的「零 CI」缺口：把本地 pre-commit 的自检 + 回归套件
+# 搬到远端，push / PR 自动跑，不用再「记得手跑」。
+#
+# 两套作业：
+#   1) lint  —— 与本地 pre-commit 同一套检查器（PEP 701 / 密钥 / 扰动残留），
+#              纯标准库、零依赖、跨平台，用 ubuntu 跑最快。
+#   2) test  —— 回归套件（offscreen Qt）。用 windows-latest，因为 requirements.txt
+#              含 pywinauto / pyautogui 等 Windows-only 依赖，在 Linux 上
+#              pip install 会直接失败。
+#
+# 设计约定（与项目硬纪律一致）：
+#   · lint 只扫「本次改动的 .py」，与本地 pre-commit 行为一致。原因：仓库里 6 个
+#     测试夹具自带合法的违规形状样本（假密钥，P27 教训），全量扫会误报 → 习惯性
+#     --no-verify → 防线瘫痪。所以只扫 diff，不扫整仓。
+#   · test 不开 --with-perturb：扰动是「元测试」（改坏源码再验判据），极慢且必须
+#     独占源码，留给本地提交前 / 发布前跑（见 AGENTS.md）。CI 跑常规回归套件即可。
+#   · 版本单一真源由 test_version_single_source_235 在 test 作业里兜住：
+#     若哪个 VERSION 漏 bump，该套件直接红。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+# 同一 ref 只保留最新一次运行，避免排队堆积。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── 作业一：提交前自检（与本地 pre-commit 同一套检查器）─────────────
+  lint:
+    name: 提交前自检（PEP 701 / 密钥 / 扰动残留）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 计算本次改动的 .py 文件
+        id: changed
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="origin/${{ github.base_ref }}"
+            git fetch origin "${{ github.base_ref }}" --depth=1 || true
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          mapfile -t FILES < <(git diff --name-only "${BASE}...HEAD" -- '*.py' 2>/dev/null)
+          echo "files=${FILES[*]}" >> "$GITHUB_OUTPUT"
+          echo "本次改动的 .py 文件：${FILES[*]:-（无）}"
+      - name: 跑 precommit_check（仅改动文件）
+        run: python precommit_check.py ${{ steps.changed.outputs.files }}
+
+  # ── 作业二：回归套件（offscreen Qt）──────────────────────────────
+  test:
+    name: 回归套件（offscreen Qt）
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 缓存 pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: 跑回归套件
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python tests/run_all.py

@@ -8,6 +8,21 @@
 - 新版本在上。
 
 ---
+## v4.238.0 — 2026-10-09
+
+工程基建：最小 CI（GitHub Actions）落地，补齐 Codex 审核的「零 CI」缺口。
+
+- **新增 `.github/workflows/ci.yml`**：push / PR 到 `main` 自动跑两套作业：
+  - `lint` —— 与本地 `precommit_check.py` **同一套检查器**（PEP 701 / 密钥 / 扰动残留），
+    只扫本次改动的 `.py`（避开 6 个自带假密钥样本的测试夹具，防误报），
+    纯标准库、跨平台、ubuntu 上跑得最快。
+  - `test` —— 在 `windows-latest` 装 `requirements.txt` 后跑 `tests/run_all.py`
+    （offscreen Qt）。用 Windows 是因为依赖清单含 `pywinauto` / `pyautogui` 等
+    Windows-only 包，Linux 上 `pip install` 会直接失败；重依赖（torch / chromadb）
+    在业务代码里是惰性 import，回归套件不触发。
+- 版本单一真源由 `test_version_single_source_235` 在 `test` 作业里兜住：漏 bump 任一
+  `VERSION` 即红。CI 不开 `--with-perturb`（扰动极慢且独占源码，留给本地提交前 / 发布前跑）。
+
 ## v4.237.0 — 2026-10-09
 
 工程基建：提交前自检（pre-commit）落地，把「记得手跑」变成「不跑就红」。

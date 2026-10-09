@@ -50,6 +50,7 @@ Python 要求 3.10+；`requirements.txt` 全部 `==` 锁死（防构建漂移）
 | 发布门禁（五道） | `python release_check.py` |
 | 产物密钥扫描 | `python _scan_exe_secrets.py` |
 | 提交前自检（手动跑） | `python precommit_check.py` |
+| CI（push / PR 自动跑） | GitHub Actions：`.github/workflows/ci.yml` |
 
 **提交前自检（pre-commit）**：`git commit` 会自动跑 `precommit_check.py`，
 拦四样东西 —— PEP 701（3.12 才合法的 f-string）、疑似密钥、
@@ -65,6 +66,16 @@ post-commit），会先备份再追加。
 
 `tests/run_all.py` 已内置 `QT_QPA_PLATFORM=offscreen`，并把测试日志改道到 `%TEMP%`，
 不会污染真实 `debug.log`。
+
+**CI（GitHub Actions）**：push / PR 到 `main` 自动跑两套作业（见 `.github/workflows/ci.yml`）：
+- `lint` —— 与本地 `precommit_check.py` **同一套检查器**（PEP 701 / 密钥 / 扰动残留），
+  只扫本次改动的 `.py`（避开 6 个自带假密钥样本的测试夹具，防误报），
+  纯标准库、跨平台、ubuntu 上跑得最快；
+- `test` —— 在 `windows-latest` 上装 `requirements.txt` 后跑 `tests/run_all.py`
+  （offscreen Qt）。用 Windows 是因为依赖清单含 `pywinauto` / `pyautogui` 等 Windows-only 包，
+  Linux 上 `pip install` 会直接失败。
+CI 不开 `--with-perturb`（扰动极慢且独占源码，留给本地提交前 / 发布前跑）。
+版本单一真源由 `test_version_single_source_235` 在 `test` 作业里兜住：漏 bump 任一 `VERSION` 即红。
 
 ## 4. 改代码前必须知道的硬纪律
 
@@ -151,3 +162,4 @@ post-commit），会先备份再追加。
 | P24 | `continue` 分支必须让 `all_done` 收敛（含 `failed`） |
 | P25 | 被打断的扰动会把**变异态源码**留在工作区并被 commit 收走 —— 整段删除型变异不留 `# 扰动` 标记，扫不出来 |
 | P26 | 外移代码后，**判据取材路径 + 扰动取材路径 + 进包核验钉子**三处要一起搬；只改判据不改扰动会造出「假命中」 |
+| P27 | 扫描类门禁（密钥/扰动标记）会拦下仓库里**合法的违规形状样本**（测试夹具）。样本要**运行时拼接**，别开豁免后门 |
