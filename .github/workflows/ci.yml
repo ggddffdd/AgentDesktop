@@ -71,13 +71,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: 缓存 pip
-        uses: actions/cache@v4
-        with:
-          path: ~\AppData\Local\pip\Cache
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+      # v4.239.1 删 pip 缓存步：① 缓存从未命中（每轮 Cache not found，零收益）；
+      # ② actions/cache 的 post 阶段 hashFiles 在测试跑完后的工作区上偶发
+      #    "Fail to hash files"（orphan 进程占着句柄），把全绿的测试 job 标红（run #4 实锤）。
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
