@@ -467,4 +467,12 @@ def main():
 
 
 if __name__ == "__main__":
+    # v4.238.1：Windows 英文环境（GitHub runner / 任何 cp1252 控制台）下，
+    # 父进程自己的中文 print 会 UnicodeEncodeError（CI 首跑 2026-10-09 实锤：
+    # 5m15s 全花在装依赖，测试一个没跑就红）。子进程早已由 run_one /
+    # run_guard_preflight 设 PYTHONIOENCODING=utf-8 兜住，这里只兜父进程；
+    # errors="replace" 保证任何极端终端都不至于让整个回归入口崩掉。
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="replace")
     sys.exit(main())

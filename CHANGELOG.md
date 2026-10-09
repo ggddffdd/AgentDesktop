@@ -8,6 +8,22 @@
 - 新版本在上。
 
 ---
+## v4.238.1 — 2026-10-09
+
+修复：CI `test` 作业首跑即红（GitHub Actions run #37867023478）。
+
+- **现象**：`回归套件（offscreen Qt）` 5m15s 失败——其中约 5 分钟是装依赖，
+  测试本体一个都没跑：`run_all.py` 第一个中文 `print` 在 GitHub 英文
+  Windows runner（cp1252 控制台）上直接 `UnicodeEncodeError`。
+- **修复**：`tests/run_all.py` 入口对父进程 stdout/stderr 强制
+  `reconfigure(encoding="utf-8", errors="replace")`（子进程本就有
+  `PYTHONIOENCODING=utf-8` 兜底，漏的只有父进程）；ci.yml `test` 步骤
+  再加 `PYTHONUTF8: "1"` 三道保险。
+- **判据**：`tests/test_runall_utf8_238.py`（5 项，行为级——真开
+  `PYTHONIOENCODING=cp1252` 子进程跑 `--list`，不 reconfigure 必红）；
+  扰动 `_perturb_runall_utf8_238.py` 2/2 零哑弹。
+
+---
 ## v4.238.0 — 2026-10-09
 
 工程基建：最小 CI（GitHub Actions）落地，补齐 Codex 审核的「零 CI」缺口。

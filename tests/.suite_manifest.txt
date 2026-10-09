@@ -83,6 +83,7 @@ test_risk_webhook_events_218.py
 test_robust_fix_186.py
 test_route_injection_guard.py
 test_run_python_schema_227.py
+test_runall_utf8_238.py
 test_runtime_dir_hygiene_236.py
 test_screenshot_path_fence_218.py
 test_sensitive_mask_220.py

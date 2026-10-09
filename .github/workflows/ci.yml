@@ -85,4 +85,9 @@ jobs:
       - name: 跑回归套件
         env:
           QT_QPA_PLATFORM: offscreen
+          # GitHub 英文 Windows 控制台是 cp1252，中文 print 会 UnicodeEncodeError
+          # （首跑 2026-10-09 实锤）。run_all.py 入口已 reconfigure 兜父进程，
+          # run_one 给子进程设 PYTHONIOENCODING=utf-8；这里再给整个 job 上
+          # UTF-8 模式做第三道保险（也覆盖未来步骤里可能新增的中文输出）。
+          PYTHONUTF8: "1"
         run: python tests/run_all.py
