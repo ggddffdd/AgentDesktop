@@ -57,7 +57,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.238.1"
+VERSION = "v4.239.0"
 
 # ============================================================
 # 意图类别
@@ -199,11 +199,13 @@ class Intent(object):
     """
 
     __slots__ = ("kind", "confidence", "explicit", "target", "requested_tools",
-                 "force_tool", "needs_action", "text_only", "reason")
+                 "force_tool", "needs_action", "text_only", "reason",
+                 "needs_clarification", "clarify_reason", "clarify_options")
 
     def __init__(self, kind=KIND_UNKNOWN, confidence=0.0, explicit=False,
                  target="", requested_tools=(), force_tool=None,
-                 needs_action=False, text_only=False, reason=""):
+                 needs_action=False, text_only=False, reason="",
+                 needs_clarification=False, clarify_reason="", clarify_options=()):
         self.kind = kind
         self.confidence = float(confidence)
         self.explicit = bool(explicit)
@@ -213,6 +215,11 @@ class Intent(object):
         self.needs_action = bool(needs_action)
         self.text_only = bool(text_only)
         self.reason = reason
+        # v4.239.0 歧义澄清闸门：默认 False（不澄清）；仅当 classify 判定多义时置 True。
+        # 这三个字段纯增量，绝不影响 kind/force/needs_action/text_only 任何既有结论。
+        self.needs_clarification = bool(needs_clarification)
+        self.clarify_reason = clarify_reason
+        self.clarify_options = tuple(clarify_options or ())
 
     def to_dict(self):
         return {s: getattr(self, s) for s in self.__slots__}
@@ -384,10 +391,50 @@ def classify(text, prev_text=None):
 
     reason = "force=%s needs_action=%s text_only=%s req=%s" % (
         force, needs_action, text_only, ",".join(req[:4]))
+
+    # v4.239.0 歧义澄清闸门（对标 Codex 评估里性价比最高的补强项）
+    # ------------------------------------------------------------------
+    # 问题：用户下「多义 / 含糊指令」时，原系统二选一——要么交给 LLM 自由发挥
+    # （大概率猜错方向），要么因判据保守被当成非指令直接吞掉。两条路都不好。
+    # 修法：检测到「多义」就主动反问，把歧义点摊开让用户选。
+    #
+    # v1 只覆盖**最干净、最无争议**的一类：
+    #     kind == action 且 force_tool 为 None 且 命中 >= 2 个候选工具
+    # 即「系统检测到了多个候选功能、却选不出唯一一个」。典型：
+    # 「帮我把视频和图片都处理一下」→ 命中 image_gen + video_gen，但没说清要生成还是编辑。
+    #
+    # 设计纪律（与 intent.py 同源，见文件头）：
+    #   · 只加不减：上面 kind/force/needs_action/text_only 的结论一行未动；
+    #     本块只额外算 needs_clarification，默认 False。
+    #   · fail-open：任何异常 → 不澄清（退回旧行为），绝不阻断。
+    #   · 不引入误触发面：单工具 / 有明确强制动词 / 疑问 / 纯创作 / 否定 一律不澄清
+    #     （这些路径走的是上方 early-return，needs_clarification 取默认 False）。
+    needs_clarify = False
+    clarify_reason = ""
+    clarify_options = ()
+    try:
+        if kind == KIND_ACTION and not force and len(req) >= 2:
+            needs_clarify = True
+            _opts = []
+            for _n in req:
+                _r = _ROUTE_BY_NAME.get(_n)
+                _opts.append((_n, _r["desc"] if _r else _n))
+            clarify_options = tuple(_opts)
+            clarify_reason = ("这条指令同时指向多个功能（%s），为避免做错方向，"
+                              "请先确认你想让我做哪一步 / 具体要什么？"
+                              % "、".join(req))
+    except Exception:
+        needs_clarify = False
+        clarify_reason = ""
+        clarify_options = ()
+
     return Intent(kind=kind, confidence=conf, explicit=explicit, target=tgt,
                   requested_tools=req, force_tool=force,
                   needs_action=needs_action, text_only=text_only,
-                  reason=reason)
+                  reason=reason,
+                  needs_clarification=needs_clarify,
+                  clarify_reason=clarify_reason,
+                  clarify_options=clarify_options)
 
 
 __all__ = [

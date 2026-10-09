@@ -940,6 +940,18 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 # v4.225：改读统一 Intent（force_tool 结论仍由 _route_force_tool 产出，
                 # 这里只多走一层壳 + 顺带刷新 self._intent 供状态栏/日志用）。
                 self._intent = intent.classify(_cur_user, _prev_user)
+                # v4.239.0 歧义澄清闸门：多义指令主动反问，不盲目交给模型猜。
+                # fail-open：字段缺失或异常 → getattr 回退 False，照常走原路由。
+                if getattr(self._intent, "needs_clarification", False):
+                    _why = (getattr(self._intent, "clarify_reason", "") or
+                            "这条指令指向多个功能，我需要先跟你确认方向再动手。")
+                    self._emit_status("需要澄清：" + _why)
+                    try:
+                        self.stream_commit.emit(
+                            "\n\n\u275c " + _why + "\n（请补充说明后我再执行）")
+                    except Exception:
+                        pass
+                    break
                 _ft = self._intent.force_tool
             else:
                 _ft = None

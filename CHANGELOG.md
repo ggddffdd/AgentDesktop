@@ -8,6 +8,26 @@
 - 新版本在上。
 
 ---
+## v4.239.0 — 2026-10-10
+
+智能理解：新增「歧义澄清」闸门（对标 Codex 评估里性价比最高的补强项）。
+
+- **问题**：用户下「多义 / 含糊指令」时，原系统二选一——要么交给 LLM 自由发挥
+  （大概率猜错方向），要么因判据保守被当成非指令直接吞掉。两条路都不好。
+- **修法**：`intent.classify()` 产出 `Intent` 时额外算 `needs_clarification` /
+  `clarify_reason` / `clarify_options` 三字段；agent 主循环 step1 在取 `force_tool`
+  路由前若命中澄清，则主动反问、把歧义点摊开让用户选，不盲目交给模型猜。
+- **v1 只覆盖最干净、最无争议的一类**：`kind == action 且 force_tool 为 None 且
+  命中 >= 2 个候选工具`（典型：「帮我把视频和图片都处理一下」→ image_gen + video_gen
+  但没说清要生成还是编辑）。设计纪律：只加不减（旧字段结论一行未动）、
+  fail-open（任何异常 → 不澄清、绝不阻断）、零误触发面（单工具 / 有明确强制动词 /
+  疑问 / 纯创作 / 否定一律不澄清）。
+- **判据**：`tests/test_clarify_gate_238.py`（18 项，judge-first 红→绿）；
+  扰动 `_perturb_clarify_gate_238.py` 3/3 零哑弹。
+- 9 处版本对齐到 v4.239.0（含 `config.py` `APP_VERSION` 的 BOM 字节替换）。
+
+---
+
 ## v4.238.1 — 2026-10-09
 
 修复：CI `test` 作业首跑即红（GitHub Actions run #37867023478）。

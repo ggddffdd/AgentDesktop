@@ -58,7 +58,8 @@ check("IN1-5 to_dict 含全部 9 字段",
 check("IN1-6 __slots__ 固定（防随手加属性漂移）",
       set(intent.Intent.__slots__) == {
           "kind", "confidence", "explicit", "target", "requested_tools",
-          "force_tool", "needs_action", "text_only", "reason"},
+          "force_tool", "needs_action", "text_only", "reason",
+          "needs_clarification", "clarify_reason", "clarify_options"},
       str(intent.Intent.__slots__))
 a = intent.Intent(kind="action", confidence=0.5)
 b = intent.Intent(kind="action", confidence=0.5)

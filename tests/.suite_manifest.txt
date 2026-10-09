@@ -16,6 +16,7 @@ test_bugfix_2092.py
 test_cancel_token.py
 test_cdp_profile_path.py
 test_claim_evidence_195.py
+test_clarify_gate_238.py
 test_clean_recycle_bin_217.py
 test_cmd_robustness_2a.py
 test_core_fix_188.py
