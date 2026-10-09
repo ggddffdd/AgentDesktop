@@ -122,6 +122,11 @@ _*
 # 已做密钥扫描确认干净（2026-10-03，见 LEARNINGS L211）。
 !_perturb_*.py
 
+# 例外：**判据共享库**必须入库（v4.239.1）。
+# tests/_qss_scan_lib.py 是 test_tokens_200 / test_ui_a11y_2102 两个判据的
+# 共享扫描库，漏入库 = CI 干净 clone 上这两套件直接 ModuleNotFoundError。
+!tests/_qss_scan_lib.py
+
 # 例外：**发布核验工具**必须入库（v4.210.3）。
 # 发布铁律要求「密钥扫描须覆盖源码 + 打包产物」，而产物扫描只能靠解 PYZ/CArchive，
 # 这类工具丢了就等于发布门禁里有一环无法复现。两者均已逐行复核，不含任何密钥内容

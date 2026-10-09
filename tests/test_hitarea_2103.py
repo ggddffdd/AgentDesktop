@@ -274,7 +274,11 @@ check("H1b 带 BOM 的源码被 utf-8-sig 正确读入（这正是首版静默�
       f"带 BOM 文件={_bom}；其中按 utf-8 读仍会带 U+FEFF 的应有全部")
 note(f"带 UTF-8 BOM 的生产源码：{_bom or '（无）'}")
 
-check("H2a 扫描覆盖的文件数达标（≥140）", len(FILES) >= 140,
+# v4.239.1（CI 红 → 修）：旧阈值 ≥140 是按本机工作区状态定的——真仓里躺着大量
+# 未入库的根目录 .py（临时核验/扰动脚本），git 干净 checkout 只有 ~101 个。
+# FILES 由 listdir 构建、覆盖天然完整，这个下限只防「扫描面意外塌方」，
+# 锚到入库生产集（~101）再留余量，任何环境都成立。
+check("H2a 扫描覆盖的文件数达标（≥90，锚定入库生产集）", len(FILES) >= 90,
       f"实际 {len(FILES)} 个文件")
 check("H2b AST 识别到的可点控件变量数达标（≥200）", len(CLICKY_OWNERS) >= 200,
       f"实际 {len(CLICKY_OWNERS)} 个")

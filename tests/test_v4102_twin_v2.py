@@ -163,7 +163,12 @@ font = dtp._cn_font()
 check("cn_font_found", bool(font) and os.path.isfile(font or ""), str(font))
 
 ff = dtp._ffmpeg()
-check("ffmpeg_found", bool(ff), str(ff))
+if ff:
+    check("ffmpeg_found", True, str(ff))
+else:
+    # v4.239.1（CI 红 → 修）：ffmpeg 是环境依赖项，缺失时只 SKIP 本项；
+    # 后续 burn/extract 失败路径断言不依赖 ffmpeg 可照跑，画幅裁剪块本就有 if dtp._ffmpeg() 守卫。
+    print("  [SKIP] ffmpeg_found —— 本机无 ffmpeg，环境依赖项跳过（不冒充通过）")
 
 # 对不存在的文件，烧标识要返回 False 而不是抛异常
 tmp = tempfile.mkdtemp(prefix="twin_t_")

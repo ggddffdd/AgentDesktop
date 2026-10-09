@@ -474,32 +474,38 @@ try:
         _dirs = _gsd()
     except Exception:
         _dirs = [os.path.join(ROOT, "skills")]
-    _total = 0
-    _degraded = 0
-    _okc = 0
-    _rej = 0
-    for _d in _dirs:
-        if not os.path.isdir(_d):
-            continue
-        for _sk in _sl2.scan_skills(_d):
-            _total += 1
-            _v = skill_meta.check_skill(_sk, strict=False)
-            if _v.verdict == "degraded":
-                _degraded += 1
-            elif _v.verdict == "ok":
-                _okc += 1
-            # 默认档一律不得 reject
-            if skill_meta.check_skill(_sk, strict=False).verdict == "reject":
-                _rej += 1
-            # 端到端：默认档必须仍能加载出文本
-            if _sl2.load_skill_prompt(_sk.name, _d, strict_meta=False) is None:
-                check("SM9-x 存量技能默认档可加载：%s" % _sk.name, False)
-    check("SM9-1 扫到存量技能（>0，证明确实在扫真目录）", _total > 0,
-          "共 %d 个" % _total)
-    check("SM9-2 默认档下存量技能 **零拒用**（不误伤）", _rej == 0,
-          "拒用 %d 个" % _rej)
-    print("       （实测：共 %d 个技能，degraded %d / ok %d）"
-          % (_total, _degraded, _okc))
+    # v4.239.1（CI 红 → 修）：SM9 的本意是「扫真目录实测不误伤」，扫描目录来自
+    # config.get_skill_scan_dirs()（用户数据目录）。CI/干净环境一个真目录都没有时
+    # _total 必为 0，这是环境空、不是误伤证据 → SKIP，不假红。
+    if not any(os.path.isdir(_d) for _d in _dirs):
+        print("  [SKIP] 无任何真实技能目录（CI/干净环境）——SM9 实测段跳过，不冒充通过")
+    else:
+        _total = 0
+        _degraded = 0
+        _okc = 0
+        _rej = 0
+        for _d in _dirs:
+            if not os.path.isdir(_d):
+                continue
+            for _sk in _sl2.scan_skills(_d):
+                _total += 1
+                _v = skill_meta.check_skill(_sk, strict=False)
+                if _v.verdict == "degraded":
+                    _degraded += 1
+                elif _v.verdict == "ok":
+                    _okc += 1
+                # 默认档一律不得 reject
+                if skill_meta.check_skill(_sk, strict=False).verdict == "reject":
+                    _rej += 1
+                # 端到端：默认档必须仍能加载出文本
+                if _sl2.load_skill_prompt(_sk.name, _d, strict_meta=False) is None:
+                    check("SM9-x 存量技能默认档可加载：%s" % _sk.name, False)
+        check("SM9-1 扫到存量技能（>0，证明确实在扫真目录）", _total > 0,
+              "共 %d 个" % _total)
+        check("SM9-2 默认档下存量技能 **零拒用**（不误伤）", _rej == 0,
+              "拒用 %d 个" % _rej)
+        print("       （实测：共 %d 个技能，degraded %d / ok %d）"
+              % (_total, _degraded, _okc))
 except Exception as _e:
     check("SM9-0 存量技能实测可跑", False, "%s: %s" % (type(_e).__name__, _e))
 

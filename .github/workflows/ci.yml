@@ -82,6 +82,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+      - name: 安装 ffmpeg（音频/图形探针套件的真跑前提）
+        # v4.239.1：runner 默认无 ffmpeg，audio_regress / probe_graphics 直接假红。
+        # 套件侧也已加「无 ffmpeg → SKIP」守卫兜底，两者互为纵深。
+        run: choco install ffmpeg -y --no-progress
+        shell: cmd
       - name: 跑回归套件
         env:
           QT_QPA_PLATFORM: offscreen

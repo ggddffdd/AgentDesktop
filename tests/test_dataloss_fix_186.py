@@ -162,9 +162,14 @@ def main():
     check("video_pipeline 使用 _MIN_CLIP_BYTES 判定",
           has_stmt("video_pipeline.py", "_clip_ok = os.path.getsize(clip) >= _MIN_CLIP_BYTES"))
     ag_path = os.path.join(os.path.dirname(root), "video-agent", "core", "agnes.py")
-    with io.open(ag_path, "r", encoding="utf-8-sig") as f:
-        check("core/agnes download got/total 完整性校验",
-              any("got != total" in l for l in f))
+    if os.path.isfile(ag_path):
+        with io.open(ag_path, "r", encoding="utf-8-sig") as f:
+            check("core/agnes download got/total 完整性校验",
+                  any("got != total" in l for l in f))
+    else:
+        # v4.239.1（CI 红 → 修）：该判据锚的是仓库外的 video-agent 源码（本机相邻目录），
+        # CI 干净 clone 上不存在 → 跳过这一条，不 FileNotFoundError 假红。
+        print("  [SKIP] video-agent/core/agnes.py 不在——外部依赖缺失，本条跳过（不冒充通过）")
 
     print("\n汇总：PASS=%d FAIL=%d" % (_P, _F))
     return 1 if _F else 0

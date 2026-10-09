@@ -133,6 +133,14 @@ def test_context_isolation():
 def test_encryption():
     print("== 记忆加密 ==")
     import shutil
+    try:
+        import cryptography  # noqa: F401
+    except ImportError:
+        # v4.239.1（CI 红 → 修）：加密后端是 cryptography（Fernet）。CI 干净环境
+        # 没装时 set_encryption 静默失效 → 9 条连坐假红。SKIP 不冒充通过；
+        # requirements.txt 已补 cryptography==46.0.6，装了的环境仍然真跑。
+        print("  [SKIP] 未安装 cryptography——记忆加密段跳过，不冒充通过")
+        return
     td = tempfile.mkdtemp(prefix="memenc_")
     ms._configure(td)
     ms.set_encryption("secret-pass")

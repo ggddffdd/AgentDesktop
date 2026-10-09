@@ -19,6 +19,12 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 import os, re, shutil, subprocess, sys, tempfile, types
 
 FF = shutil.which("ffmpeg")
+if not FF:
+    # v4.239.1（CI 红 → 修）：GitHub runner 无 ffmpeg，套件造夹具（lavfi）直接崩，
+    # run_all 记成 FAIL=1 假红。SKIP 口径与 test_frozen_smoke 一致：明确告知，不冒充通过。
+    # CI 侧（ci.yml）已加 choco install ffmpeg —— 有 ffmpeg 的环境仍然真跑。
+    print("  [SKIP] ffmpeg 不可用（不在 PATH）——音频回归跳过，不冒充通过")
+    sys.exit(0)
 import video_pipeline as vp
 
 # v4.186.0（P1-11 连带修）：自生成夹具。原实现硬编码本机个人产物目录里

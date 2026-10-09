@@ -27,6 +27,11 @@ numpy==2.4.4
 # rag.py 索引 Word、ui.py 导出 Word；spec 的 hiddenimports 已登记 'docx'
 python-docx==1.2.0
 
+# ---------- 记忆加密后端（v4.239.1 补列）----------
+# memory_store.py 的 Fernet 加密直接 import cryptography，此前漏列：
+# 本机能跑是因为装过，干净环境（CI）缺它 → set_encryption 静默失效、回归假红。
+cryptography==46.0.6
+
 # ---------- run_python（代码执行能力）在目标机的 Python 环境使用，**不进 exe** ----------
 # 这些库是给独立 Python 解释器用的：想用「做 PPT / 数据分析」类能力，
 # 目标机的 Python 需装好它们（不装则相关任务会报 ImportError）。

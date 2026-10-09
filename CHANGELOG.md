@@ -8,6 +8,29 @@
 - 新版本在上。
 
 ---
+## v4.239.1 — 2026-10-09
+
+CI 首绿修复：回归套件在 GitHub runner 上 11 个套件 / 36 断言假红，全部根因定位并修复。
+
+- **`tests/_qss_scan_lib.py` 漏入库**：被 `.gitignore` 的 `_*` 规则吞掉，CI 干净
+  clone 上 test_tokens_200 / test_ui_a11y_2102 直接 ModuleNotFoundError。加
+  `!tests/_qss_scan_lib.py` 反选入库（与 `_perturb_*` 例外同一章节）。
+- **外部依赖缺失 → SKIP**：4 个判据锚的是仓库外的 video-agent（`core` 包 /
+  `agnes.py`），本机相邻目录存在所以本地绿、CI 必红。统一加守卫：外部依赖不在
+  → 打印 `[SKIP]` 退出 0，与 test_frozen_smoke 的 SKIP 同口径，不冒充通过。
+  涉及 test_director_manifest / test_video_core_home / test_dataloss_fix_186。
+- **ffmpeg 缺失 → SKIP + CI 补装**：runner 无 ffmpeg，audio_regress /
+  probe_graphics / twin_v2 共 20 项假红。套件侧加「无 ffmpeg → SKIP」守卫，
+  ci.yml 加 `choco install ffmpeg`——两者互为纵深，有 ffmpeg 的环境仍真跑。
+- **requirements.txt 漏列 `cryptography`**：memory_store 的 Fernet 加密直接
+  import 它，本机装过所以没暴露；CI 缺它 → 加密段 9 项静默失效假红。
+  补 `cryptography==46.0.6`，regression.py 加未安装 SKIP 守卫。
+- **test_hitarea_2103 H2a 阈值锚错**：≥140 按本机工作区状态定的（含大量未入库
+  根目录 .py），干净 checkout 只有 101。改锚「入库生产集 ≥90」并注明理由。
+- **test_skill_meta_226 SM9**：扫描目录来自用户数据目录，CI 一个真目录都没有
+  → 环境空非误伤证据，加 SKIP 守卫。
+
+---
 ## v4.239.0 — 2026-10-10
 
 智能理解：新增「歧义澄清」闸门（对标 Codex 评估里性价比最高的补强项）。
