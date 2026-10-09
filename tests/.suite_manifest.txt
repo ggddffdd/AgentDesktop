@@ -43,6 +43,7 @@ test_hitarea_2103.py
 test_hotfix15.py
 test_image_payload_guard.py
 test_impact_scope_220.py
+test_intent_dag_239.py
 test_intent_guard_negation.py
 test_intent_routing.py
 test_intent_scope.py

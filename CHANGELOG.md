@@ -8,6 +8,22 @@
 - 新版本在上。
 
 ---
+## v4.240.0 — 2026-10-09
+
+意图理解「多步指令 DAG 化」相A：新增 `intent_dag.decompose_intent` 纯函数（设计稿 `DESIGN_intent_dag.md`）。
+
+- 把「一句话抽 N 动作 + 依赖」结构化为 `ActionDAG`，为相B（接入 PLAN 带依赖边）与
+  相C（前置校验前置化）打地基。**相A 不接线、零风险**：不触 agent.py / agent_loop.py /
+  task_state.py，不改变任何既有行为。
+- 触发规则：kind==action 且未命中澄清闸门，且生成/搜索类主节点 + 落盘动词/路径词共现 →
+  追加 `write_file` 依赖节点（`deps`=主节点、`precond_tool`=主节点）。严防凭空编造依赖。
+- 纪律：`fail-open`（异常/节点<2 → None）、**澄清优先**（歧义句交澄清闸门，不分解）、
+  只基于字面动词/连接词、不引入画像（与「画像上下文」第1项彻底解耦）。
+- 判据 `tests/test_intent_dag_239.py` 19/0（judge-first 红→绿）；扰动
+  `_perturb_intent_dag_239.py` 3/3 零哑弹（落盘节点删除 / 落盘信号失效 / 澄清优先被关 三 case 全翻红）。
+- 9 处 VERSION 对齐 v4.240.0（含 config.APP_VERSION 字节级替换）。
+
+---
 ## v4.239.1 — 2026-10-09
 
 CI 首绿修复：回归套件在 GitHub runner 上 11 个套件 / 36 断言假红，全部根因定位并修复。

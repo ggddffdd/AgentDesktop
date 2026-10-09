@@ -25,6 +25,7 @@ _perturb_exec_tool_gate_219.py
 _perturb_hard_confirm_bypass_221.py
 _perturb_hitarea_2103.py
 _perturb_impact_scope_220.py
+_perturb_intent_dag_239.py
 _perturb_log_redirect_hyg.py
 _perturb_memory_meta.py
 _perturb_msg_budget_cap_224.py

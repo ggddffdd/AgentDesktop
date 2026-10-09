@@ -133,7 +133,7 @@ CI 不开 `--with-perturb`（扰动极慢且独占源码，留给本地提交前
 
 历史漂移（已修）：`agent_task_mixin` / `intent` / `task_state` 曾停在 `v4.225.0`，
 `intent_guard` 曾停在 `v4.168.0`。**bump 版本时必须同步全部模块级 `VERSION`**，否则门禁拦下。
-v4.239.0 起 9 处模块级 `VERSION` 与 `config.APP_VERSION` 已全量对齐（bump 须过 `release_check._module_version_drift` 守卫）。
+v4.239.0 起 10 处版本戳（`config.APP_VERSION` + 9 个模块级 `VERSION`，含 `intent_dag` 新增的 `VERSION`）已全量对齐（bump 须过 `release_check._module_version_drift` 守卫）。
 
 ## 7. Review guidelines
 
