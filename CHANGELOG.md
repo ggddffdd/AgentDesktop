@@ -8,6 +8,22 @@
 - 新版本在上。
 
 ---
+## v4.245.0 — 2026-10-09
+
+审查报告第三批修复（T-3/T-4/T-5/T-6/T-8/I-7）：健壮性/防御项。
+
+- **T-3 空批次保护**：`_exec_tool_calls` / `_run_concurrent` 开头加 `if not tool_calls: return`，防 `max_workers=0` 抛 ValueError（纯防御）。
+- **T-6 后验验证异常留痕**：`tools.exec_tool` 里 `apply_post_verification` 的 `except: pass` 改为 `log.warning` 留痕（两处），区分「没验证」与「验证器崩了」。
+- **T-8 定时缺时间不再静默补 09:00**：`_h_create_automation` 在 daily/weekly 缺 at_time 时返回提示反问（不再替用户默认 09:00）；once/interval 仍保留默认。
+- **T-4 复读护栏幂等豁免**：新增 `_IDEMPOTENT_READ` 集合，读类工具（read_file/web_search/sys_info 等）重复调用不再误当死循环拦截；只对非幂等/有副作用工具做全等拦截。
+- **T-5 闸门校验 needs_user（第二道锁）**：`Decision` 加 `confirmed` 字段；串行确认后置 confirmed；`_permission_gate` 对 needs_user=True 且未确认的决策 fail-closed 拒绝。杜绝「某调用方漏检 needs_user 就静默跳过确认」。
+- **I-7 兜底判据收窄**：`_ACTION_KEYWORDS` 删裸「快」「动」单字（「快看这个」「动一下」不再误判要干活），「快点/赶紧/动起来/动手」双字保留。
+- 判据 `tests/test_review_fix_245.py` 14/0（judge-first 红→绿）；扰动 `_perturb_review_fix_245.py` 6/6 零哑弹。
+- 10 处 VERSION 对齐 v4.245.0。
+
+> 归因更正/遗留：报告 T-4 的「write_file 后 read_file 被拦」例子有误（两者 name 不同不互拦）；报告 T-4「无窗口」也错（实际有 [-12:] 窗口）。`_is_question` 正文疑问代词（哪个/怎么样在祈使句宾语里）仍为深层位置/结构问题，本批未动，留作已知残留。
+
+---
 ## v4.244.0 — 2026-10-09
 
 审查报告第二批修复（I-5/I-6/I-4/I-3/T-2 + I-2尾巴）：judge-first 落地。

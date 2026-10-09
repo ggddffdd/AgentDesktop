@@ -629,6 +629,12 @@ def _h_create_automation(cfg, app_dir, args, progress=None):
         "interval": auto.SCHED_INTERVAL, "间隔": auto.SCHED_INTERVAL, "每": auto.SCHED_INTERVAL,
     }
     st = _st_map.get(st_raw, auto.SCHED_DAILY)
+    # v4.245.0（审查报告 T-8）：每天/每周任务缺时间时不再静默补 09:00，反问用户。
+    # 用户说「每天早上提醒我喝水」却没给时刻时，替用户默认 09:00 是擅自决定。
+    _has_time = bool(args.get("at_time") or args.get("time"))
+    if not _has_time and st in (auto.SCHED_DAILY, auto.SCHED_WEEKLY):
+        return ("请补充任务执行时间（at_time，格式 HH:MM，如 09:00）。"
+                "「每天/每周」任务需要指定具体时刻，我无法替你默认。", [], None)
     at_time = _norm_time(args.get("at_time") or args.get("time") or "09:00")
     at_date = args.get("at_date") or args.get("date") or ""
     weekday = _norm_weekday(args.get("weekday"))
@@ -851,6 +857,11 @@ def _permission_gate(name, args, perm_ctx):
     if perm_ctx is not None and hasattr(perm_ctx, "allowed"):
         if not perm_ctx.allowed:
             return (False, f"权限决策拒绝执行 {name}：{getattr(perm_ctx, 'reason', '')}")
+        # v4.245.0（审查报告 T-5）：需要用户确认但未取得确认 → 拒绝（第二道锁）。
+        # 调用方完成确认后必须置 confirmed=True，否则这里 fail-closed，
+        # 杜绝「某调用方漏检 needs_user 就静默跳过确认」。
+        if getattr(perm_ctx, "needs_user", False) and not getattr(perm_ctx, "confirmed", False):
+            return (False, f"该操作需要用户确认但未取得确认（{name}）")
         return (True, None)
     # 无上下文：按风险分类 fail-closed
     try:
@@ -933,8 +944,9 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
             # v4.224：执行后验证（查副作用是否真生效；只降级不升级）
             try:
                 apply_post_verification(_tr, name, args)
-            except Exception:
-                pass
+            except Exception as _ve:
+                # v4.245.0（审查报告 T-6）：验证器坏掉不留痕 = 无法区分「没验证」和「验证器崩了」
+                log.warning("后验验证异常 %s: %s", name, _ve)
             return _tr
         except Exception as e:
             log.warning("工具 %s 执行异常: %s", name, e)
@@ -968,8 +980,9 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
     # v4.224：执行后验证（查副作用是否真生效；只降级不升级）
     try:
         apply_post_verification(_tr, name, args)
-    except Exception:
-        pass
+    except Exception as _ve:
+        # v4.245.0（审查报告 T-6）：验证器坏掉不留痕 = 无法区分「没验证」和「验证器崩了」
+        log.warning("后验验证异常 %s: %s", name, _ve)
     return _tr
 
 

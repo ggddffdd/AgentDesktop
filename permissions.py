@@ -73,6 +73,9 @@ class Decision:
     needs_user: bool    # 执行前是否需要用户确认
     reason: str         # 人类可读原因（用于日志/提示）
     rule: str = ""      # 命中规则（mode:auto / session / auto_allow / risk:exec ...）
+    # v4.245.0（审查报告 T-5）：是否已取得用户确认。needs_user=True 的决策，
+    # 调用方完成确认后必须置 True，否则 exec_tool 最终闸门按「未确认」拒绝。
+    confirmed: bool = False
 
 
 def _audit_decision(engine, name, args, dec, explicit_intent=True):

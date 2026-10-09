@@ -159,6 +159,16 @@ from untrusted_boundary import (  # noqa: F401
 # 造第二套策略 —— 两套策略必然漂移，且这正是当初写下这个类的那一步。
 #
 
+# v4.245.0（审查报告 T-4）：幂等读类工具——重复调用是合理的（复查/轮询/重看），
+# 不参与「同参数疯狂调工具」死循环判定。只对非幂等/有副作用工具做全等拦截。
+# 场景：run_python 修好代码后重跑同一测试脚本、开头 sys_info 自检收尾再确认、
+# web_search 同一 query 隔几轮回看——这些全等签名不该被误当死循环。
+_IDEMPOTENT_READ = frozenset({
+    "read_file", "list_dir", "sys_info", "search_memory", "web_search",
+    "web_fetch", "list_automation", "log_query", "director_status",
+    "list_skills", "rag_search",
+})
+
 class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                    AgentResultMixin, AgentMemoryMixin, QThread):
     """后台线程跑 Agent 循环，所有 UI 更新通过信号抛回主线程，彻底避免卡死。
@@ -1468,6 +1478,9 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                     # v4.169.0（P0-5）：必须带上 args —— 只记工具名会让
                     # 确认过的安全参数给后续危险参数"背书"。
                     engine.trust_tool(name, args)
+                    # v4.245.0（审查报告 T-5）：确认后置 confirmed，exec_tool 最终闸门
+                    # 据此放行（第二道锁：needs_user 但未确认的决策在闸门处 fail-closed）。
+                    dec.confirmed = True
                     try:
                         _tr = tools.exec_tool(
                             mw.cfg, APP_DIR, name, args,
@@ -1576,6 +1589,9 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
 
     def _run_concurrent(self, tool_calls, mw, APP_DIR):
         """并发执行工具调用（所有 tools 无数据依赖）"""
+        # v4.245.0（审查报告 T-3）：空批次直接返回，防 max_workers=0 抛 ValueError。
+        if not tool_calls:
+            return
         max_workers = min(len(tool_calls), 5)
         total = len(tool_calls)
         self._emit_status(f"并发执行 {total} 个工具（{max_workers} 线程）…")
@@ -1720,6 +1736,9 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
 
     def _exec_tool_calls(self, tool_calls, mw, APP_DIR):
         """执行一批工具调用（串行/并发由权限引擎决策），供主循环与续跑共用。"""
+        # v4.245.0（审查报告 T-3）：空批次直接返回，防 max_workers=0 抛 ValueError。
+        if not tool_calls:
+            return
         self._app_dir = APP_DIR  # v4.222：缓存，供 _handle_tool_result 绝对化交付物路径
         # v4.222：断点幂等——恢复模式下，已执行过的不可幂等操作不再重复触发
         if getattr(self, "_resume_done_hashes", None):
@@ -1813,17 +1832,24 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
             self._recent_tool_sigs = []
         new_sigs = []
         dup_all = True
+        _has_non_idempotent = False
         for tc in tool_calls:
             fn = tc.get("function", {})
+            _nm = fn.get("name", "")
             try:
                 args = json.loads(fn.get("arguments", "{}") or "{}")
             except Exception:
                 args = fn.get("arguments", "")
-            sig = (fn.get("name", ""), json.dumps(args, ensure_ascii=False))
+            sig = (_nm, json.dumps(args, ensure_ascii=False))
             new_sigs.append(sig)
+            # v4.245.0（审查报告 T-4）：幂等读类工具重复调用合理（复查/轮询），
+            # 不参与死循环判定；只对非幂等/有副作用工具做全等拦截。
+            if _nm in _IDEMPOTENT_READ:
+                continue
+            _has_non_idempotent = True
             if sig not in self._recent_tool_sigs:
                 dup_all = False
-        if dup_all and self._recent_tool_sigs:
+        if _has_non_idempotent and dup_all and self._recent_tool_sigs:
             self.tool_log.emit({
                 "name": "护栏", "args": "",
                 "result": "检测到重复工具调用，已拦截，请直接基于已有信息给出正文回答，不要再次调用相同工具。",
