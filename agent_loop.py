@@ -49,7 +49,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.240.0"
+VERSION = "v4.241.0"
 
 # ============================================================
 # 阶段常量
@@ -150,28 +150,53 @@ class LoopState(object):
 PLAN_MIN_REQUIREMENTS = 2
 
 
-def should_plan(required_tools, step=1):
+def should_plan(required_tools, step=1, dag=None):
     """是否该在开头注入计划。门槛见 PLAN_MIN_REQUIREMENTS 说明。
+
+    相B（v4.241.0）：dag 非空即视为「≥2 动作」—— 即便字面只点名 1 个工具，
+    落盘动词也已隐含 write_file 依赖节点（如「生成视频并存盘」只点名 video_gen）。
 
     fail-open：任何异常 → False（不注入，等于旧行为）。
     """
     try:
         if int(step or 1) != 1:
             return False   # 只在第一步注入一次
+        # 相B：DAG 非空 → 带依赖边的多动作，即使字面只点名 1 个工具也注入计划
+        if dag is not None and getattr(dag, "nodes", None):
+            return True
         return len(list(required_tools or ())) >= PLAN_MIN_REQUIREMENTS
     except Exception:
         return False
 
 
-def build_plan(goal, required_tools):
+def build_plan(goal, required_tools, dag=None):
     """把「目标 + 硬要求」摊成有序子目标清单。
 
     刻意**只列硬要求与目标**，不臆造步骤（不写「第一步…第二步…」这类模型
     自己就能编的东西）—— 计划的价值在于「不许漏掉用户点名的那几件」，
     不是替模型做决策。
+
+    相B（v4.241.0）：dag 非空时按拓扑序输出**带依赖边**的清单（含「↓ 依赖」
+    标记），把「生成→落盘」这类前置关系显式列出，不再靠模型自己悟。
     """
     out = []
     try:
+        # 相B：DAG 驱动 → 带依赖边的清单
+        if dag is not None and getattr(dag, "nodes", None):
+            g = str(goal or "").strip()
+            if g:
+                if len(g) > 120:
+                    g = g[:120] + "…"
+                out.append("总目标：%s" % g)
+            _idx = {n.id: i + 1 for i, n in enumerate(dag.nodes)}
+            for n in dag.nodes:
+                num = _idx.get(n.id)
+                label = "（落盘动作）" if n.tool == "write_file" else ""
+                out.append("%d) %s%s" % (num, n.tool, label))
+                for d in (n.deps or ()):
+                    out.append("   ↓ 依赖 %s(%s) 产物，必须在其后调用"
+                               % (d, _idx.get(d, d)))
+            return out
         g = str(goal or "").strip()
         if g:
             if len(g) > 120:
@@ -188,13 +213,16 @@ def build_plan(goal, required_tools):
     return out
 
 
-def plan_instruction(plan):
+def plan_instruction(plan, dag=None):
     """计划阶段注入的指令文本（一条 system 侧内部消息）。
 
     措辞纪律：
       * 说清「这是清单，不是让你复述」—— 弱模型最爱把清单原样念一遍当交差；
       * 明确「按需排序，不必先声明计划」—— 不逼它多花一轮说话；
       * 保留「做不完要说清楚」—— 否则它会硬凑。
+
+    相B（v4.241.0）：dag 含「生成→落盘」依赖时，升级一条硬约束——
+    「生成完成后必须确实调用落盘工具，不得跳步」，把依赖边变成不可跳过清单。
     """
     try:
         items = [str(x) for x in (plan or ()) if str(x).strip()]
@@ -208,6 +236,13 @@ def plan_instruction(plan):
             "请在心里按依赖排好顺序直接开工（不必先向我口头汇报计划）。"
             "若某条确实做不到，必须在最终结论里**明确写出是哪一条、为什么**，"
             "不许含糊带过。")
+        # 相B：带「生成→落盘」依赖时，显式强调不得跳步（依赖边 → 不可跳过清单）
+        if dag is not None and getattr(dag, "nodes", None):
+            _has_save = any(n.tool == "write_file" for n in dag.nodes)
+            if _has_save:
+                lines.append(
+                    "涉及「生成→落盘」的步骤：生成完成后**必须确实调用落盘工具**"
+                    "把产物保存到磁盘，不得跳步、不得只说没做。")
         return "\n".join(lines)
     except Exception:
         return ""

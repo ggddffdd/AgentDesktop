@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v4.240.0 判据：「多步指令 DAG 化」相A（decompose_intent 纯函数）
+"""v4.241.0 判据：「多步指令 DAG 化」相A（decompose_intent 纯函数）+ 相B（PLAN 接入 dag）
 
 judge-first：本文件先于实现编写，预期红（intent_dag 尚未实现时整体 FAIL）。
 实现落地后转绿（decompose_intent 把一句话拆成 ActionDAG）。
@@ -17,6 +17,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import intent
+import agent_loop  # 相B 接入点（should_plan/build_plan/plan_instruction）
 
 try:
     from intent_dag import decompose_intent, ActionNode, ActionDAG
@@ -109,6 +110,43 @@ if dag and len(dag.nodes) == 2:
 if dag:
     check("DAG 是 ActionDAG 实例", isinstance(dag, ActionDAG))
     check("节点是 ActionNode 实例", all(isinstance(n, ActionNode) for n in dag.nodes))
+
+# ---- D6 (相B) 接入 PLAN：build_plan/plan_instruction/should_plan 带依赖边 ----
+# judge-first：相B 未实现时，build_plan/plan_instruction/should_plan 还不接受 dag
+# 形参，调用会抛 TypeError → 防御性转成 FAIL（而非让整个套件崩成无 FAIL 字样）。
+it = _mk(force="video_gen", req=("video_gen",))
+_d6dag = decompose_intent("生成视频并存到 D 盘", it)
+check("D6-0 dag 非空（相A 已落地）", _d6dag is not None, "got %r" % _d6dag)
+if _d6dag:
+    try:
+        _p6 = agent_loop.build_plan("生成视频并存到 D 盘", ["video_gen"], dag=_d6dag)
+    except TypeError:
+        _p6 = []
+        check("D6-1 build_plan 已接入 dag 形参", False, "尚未接入 dag")
+    else:
+        check("D6-1 build_plan 已接入 dag 形参", True)
+        check("D6-2 build_plan(dag) 含依赖边标记（↓）",
+              any("↓" in x for x in _p6), str(_p6))
+        check("D6-3 build_plan(dag) 含 write_file 节点",
+              any("write_file" in x for x in _p6), str(_p6))
+        check("D6-4 build_plan(dag) 含 video_gen 节点",
+              any("video_gen" in x for x in _p6), str(_p6))
+        try:
+            _in6 = agent_loop.plan_instruction(_p6, dag=_d6dag)
+        except TypeError:
+            _in6 = ""
+            check("D6-5 plan_instruction 已接入 dag 形参", False, "尚未接入 dag")
+        else:
+            check("D6-5 plan_instruction 已接入 dag 形参", True)
+            check("D6-6 plan_instruction(dag) 含「不得跳步」硬约束",
+                  "不得跳步" in _in6, _in6[:160])
+    try:
+        _sp6 = agent_loop.should_plan(["video_gen"], dag=_d6dag)
+    except TypeError:
+        check("D6-7 should_plan 已接入 dag 形参", False, "尚未接入 dag")
+    else:
+        check("D6-7 should_plan 已接入 dag 形参", True)
+        check("D6-8 should_plan(dag) 单工具也注入计划", _sp6 is True, "got %r" % _sp6)
 
 print("PASS=%d FAIL=%d" % (_P, _F))
 sys.exit(1 if _F else 0)

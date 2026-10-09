@@ -412,7 +412,7 @@ try:
                                              "AgentWorker"))
     # 关键自证：把 _loop_start 换掉，行为必须变 —— 证明这套断言不是恒真
     _w5b, _mw5b = _mk_worker([("hi", [])], "用 video_gen 生成视频")
-    _w5b._loop_start = lambda agent_loop: False     # 拆掉PLAN 接线
+    _w5b._loop_start = lambda agent_loop, dag=None: False     # 拆掉PLAN 接线
     _ch5b = []
     _w5b.stream_commit.connect(lambda t: _ch5b.append(str(t)))
     _w5b.run()

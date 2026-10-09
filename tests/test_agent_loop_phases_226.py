@@ -334,8 +334,8 @@ check("LP9-2 agent.py import AgentLoopMixin",
       "from agent_loop_mixin import AgentLoopMixin" in _agx)
 check("LP9-3 AgentWorker 继承 AgentLoopMixin",
       re.search(r"class\s+AgentWorker\s*\([^)]*AgentLoopMixin", _ag) is not None)
-check("LP9-4 run() 开头调 _loop_start",
-      "self._loop_start(agent_loop)" in _agx)
+check("LP9-4 run() 开头调 _loop_start（相B：透传意图层 DAG）",
+      "self._loop_start(agent_loop, getattr(self, \"_intent_dag\", None))" in _agx)
 check("LP9-5 工具执行后调 _loop_verify",
       "self._loop_verify(agent_loop)" in _agx)
 check("LP9-6 收尾调 _loop_summary",

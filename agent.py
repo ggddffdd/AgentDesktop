@@ -753,11 +753,20 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         # 注意 _needs_action 的**结论仍原样来自** _detect_action_intent ——
         # Intent 只是壳，换壳不改行为（改判据 = 重排行为 = 事故）。
         self._intent = intent.classify(self._last_user_text(), None)
+        # v4.241.0 相B：意图层 DAG 分解，跑在 classify 之后、PLAN 之前。
+        # decompose_intent 内部已处理「澄清优先」—— needs_clarification 命中即返回 None，
+        # 交 v4.239.0 澄清闸门反问，不被 PLAN 分解。fail-open：任何异常 → None 不阻断。
+        try:
+            from intent_dag import decompose_intent as _decompose_intent
+            self._intent_dag = _decompose_intent(self._last_user_text(), self._intent)
+        except Exception:
+            self._intent_dag = None
         # v4.225（P2 任务状态机）：建账本（接线在 agent_task_mixin）
         self._tstate_init(task_state)
         # v4.226（四阶段循环）：建阶段状态 + 门槛满足时注入任务清单
         # （接线在 agent_loop_mixin；判定在 agent_loop）
-        self._loop_start(agent_loop)
+        # 相B：把意图层分解出的 DAG 透传给 PLAN，注入带依赖边的清单
+        self._loop_start(agent_loop, getattr(self, "_intent_dag", None))
         self._needs_action = agent_text._detect_action_intent(self.messages)
         if not self._needs_action and self._intent.needs_action:
             # classify 走的是单条 user 消息口径，与 messages 口径可能不同；

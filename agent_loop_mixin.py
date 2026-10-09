@@ -29,7 +29,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.240.0"
+VERSION = "v4.241.0"
 
 
 class AgentLoopMixin(object):
@@ -42,8 +42,11 @@ class AgentLoopMixin(object):
     # --------------------------------------------------------
     # 1) 循环启动：建 LoopState + 判定要不要注入计划
     # --------------------------------------------------------
-    def _loop_start(self, agent_loop):
+    def _loop_start(self, agent_loop, dag=None):
         """run() 开头调一次：建阶段状态 + （若门槛满足）注入计划清单。
+
+        相B（v4.241.0）：传入意图层分解出的 ActionDAG（可能 None），让 PLAN 三函数
+        输出带依赖边的清单（生成→落盘不可跳过）。
 
         返回 True = 已注入计划（调用方据此把阶段推进到 EXECUTE）。
         """
@@ -52,12 +55,12 @@ class AgentLoopMixin(object):
             goal = ts.goal if ts is not None else ""
             self._loop = agent_loop.LoopState(goal)
             if not agent_loop.should_plan(
-                    ts.required_tools if ts is not None else ()):
+                    ts.required_tools if ts is not None else (), dag=dag):
                 self._loop.enter(agent_loop.PHASE_EXECUTE, 0)
                 return False
             plan = agent_loop.build_plan(
-                goal, ts.required_tools if ts is not None else ())
-            instr = agent_loop.plan_instruction(plan)
+                goal, ts.required_tools if ts is not None else (), dag=dag)
+            instr = agent_loop.plan_instruction(plan, dag=dag)
             if not instr:
                 self._loop.enter(agent_loop.PHASE_EXECUTE, 0)
                 return False

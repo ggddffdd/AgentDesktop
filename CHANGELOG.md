@@ -8,6 +8,25 @@
 - 新版本在上。
 
 ---
+## v4.241.0 — 2026-10-09
+
+意图理解「多步指令 DAG 化」相B：把 `decompose_intent` 的 `ActionDAG` 接入 PLAN 阶段（设计稿 `DESIGN_intent_dag.md` §6）。
+
+- `agent_loop` 三函数 `should_plan` / `build_plan` / `plan_instruction` 增 `dag=None` 形参：
+  dag 非空时 `build_plan` 按拓扑序输出**带依赖边**清单（含「↓ 依赖」标记），
+  `plan_instruction` 升级「生成→落盘」硬约束（必须确实调用落盘工具、不得跳步），
+  `should_plan` 门槛从「字面点名 ≥2」扩展为「≥2 **或** dag 非空」（落盘动词隐含 write_file）。
+- 接线点：`agent.py` 在 `intent.classify` 之后、`_loop_start` 之前算 `decompose_intent`
+  并透传（fail-open：异常 → None 不阻断；澄清优先：`needs_clarification` 命中即不分解）；
+  `agent_loop_mixin._loop_start` 透传 dag 给三函数。**不碰 `_route_force_tool`**（确定性单工具守卫）。
+- 判据 `tests/test_intent_dag_239.py` 扩 D6（build_plan 含依赖边 / plan_instruction 含不得跳步 /
+  should_plan 单工具也注入），整体 28/0（judge-first 红→绿）；扰动
+  `_perturb_intent_dag_b_240.py` 3/3 零哑弹（should_plan 门 / build_plan 依赖边 /
+  plan_instruction 不得跳步 三 case 全翻红，D1-D5 相A 判据不受影响）。
+- 10 处 VERSION 对齐 v4.241.0（含 config.APP_VERSION 字节级替换，无 BOM 假 diff）。
+
+---
+
 ## v4.240.0 — 2026-10-09
 
 意图理解「多步指令 DAG 化」相A：新增 `intent_dag.decompose_intent` 纯函数（设计稿 `DESIGN_intent_dag.md`）。
