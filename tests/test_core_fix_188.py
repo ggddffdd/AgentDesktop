@@ -146,8 +146,12 @@ def main():
     check("F1 _REF_KW ⊇ intent_guard 权威强引用表",
           all(k in agent_text._REF_KW for k in ig._STRONG_REF_KW),
           f"{len(ig._STRONG_REF_KW)} 词全含")
-    check("F2 _REF_KW 保留 agent 独有宽词",
-          all(k in agent_text._REF_KW for k in ("这件事", "你说的", "讨论", "评价")))
+    check("F2 _REF_KW 保留 agent 独有强回指词",
+          all(k in agent_text._REF_KW for k in ("这件事", "你说的")))
+    # v4.244.0（审查报告 I-3）：裸回指词「讨论/评价/什么时候/让你」从 _REF_KW 拆到
+    # _REF_BARE_KW（需回指锚点共现才生效），避免真指令见词就丢路由。
+    check("F2b 裸回指词拆到 _REF_BARE_KW（I-3 锚点共现）",
+          all(k in agent_text._REF_BARE_KW for k in ("讨论", "评价", "什么时候", "让你")))
     check("F3 _META_VERBS 与权威表一致",
           tuple(agent_text._META_VERBS) == tuple(ig._META_VERBS))
     check("F4 _CLAUSE_SEP 与权威表一致",

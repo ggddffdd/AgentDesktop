@@ -8,6 +8,23 @@
 - 新版本在上。
 
 ---
+## v4.244.0 — 2026-10-09
+
+审查报告第二批修复（I-5/I-6/I-4/I-3/T-2 + I-2尾巴）：judge-first 落地。
+
+- **I-5 澄清话术泄露工具名**：`clarify_reason` 改用 ROUTE_REGISTRY 中文短名（desc 括号前），工具名只进 `clarify_options`/log，不再抛给用户。
+- **I-6 DAG 凭空造节点**：`intent_dag` 删裸字键「画」（「动画片」不再误触 image_gen）、删路径词「电脑」「下载」（「在电脑上搜」不再造 write_file；下载已由 `_SAVE_VERBS` 覆盖）。「画一张图」仍由 force_tool/_phrase_hit 兜住。
+- **I-4 讨论句被判 action**：`classify` 的 DISCUSS 分支去掉 `not req`，讨论判定优先于候选工具。「分析下这个视频」不再因「视频」命中 req 被判 action。
+- **I-3 回指词误伤真指令**：`_REF_KW` 拆强回指（一票否决）与裸词「什么时候/让你/讨论/评价」（新增 `_REF_BARE_KW` + `_REF_ANCHOR`，裸词需回指锚点共现才生效）。「明天什么时候下雨」「讨论一下AI」不再丢路由。
+- **T-2 并发路径漏 task_risk**：`_run_concurrent` worker 内二次 decide 删除，改为复用 `_exec_tool_calls` 批次级 decs（含 task_risk + needs_user 校验），`zip(tool_calls, decs)` 传入。
+- **I-2 尾巴 _is_question 裸词**：`_is_question` 剥离书名号/引号内内容后再判疑问，「标题叫《如何用AI赚钱》」不再被「如何」误判疑问。
+- 判据 `tests/test_review_fix_244.py` 20/0（judge-first 红→绿）；扰动 `_perturb_review_fix_244.py` 6/6 零哑弹。
+- 既有 `tests/test_core_fix_188.py` F2 随 I-3 更新（裸词拆到 _REF_BARE_KW）；其余基线套件全绿。
+- 10 处 VERSION 对齐 v4.244.0。
+
+> 归因更正（核实后）：I-3 第三条「做个视频，评价一下这三个方案哪个好」真正拦路除「评价」（已修）外还有 `_is_question` 的「哪个」疑问代词；I-2 尾巴的「主题是新手怎么样」同理（疑问代词在祈使句宾语里）。这类属深层位置/结构问题，本批只修了书名号/引号内剥离 + 回指锚点，正文宾语里的疑问代词仍为已知残留。
+
+---
 ## v4.243.0 — 2026-10-09
 
 审查报告第一批修复（第三方代码审查，2026-10-09）：三条 P1 真问题，judge-first 落地。

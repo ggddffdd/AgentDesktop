@@ -57,7 +57,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.243.0"
+VERSION = "v4.244.0"
 
 # ============================================================
 # 意图类别
@@ -372,7 +372,10 @@ def classify(text, prev_text=None):
         # 但用户要的是**答案**不是执行。`force_tool` 已在上游单独判过（这里
         # force 为 None），所以把它归为 question 不会影响任何既有行为。
         kind = KIND_QUESTION
-    elif weak_discuss and not req:
+    elif weak_discuss:
+        # v4.244.0（审查报告 I-4）：讨论判定优先于候选工具。此前 `not req` 让
+        # 「分析下这个视频」因「视频」命中 req 被判 action；讨论句提到产物词是常态，
+        # 不该因此翻成「要干活」。
         kind = KIND_DISCUSS
     elif req or needs_action:
         kind = KIND_ACTION
@@ -416,13 +419,17 @@ def classify(text, prev_text=None):
         if kind == KIND_ACTION and not force and len(req) >= 2:
             needs_clarify = True
             _opts = []
+            _desc_parts = []
             for _n in req:
                 _r = _ROUTE_BY_NAME.get(_n)
                 _opts.append((_n, _r["desc"] if _r else _n))
+                # v4.244.0（审查报告 I-5）：面向用户的话术用中文短名（desc 括号前），
+                # 工具名只进 clarify_options / log，不进用户可见文案。
+                _d = _r["desc"] if _r else _n
+                _desc_parts.append(_d.split("（")[0] if "（" in _d else _d)
             clarify_options = tuple(_opts)
-            clarify_reason = ("这条指令同时指向多个功能（%s），为避免做错方向，"
-                              "请先确认你想让我做哪一步 / 具体要什么？"
-                              % "、".join(req))
+            clarify_reason = ("这条指令可能指向多个功能：%s。为避免做错方向，"
+                              "请先确认你想要哪一个？" % "、".join(_desc_parts))
     except Exception:
         needs_clarify = False
         clarify_reason = ""

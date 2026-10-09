@@ -172,9 +172,13 @@ _TOPIC_DIR_KEYWORDS = (
 # 的 fallback；② tests/test_route_injection_guard.py 的 AST 提取器只认类体
 # 直接 Tuple 赋值（try 内赋值不收），它拿冻结版即可测出路由行为不回归。
 _REF_KW = (
-    "这件事", "你说的", "你刚才说的", "什么时候", "让你", "是BUG",
-    "讨论", "评价",
+    "这件事", "你说的", "你刚才说的", "是BUG",
 )
+# v4.244.0（审查报告 I-3）：裸回指词——必须与回指锚点（「刚才/上面/之前/你说的」等）共现
+# 才算回指语境，避免「明天什么时候下雨」「讨论一下AI」「评价方案」见词就丢强制路由。
+# 锚点刻意不收「这个/那个」（泛指代词，会误伤「评价这个方案」这类祈使），只认明确回指短语。
+_REF_BARE_KW = ("什么时候", "让你", "讨论", "评价")
+_REF_ANCHOR = ("刚才", "上面", "之前", "你说的", "这句话", "这句", "那条")
 # v4.158→v4.159.1：讨论/复盘/质疑类弱豁免（分析/解释/聊聊等），仅在【未命中生成意图】
 # 时兜底生效；v4.159.2 将 讨论/评价 上提为 _REF_KW 引用标记（前置一票否决），
 # 此处仅留弱讨论词，降低误伤真指令概率。
@@ -340,13 +344,16 @@ def _is_question(text):
     s = text.strip()
     if s.endswith(("？", "?", "吗", "呢", "么")):
         return True
-    if any(k in text for k in ("怎么", "为什么", "为何", "是否", "是不是",
-                                "能不能", "可以吗", "行吗", "如何", "咋")):
+    # v4.244.0（审查报告 I-2 尾巴）：剥离书名号/引号内的内容（标题/引用文案），
+    # 避免「标题叫《如何用AI赚钱》」「文案是『状态拉满』」里的疑问词被误判成提问。
+    _stripped = re.sub(r'[《「『“"‘\'][^》」』”"‘\']*[》」』”"‘\']?', "　", s)
+    if any(k in _stripped for k in ("怎么", "为什么", "为何", "是否", "是不是",
+                                     "能不能", "可以吗", "行吗", "如何", "咋")):
         return True
     # v4.159.5：补闭集疑问代词（什么/啥/哪些/哪个/多少/多久），结构性识别疑问句，
     # 堵死『做视频需要什么条件/有啥技巧/有哪些坑/走哪个接口/要花多少钱/要多久』类
     # 危险侧误触（此前缺疑问代词，单靠 吗/呢/怎么 漏判）。绝不补短语（开集坑第五次警示）。
-    if any(k in text for k in ("什么", "啥", "哪些", "哪个", "多少", "多久")):
+    if any(k in _stripped for k in ("什么", "啥", "哪些", "哪个", "多少", "多久")):
         return True
     return False
 def _verb_near(scan, obj_idx, obj_len, window=30):
@@ -580,6 +587,21 @@ def _is_status_query(text):
     if any(k in t for k in _bare) and t.endswith(("吗", "呢", "?", "？")):
         return True
     return False
+def _is_ref_context(text):
+    """是否「回指/质疑」语境（v4.244.0 审查报告 I-3）。
+
+    强回指词（_REF_KW 运行时已并入 intent_guard._STRONG_REF_KW，含「你刚才说的」
+    「什么时候让你」等组合词）一票否决；裸回指词（什么时候/让你/讨论/评价）必须与
+    回指锚点（刚才/上面/之前/你说的…）共现才算回指——「帮我搜一下明天什么时候下雨」
+    这类真指令不再见词就丢路由。
+    """
+    if not text:
+        return False
+    if any(k in text for k in _REF_KW):
+        return True
+    if any(k in text for k in _REF_BARE_KW):
+        return any(a in text for a in _REF_ANCHOR)
+    return False
 def _route_force_tool(text, prev_text=None):
     """v4.80：依据用户【当前】原话推断最该调用的工具，返回工具名或 None。
         仅用于 step1 强制指定 tool_choice：视频优先于图片（『图生视频』含『图』但属视频）；
@@ -621,7 +643,7 @@ def _route_force_tool(text, prev_text=None):
     # 0.5) 引用/质疑语境一票否决（v4.159.2）：用户在谈论/质疑/引用某生成动作而非
     #      下达指令时（「分析下生成视频这件事」「你刚才说的生成个视频，是BUG」
     #      「我什么时候让你生成视频了」），前置拦截，避免强制生成。
-    if any(k in text for k in _REF_KW):
+    if _is_ref_context(text):
         return None
     # 1) 状态追问优先拦截：进度/如何/好了吗/状态/完了吧 → 不强制工具，让模型正常汇报
     # v4.243.0（审查报告 I-2）：改用共现判据 _is_status_query，避免「如何/怎么样/状态/进度」
@@ -764,7 +786,7 @@ def _detect_action_intent(messages):
         return False
     # v4.159.2：否定/引用语境同样不该强制 action——「取消生成视频」「分析下生成视频这件事」
     # 不应被判定为需要执行操作。v4.159.3：补位置判据（分析下生成视频 无标记也拦截）。
-    if _neg_hit(text) or any(k in text for k in _REF_KW) or _ref_by_position(text):
+    if _neg_hit(text) or _is_ref_context(text) or _ref_by_position(text):
         return False
     # v4.102 fix10：明确要求生成图片/视频（产物是多媒体文件）→ 必须走工具
     if _gen_intent(text, _IMAGE_OBJ) or _gen_intent(text, _VIDEO_OBJ) or _phrase_hit(text):

@@ -77,48 +77,28 @@ _guard.arm()
 # 原串一律从真实源码抄（缩进差一级就 SKIP；SKIP 不能当「跑过了」）
 # ------------------------------------------------------------
 
-# ---- 并发批次：拿不到决策时的兜底（v4.226 已删，此处用于「复活」变异） ----
-_DEC_OLD = '''                _engine = getattr(self.mw, "permission_engine", None)
-                _dec = None
-                if _engine is not None:
-                    try:
-                        _dec = _engine.decide(
-                            name, args,
-                            explicit_intent=getattr(self, "explicit_intent", True))
-                    except Exception as _pe:
-                        # 决策异常必须留痕：否则「权限闸失效」这件事只有代码知道。
-                        log.warning("权限决策异常（并发批次 %s），按无授权处理: %s", name, _pe)
-                        _dec = None
+# ---- 批次级 decide 的异常分支（v4.244.0 审查报告 T-2 上移后的位置）----
+_DEC_OLD = '''            except Exception as _pe:
+                # v4.244.0（审查报告 T-2）：决策异常必须留痕（否则「权限闸失效」只有代码知道），
+                # 按无授权处理（None → 下方走串行，串行里 decide 再决一次，仍异常则向上抛）。
+                log.warning("权限决策异常（批次 %s），按无授权处理: %s", _nm, _pe)
+                _d = None
+            decs.append(_d)
 '''
 
-# 变异1：把允许兜底重新塞回来（allowed=True 的假决策）
-_DEC_REVIVED = '''                _engine = getattr(self.mw, "permission_engine", None)
-                _dec = None
-                if _engine is not None:
-                    try:
-                        _dec = _engine.decide(
-                            name, args,
-                            explicit_intent=getattr(self, "explicit_intent", True))
-                    except Exception as _pe:
-                        log.warning("权限决策异常（并发批次 %s），按无授权处理: %s", name, _pe)
-                        _dec = None
-                if _dec is None:
-                    _dec = _AllowAllDecision()
+# 变异1：把允许兜底重新塞回来（allowed=True 的假决策，log 还在）
+_DEC_REVIVED = '''            except Exception as _pe:
+                # v4.244.0（审查报告 T-2）：决策异常必须留痕（否则「权限闸失效」只有代码知道），
+                # 按无授权处理（None → 下方走串行，串行里 decide 再决一次，仍异常则向上抛）。
+                log.warning("权限决策异常（批次 %s），按无授权处理: %s", _nm, _pe)
+                _d = _AllowAllDecision()
+            decs.append(_d)
 '''
 
-# 变异2：只删动作留条件 —— 异常分支里把「按无授权处理」悄悄改成放行
-#       （log.warning 还在、_dec = None 还在，最阴的一种）
-_DEC_SHELL = '''                _engine = getattr(self.mw, "permission_engine", None)
-                _dec = None
-                if _engine is not None:
-                    try:
-                        _dec = _engine.decide(
-                            name, args,
-                            explicit_intent=getattr(self, "explicit_intent", True))
-                    except Exception as _pe:
-                        # 决策异常必须留痕：否则「权限闸失效」这件事只有代码知道。
-                        log.warning("权限决策异常（并发批次 %s），按无授权处理: %s", name, _pe)
-                        _dec = _AllowAllDecision()
+# 变异2：只删动作留条件 —— 异常分支里把「按无授权处理」悄悄改成放行（连 log 也删）
+_DEC_SHELL = '''            except Exception as _pe:
+                _d = _AllowAllDecision()
+            decs.append(_d)
 '''
 
 # ---- workflow：缺引擎拒绝分支 ----
@@ -187,14 +167,14 @@ CASES = [
      ["A1 READ(web_search) 无授权仍放行",
       "A7 只读工具在无授权下仍放行"]),
 
-    # ---- 防线2：并发批次的兜底 ----
-    ("并发批次把 allowed=True 兜底决策复活",
+    # ---- 防线2：并发批次（T-2 后为批次级 decide）的兜底 ----
+    ("批次级 decide 异常把 allowed=True 兜底决策复活",
      "agent.py", _DEC_OLD, _DEC_REVIVED,
-     ["B4 并发批次 perm_ctx 链", "B5 并发批次不再构造任何 *_Decision"]),
+     ["B5b 批次级不构造任何 *_Decision / *AllowAll 兜底对象"]),
 
-    ("并发批次只删动作留条件（异常分支改放行，log 还在）",
+    ("批次级 decide 异常只删留痕并放行（连 log 也删）",
      "agent.py", _DEC_OLD, _DEC_SHELL,
-     ["B4 并发批次 perm_ctx 链", "B5 并发批次不再构造任何 *_Decision"]),
+     ["B5b 批次级不构造任何 *_Decision / *AllowAll 兜底对象"]),
 
     # ---- 防线3：workflow 缺引擎分支 ----
     ("workflow 缺引擎分支保留但不 return（落回末尾照跑）",

@@ -15,17 +15,21 @@ judge-first 伴生判据：tests/test_intent_dag_239.py（D1-D5）
 """
 from dataclasses import dataclass
 
-VERSION = "v4.243.0"
+VERSION = "v4.244.0"
 
 # 落盘动词（命中即认为用户要"产出文件"）
 _SAVE_VERBS = ("存", "保存", "导出", "写到", "写入", "下载", "落盘", "存档",
                "存成", "存到", "存起来", "导出到")
 # 路径词（含盘符 / 常见落盘位置）——命中同样视为落盘信号
-_PATH_WORDS = ("D盘", "桌面", "下载", "本地", "文件夹", "目录", "硬盘", "u盘", "U盘", "电脑")
+# v4.244.0（审查报告 I-6）：删「下载」（已在 _SAVE_VERBS 重复登记）与「电脑」（位置词
+# 非落盘信号，见词就造 write_file 节点会凭空编造依赖）。
+_PATH_WORDS = ("D盘", "桌面", "本地", "文件夹", "目录", "硬盘", "u盘", "U盘")
 # 生成/搜索类动词 → 候选工具（用于从文本补主节点；force_tool 优先）
+# v4.244.0（审查报告 I-6）：删裸字键「画」——「动画片」里的「画」被误判成生图意图。
+# 「画一张图」类真指令由 force_tool/_phrase_hit 覆盖，不依赖此裸字键。
 _GEN_KEYWORDS = (
     ("视频", "video_gen"), ("生视频", "video_gen"), ("做视频", "video_gen"),
-    ("图片", "image_gen"), ("生图", "image_gen"), ("做图", "image_gen"), ("画", "image_gen"),
+    ("图片", "image_gen"), ("生图", "image_gen"), ("做图", "image_gen"),
     ("搜", "web_search"), ("搜索", "web_search"),
     ("查一下", "web_search"), ("查查", "web_search"),
 )

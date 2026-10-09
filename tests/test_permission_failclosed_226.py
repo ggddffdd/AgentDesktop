@@ -311,14 +311,31 @@ def group_b_wiring():
     check("B5 并发批次不再构造任何 *_Decision / *AllowAll 兜底对象", not ctor_names,
           "发现 %r" % (sorted(ctor_names),))
 
-    dec_calls = _calls_in(par, "decide")
-    check("B6 并发批次仍取真实权限决策（decide 调用存在）", len(dec_calls) >= 1,
+    # v4.244.0（审查报告 T-2）：权限决策已从 worker 内二次 decide 上移到
+    # _exec_tool_calls 批次级（批次级 decide 后把 decs 传给 _run_concurrent 复用），
+    # 故「取真实权限决策」与「异常留痕」改查批次级。
+    _batch = _fn_ast(cls, "_exec_tool_calls")
+    check("B6b 定位到批次级 _exec_tool_calls", _batch is not None, "未找到")
+    if _batch is None:
+        return
+    dec_calls = _calls_in(_batch, "decide")
+    check("B6 批次级取真实权限决策（decide 调用存在）", len(dec_calls) >= 1,
           "找到 %d 处" % len(dec_calls))
 
     log_warn = any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
                    and n.func.attr == "warning"
-                   for n in ast.walk(par))
+                   for n in ast.walk(_batch))
     check("B7 权限决策异常有 log.warning 留痕", log_warn, "未找到 log.warning")
+
+    ctor_batch = set()
+    for n in ast.walk(_batch):
+        if isinstance(n, ast.Call):
+            f = n.func
+            nm = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+            if nm and ("AllowAll" in nm or nm.endswith("Decision")):
+                ctor_batch.add(nm)
+    check("B5b 批次级不构造任何 *_Decision / *AllowAll 兜底对象", not ctor_batch,
+          "发现 %r" % (sorted(ctor_batch),))
 
     # ---- B8~B11：workflow 闸门 ----
     wf = _fn_ast(cls, "_run_workflow_guarded")

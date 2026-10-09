@@ -1583,7 +1583,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {}
             _seen_sigs = set()  # v4.120：批内完全重复调用去重（同 _run_serial）
-            for _seq_idx, tc in enumerate(tool_calls):
+            for _seq_idx, (tc, _dec) in enumerate(tool_calls):
                 fn = tc.get("function", {})
                 name = fn.get("name", "")
                 try:
@@ -1612,22 +1612,9 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 # 审计修复 E1：线程池工作线程是全新线程，不继承 thread-local——
                 # 在任务函数内先注入默认 sid，并发执行的 context 工具同样命中当前会话。
                 _ctx_sid = self._ctx_sid
-                # P1 #4（v4.219）：并发批次同样携带权限决策，杜绝绕过最终闸门。
-                # v4.226（P1-1）：拿不到决策时**不再伪造一个 allowed=True 的兜底**，
-                # 改为原样传 None —— 由 exec_tool 的 _permission_gate 按风险分类
-                # fail-closed（READ 放行 / WRITE_LOCAL·EXEC·EXTERNAL 拒绝）。
-                # decide() 抛异常同理：引擎自己出错了，绝不因此把权限放开。
-                _engine = getattr(self.mw, "permission_engine", None)
-                _dec = None
-                if _engine is not None:
-                    try:
-                        _dec = _engine.decide(
-                            name, args,
-                            explicit_intent=getattr(self, "explicit_intent", True))
-                    except Exception as _pe:
-                        # 决策异常必须留痕：否则「权限闸失效」这件事只有代码知道。
-                        log.warning("权限决策异常（并发批次 %s），按无授权处理: %s", name, _pe)
-                        _dec = None
+                # v4.244.0（审查报告 T-2）：_dec 由 _exec_tool_calls 批次级 decide 统一传入
+                # （已含 task_risk + needs_user 校验），worker 内不再二次 decide——那处重算
+                # 既漏 task_risk 又不校验 needs_user，且只带来风险不带来信息。
                 def _exec_with_ctx(_name=name, _args=args, _sid=_ctx_sid,
                                   _stop=lambda: self._stop_requested, _dec_ctx=_dec):
                     context_manager.set_default_sid(_sid)
@@ -1853,17 +1840,27 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         self._recent_tool_sigs.extend(new_sigs)
         self._recent_tool_sigs = self._recent_tool_sigs[-12:]
         engine = mw.permission_engine
-        decs = [engine.decide(
-            tc.get("function", {}).get("name", ""),
-            self._safe_args(tc),
-            explicit_intent=getattr(self, "explicit_intent", True),
-            task_risk=(getattr(self, "_task_risk_ctx", None) or (lambda: None))()) for tc in tool_calls]
-        # 任一被阻止 或 需用户确认 → 串行（逐条决策/确认）
-        if any(not d.allowed for d in decs) or any(d.needs_user for d in decs):
+        decs = []
+        for tc in tool_calls:
+            _nm = tc.get("function", {}).get("name", "")
+            try:
+                _d = engine.decide(
+                    _nm, self._safe_args(tc),
+                    explicit_intent=getattr(self, "explicit_intent", True),
+                    task_risk=(getattr(self, "_task_risk_ctx", None) or (lambda: None))())
+            except Exception as _pe:
+                # v4.244.0（审查报告 T-2）：决策异常必须留痕（否则「权限闸失效」只有代码知道），
+                # 按无授权处理（None → 下方走串行，串行里 decide 再决一次，仍异常则向上抛）。
+                log.warning("权限决策异常（批次 %s），按无授权处理: %s", _nm, _pe)
+                _d = None
+            decs.append(_d)
+        # 任一被阻止 / 需用户确认 / 决策异常（None）→ 串行（逐条决策/确认）
+        if (any(d is None or not d.allowed for d in decs)
+                or any(d is not None and d.needs_user for d in decs)):
             self._run_serial(tool_calls, mw, APP_DIR)
         else:
-            # 全允许且无需确认 → 并发执行
-            self._run_concurrent(tool_calls, mw, APP_DIR)
+            # 全允许且无需确认 → 并发执行（decs 随 tc 传入，worker 内不再二次 decide）
+            self._run_concurrent(list(zip(tool_calls, decs)), mw, APP_DIR)
 
     def _task_risk_ctx(self):
         """v4.196 批⑬：本轮任务的**任务级**风险等级（给权限引擎的 fail-closed 闸）。
