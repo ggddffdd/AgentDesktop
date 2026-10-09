@@ -24,6 +24,8 @@ if not FF:
     # run_all 记成 FAIL=1 假红。SKIP 口径与 test_frozen_smoke 一致：明确告知，不冒充通过。
     # CI 侧（ci.yml）已加 choco install ffmpeg —— 有 ffmpeg 的环境仍然真跑。
     print("  [SKIP] ffmpeg 不可用（不在 PATH）——音频回归跳过，不冒充通过")
+    # run_all 约定：rc=0 也必须输出 PASS=/FAIL= 统计（或成功横幅），否则按 EMPTY 判失败
+    print("PASS=0 FAIL=0 (SKIP: ffmpeg 不可用)")
     sys.exit(0)
 import video_pipeline as vp
 

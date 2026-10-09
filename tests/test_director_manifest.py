@@ -43,6 +43,8 @@ except ImportError as _e:
     # v4.239.1（CI 红 → 修）：core_agnes 依赖仓库外的 video-agent/core 包，
     # CI 干净 clone 上不存在 → 环境缺失 SKIP，不假红（与 frozen_smoke 同口径）。
     print(f"  [SKIP] video-agent/core 不在（{_e}）——外部依赖缺失，跳过不冒充通过")
+    # v4.239.1 补：run_all 规定 rc=0 也必须输出 PASS=/FAIL= 统计，否则按 EMPTY 判失败
+    print("\n汇总：PASS=0 FAIL=0 (SKIP: video-agent/core 不在)")
     sys.exit(0)
 import cancel_token as ct     # noqa: E402
 

@@ -33,6 +33,8 @@ if not shutil.which("ffmpeg"):
     # v4.239.1（CI 红 → 修）：本组探针全链路依赖 ffmpeg（noconsole/抽帧/DPR），
     # runner 无 ffmpeg 时 18 项连坐假红。SKIP 不冒充通过；CI 已装 ffmpeg 仍真跑。
     print("  [SKIP] ffmpeg 不可用 —— 图形探针组跳过，不冒充通过")
+    # run_all 约定：rc=0 也必须输出 PASS=/FAIL= 统计（或成功横幅），否则按 EMPTY 判失败
+    print("PASS=0 FAIL=0 (SKIP: ffmpeg 不可用)")
     sys.exit(0)
 
 FAIL = []
