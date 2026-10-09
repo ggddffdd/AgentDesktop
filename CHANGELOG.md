@@ -8,6 +8,17 @@
 - 新版本在上。
 
 ---
+## v4.242.0 — 2026-10-09
+
+意图理解「多步指令 DAG 化」相C：把「漏落盘」从收尾救回提前到事中 nudge（设计稿 `DESIGN_intent_dag.md` §7）。
+
+- `task_state` 新增 `precond_check(dag)` + `dag_nudge_instruction(missing)`：基于账本既有事实（`succeeded_tools` / `artifacts`）映射 dag 节点，检出「生成节点已完成但 `write_file` 未调用」等前置缺口；`fail-open`（dag=None / 异常 → 空清单不阻断）；**不污染 `required_tools` 硬要求口径**。
+- 接线点：`agent_task_mixin._dag_precond_miss_now` 在收尾闸门**之前**介入，复用 `_tstate_nudged` 一轮闸 + 步数余量防死循环，命中则注入定向 nudge「检测到『生成视频』已完成但『存盘』未执行，请先调用 write_file 保存」再给一轮（与 `task_state` 收尾闸门不叠加）。
+- 判据 `tests/test_intent_dag_239.py` 扩 D7（precond_check 漏落盘/依赖前置/dag=None 不阻断 / fail-open）+ D8（接线 `_dag_precond_miss_now` 漏落盘注入 / 一轮闸 / 步数耗尽 / 补齐不介入），整体 45/0（judge-first 红→绿）；扰动 `_perturb_intent_dag_c_241.py` 3/3 零哑弹（漏落盘检测失效 / 依赖前置检查失效 / fail-open 被关 三 case 全翻红）。
+- 10 处 VERSION 对齐 v4.242.0（含 config.APP_VERSION 字节级替换，无 BOM 假 diff）。
+
+---
+
 ## v4.241.0 — 2026-10-09
 
 意图理解「多步指令 DAG 化」相B：把 `decompose_intent` 的 `ActionDAG` 接入 PLAN 阶段（设计稿 `DESIGN_intent_dag.md` §6）。

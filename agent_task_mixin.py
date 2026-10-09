@@ -30,7 +30,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.241.0"
+VERSION = "v4.242.0"
 
 
 class AgentTaskMixin(object):
@@ -195,6 +195,48 @@ class AgentTaskMixin(object):
             return True
         except Exception as e:
             log.warning("任务状态机收尾闸门异常（已忽略）: %s", e)
+            return False
+
+    def _dag_precond_miss_now(self, task_state, step, max_steps):
+        """相C：收尾 break 前调：dag 前置校验未满足 → 注入定向 nudge 再给一轮。
+
+        返回 True = 已注入指令（调用方 continue 再给一轮）；
+        返回 False = 不介入，调用方走旧路径 break。
+
+        gate：复用 task_state 收尾闸门的「本轮注入过」标记 `_tstate_nudged` 作一轮闸，
+        确保与 `_tstate_nudge_now` 不会在同一轮叠加成死循环；且 steps 须有余量。
+        fail-open：任何异常 → 返回 False（退回原行为，绝不阻断主循环）。
+        """
+        try:
+            dag = getattr(self, "_intent_dag", None)
+            if dag is None:
+                return False
+            _ts = getattr(self, "_tstate", None)
+            if _ts is None:
+                return False
+            # 一轮闸：本模块与 task_state 收尾闸门共用 _tstate_nudged，
+            # 本轮已注入过任意一类 nudge 则不再注入，避免叠加成死循环。
+            if getattr(self, "_tstate_nudged", False):
+                return False
+            if max_steps and int(step) >= int(max_steps):
+                return False
+            missing = _ts.precond_check(dag)
+            if not missing:
+                return False
+            _instr = _ts.dag_nudge_instruction(missing)
+            if not _instr:
+                return False
+            _ts.mark_nudged()
+            self._tstate_nudged = True
+            self._force_next = True
+            self._idle_steps = 0
+            self._emit_status("⚠ 检测到前置步骤未完成，正在补做…")
+            self.messages.append({"role": "user", "content": _instr,
+                                  "_internal": True})
+            log.info("dag 前置校验补做：%s", _ts.summary())
+            return True
+        except Exception as e:
+            log.warning("dag 前置校验异常（已忽略）: %s", e)
             return False
 
     def _tstate_trace_nudge(self, step, tracer):

@@ -39,7 +39,7 @@ import os
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.241.0"
+VERSION = "v4.242.0"
 
 # ============================================================
 # 会产出实物的工具（按工具名 → 产物是否应当落盘到磁盘）
@@ -290,6 +290,76 @@ class TaskState(object):
         return out
 
     # --------------------------------------------------------
+    # 相C：前置校验前置化（把「漏落盘」从收尾救回提前到事中 nudge）
+    # --------------------------------------------------------
+    def _precond_artifact_ok(self, tool):
+        """相C：前置工具是否已「成功且产物落盘」。
+
+        口径（稳健优先，避免凭路径缺失误判）：
+          · 非文件产出工具（web_search 等）→ 无需产物，恒 True；
+          · 有已记录产物且 exists=True → True；
+          · 有已记录产物但 exists=False（明确失败）→ False；
+          · 该工具成功但没记下产物路径（agent 未捕获 path）→ 信任成功，True。
+        """
+        if tool not in _FILE_PRODUCING:
+            return True
+        found_ok = False
+        found_fail = False
+        for (p, ok, t) in self.artifacts:
+            if t == tool:
+                if ok:
+                    found_ok = True
+                else:
+                    found_fail = True
+        if found_ok:
+            return True
+        if found_fail:
+            return False
+        return True  # 没记到产物（信任成功）
+
+    def precond_check(self, dag):
+        """相C 前置校验前置化：把「漏落盘」从收尾救回提前到事中 nudge。
+
+        遍历 dag 节点，对每个声明了 precond_tool 的节点，核对该前置工具是否
+        已被 record_tool 记成功（succeeded_tools）且产物已落盘（_precond_artifact_ok）；
+        特别地，write_file 节点要求 write_file 自身已被调用（用户明确要存盘）。
+
+        返回未满足项清单：[(node_id, tool, precond_tool, kind), ...]
+          kind ∈ {"precond_not_called", "precond_no_artifact", "write_not_called"}
+        空列表 = 全部满足，不该介入。
+
+        fail-open：dag 为 None / 无 nodes / 异常 → 返回 []（退回原行为，不阻断主循环）。
+        不污染 required_tools：本方法只读既有事实，绝不改写硬要求口径。
+        """
+        try:
+            if dag is None or not hasattr(dag, "nodes"):
+                return []
+            nodes = getattr(dag, "nodes", ())
+            if not nodes:
+                return []
+            missing = []
+            for n in nodes:
+                pt = getattr(n, "precond_tool", "") or ""
+                if not pt:
+                    continue
+                tool = getattr(n, "tool", "")
+                nid = getattr(n, "id", "")
+                called = pt in self.succeeded_tools
+                artifact_ok = self._precond_artifact_ok(pt)
+                if not called:
+                    missing.append((nid, tool, pt, "precond_not_called"))
+                    continue
+                if not artifact_ok:
+                    missing.append((nid, tool, pt, "precond_no_artifact"))
+                    continue
+                # 前置已满足：若本节点是 write_file，自身必须被调用
+                if tool == "write_file" and "write_file" not in self.succeeded_tools:
+                    missing.append((nid, tool, pt, "write_not_called"))
+            return missing
+        except Exception:
+            return []
+
+    # --------------------------------------------------------
     # nudge 文案
     # --------------------------------------------------------
     def should_nudge(self, step, max_steps, already_injected=None):
@@ -332,6 +402,29 @@ class TaskState(object):
             "请补做上面未完成的部分（真实调用工具，不要只在文字里声称做过）。"
             "不要重复已经完成的内容，也不要输出空泛的『我已完成』——"
             "若因客观原因确实做不到，请直接说明哪一条做不到、为什么。")
+        return "\n".join(lines)
+
+    def dag_nudge_instruction(self, missing):
+        """相C 定向 nudge 文案（基于 precond_check 的未满足项）。
+
+        措辞要点：说清「前置已完成但后续没做」，并明确要调哪个工具，
+        弱模型常见反应是复述已做内容充当交差 → 明确「真实调用工具」。
+        """
+        if not missing:
+            return ""
+        lines = ["【任务前置检查】检测到动作已完成、但后续步骤未执行："]
+        for (nid, tool, pt, kind) in missing:
+            if kind == "write_not_called":
+                lines.append("  · 检测到「%s」已完成，但「%s」未执行，请先调用 %s 将产物保存到磁盘。"
+                             % (pt, tool, tool))
+            elif kind == "precond_not_called":
+                lines.append("  · 前置动作「%s」尚未执行，无法继续「%s」，请先完成前置。"
+                             % (pt, tool))
+            else:  # precond_no_artifact
+                lines.append("  · 前置动作「%s」虽已调用但产物未落盘，请确认「%s」可继续。"
+                             % (pt, tool))
+        lines.append("请补做上面的步骤（真实调用工具，不要只在文字里声称做过）。"
+                     "若因客观原因确实做不到，请直接说明哪一条做不到、为什么。")
         return "\n".join(lines)
 
     def mark_nudged(self):

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""intent_dag.py —— v4.241.0 多步指令 DAG 化（相A：纯函数 decompose_intent）
+"""intent_dag.py —— v4.242.0 多步指令 DAG 化（相A：纯函数 decompose_intent）
 
 设计稿：DESIGN_intent_dag.md §3-§4。本模块是**纯函数层**：无 IO、可单测、不接线、
 零风险（相A 不触 agent.py / agent_loop.py / task_state.py，相B/相C 才接入）。
@@ -15,7 +15,7 @@ judge-first 伴生判据：tests/test_intent_dag_239.py（D1-D5）
 """
 from dataclasses import dataclass
 
-VERSION = "v4.241.0"
+VERSION = "v4.242.0"
 
 # 落盘动词（命中即认为用户要"产出文件"）
 _SAVE_VERBS = ("存", "保存", "导出", "写到", "写入", "下载", "落盘", "存档",

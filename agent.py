@@ -1200,6 +1200,12 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                     continue
                 if self._nudge_count >= MAX_FORCE_RETRIES:
                     self.stream_commit.emit("⚠️ 已多次尝试但 Agent 始终未调用工具。请明确指示具体操作（如：搜索XX、读取文件XX、运行Python代码XX）。")
+                # ── 相C：dag 前置校验前置化（漏落盘从收尾救回提前到事中 nudge）──
+                # 放在 task_state 收尾闸门**之前**：与后者共用 _tstate_nudged 一轮闸，
+                # 不叠加；相C 更精确（专抓「生成了但没存盘」），优先于泛化收尾闸门。
+                if self._dag_precond_miss_now(task_state, step, self._max_steps):
+                    self._tstate_trace_nudge(step, _tracer)
+                    continue
                 # ── v4.225（P2 任务状态机）：收尾闸门 ──
                 # 放在所有 nudge 分支**之后**、真正 break 之前：只有老逻辑
                 # 都不打算再给一次机会时，这里才做最后一道「你确定做完了？」
