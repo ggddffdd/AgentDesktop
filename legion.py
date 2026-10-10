@@ -72,7 +72,7 @@ ROLE_FIELDS = [
 
 # 常用工具候选（与 agent_node._TOOL_DESC 对齐，另补实际在用的工具名）
 TOOL_CANDIDATES = [
-    "web_search", "web_fetch", "write_file", "read_file",
+    "web_search", "browser_open", "browser_read", "write_file", "read_file",
     "run_python", "image_gen", "search_memory", "remember",
     # 军团调度三件套（v4.122 新增）：项目经理靠这三个「眼睛」做验收与调度
     "legion_list_outputs", "legion_get_output", "legion_read_log",
@@ -3083,7 +3083,7 @@ def default_role_library():
                 "🔴 回答篇幅要撑得起（多数题材 ≥800 字），排版要有小标题与分段。\n"
                 "🔴 引用数据必须标注来源，不许编造数据或案例。"
             ),
-            tools=["web_search", "web_fetch", "write_file", "read_file"],
+            tools=["web_search", "browser_open", "browser_read", "write_file", "read_file"],
             output_format=(
                 "【选题清单】问题名 / 关注量与浏览量级 / 竞争度 / 我们的优势\n"
                 "【逐篇回答】开头（立论+身份锚点）→ 分点论证（数据/案例/出处）→ 结论 → 引导\n"
@@ -3220,7 +3220,7 @@ def default_role_library():
                 "🔴 listing 必须本地化语言，禁止机翻直上。\n"
                 "🔴 不承诺具体销量与利润；给区间 + 前提假设，并标注关键假设。"
             ),
-            tools=["web_search", "web_fetch", "write_file", "read_file"],
+            tools=["web_search", "browser_open", "browser_read", "write_file", "read_file"],
             output_format=(
                 "【平台与站点】推荐平台 / 理由 / 门槛与成本 / 风险\n"
                 "【选品建议】候选品 / 目标市场 / 定价区间 / 物流方案 / 合规待核实项\n"
@@ -3323,7 +3323,7 @@ def default_role_library():
                 "🔴 不做无法验证的宏大叙事：每条建议要能落到下一步动作。\n"
                 "🔴 不承诺收入与利润数字；给区间 + 假设 + 验证方法。"
             ),
-            tools=["web_search", "web_fetch", "write_file", "read_file"],
+            tools=["web_search", "browser_open", "browser_read", "write_file", "read_file"],
             output_format=(
                 "【局面判断】事实层 / 推断层（分层列）\n"
                 "【可选路径】每条含：做法 / 投入 / 周期 / 风险 / 适用前提\n"
@@ -3386,7 +3386,7 @@ def default_role_library():
                 "🔴 禁止为迎合 AI 而编造数据或伪造出处——引用率的前提是可信。\n"
                 "🔴 不承诺「保证被某某 AI 引用」；给做法与验证方法。"
             ),
-            tools=["web_search", "web_fetch", "write_file", "read_file"],
+            tools=["web_search", "browser_open", "browser_read", "write_file", "read_file"],
             skills=["geo-content-optimizer"],
             output_format=(
                 "【可引用性诊断】现有内容哪些段落抽不出来 + 为什么\n"
@@ -5220,7 +5220,7 @@ AUTO_FILL_DENY = {"web_fetch"}
 CAPABILITY_TAG_MAP = {
     "web-research": {
         "desc": "联网检索取证",
-        "tools": ["web_search", "web_fetch"],
+        "tools": ["web_search", "browser_read"],
         "skills": [],
     },
     "browser-automation": {
@@ -6736,10 +6736,10 @@ _CAPABILITY_KEYWORDS = {
 
 # 能力 → 所需工具/技能（覆盖率判定的依据）。纯推理类（无 tools/skills）默认角色自带。
 _CAPABILITY_REQUIRES = {
-    "实时搜索": {"tools": ["web_search", "web_fetch"], "skills": []},
-    "多来源验证": {"tools": ["web_search", "web_fetch"], "skills": []},
-    "事实核查": {"tools": ["web_search", "web_fetch"], "skills": []},
-    "数据抓取": {"tools": ["web_fetch", "browser_open", "browser_read"], "skills": ["网页爬取"]},
+    "实时搜索": {"tools": ["web_search", "browser_read"], "skills": []},
+    "多来源验证": {"tools": ["web_search", "browser_read"], "skills": []},
+    "事实核查": {"tools": ["web_search", "browser_read"], "skills": []},
+    "数据抓取": {"tools": ["browser_open", "browser_read"], "skills": ["网页爬取"]},
     "浏览器自动化": {"tools": ["browser_open", "browser_read"], "skills": ["浏览器自动化"]},
     "角色地图": {"tools": [], "skills": []},
     "冲突分析": {"tools": [], "skills": []},

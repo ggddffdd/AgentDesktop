@@ -7,6 +7,19 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.249.0 — 2026-10-10
+
+军团数据抓取系统性清 web_fetch：统一走 browser_read（web_fetch 的超集，能抓 JS 渲染页 + 静态页）。
+
+- **4 个角色卡移除 web_fetch**：知乎策略师 / 跨境电商操盘 / 商业策略师 / AI引用策略师，补 browser_open + browser_read。此前 v4.147.9 只清了数据岗 3 个角色，这 4 个「检索+引用」岗还留着 web_fetch。
+- **能力覆盖率映射表清 web_fetch**：_CAPABILITY_REQUIRES 的「实时搜索/多来源验证/事实核查/数据抓取」改用 browser_read。
+- **自动垫能力映射清 web_fetch**：CAPABILITY_TAG_MAP 的 web-research 改用 browser_read（此前靠 AUTO_FILL_DENY 拦，映射表本身是脏的）。
+- **工具候选列表清 web_fetch**：TOOL_CANDIDATES 改用 browser_open + browser_read，RoleEditor 不再提供 web_fetch。
+- 判据 tests/test_legion_data_fetch_249.py 30/0；扰动 _perturb_legion_data_fetch_249.py 4/4 零哑弹。
+- 10 处 VERSION 对齐 v4.249.0。
+
+---
+
 ## v4.248.0 — 2026-10-10
 
 军团产出质量修复 + 组队覆盖 bug。

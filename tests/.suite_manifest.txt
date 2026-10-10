@@ -51,6 +51,7 @@ test_judge_single_source.py
 test_legion_advisor_status.py
 test_legion_audit.py
 test_legion_chat_ui.py
+test_legion_data_fetch_249.py
 test_legion_permissions.py
 test_legion_quality_248.py
 test_legion_resume_fill.py
