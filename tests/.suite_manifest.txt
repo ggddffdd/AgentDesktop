@@ -60,6 +60,7 @@ test_legion_resume_fill.py
 test_legion_status.py
 test_legion_team_chat.py
 test_legion_ui_polish_250.py
+test_legion_ui_polish_252.py
 test_log_redirect_hyg.py
 test_memory_gate_196.py
 test_memory_metadata.py

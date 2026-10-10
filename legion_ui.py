@@ -50,7 +50,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QLineEdit, QPushButton, QLabel, QTextEdit, QComboBox,
     QMessageBox, QGroupBox, QScrollArea, QDialogButtonBox, QAbstractItemView,
     QSizePolicy, QCheckBox, QSpinBox, QInputDialog, QStackedWidget,
-    QSplitter, QTextBrowser, QPlainTextEdit,
+    QSplitter, QTextBrowser, QPlainTextEdit, QMenu,
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize
 from PySide6.QtGui import QBrush, QColor
@@ -220,6 +220,9 @@ class RoleEditor(QDialog):
         self.e_skills = QListWidget()
         self.e_skills.setSelectionMode(QAbstractItemView.MultiSelection)
         mounted = set(r.get("skills") or [])
+        # v4.252.0：勾选真相（搜索重建时据此恢复勾选，不丢用户选择）
+        self._selected_slugs = set(mounted)
+        self._rebuilding_skills = False
         # 规范化 archived_skills：旧数据是 slug 字符串，新数据是 dict
         archived_raw = r.get("archived_skills") or []
         archived_norm = []
@@ -227,56 +230,15 @@ class RoleEditor(QDialog):
             n = legion._normalize_archived_entry(e)
             if n:
                 archived_norm.append(n)
-        # 已安装技能段
-        _add_skill_section_header(self.e_skills, "✓ 当前可挂载")
-        for sk in self._all_skills:
-            slug = sk.get("slug", "")
-            name = sk.get("name") or slug
-            emoji = sk.get("emoji", "")
-            # v4.250.0：description 副行直接可见（不再只靠悬停 tooltip），治「记不得技能是干嘛的」
-            desc = (sk.get("description") or "").strip()
-            label = f"{emoji} {name}".strip() if emoji else name
-            if desc:
-                label += "\n  " + desc[:50]
-            it = QListWidgetItem(label)
-            it.setData(Qt.UserRole, ("installed", slug))
-            tip = desc[:120] + ("…" if len(desc) > 120 else "")
-            if tip:
-                it.setToolTip(f"slug: {slug}\n{tip}")
-            else:
-                it.setToolTip(f"slug: {slug}")
-            it.setSizeHint(QSize(0, 42))
-            self.e_skills.addItem(it)
-            if slug in mounted:
-                it.setSelected(True)
-        # 已下架技能段（仅当成员 archived_skills 非空时才出现）
-        if archived_norm:
-            _add_skill_section_header(self.e_skills, "⚠ 已下架但本项目仍挂着")
-            for entry in archived_norm:
-                slug = entry.get("slug", "")
-                # 显示名解析优先级：v4.121.5 存档快照 → 运行时扫（重装回来）→ slug
-                name = entry.get("name") or slug
-                emoji = entry.get("emoji") or ""
-                if name == slug or not emoji:
-                    info = legion._load_skill_prompt(slug)
-                    if info:
-                        name = info.get("name") or name
-                        emoji = emoji or (info.get("emoji") or "")
-                # 真正拿不到就用 ⚠ 前缀（极端情况：旧数据 + 未重装）
-                if name == slug and not emoji:
-                    name = f"⚠ {slug}"
-                label = f"{emoji} {name}".strip()
-                it = QListWidgetItem(label)
-                # v4.121.5：payload 改为整个 dict，get_role 时整存回去名字不丢
-                it.setData(Qt.UserRole, ("archived", entry))
-                it.setForeground(QBrush(QColor(THEME["gray2"])))
-                it.setToolTip(
-                    f"slug: {slug}\n"
-                    f"状态：技能已下架（skills/{slug}/SKILL.md 不存在或读不动）\n"
-                    f"默认勾选 = 保留在 archived_skills；取消勾选 = 主动移除")
-                self.e_skills.addItem(it)
-                # 默认勾选：用户原始意图是"留着"
-                it.setSelected(True)
+        self._archived_norm = archived_norm
+        self._selected_archived = {en.get("slug", "") for en in archived_norm}
+        # v4.252.0：搜索框 + 分类分组（治「47 个技能要翻、记不得干嘛」）
+        self.e_skill_filter = QLineEdit()
+        self.e_skill_filter.setPlaceholderText("🔍 搜技能：名称 / 用途 / 分类")
+        self.e_skill_filter.setClearButtonEnabled(True)
+        self.e_skill_filter.textChanged.connect(self._on_skill_filter)
+        self.e_skills.itemChanged.connect(self._on_skill_item_changed)
+        self._build_skill_items("")
         self.e_skills.setFixedHeight(180)
         self.e_skills.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.e_skills.setToolTip(
@@ -293,7 +255,14 @@ class RoleEditor(QDialog):
         form.addRow("⑤ 输出格式", self.e_output)
         form.addRow("⑥ 质量标准", self.e_quality)
         form.addRow("⑦ 自检", self.e_selfcheck)
-        form.addRow("⑧ 挂载技能", self.e_skills)
+        # v4.252.0：搜索框 + 列表 包成一个 widget（原来只放列表，现在顶部加搜索）
+        skill_box = QWidget()
+        sv = QVBoxLayout(skill_box)
+        sv.setContentsMargins(0, 0, 0, 0)
+        sv.setSpacing(4)
+        sv.addWidget(self.e_skill_filter)
+        sv.addWidget(self.e_skills)
+        form.addRow("⑧ 挂载技能", skill_box)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.button(QDialogButtonBox.Ok).setText("确定")
@@ -327,6 +296,97 @@ class RoleEditor(QDialog):
         except Exception:
             pass
         return super().exec()
+
+    # ---- v4.252.0：技能列表 搜索 + 分类分组 ----
+    def _on_skill_filter(self, text):
+        self._build_skill_items(text)
+
+    def _on_skill_item_changed(self, it):
+        """用户勾选/取消勾选 → 增量同步勾选真相（重建期间忽略程序化改动）。"""
+        if self._rebuilding_skills:
+            return
+        payload = it.data(Qt.UserRole)
+        if not (isinstance(payload, tuple) and len(payload) == 2):
+            return
+        kind, value = payload
+        if kind == "installed" and isinstance(value, str):
+            if it.isSelected():
+                self._selected_slugs.add(value)
+            else:
+                self._selected_slugs.discard(value)
+        elif kind == "archived":
+            slug = value.get("slug", "") if isinstance(value, dict) else str(value or "")
+            if it.isSelected():
+                self._selected_archived.add(slug)
+            else:
+                self._selected_archived.discard(slug)
+
+    def _build_skill_items(self, filter_text=""):
+        """重建技能列表：按搜索词过滤 + 按 category 分组 + 恢复勾选状态。"""
+        self._rebuilding_skills = True
+        try:
+            self.e_skills.clear()
+            q = (filter_text or "").strip().lower()
+            # 已安装技能：过滤 + 按分类分组
+            _add_skill_section_header(self.e_skills, "✓ 当前可挂载")
+            by_cat = {}
+            for sk in self._all_skills:
+                slug = sk.get("slug", "")
+                name = sk.get("name") or slug
+                emoji = sk.get("emoji", "")
+                desc = (sk.get("description") or "").strip()
+                cat = sk.get("category") or "未分类"
+                if q:
+                    hay = " ".join([slug, name, desc, cat]).lower()
+                    if q not in hay:
+                        continue
+                by_cat.setdefault(cat, []).append((slug, name, emoji, desc))
+            for cat in sorted(by_cat):
+                _add_skill_section_header(self.e_skills, f"📂 {cat}")
+                for slug, name, emoji, desc in by_cat[cat]:
+                    label = f"{emoji} {name}".strip() if emoji else name
+                    if desc:
+                        label += "\n  " + desc[:50]
+                    it = QListWidgetItem(label)
+                    it.setData(Qt.UserRole, ("installed", slug))
+                    tip = desc[:120] + ("…" if len(desc) > 120 else "")
+                    if tip:
+                        it.setToolTip(f"slug: {slug}\n{tip}")
+                    else:
+                        it.setToolTip(f"slug: {slug}")
+                    it.setSizeHint(QSize(0, 42))
+                    it.setSelected(slug in self._selected_slugs)
+                    self.e_skills.addItem(it)
+            # 已下架段（不参与搜索过滤，始终显示）
+            if self._archived_norm:
+                _add_skill_section_header(self.e_skills, "⚠ 已下架但本项目仍挂着")
+                for entry in self._archived_norm:
+                    slug = entry.get("slug", "")
+                    # 显示名解析优先级：v4.121.5 存档快照 → 运行时扫（重装回来）→ slug
+                    name = entry.get("name") or slug
+                    emoji = entry.get("emoji") or ""
+                    if name == slug or not emoji:
+                        info = legion._load_skill_prompt(slug)
+                        if info:
+                            name = info.get("name") or name
+                            emoji = emoji or (info.get("emoji") or "")
+                    # 真正拿不到就用 ⚠ 前缀（极端情况：旧数据 + 未重装）
+                    if name == slug and not emoji:
+                        name = f"⚠ {slug}"
+                    label = f"{emoji} {name}".strip()
+                    it = QListWidgetItem(label)
+                    # v4.121.5：payload 改为整个 dict，get_role 时整存回去名字不丢
+                    it.setData(Qt.UserRole, ("archived", entry))
+                    it.setForeground(QBrush(QColor(THEME["gray2"])))
+                    it.setToolTip(
+                        f"slug: {slug}\n"
+                        f"状态：技能已下架（skills/{slug}/SKILL.md 不存在或读不动）\n"
+                        f"默认勾选 = 保留在 archived_skills；取消勾选 = 主动移除")
+                    self.e_skills.addItem(it)
+                    # 默认勾选：用户原始意图是"留着"
+                    it.setSelected(slug in self._selected_archived)
+        finally:
+            self._rebuilding_skills = False
 
     def get_role(self):
         role = legion.new_role(
@@ -2863,23 +2923,33 @@ class LegionWindow(QWidget):
                 row.addWidget(name_l)
                 row.addWidget(info_l, 1)
 
-                b_up = QPushButton("↑")
-                b_up.setFixedWidth(32)
-                b_up.setToolTip("上移（越过波首则并入上一波）")
-                b_up.clicked.connect(
+                # v4.252.0：↑↓ 两个按钮收敛成「移动▾」菜单——上移/下移一格，
+                # 或直接「移到第 N 波」跨波（不再连点 N 次 + 滚屏确认）。
+                b_move = QPushButton("移动▾")
+                b_move.setFixedWidth(66)
+                b_move.setToolTip("上移/下移一格，或直接跨波移到指定波次")
+                move_menu = QMenu(b_move)
+                act_up = move_menu.addAction("↑ 上移（越过波首并入上一波）")
+                act_up.triggered.connect(
                     lambda _c=False, w=wi, i=mi: self._move_member(w, i, -1))
-                b_dn = QPushButton("↓")
-                b_dn.setFixedWidth(32)
-                b_dn.setToolTip("下移（越过波尾则并入下一波）")
-                b_dn.clicked.connect(
+                act_dn = move_menu.addAction("↓ 下移（越过波尾并入下一波）")
+                act_dn.triggered.connect(
                     lambda _c=False, w=wi, i=mi: self._move_member(w, i, 1))
+                move_menu.addSeparator()
+                for tw in range(len(waves)):
+                    if tw == wi:
+                        continue
+                    act = move_menu.addAction(f"移到 第 {tw + 1} 波")
+                    act.triggered.connect(
+                        lambda _c=False, w=wi, i=mi, t=tw: self._move_member_to(w, i, t))
+                b_move.setMenu(move_menu)
                 b_ed = QPushButton("编辑")
                 b_ed.clicked.connect(
                     lambda _c=False, w=wi, i=mi: self._edit_member(w, i))
                 b_rm = QPushButton("移除")
                 b_rm.clicked.connect(
                     lambda _c=False, w=wi, i=mi: self._del_member(w, i))
-                for b in (b_up, b_dn, b_ed, b_rm):
+                for b in (b_move, b_ed, b_rm):
                     row.addWidget(b)
                 bl.addLayout(row)
 
@@ -3120,6 +3190,29 @@ class LegionWindow(QWidget):
         else:
             waves[tw].setdefault("members", []).insert(ti, member)
 
+        _ui_save_legion(self.data)
+        self._rebuild_waves()
+        self._refresh_head()
+
+    def _move_member_to(self, wi, mi, target_wi):
+        """v4.252.0：把 (wi, mi) 的成员直接移到 target_wi 末尾（跨波一步到位）。
+
+        相比 _move_member 的「一格一格挪」，这条是「移到第 N 波」菜单的直达路径，
+        治「跨 3 波要连点 3 次还要滚屏确认」。
+        """
+        p = self._cur_project()
+        if not p:
+            return
+        waves = p.get("waves") or []
+        if not (0 <= wi < len(waves)) or not (0 <= target_wi < len(waves)):
+            return
+        if wi == target_wi:
+            return
+        members = waves[wi].get("members") or []
+        if not (0 <= mi < len(members)):
+            return
+        member = members.pop(mi)
+        waves[target_wi].setdefault("members", []).append(member)
         _ui_save_legion(self.data)
         self._rebuild_waves()
         self._refresh_head()

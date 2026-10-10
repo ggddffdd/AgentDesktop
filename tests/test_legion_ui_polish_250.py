@@ -31,10 +31,14 @@ def check(name, cond):
 
 
 def test_skill_list_desc():
-    """技能列表 item 必须显示 description 副行（不再只靠悬停 tooltip）。"""
+    """技能列表 item 必须显示 description 副行（不再只靠悬停 tooltip）。
+
+    v4.252.0：desc 副行逻辑从 __init__ 移进 _build_skill_items（搜索+分组重构），
+    判据改为 inspect 该方法，避免重构后判据跟着失效。
+    """
     import inspect
     from legion_ui import RoleEditor
-    src = inspect.getsource(RoleEditor.__init__)
+    src = inspect.getsource(RoleEditor._build_skill_items)
     check("技能·item拼description副行", 'label += "\\n"' in src or "desc[:50]" in src)
 
 
