@@ -15,7 +15,7 @@ judge-first 伴生判据：tests/test_intent_dag_239.py（D1-D5）
 """
 from dataclasses import dataclass
 
-VERSION = "v4.250.0"
+VERSION = "v4.251.0"
 
 # 落盘动词（命中即认为用户要"产出文件"）
 _SAVE_VERBS = ("存", "保存", "导出", "写到", "写入", "下载", "落盘", "存档",

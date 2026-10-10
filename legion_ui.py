@@ -3032,6 +3032,10 @@ class LegionWindow(QWidget):
         p = self._cur_project()
         if not p:
             return
+        # v4.251.0 修复：波次越界守卫（与 _edit_member/_del_member 对齐）。
+        # 此前这里直接 p["waves"][wi]，渲染后项目/波次被删的竞态下会 KeyError 崩。
+        if not (0 <= wi < len(p.get("waves") or [])):
+            return
         picker = RolePicker(self.data.get("role_library", []), self)
         if picker.exec() != QDialog.Accepted:
             return
@@ -3608,7 +3612,10 @@ class LegionWindow(QWidget):
         if hasattr(self, "chat_panel"):
             try:
                 self.chat_panel.begin_auth(title, detail)
-                self._switch_page(1)
+                # v4.251.0 修复：授权要切到「聊天页」（idx 0），此前误写 1（角色库页）。
+                # v4.148.1 页面重排（聊天 0/角色库 1/团队库 2/编排 3）时漏改此处直调，
+                # 导致授权到来时把人带到角色库而非能看到「放行/打回/终止」的对话流。
+                self._switch_page(0)
                 # v4.145 修复①：把承载军团的顶层页提到前台——用户可能在别的页
                 # （导演台/主对话），否则授权被渲染进不可见的对话页，600s 后静默超时、
                 # 整轮多波次运行被破坏性中止（人不在必「卡死」）。

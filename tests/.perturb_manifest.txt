@@ -30,6 +30,7 @@ _perturb_intent_dag_b_240.py
 _perturb_intent_dag_c_241.py
 _perturb_legion_chat_ui.py
 _perturb_legion_data_fetch_249.py
+_perturb_legion_orch_audit_251.py
 _perturb_legion_polish_250.py
 _perturb_legion_quality_248.py
 _perturb_legion_team_chat.py
