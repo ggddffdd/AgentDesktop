@@ -6,6 +6,7 @@ OrchestrateWorker（小说一条龙编排）、_ASRWorker/_TTSWorker（语音链
 零行为变化：代码逐行搬移；ui.py 顶部 re-export 全部名字保兼容。
 """
 from PySide6.QtCore import (QMutex, QThread, QWaitCondition, Signal)
+import logging
 import os
 import perf_baseline
 import re
@@ -15,6 +16,15 @@ import trace_log
 import voice as voice_mod  # v4.216.0：worker 内引用 voice_mod
 from config import (WORKSPACE_DIR)
 from datetime import (datetime)
+
+# v4.257.0（P0-6）：模块级 logger。
+# 此前本文件**零 logger 定义**，而 `_TTSWorker.run()` 的 except 分支写了
+# `log.error(...)` —— 这里的 `log` 从来就不存在（`log` 只是 OrchestrateWorker
+# 的类属性 Signal(str)）。结果：TTS 一失败，异常处理器自己抛 NameError，
+# 把**真正的失败原因**顶掉；而 `_TTSWorker` 只有 sig_mp3 一个信号，调用方
+# （ui.py:1497/1523）只连了它 —— 用户端完全无感知，静默无声。
+# 实测确认：`hasattr(ui_workers, "log")` == False → NameError: name 'log' is not defined。
+log = logging.getLogger("dsdesktop.workers")
 
 class _GenThread(QThread):
     """后台跑阻塞型生成（生图/生视频），结果经信号回主线程。"""
@@ -584,6 +594,10 @@ class _ASRWorker(QThread):
 class _TTSWorker(QThread):
     """后台语音合成：文本 -> mp3（edge-tts）。"""
     sig_mp3 = Signal(str)
+    # v4.257.0（P0-6）：补错误通道 —— 与同族 `_ASRWorker` 对齐。
+    # 此前本类只有 sig_mp3，失败时既无信号也无日志（还 NameError），
+    # 调用方（ui.py:1497/1523）只连了 sig_mp3 → 失败=静默无声。
+    sig_error = Signal(str)
 
     def __init__(self, text, tts):
         super().__init__()
@@ -595,4 +609,13 @@ class _TTSWorker(QThread):
             mp3 = voice_mod.synthesize(self.text, self.tts)
             self.sig_mp3.emit(mp3)
         except Exception as e:
-            log.error("TTS 失败: %s", e)
+            # v4.257.0（P0-6）：先落日志（模块级 logger，见文件头），再上送错误。
+            # 顺序不能反 —— 早期 return 会把失败原因彻底吞掉。
+            try:
+                log.error("TTS 失败: %s", e, exc_info=True)
+            except Exception:
+                pass
+            try:
+                self.sig_error.emit(str(e))
+            except Exception:
+                pass

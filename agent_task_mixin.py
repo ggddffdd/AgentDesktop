@@ -30,7 +30,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.256.0"
+VERSION = "v4.257.0"
 
 
 class AgentTaskMixin(object):

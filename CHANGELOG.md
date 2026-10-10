@@ -7,6 +7,33 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.257.0 — 2026-10-11
+
+失败日志真落库（P0-5）+ TTS 失败不再二次抛错（P0-6）。
+
+继 v4.256.0「数据出口四件套」之后，继续清评审报告里**小改动、立刻兑现**的两条。
+两条都实地核对过，且**范围按实证收窄**——报告把 8 处 `exc_info=True` 混为一谈，
+实际只有 `tools.py` 两处是真 bug，其余 6 处是 std logging（参数合法），一并改会改坏。
+
+- **P0-5 工具失败日志从未落库**：`StructuredLogger.error` 签名没有 `exc_info`，
+  而 `tools.py` 两处按 std logging 习惯传了 `exc_info=True` → TypeError → 被外层
+  `except Exception: pass` 吞掉。**v4.155 fix1 号称补的「工具失败 ERROR 级落库」，
+  自那以后一次都没成功过**——工具失败在日志里是一片空白。
+  现 `_log` 及五个级别方法全族接 `exc_info`（默认 False，老调用逐字不变），
+  对齐 std logging 口径（True / 异常实例 / 三元组都可）；message 尾部附「[异常] 类型: 信息」，
+  完整栈进 `extra["traceback"]`——日志查看器只显示 message 时也不至于只剩「执行异常」。
+- **P0-6 TTS 失败信息被自己吞掉**：`ui_workers` **模块级零 logger**，而 `_TTSWorker.run()`
+  的 except 分支写了 `log.error(...)` → `NameError: name 'log' is not defined`。
+  这是异常处理器里的异常，把**真正的失败原因**顶掉；且 `_TTSWorker` 只有 `sig_mp3`
+  一个信号、调用方只连了它 → TTS 失败 = 用户端静默无声。
+  现补模块级 logger，并给 `_TTSWorker` 补 `sig_error`（与同族 `_ASRWorker` 对齐）。
+
+- 判据 tests/test_fail_log_tts_257.py 18/0（先红 2/11）；扰动 _perturb_fail_log_tts_257.py 7/7 零哑弹。
+- 端到端判据是本次重点：光修签名不够，必须证明「工具真失败时 ERROR 真的进了库」。
+- 10 处 VERSION 对齐 v4.257.0。
+
+---
+
 ## v4.256.0 — 2026-10-11
 
 数据出口四件套：把「往外漏」的四个口子堵上（P0-1 / P0-2 / P1-1 / P1-2）。
