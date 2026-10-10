@@ -2274,7 +2274,7 @@ class LegionWindow(QWidget):
         _ui_save_legion(self.data)
         self._refresh_projects(select_id=p.get("id"))
         self._rebuild_waves()
-        self.chat_panel.say("系统", "✅ " + rep + "。写「启动军团 <任务>」就能开工。")
+        self.chat_panel.say("系统", rep + " 直接说「启动军团 做小红书带货」就能开工")
 
     def _chat_manage(self, kind):
         """v4.247.0：对话项目管理命令 → 复用既有方法（危险操作内部自带确认）。"""

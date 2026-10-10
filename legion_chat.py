@@ -355,6 +355,9 @@ class LegionChatPanel(QWidget):
         _task = self._parse_launch_command(text)
         if _task is not None:
             self._record("你", text)
+            if not _task:
+                self._record("系统", "启动军团需要任务描述，例如：启动军团 做小红书带货")
+                return
             cb = getattr(self, "_launch_cb", None)
             if callable(cb):
                 cb(_task)
@@ -388,9 +391,9 @@ class LegionChatPanel(QWidget):
         if not t or len(t) > 60:
             return None
         for kw in ("启动军团", "开团"):
-            if t.startswith(kw) and len(t) > len(kw):
+            if t.startswith(kw):
                 task = t[len(kw):].strip(" :：，,。.")
-                return task or None
+                return task  # 可能为 ""（只输入「启动军团」没带任务）
         return None
 
     @staticmethod
@@ -609,11 +612,11 @@ class LegionChatPanel(QWidget):
 
     def _render_divider(self, label, wave_no):
         """v4.247.0：纯文本波次分隔线。"""
-        self._insert("")
         self._insert("─────  %s  ─────" % label)
 
     def _insert(self, s):
-        self.log.insertPlainText(s + "\n")
+        # 每条消息后空一行，让消息块之间有呼吸感（纯文本流治「挤」）
+        self.log.insertPlainText(s + "\n\n")
         c = self.log.textCursor()
         c.movePosition(c.MoveOperation.End)
         self.log.setTextCursor(c)

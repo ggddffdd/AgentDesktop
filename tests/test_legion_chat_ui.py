@@ -75,9 +75,20 @@ def test_manage_callback():
     check("管理命令→回调", got.get("kind") == "info")
 
 
+def test_launch_command():
+    from legion_chat import LegionChatPanel
+    # 「启动军团」无任务 → 返回空串（send 层据此提示补任务，而非静默无反应）
+    check("启动·无任务返回空串", LegionChatPanel._parse_launch_command("启动军团") == "")
+    check("启动·带任务", LegionChatPanel._parse_launch_command("启动军团做小红书带货") == "做小红书带货")
+    check("启动·开团前缀", LegionChatPanel._parse_launch_command("开团写公众号") == "写公众号")
+    # 反向
+    check("启动·非启动命令", LegionChatPanel._parse_launch_command("把选品范围收窄") is None)
+
+
 if __name__ == "__main__":
     test_parse_manage_intent()
     test_render_plaintext()
     test_manage_callback()
+    test_launch_command()
     print(f"\nPASS={PASS} FAIL={FAIL}")
     sys.exit(1 if FAIL else 0)
