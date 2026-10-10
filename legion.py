@@ -7069,6 +7069,29 @@ def format_team_plan(plan, lib=None):
     return "\n".join(lines)
 
 
+_MANAGE_INTENTS = {
+    "项目信息": "info", "查看项目": "info", "看项目": "info", "项目详情": "info",
+    "复制项目": "dup", "克隆项目": "dup",
+    "删除项目": "delete", "删项目": "delete", "删除当前项目": "delete",
+    "补录数据": "manual", "补录": "manual", "管理补录": "manual",
+    "清记忆": "wipe", "清空记忆": "wipe", "清除记忆": "wipe",
+    "上次报告": "report", "打开报告": "report", "看报告": "report",
+    "打开上次报告": "report",
+}
+
+
+def parse_manage_intent(text):
+    """v4.247.0：识别对话里的「项目管理」命令。返回 kind 或 None。
+
+    只做**整句精确匹配**（去空格/全角空格后），零误判——识别不到就当普通留言。
+    kind ∈ {"info","dup","delete","manual","wipe","report"}。
+    """
+    t = str(text or "").strip().replace(" ", "").replace("\u3000", "")
+    if not t or len(t) > 12:
+        return None
+    return _MANAGE_INTENTS.get(t)
+
+
 def parse_skill_intent(text):
     """v4.139 P2：解析对话里的「技能」意图。返回 (kind, arg)。
 

@@ -1585,39 +1585,13 @@ class LegionWindow(QWidget):
         self.proj_list = QListWidget()
         self.proj_list.currentItemChanged.connect(self._on_select_project)
         lv.addWidget(self.proj_list, 1)
-        # v4.123：先让 PM 组队，再手工微调，比从空白搭省事
-        b_team = QPushButton("🧙 PM 出方案（我审批）")
-        b_team.setToolTip("PM 只拟方案，你批准后角色才入职")
-        b_team.setToolTip("说一句你要干什么，项目经理自动拉人排波次、配技能")
-        b_team.clicked.connect(self._auto_team)
-        b_add = QPushButton("+ 添加团队")
-        b_add.clicked.connect(self._add_project)
-        b_edit = QPushButton("项目信息")
-        b_edit.clicked.connect(self._edit_project)
-        b_dup = QPushButton("复制项目")
-        b_dup.clicked.connect(self._dup_project)
-        b_del = QPushButton("删除项目")
-        b_del.clicked.connect(self._del_project)
-        b_skill = QPushButton("🔧 装技能（GitHub）")
-        b_skill.setToolTip("技能库里缺方法论时，从 GitHub 找 SKILL.md 装上。\n"
-                           "装完会问挂给谁 —— 挂上后下一波 / 打回重跑立即生效\n"
-                           "（项目经理报了差技能的话，名字在执行日志里）")
-        b_skill.clicked.connect(self._install_skill)
-        # v4.124.14：记忆层必须「看得见、清得掉」——
-        # 否则换了个新任务，旧的补录数据/锁定标的还在暗处把方向带跑偏。
-        b_manual = QPushButton("📎 补录数据")
-        b_manual.setToolTip("管理手工补录文件：挂载到本项目 / 归档（不再被任何任务自动读取）")
-        b_manual.clicked.connect(self._manage_manual)
-        b_wipe = QPushButton("🧹 清记忆")
-        b_wipe.setToolTip("清空本项目的锁定标的 / 否决黑名单 / 项目教训本")
-        b_wipe.clicked.connect(self._wipe_memory)
-        # v4.124.15：报告入口（跑完的成稿落在 ~/Documents/小臭玩AI/legion_reports/）
-        b_report = QPushButton("📄 上次报告")
-        b_report.setToolTip("打开最近一次军团的报告文件（落盘位置 legion_reports/）")
-        b_report.clicked.connect(self._open_last_report)
-        for b in (b_team, b_add, b_edit, b_dup, b_del, b_skill, b_manual, b_wipe,
-                  b_report):
-            lv.addWidget(b)
+        # v4.247.0：左栏按钮全部对话化（组队/装技能/项目管理都在对话里说），只留项目列表
+        hint = QLabel("在右侧对话里说需求即可：\n"
+                      "组队：组个团队做X\n"
+                      "管理：项目信息 / 复制项目 / 补录数据 / 清记忆 / 上次报告")
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color:{THEME['faint']};font-size:12px;padding:4px 2px;")
+        lv.addWidget(hint)
         root.addWidget(left)
 
         # 右栏：波次编排 + 运行
@@ -1723,11 +1697,12 @@ class LegionWindow(QWidget):
         self.chat_panel.set_auth_dialog_opener(self._open_auth_dialog)
         self.chat_panel.set_stopper(self._on_stop_clicked)   # v4.137 对话页也能停
         self.chat_panel.set_skill_helper(self._skill_cmd)    # v4.139 对话里查/搜/装技能
-        self.chat_panel.set_skill_installer(self._install_skill)  # v4.144 对话页也能装技能
         self.chat_panel.set_launcher(self._chat_launch)      # v4.148.1 聊天框直接「启动 …」
         # v4.246.0 组队对话化：对话里说需求 → PM 出方案 → 一句话审批
         self.chat_panel.set_team_builder(self._chat_team_build)
         self.chat_panel.set_team_approver(self._chat_team_approve)
+        # v4.247.0 管理命令对话化：项目信息/复制/删除/补录/清记忆/报告
+        self.chat_panel.set_manager(self._chat_manage)
 
         right_container = QWidget()
         rcv = QVBoxLayout(right_container)
@@ -2300,6 +2275,24 @@ class LegionWindow(QWidget):
         self._refresh_projects(select_id=p.get("id"))
         self._rebuild_waves()
         self.chat_panel.say("系统", "✅ " + rep + "。写「启动军团 <任务>」就能开工。")
+
+    def _chat_manage(self, kind):
+        """v4.247.0：对话项目管理命令 → 复用既有方法（危险操作内部自带确认）。"""
+        _fn = {
+            "info": self._edit_project,
+            "dup": self._dup_project,
+            "delete": self._del_project,
+            "manual": self._manage_manual,
+            "wipe": self._wipe_memory,
+            "report": self._open_last_report,
+        }.get(kind)
+        if not _fn:
+            self.chat_panel.say("系统", "不认识的管理命令。")
+            return
+        try:
+            _fn()
+        except Exception as e:
+            log.warning("对话管理命令 %s 失败: %s", kind, e)
 
     # ---- 工具 ----
     def _clear_layout(self, lay):

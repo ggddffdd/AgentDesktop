@@ -113,6 +113,7 @@ class LegionChatPanel(QWidget):
         self._team_approve_cb = None     # 组队审批回调（pass/reject/abort）
         self._team_building = False      # 正在等 PM 出组队方案
         self._pending_team_plan = None   # 组队方案待审批：{"plan", "need"} 或 None
+        self._manage_cb = None           # v4.247.0 项目管理命令回调（LegionWindow 注入）
         self._save_counter = 0
         self._build_ui()
         self._load_history()
@@ -133,9 +134,10 @@ class LegionChatPanel(QWidget):
         self.log.setPlaceholderText(
             "军团进展、项目经理汇报、你的决策、成果都会在这里实时出现。\n"
             "授权待决时，在下面一句话写「放行 / 打回 / 终止」即可。")
+        # v4.247.0：纯文本流，字号对齐主聊天气泡（chat_web .bubble 13.5px / 1.7）
         self.log.setStyleSheet(
             f"QTextEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:10px;padding:12px 12px;font-size:13px;color:{THEME['text']};}}")
+            f"border-radius:10px;padding:12px 14px;font-size:13.5px;color:{THEME['text']};}}")
         lay.addWidget(self.log, 1)
 
         row = QHBoxLayout()
@@ -154,10 +156,6 @@ class LegionChatPanel(QWidget):
         self.auth_btn = QPushButton("授权弹窗")
         self.stop_btn = QPushButton("⛔ 停止")
         self.send_btn = QPushButton("发送")
-        self.skill_btn = QPushButton("🔧 装技能（GitHub）")
-        self.skill_btn.setToolTip("技能库缺方法论时，从 GitHub 找 SKILL.md 装上。\n"
-                                  "装完会问挂给谁 —— 挂上后下一波 / 打回重跑立即生效。\n"
-                                  "（运行中也能装，不必切回编排页）")
         self.auth_btn.setEnabled(False)   # 仅授权待决时可点（兜底入口）
         self.auth_btn.setToolTip("用按钮完成这次授权（与在对话框说话二选一）；"
                                  "宪法第二章保留按钮兜底。")
@@ -166,8 +164,7 @@ class LegionChatPanel(QWidget):
         self.stop_btn.setVisible(False)   # 仅军团执行时由 LegionWindow 显形
         self.stop_btn.setToolTip(
             "向军团发出停止指令：跑完当前这一步就收尾，产出保留、可续跑。")
-        for b in (self.skill_btn, self.clear_btn, self.auth_btn, self.stop_btn,
-                  self.send_btn):
+        for b in (self.clear_btn, self.auth_btn, self.stop_btn, self.send_btn):
             b.setFixedHeight(52)
             b.setCursor(Qt.PointingHandCursor)
         self.send_btn.setStyleSheet(
@@ -175,10 +172,6 @@ class LegionChatPanel(QWidget):
             f"border-radius:10px;padding:0 16px;font-size:13px;font-weight:600;}}")
         self.clear_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['card']};color:{THEME['faint']};"
-            f"border:1px solid {THEME['border']};border-radius:10px;padding:0 12px;"
-            f"font-size:13px;}}")
-        self.skill_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
             f"border:1px solid {THEME['border']};border-radius:10px;padding:0 12px;"
             f"font-size:13px;}}")
         self.auth_btn.setStyleSheet(
@@ -195,8 +188,6 @@ class LegionChatPanel(QWidget):
         self.send_btn.clicked.connect(self.send)
         self.auth_btn.clicked.connect(self._on_auth_dialog_clicked)
         self.stop_btn.clicked.connect(self._on_stop_clicked)
-        self.skill_btn.clicked.connect(self._on_skill_install_clicked)
-        row.addWidget(self.skill_btn)
         row.addWidget(self.clear_btn)
         row.addWidget(self.auth_btn)
         row.addWidget(self.stop_btn)
@@ -238,14 +229,6 @@ class LegionChatPanel(QWidget):
         """
         self._skill_cb = cb
 
-    def set_skill_installer(self, cb):
-        """cb() —— v4.144：对话页「🔧 装技能（GitHub）」按钮回调（由 LegionWindow 实现）。
-
-        复用编排页同一套 _install_skill：装完选角色挂上、下一波/重跑立即生效，
-        运行中也能补，不必切回编排页。
-        """
-        self._skill_install_cb = cb
-
     def set_launcher(self, cb):
         """cb(task_text) —— v4.148.1：聊天框直接「启动 <任务>」开团（UI 化繁为简）。"""
         self._launch_cb = cb
@@ -257,6 +240,10 @@ class LegionChatPanel(QWidget):
     def set_team_approver(self, cb):
         """cb(intent, text) —— v4.246.0：组队审批回调（intent∈pass/reject/abort）。"""
         self._team_approve_cb = cb
+
+    def set_manager(self, cb):
+        """cb(kind) —— v4.247.0：项目管理命令回调（kind∈info/dup/delete/manual/wipe/report）。"""
+        self._manage_cb = cb
 
     def on_team_plan(self, plan_text, lib=None):
         """v4.246.0：收到 PM 的组队方案 → 解析 + 渲染卡片 + 进入待审批态。"""
@@ -282,14 +269,6 @@ class LegionChatPanel(QWidget):
             except Exception:
                 pass
         self._pending_team_plan = None
-
-    def _on_skill_install_clicked(self):
-        """🔧 装技能（GitHub）—— 真实实现在 LegionWindow._install_skill。"""
-        cb = getattr(self, "_skill_install_cb", None)
-        if not callable(cb):
-            self._record("系统", "装技能入口未接线（军团窗口还没准备好）。")
-            return
-        cb()
 
     def _handle_skill_intent(self, kind, arg):
         cb = getattr(self, "_skill_cb", None)
@@ -360,6 +339,16 @@ class LegionChatPanel(QWidget):
         if _sk_kind:
             self._record("你", text)
             self._handle_skill_intent(_sk_kind, _sk_arg)
+            return
+        # v4.247.0：项目管理命令（整句精确匹配，零误判）
+        _mk = legion.parse_manage_intent(text)
+        if _mk:
+            self._record("你", text)
+            cb = getattr(self, "_manage_cb", None)
+            if callable(cb):
+                cb(_mk)
+            else:
+                self._record("系统", "管理入口未接线（军团窗口还没准备好）。")
             return
         # v4.148.1（UI 化繁为简）：聊天框直接「启动 <任务描述>」开团 ——
         # 只在军团未运行时生效（运行中写「启动」会被当留言转给 PM）。
@@ -607,64 +596,24 @@ class LegionChatPanel(QWidget):
             self._save_counter = 0
             self._save_history()
 
-    def _accent_color(self, role, text):
-        """卡片左色条颜色：系统日志含警示 token → 琥珀/红，否则取角色色。"""
-        base = _ROLE_COLOR.get(role, THEME["role_default_gray"])
-        if role == "系统" and text:
-            for tok in _WARN_TOKENS:
-                if tok in text:
-                    return THEME["role_alert_red"]   # 警示红，让失败/拦截/缺口一眼可见
-        return base
-
     def _render_card(self, role, text, wave=None, ts=None):
-        """把一条消息渲染成「带角色徽章 + 时间戳 + 左色条的卡片」，卡片间留白。"""
-        color = self._accent_color(role, text)
-        ts = ts or self._now()
-        border_c = getattr(self, "_THEME_BORDER", "#ddd")
-        text_c = getattr(self, "_THEME_TEXT", "#222")
-        faint_c = getattr(self, "_THEME_FAINT", "#999")
-        # 系统日志降级为紧凑样式（小字、淡边），降低密度、突出关键消息
-        if role == "系统":
-            body_style = ("font-size:12px;color:%s;line-height:1.45;" % _ROLE_COLOR["系统"])
-            pad = "5px 9px"
-            border = ("border:1px solid %s;border-left:3px solid %s;"
-                      % (border_c, color))
+        """v4.247.0：纯文本流——角色前缀 + 内容，全黑白、无卡片/色条/时间戳。
+
+        字号/行距由 self.log 的 QSS 统一对齐主聊天。wave/ts 仅历史回放沿用，不再渲染。
+        """
+        prefix = {"你": "你：", "项目经理": "项目经理：", "成果": "成果："}.get(role)
+        if prefix:
+            self._insert(prefix + text)
         else:
-            body_style = "font-size:13px;color:%s;line-height:1.55;" % text_c
-            pad = "7px 11px"
-            border = ("border:1px solid %s;border-left:4px solid %s;"
-                      % (border_c, color))
-        body = _esc(text).replace(chr(10), "<br>")
-        # 注意：`%` 只作用于「最后一个字符串字面量」，中间插 `+ THEME[...] +`
-        # 会把 %s 与参数对不上（TypeError）。font_micro 也走 %s 参数，
-        # 让整段成为纯相邻字面量拼接后再统一格式化。
-        html = (
-            '<div style="margin:0 0 8px 0;padding:%s;background:transparent;'
-            '%s;border-radius:8px;">'
-            '<div style="margin:0 0 4px 0;font-size:%s;color:%s;">'
-            '<span style="font-weight:700;color:%s;">%s</span>'
-            % (pad, border, THEME['font_micro'], faint_c, color, _esc(role))
-        )
-        if wave:
-            html += ('<span style="color:%s;"> · 第 %d 波</span>'
-                     % (faint_c, wave))
-        html += ('<span style="float:right;">%s</span></div>'
-                 '<div style="%s">%s</div></div>'
-                 % (ts, body_style, body))
-        self._insert(html)
+            self._insert(text)
 
     def _render_divider(self, label, wave_no):
-        """渲染一条居中的波次分隔条，清晰划分波与波。"""
-        html = (
-            '<div style="margin:12px 0 8px 0;text-align:center;'
-            'font-size:12px;font-weight:700;color:%s;letter-spacing:2px;">'
-            '─────  %s  ─────</div>'
-            % (_ROLE_COLOR["波次"], _esc(label))
-        )
-        self._insert(html)
+        """v4.247.0：纯文本波次分隔线。"""
+        self._insert("")
+        self._insert("─────  %s  ─────" % label)
 
     def _insert(self, s):
-        self.log.insertHtml(s)
+        self.log.insertPlainText(s + "\n")
         c = self.log.textCursor()
         c.movePosition(c.MoveOperation.End)
         self.log.setTextCursor(c)
