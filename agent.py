@@ -762,7 +762,11 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         # 下面三处分散判据（_needs_action / step1 强制路由 / 状态栏）都读它。
         # 注意 _needs_action 的**结论仍原样来自** _detect_action_intent ——
         # Intent 只是壳，换壳不改行为（改判据 = 重排行为 = 事故）。
-        self._intent = intent.classify(self._last_user_text(), None)
+        # v4.255.0（B 包 会话粘性）：第三个参数把**会话**喂进去 ——
+        # 「再来一个」「再详细点」这类续接指令本身没有动作词，只有结合
+        # 「这个会话刚刚还在调工具」这个事实才能认定要接着干。不传 messages
+        # 时 classify 的续接分支整体跳过（行为与改动前逐字一致）。
+        self._intent = intent.classify(self._last_user_text(), None, self.messages)
         # v4.241.0 相B：意图层 DAG 分解，跑在 classify 之后、PLAN 之前。
         # decompose_intent 内部已处理「澄清优先」—— needs_clarification 命中即返回 None，
         # 交 v4.239.0 澄清闸门反问，不被 PLAN 分解。fail-open：任何异常 → None 不阻断。
@@ -958,7 +962,8 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 # v4.80b：意图路由——以当前句为主，能明确推断目标工具时直接指定，杜绝 sys_info 死循环
                 # v4.225：改读统一 Intent（force_tool 结论仍由 _route_force_tool 产出，
                 # 这里只多走一层壳 + 顺带刷新 self._intent 供状态栏/日志用）。
-                self._intent = intent.classify(_cur_user, _prev_user)
+                # v4.255.0：同 765 行口径 —— 带上会话，续接判定才有事实可依。
+                self._intent = intent.classify(_cur_user, _prev_user, self.messages)
                 # v4.239.0 歧义澄清闸门：多义指令主动反问，不盲目交给模型猜。
                 # fail-open：字段缺失或异常 → getattr 回退 False，照常走原路由。
                 if getattr(self._intent, "needs_clarification", False):

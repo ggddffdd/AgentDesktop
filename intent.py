@@ -44,6 +44,7 @@
     needs_action     bool  是否算「需要执行动作」（决定 agent_mode）
     text_only        bool  是否是「纯文本创作」（不该逼它调工具）
     reason           str   人可读依据（打日志用，便于事后归因）
+    continuation     bool  v4.255.0：是否「接着上一轮续干」（会话粘性事实判据）
 
 `confidence` 的算法（刻意保守，**只反映证据强度**、不影响任何既有决策）：
     base 0.30（仅分类出类别）
@@ -57,7 +58,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.254.0"
+VERSION = "v4.255.0"
 
 # ============================================================
 # 意图类别
@@ -200,12 +201,14 @@ class Intent(object):
 
     __slots__ = ("kind", "confidence", "explicit", "target", "requested_tools",
                  "force_tool", "needs_action", "text_only", "reason",
-                 "needs_clarification", "clarify_reason", "clarify_options")
+                 "needs_clarification", "clarify_reason", "clarify_options",
+                 "continuation")
 
     def __init__(self, kind=KIND_UNKNOWN, confidence=0.0, explicit=False,
                  target="", requested_tools=(), force_tool=None,
                  needs_action=False, text_only=False, reason="",
-                 needs_clarification=False, clarify_reason="", clarify_options=()):
+                 needs_clarification=False, clarify_reason="", clarify_options=(),
+                 continuation=False):
         self.kind = kind
         self.confidence = float(confidence)
         self.explicit = bool(explicit)
@@ -220,6 +223,9 @@ class Intent(object):
         self.needs_clarification = bool(needs_clarification)
         self.clarify_reason = clarify_reason
         self.clarify_options = tuple(clarify_options or ())
+        # v4.255.0（B 包 会话粘性）：本句是否属于「接着上一轮继续干」。
+        # 纯增量字段，默认 False；只在 classify 拿到 messages 且事实判据成立时置 True。
+        self.continuation = bool(continuation)
 
     def to_dict(self):
         return {s: getattr(self, s) for s in self.__slots__}
@@ -310,7 +316,77 @@ def detect_implicit_imperative(text):
         return ""
 
 
-def classify(text, prev_text=None):
+# ============================================================
+# v4.255.0（B 包）：续接指令 —— 接事实，不猜词
+# ============================================================
+# 症状（探针 _dev_history/_probe_sticky_255.py 实测 21 条 13 条不符）：
+#   「再来一个」「再详细点」「换一个风格」→ kind=unknown、needs_action=False。
+#   needs_action 是 agent.py 两道防线的总开关：
+#     · 946  force_required = step==1 and self._needs_action   → 首步不强制
+#     · 1183 nudge 门槛同样看 _needs_action                    → 空转也不催
+#   两道同时失效 = 用户看到「好的，我来」然后没下文（空转）。
+#   「继续」能用只是因为它碰巧躺在 agent_text._ACTION_KEYWORDS 里 —— 靠词表
+#   蒙对，换个说法立刻失效。**词表枚举补不完**，这是根本问题。
+#
+# 修法：把 v4.111 回放已证明的事实判据 `route_judge.has_recent_tool_any` 接进来。
+#   这个会话刚刚还在调工具吗？调了 ⇒ 活没干完 ⇒ 续接句是「接着干」。
+#   没调 ⇒ 凭一句「再来一个」不该凭空派活（S3 反向用例专门钉这条）。
+#
+# 三道闸缺一不可，各自都有反向用例：
+#   ① 文本命中续接闭集（下方 _CONTINUATION_MARKERS）
+#   ② 非疑问、非主观/假设（复用 A 包 _IMPLICIT_EXCLUDE_KW，两处同一口径）
+#   ③ 事实：最近 k 条确有工具调用
+_CONTINUATION_MARKERS = (
+    # 再来 X 族
+    "再来", "再做一个", "再做", "再写", "再生成", "再出", "再画", "再拍",
+    "再跑", "再试", "再改", "再调", "再加点", "再加", "再多", "再来点",
+    "再来些", "再来一遍", "再来一次", "再换",
+    # 重做 / 换一个
+    "重新", "重来", "换一个", "换个", "换张", "换种", "换一版",
+    # 详略 / 深浅
+    "再详细", "详细点", "详细些", "再细", "再深入", "深入一点", "展开",
+    "不够详细", "不够具体", "太简略", "简单了点", "再丰富", "丰富一下",
+    "加点细节",
+    # 接着上一轮
+    "继续", "接着", "还差", "还缺", "同上", "照这个", "按这个再来",
+)
+# 与 A 包同源：主观评价 / 疑问 / 假设语气不是下指令（「我觉得不够详细」是评价，
+# 不是要你再写一遍）。复用同一张表，避免两边各存一份又漂。
+_CONTINUATION_EXCLUDE_KW = _IMPLICIT_EXCLUDE_KW
+# 长度闸：自动化任务说明书里常写「失败了再试一次」「重新生成简报」——
+# 那是一条完整新指令，不是「接着上一轮」。不闸住会被判成续接。
+_CONTINUATION_MAX_LEN = 60
+# 粘性窗口：与 route_judge.STICKY_WINDOW 同源（4）—— 任务一结束粘性自然衰减，
+# 不需要额外的"结束"判据。
+_CONTINUATION_WINDOW = 4
+
+
+def detect_continuation(text, messages=None, k=_CONTINUATION_WINDOW):
+    """是否「续接指令」—— 接着上一轮继续干（v4.255.0 B 包）。
+
+    返回 bool。纯函数、fail-open（模块缺失 / 参数异常 / 任何错误 → False）。
+    """
+    try:
+        if not isinstance(text, str) or not text:
+            return False
+        t = text.strip()
+        if len(t) > _CONTINUATION_MAX_LEN:
+            return False
+        if _is_question(t):
+            return False
+        if any(w in t for w in _CONTINUATION_EXCLUDE_KW):
+            return False
+        if not any(mk in t for mk in _CONTINUATION_MARKERS):
+            return False
+        import route_judge
+        if not route_judge.has_recent_tool_any(messages, k):
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def classify(text, prev_text=None, messages=None):
     """v4.225：**唯一**对外分类入口，返回 Intent。
 
     流程（严格照搬 agent_text 既有判据的判定顺序，本模块不新增否决逻辑）：
@@ -320,6 +396,12 @@ def classify(text, prev_text=None):
       3. 再问「要不要动手」——`agent_text._detect_action_intent`（注意它吃 messages）。
       4. 再问「是不是纯文本创作」——`agent_text._content_creation_only`。
       5. 最后算 confidence（**只用于日志展示**，不参与上面任何判定）。
+      6. v4.255.0：若传入 `messages`，再判一次「续接」—— 弱意图（unknown /
+         action 但未认定要动手）+ 续接闭集 + **最近确有工具调用** → 放宽
+         needs_action。只放宽、不收紧；不传 messages 则本步整体跳过。
+
+    messages 是**可选**的：`classify(text)` 的老调用点行为逐字不变（continuation
+    恒 False）。只有把会话喂进来的调用点（agent.py）才享受粘性判据。
 
     fail-open：agent_text 不可用或抛异常 → 返回 KIND_UNKNOWN 的 Intent，
     调用方按「没分类出来」处理（= 退回本轮改动前的默认行为）。
@@ -443,6 +525,24 @@ def classify(text, prev_text=None):
     reason = "force=%s needs_action=%s text_only=%s req=%s" % (
         force, needs_action, text_only, ",".join(req[:4]))
 
+    # v4.255.0（B 包 会话粘性接线）：续接指令 —— 接事实，不猜词。
+    # ------------------------------------------------------------------
+    # 只在**判据没看出要干活**时放宽（只加不减）：
+    #   · kind 为 unknown（压根没认出来）或 action（认出方向但没认定要动手）
+    #   · 没有强制工具（有点名工具就按点名的走，不抢方向盘）
+    #   · needs_action 目前是 False（已经是 True 的不用管）
+    #   · 文本命中续接闭集 + 疑问/主观排除 + 长度闸
+    #   · 事实：最近 _CONTINUATION_WINDOW 条确有工具调用
+    # 少一道闸都会误触发：最危险的是漏掉事实闸 —— 那本包就退化成「又补一批词」，
+    # 与 B 方案的立论（不猜词）自相矛盾，所以 S3 反向用例专门钉它。
+    continuation = False
+    if messages is not None and kind in (KIND_UNKNOWN, KIND_ACTION) \
+            and not force and not needs_action:
+        if detect_continuation(text, messages):
+            continuation = True
+            needs_action = True
+            reason += " 续接(会话粘性:近期确有工具调用)"
+
     # v4.239.0 歧义澄清闸门（对标 Codex 评估里性价比最高的补强项）
     # ------------------------------------------------------------------
     # 问题：用户下「多义 / 含糊指令」时，原系统二选一——要么交给 LLM 自由发挥
@@ -500,11 +600,12 @@ def classify(text, prev_text=None):
                   reason=reason,
                   needs_clarification=needs_clarify,
                   clarify_reason=clarify_reason,
-                  clarify_options=clarify_options)
+                  clarify_options=clarify_options,
+                  continuation=continuation)
 
 
 __all__ = [
-    "VERSION", "Intent", "classify",
+    "VERSION", "Intent", "classify", "detect_continuation",
     "ROUTE_REGISTRY", "KIND_ACTION", "KIND_CONTENT", "KIND_QUESTION",
     "KIND_DISCUSS", "KIND_STATUS", "KIND_NEGATED", "KIND_REFERENCE",
     "KIND_UNKNOWN", "KIND_ALL",

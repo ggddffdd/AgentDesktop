@@ -52,14 +52,15 @@ check("IN1-3 默认 force_tool=None", i0.force_tool is None, i0.force_tool)
 check("IN1-4 requested_tools 是 tuple",
       isinstance(i0.requested_tools, tuple), type(i0.requested_tools))
 d = i0.to_dict()
-check("IN1-5 to_dict 含全部 9 字段",
+check("IN1-5 to_dict 含全部字段",
       set(d.keys()) == set(intent.Intent.__slots__),
       str(sorted(d.keys())))
 check("IN1-6 __slots__ 固定（防随手加属性漂移）",
       set(intent.Intent.__slots__) == {
           "kind", "confidence", "explicit", "target", "requested_tools",
           "force_tool", "needs_action", "text_only", "reason",
-          "needs_clarification", "clarify_reason", "clarify_options"},
+          "needs_clarification", "clarify_reason", "clarify_options",
+          "continuation"},
       str(intent.Intent.__slots__))
 a = intent.Intent(kind="action", confidence=0.5)
 b = intent.Intent(kind="action", confidence=0.5)

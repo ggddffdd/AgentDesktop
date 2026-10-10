@@ -191,6 +191,16 @@ def needs_tool_extra(text):
     return any(k in t for k in NEEDS_TOOL_EXTRA)
 
 
+def _recent_tool_in(messages, k, roles):
+    """最近 k 条消息里，role 属于 roles 的任一条 → True。"""
+    if k <= 0:
+        return False
+    for m in (messages or [])[-k:]:
+        if isinstance(m, dict) and m.get("role") in roles:
+            return True
+    return False
+
+
 def has_recent_tool(messages, k=STICKY_WINDOW):
     """会话粘性：最近 k 条消息里出现过工具调用 → 任务还在进行中，能力需求不降级。
 
@@ -200,11 +210,33 @@ def has_recent_tool(messages, k=STICKY_WINDOW):
 
     这条规则会自然衰减：任务一结束（assistant 不再调工具），粘性自动消失，
     下一轮闲聊就正常走主模型。不需要额外的"结束"判据。
+
+    ⚠ 本函数是**回放基准口径**（只认 role=="tool"），动它会让历史回放数据
+    不可比；agent 侧需要更宽的口径请用 `has_recent_tool_any`。
     """
+    return _recent_tool_in(messages, k, ("tool",))
+
+
+# v4.255.0（B 包 会话粘性接线）：agent 侧的事实口径。
+#
+# 回放只认 role=="tool"，但 agent 拿到手的会话**不只有那一种形态**：
+#   · role="tool"           agent 内存回灌（agent.py 工具执行后 append）
+#   · role="tool_log"       UI 落盘会话（ui.py 持久化），从历史会话恢复的
+#                           上下文里只有这个 —— 只认 tool 会让恢复的会话
+#                           「明明刚干完活」却判成没干过
+#   · assistant.tool_calls  回执还没回灌成 tool 消息时（模型刚发起调用）
+# 少认任何一种，粘性都会在某些真实路径上变成摆设，而且**静默**变摆设。
+_TOOL_ROLES_ANY = ("tool", "tool_log", "function")
+
+
+def has_recent_tool_any(messages, k=STICKY_WINDOW):
+    """会话粘性（宽松口径）：最近 k 条里出现过**任何形态**的工具调用 → True。"""
+    if _recent_tool_in(messages, k, _TOOL_ROLES_ANY):
+        return True
     if k <= 0:
         return False
     for m in (messages or [])[-k:]:
-        if isinstance(m, dict) and m.get("role") == "tool":
+        if isinstance(m, dict) and (m.get("tool_calls") or m.get("function_call")):
             return True
     return False
 

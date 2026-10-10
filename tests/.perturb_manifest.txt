@@ -19,6 +19,7 @@ _perturb_automation_isolation.py
 _perturb_browser_control.py
 _perturb_clarify_gate_238.py
 _perturb_clean_recycle_bin_217.py
+_perturb_continuation_sticky_255.py
 _perturb_critical_proc_deny.py
 _perturb_evidence_mask.py
 _perturb_exec_tool_gate_219.py
