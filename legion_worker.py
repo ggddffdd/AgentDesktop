@@ -114,6 +114,16 @@ _FINAL_WAVE_BRIEF = 600           # 每波产出摘要字数
 _FINAL_GATE_BRIEF = 300           # 每条验收记录摘要字数
 _FINAL_CTX_MAX = 6000             # 结项输入总上限
 
+# v4.253.0：授权等待剩余多少秒时发一次「即将超时」提醒。
+# 授权超时默认 600s，提前 100s 提醒 —— 人走开了也能被喊回来，别静默等到整轮中断。
+AUTH_WARN_BEFORE = 100
+
+
+def auth_warn_text(remain):
+    """v4.253.0：授权即将超时的提醒文本（纯函数，便于判据钉死）。"""
+    return (f"⏳ 授权即将超时（还剩 {remain} 秒）——请尽快写「放行 / 打回 / 终止」，"
+            f"否则将按不授权处理、停止推进。")
+
 
 class LegionWorker(QThread):
     """按项目波次跑一个军团任务，结果以纯文本归并后经 done 信号抛出。"""
@@ -273,7 +283,20 @@ class LegionWorker(QThread):
             except Exception:
                 pass
             return None
-        self._auth_event.wait(timeout=timeout)
+        # v4.253.0：分段等待，剩余 AUTH_WARN_BEFORE 秒时发一次「即将超时」提醒
+        # （人走开了也能被喊回来，别静默等到 600s 超时整轮中断）。
+        _remain = timeout
+        _warned = False
+        while _remain > 0:
+            if self._auth_event.wait(timeout=1):
+                break
+            _remain -= 1
+            if not _warned and _remain <= AUTH_WARN_BEFORE:
+                _warned = True
+                try:
+                    self.log_line.emit(auth_warn_text(_remain))
+                except Exception:
+                    pass
         return self._auth_val
 
     def set_auth_revision(self, text):

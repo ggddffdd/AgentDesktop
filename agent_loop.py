@@ -49,7 +49,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.252.0"
+VERSION = "v4.253.0"
 
 # ============================================================
 # 阶段常量

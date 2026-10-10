@@ -2675,50 +2675,6 @@ class LegionWindow(QWidget):
         self._refresh_projects(select_id=p.get("id"))
         self._rebuild_waves()
 
-    def _install_skill(self):
-        """独立入口：**任何时候**都能补技能，装完直接挂给在编角色（v4.134.2）。
-
-        此前这个入口只装不挂 —— 装完 slug 就丢了。而「挂给角色」的逻辑只写在
-        组队弹窗里，开工之后/波间/打回重跑根本走不到那个弹窗，于是「能装但没处挂」，
-        等于没补（这正是断口）。现在装完弹角色下拉，挂上立即生效。
-        """
-        dlg = SkillInstallDialog(mw=self.mw, parent=self)
-        dlg.exec()
-        slug = getattr(dlg, "installed_slug", None)
-        if not slug:
-            return
-        p = self._cur_project()
-        if not p:
-            QMessageBox.information(
-                self, "已装进技能库",
-                "「%s」已装好。\n\n当前没选项目 —— 选一个项目（或先组队）后，"
-                "再挂给需要的角色。" % slug)
-            return
-        roster = legion.project_members(p)
-        if not roster:
-            QMessageBox.information(
-                self, "已装进技能库",
-                "「%s」已装好。\n\n项目「%s」还没有在编成员。先组队，"
-                "组队时可以直接勾上这个技能。" % (slug, p.get("name", "")))
-            return
-        labels = ["%s%s（第 %d 波）%s"
-                  % (r.get("emoji", ""), r["name"], r["wave"],
-                     "｜已挂" if slug in (r.get("skills") or []) else "")
-                  for r in roster]
-        pick, ok = QInputDialog.getItem(
-            self, "挂给谁",
-            "把「%s」挂给谁？\n挂上后**下一波 / 打回重跑立即生效**（不用重新组队）。" % slug,
-            labels, 0, False)
-        if not ok or not pick:
-            return
-        role_name = roster[labels.index(pick)]["name"]
-        _waves, msg = legion.attach_skill_to_project(p, slug, role_name)
-        if _waves:
-            _ui_save_legion(self.data)
-            self._rebuild_waves()
-        self.log_view.append(msg)
-        QMessageBox.information(self, "挂载结果", msg)
-
     def _edit_project(self):
         p = self._cur_project()
         if not p:

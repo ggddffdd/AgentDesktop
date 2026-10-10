@@ -10,6 +10,7 @@
 """
 
 import os
+import re
 import sys
 import json
 import subprocess
@@ -760,6 +761,45 @@ def tool_browser_fill(cfg, app_dir, args):
     )
 
 
+# v4.253.0：browser_read 正文去噪（纯文本行级，砍导航/页脚/版权短句 + 重复块）。
+# 与 tools._FETCH_NAV_WORDS 同源（web_fetch 的 HTML 去噪），此处独立一份避免循环 import。
+_BROWSER_NAV_WORDS = (
+    "skip to content", "skip to main", "toggle navigation", "all rights reserved",
+    "privacy policy", "terms of service", "cookie", "sign in", "log in", "sign up",
+    "subscribe", "newsletter", "breadcrumb", "share this", "read more",
+    "首页", "登录", "注册", "版权所有", "京公网安备", "意见反馈", "关于我们",
+    "联系我们", "网站地图", "免责声明", "手机版", "电脑版", "扫码", "下载app",
+    "上一篇", "下一篇", "返回顶部", "相关推荐", "热门推荐",
+)
+
+
+def _denoise_browser_text(text):
+    """v4.253.0：browser_read 纯文本行级去噪。
+
+    砍 <8 字的碎句、命中导航词的短句、纯链接行、重复块（短块第 2 次即丢，
+    长块第 3 次才丢）。去噪后为空则退回原文（宁留勿丢，不误杀正文）。
+    """
+    if not text:
+        return text
+    lines, seen = [], {}
+    for ln in text.split('\n'):
+        s = re.sub(r'\s+', ' ', ln).strip()
+        if len(s) < 8:
+            continue
+        low = s.lower()
+        if len(s) < 40 and any(w in low for w in _BROWSER_NAV_WORDS):
+            continue
+        if s.count('http') >= 2 and len(re.sub(r'http\S+', '', s)) < 12:
+            continue
+        k = s[:24]
+        seen[k] = seen.get(k, 0) + 1
+        if seen[k] > (1 if len(s) < 60 else 2):
+            continue
+        lines.append(s)
+    out = '\n'.join(lines).strip()
+    return out if out else text
+
+
 def tool_browser_read(cfg, app_dir, args):
     url = args.get("url", "")
     sel = args.get("selector", "")
@@ -774,10 +814,16 @@ def tool_browser_read(cfg, app_dir, args):
             [],
             None,
         )
-    txt = out.get("text", "")
+    txt_raw = out.get("text", "")
+    # v4.253.0：正文去噪（砍导航/页脚/版权短句 + 重复块）。去噪后为空则退回原文（宁留勿丢）。
+    txt = _denoise_browser_text(txt_raw)
+    if txt != txt_raw:
+        note = f"（已去噪：原文 {len(txt_raw)} 字 → 正文 {len(txt)} 字）"
+    else:
+        note = f"（{len(txt_raw)} 字）"
     preview = txt[:1500] + ("…" if len(txt) > 1500 else "")
     return (
-        _with_warn(f"已读取网页文本（{len(txt)} 字）：\n{preview}", out),
+        _with_warn(f"已读取网页文本{note}：\n{preview}", out),
         [],
         None,
     )

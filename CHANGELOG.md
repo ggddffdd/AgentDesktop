@@ -7,6 +7,19 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.253.0 — 2026-10-11
+
+军团收尾优化（死代码清理 + 授权超时提醒 + 抓取去噪）。
+
+- **授权超时前提醒**：_request_auth 改分段等待，剩余 AUTH_WARN_BEFORE=100 秒时经 log_line 发「即将超时」提醒（auth_warn_text 纯函数），人走开了也能被喊回来，别静默等到 600s 超时整轮中断。
+- **browser_read 正文去噪**：新增 _denoise_browser_text（砍 <8 字碎句/导航词短句/纯链接行/重复块，去噪后空则退回原文），返回时注明「原文 N 字 → 正文 M 字」。治「导航/页脚噪音混进产出」。
+- **清理 _install_skill 死代码**：v4.247 删「装技能」按钮后无调用方（SkillInstallDialog 仍在 _find_skill 用，保留），删除该入口。
+- 同步更新 test_receipt_copy_209 B4 判据：原「在编成员」文案宿主 _install_skill 已删，改负向断言。
+- 判据 tests/test_legion_polish_253.py 6/0；扰动 _perturb_legion_polish_253.py 3/3 零哑弹。
+- 10 处 VERSION 对齐 v4.253.0。
+
+---
+
 ## v4.252.0 — 2026-10-11
 
 军团 UI 体验优化（A 档 1+2）。

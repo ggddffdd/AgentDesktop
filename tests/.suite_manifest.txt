@@ -55,6 +55,7 @@ test_legion_data_fetch_249.py
 test_legion_data_verify_250.py
 test_legion_orch_audit_251.py
 test_legion_permissions.py
+test_legion_polish_253.py
 test_legion_quality_248.py
 test_legion_resume_fill.py
 test_legion_status.py
