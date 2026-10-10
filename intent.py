@@ -57,7 +57,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.253.0"
+VERSION = "v4.254.0"
 
 # ============================================================
 # 意图类别
@@ -262,6 +262,54 @@ def _is_question(text):
         return t.endswith(("？", "?", "吗", "呢", "么"))
 
 
+# v4.254.0（A4 澄清放宽）：**隐含祈使** —— 用户在陈述异常现象（「表格第三列对不上」
+# 「这个按钮点不动」「报错了」），没写「帮我修」但意思就是要修。
+#
+# 现状：这类句子既没有动宾结构（进不了 action）、也没有疑问词（进不了 question），
+# 被判 KIND_UNKNOWN 直接吞掉 —— 于是只有两条路：模型自由发挥猜方向，或被当闲聊
+# 不干活。两条都不好。修法：认出它是「在报问题」，反问一句确认再动手。
+#
+# 词表刻意**不收**裸「不行/不好/不对」：那是主观评价/感受（「这个方案我觉得不行」），
+# 不是要修。只收**事实性异常陈述**（闭集、可穷举）。
+_IMPLICIT_IMPERATIVE_KW = (
+    "对不上", "不一致", "错了", "有误", "报错", "崩了", "出框", "点不动",
+    "打不开", "没反应", "卡住", "卡了", "乱了", "丢了", "少了", "多了",
+    "不生效", "没生效", "显示不对", "位置不对", "大小不对", "跑不起来",
+    "失败了", "失效", "排版乱", "重叠了", "错位", "漏了", "重复了",
+)
+# 排除：疑问句 / 主观感受 / 假设语气 —— 这些只是「在说」，不是要修
+_IMPLICIT_EXCLUDE_KW = (
+    "觉得", "认为", "感觉", "是不是", "为什么", "怎么", "吗", "呢", "应该",
+    "最好", "建议", "如果", "要是", "万一", "可能",
+)
+# 与 intent_guard._NEG_MAX_LEN 同源：超长文本是任务说明书，不是陈述异常。
+# ⚠ 判据实测踩中：自动化任务正文里常写「失败就重试三次」「报错了也别停」，
+# 不加这条长度闸，日常任务每轮都会被反问打断 → 任务直接卡死。
+_IMPLICIT_MAX_LEN = 40
+
+
+def detect_implicit_imperative(text):
+    """是否「隐含祈使」——陈述异常、隐含要修（v4.254.0 A4）。
+
+    返回命中的异常词（无则 ""）。纯函数、fail-open（任何异常 → ""）。
+    """
+    try:
+        if not isinstance(text, str) or not text:
+            return ""
+        if len(text.strip()) > _IMPLICIT_MAX_LEN:
+            return ""
+        if _is_question(text):
+            return ""
+        if any(k in text for k in _IMPLICIT_EXCLUDE_KW):
+            return ""
+        for k in _IMPLICIT_IMPERATIVE_KW:
+            if k in text:
+                return k
+        return ""
+    except Exception:
+        return ""
+
+
 def classify(text, prev_text=None):
     """v4.225：**唯一**对外分类入口，返回 Intent。
 
@@ -434,6 +482,17 @@ def classify(text, prev_text=None):
         needs_clarify = False
         clarify_reason = ""
         clarify_options = ()
+
+    # v4.254.0（A4）：隐含祈使 → 反问确认。与上面「多候选工具」那条**互斥**：
+    # kind==action 说明模型已经知道要干什么，再多问一句只是打扰；只有判据没看出
+    # 要干活（unknown / discuss / question）时才值得问一句「要我改吗」。
+    if not needs_clarify and kind in (KIND_UNKNOWN, KIND_DISCUSS, KIND_QUESTION):
+        _hit = detect_implicit_imperative(text)
+        if _hit:
+            needs_clarify = True
+            clarify_reason = ("你在说「%s」—— 是要我动手改，还是只是说一声？" % _hit)
+            clarify_options = (("confirm_fix", "动手改"),
+                               ("chat_only", "只是说说"))
 
     return Intent(kind=kind, confidence=conf, explicit=explicit, target=tgt,
                   requested_tools=req, force_tool=force,

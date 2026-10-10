@@ -28,6 +28,7 @@ _perturb_impact_scope_220.py
 _perturb_intent_dag_239.py
 _perturb_intent_dag_b_240.py
 _perturb_intent_dag_c_241.py
+_perturb_intent_strong_254.py
 _perturb_legion_chat_ui.py
 _perturb_legion_data_fetch_249.py
 _perturb_legion_orch_audit_251.py

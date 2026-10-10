@@ -47,6 +47,7 @@ test_intent_dag_239.py
 test_intent_guard_negation.py
 test_intent_routing.py
 test_intent_scope.py
+test_intent_strong_254.py
 test_judge_single_source.py
 test_legion_advisor_status.py
 test_legion_audit.py
