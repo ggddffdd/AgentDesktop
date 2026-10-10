@@ -592,41 +592,10 @@ class TeamBuildDialog(QDialog):
         self.skill_list.clear()
 
     def _fmt(self, plan):
-        """方案排版：**理解置顶** —— 用户审批时第一眼看的就是这个。"""
-        lines = []
-        und = (plan.get("understanding") or "").strip()
-        lines.append("① PM 对你需求的理解（先看这个，理解错了后面全白搭）")
-        lines.append("   " + (und or "（PM 没写理解 —— 建议打回重来）"))
-        lines.append("")
-        lines.append("② 阵容编排")
-        if plan.get("name"):
-            lines.append("   【%s %s】%s" % (plan.get("emoji", ""), plan.get("name"),
-                                             plan.get("description") or ""))
-        for i, w in enumerate(plan.get("waves") or [], 1):
-            lines.append("   第 %d 波（并行）：" % i)
-            for m in (w.get("members") or []):
-                nm = m.get("name", "?")
-                em = ""
-                tools = []
-                for r in self.library:
-                    if r.get("name") == nm:
-                        em = r.get("emoji", "")
-                        tools = [t for t in (r.get("tools") or []) if t]
-                        break
-                seg = "     · %s %s" % (em, nm)
-                if m.get("why"):
-                    seg += " —— %s" % m["why"]
-                # v4.134：把「手脚」摆出来 —— 成员有没有工具，一眼就能看出
-                # （无工具的纯生成型成员跑起来只能凭记忆编，组队时就得知道）
-                seg += "\n         🔧 工具：%s" % (
-                    "、".join(tools) if tools
-                    else "（无 —— 一个工具都调不了，开工时需项目经理在【能力配置】里配）")
-                if m.get("skills"):
-                    seg += "\n         技能：%s" % "、".join(m["skills"])
-                lines.append(seg)
-        if plan.get("reason"):
-            lines.append("\n③ 组队理由：%s" % plan["reason"])
-        return "\n".join(lines)
+        """方案排版：**理解置顶** —— 用户审批时第一眼看的就是这个。
+        v4.246.0：逻辑提取到 legion.format_team_plan（组队弹窗与对话页共用）。
+        """
+        return legion.format_team_plan(plan, self.library)
 
     def _fill_gaps(self, plan):
         """把缺角/缺技能填进下面的勾选区——这两块都是**要你点头**的事。"""
@@ -1756,6 +1725,9 @@ class LegionWindow(QWidget):
         self.chat_panel.set_skill_helper(self._skill_cmd)    # v4.139 对话里查/搜/装技能
         self.chat_panel.set_skill_installer(self._install_skill)  # v4.144 对话页也能装技能
         self.chat_panel.set_launcher(self._chat_launch)      # v4.148.1 聊天框直接「启动 …」
+        # v4.246.0 组队对话化：对话里说需求 → PM 出方案 → 一句话审批
+        self.chat_panel.set_team_builder(self._chat_team_build)
+        self.chat_panel.set_team_approver(self._chat_team_approve)
 
         right_container = QWidget()
         rcv = QVBoxLayout(right_container)
@@ -2235,6 +2207,99 @@ class LegionWindow(QWidget):
                 self.chat_panel.say("你", f"授权决定：{_zh}")
         except Exception as e:
             self.log_view.append(f"\n⚠️ 授权结果发送失败：{e}\n")
+
+    # ---- 组队对话化（v4.246.0）：对话说需求 → PM 出方案 → 一句话审批 ----
+    def _chat_team_build(self, need):
+        """对话页组队命令 → 复用 TeamBuildWorker 出方案（不弹窗）。"""
+        if self.worker is not None and self.worker.isRunning():
+            self.chat_panel.say("系统", "军团正在跑，先「⛔ 停止」再组队。")
+            return
+        self._team_need = need
+        self._team_advice = ""
+        self._team_plan = None
+        self._team_created_proj = None
+        p = self._cur_project()
+        if not p:
+            p = legion.new_project(name="新军团", emoji="🧙")
+            self.data.setdefault("projects", []).append(p)
+            self._team_created_proj = p
+        self._team_target_proj = p
+        lib = self.data.get("role_library") or []
+        self._tb_worker = TeamBuildWorker(self.mw, need, lib, self.data)
+        self._tb_worker.done.connect(self._on_chat_team_plan)
+        self._tb_worker.failed.connect(self._on_chat_team_fail)
+        self._tb_worker.start()
+
+    def _on_chat_team_plan(self, text):
+        """PM 方案回传：缓存 plan，交给聊天页渲染 + 进入待审批态。"""
+        self._team_plan = legion.parse_team_plan(text)
+        self.chat_panel.on_team_plan(text, self.data.get("role_library") or [])
+
+    def _on_chat_team_fail(self, msg):
+        self.chat_panel.on_team_plan_fail(msg)
+
+    def _chat_team_approve(self, intent, text):
+        """对话页组队审批：pass 批准写项目 / reject 带意见重跑 / abort 放弃。"""
+        if intent == "abort":
+            self._team_plan = None
+            self._team_need = None
+            if getattr(self, "_team_created_proj", None) is not None:
+                self.data["projects"] = [
+                    x for x in self.data.get("projects", [])
+                    if x is not self._team_created_proj]
+                self._team_created_proj = None
+            self.chat_panel.say("系统", "已放弃这次组队。")
+            return
+        if intent == "reject":
+            # 带意见重跑（复用 TeamBuildDialog._reject_plan 的意见拼装方式）
+            self._team_advice = (text or "").strip()
+            need = self._team_need or ""
+            if self._team_advice:
+                need = need + "\n\n【上一版被打回，用户意见如下，必须照改】\n" + self._team_advice
+            self._team_plan = None
+            lib = self.data.get("role_library") or []
+            self._tb_worker = TeamBuildWorker(self.mw, need, lib, self.data)
+            self._tb_worker.done.connect(self._on_chat_team_plan)
+            self._tb_worker.failed.connect(self._on_chat_team_fail)
+            self._tb_worker.start()
+            self.chat_panel.say("系统", "已打回，项目经理正在照意见重拟方案…")
+            return
+        # pass：批准组建（复用 TeamBuildDialog._approve 的既有逻辑，含审计）
+        plan = getattr(self, "_team_plan", None)
+        if not plan:
+            self.chat_panel.say("系统", "组队方案已失效，重新说一次需求。")
+            return
+        p = getattr(self, "_team_target_proj", None) or self._cur_project()
+        if not p:
+            p = legion.new_project(name="新军团", emoji="🧙")
+            self.data.setdefault("projects", []).append(p)
+        need = getattr(self, "_team_need", "") or ""
+        p, rep = legion.apply_team_plan(p, plan, self.data.get("role_library") or [])
+        try:
+            rec, _ = legion.save_team_recipe(self.data, need, plan)
+            if rec:
+                p["recipe_id"] = rec.get("id")
+        except Exception as e:
+            log.warning("班子留档失败: %s", e)
+        # 宪法第二章：组队是第一道闸，批准动作必须留审计痕（可抽查）
+        try:
+            names = []
+            for w in (plan.get("waves") or []):
+                names += [m.get("name", "") for m in (w.get("members") or [])]
+            legion.record_auth(
+                p.get("id", ""), p.get("name", ""), 0, "team_plan",
+                "PM:%s" % (plan.get("name") or ""), "approve", by="user",
+                reason="批准组队方案：%s（%d 人）" % ("、".join(names)[:120], len(names)))
+        except Exception as e:
+            log.warning("组队审计写入失败: %s", e)
+        self._team_plan = None
+        self._team_need = None
+        self._team_created_proj = None
+        self._team_target_proj = None
+        _ui_save_legion(self.data)
+        self._refresh_projects(select_id=p.get("id"))
+        self._rebuild_waves()
+        self.chat_panel.say("系统", "✅ " + rep + "。写「启动军团 <任务>」就能开工。")
 
     # ---- 工具 ----
     def _clear_layout(self, lay):

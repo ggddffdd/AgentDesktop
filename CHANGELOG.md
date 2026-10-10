@@ -7,6 +7,17 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.246.0 — 2026-10-10
+
+军团「组队对话化」：把组队从「按钮+弹窗」收进聊天页，回到「对话说需求 → PM 出方案 → 一句话审批」的主链路。
+
+- **组队收进聊天页**：聊天框说「组个团队做X / 帮我组建…」→ 复用 TeamBuildWorker 出方案 → 方案以卡片渲染在对话里 → 一句话「批准 / 打回+意见 / 放弃」完成审批（复用 apply_team_plan + record_auth 审计）。TeamBuildDialog 弹窗保留作兜底入口（不删）。
+- **方案排版提取**：TeamBuildDialog._fmt 提取成数据层 legion.format_team_plan（理解置顶 + 阵容 + 理由），弹窗与对话页共用，避免两处各写一份、日后排版漂移。
+- **组队命令识别**：新增 legion.parse_team_build_intent（纯函数，只认组队动词开头，保守防误判「组队的事」这类普通留言）。
+- **修复原有渲染 bug**：legion_chat._render_card 的 % 只作用于最后一个字符串字面量，中间 + THEME[font_micro] + 导致「发消息即 TypeError 崩」—— font_micro 改走 %s 参数。
+- 判据 tests/test_legion_team_chat.py 18/0（judge-first 红→绿）；扰动 _perturb_legion_team_chat.py 5/5 零哑弹。
+- 10 处 VERSION 对齐 v4.246.0。
+
 ---
 ## v4.245.0 — 2026-10-09
 

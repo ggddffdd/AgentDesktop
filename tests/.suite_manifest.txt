@@ -53,6 +53,7 @@ test_legion_audit.py
 test_legion_permissions.py
 test_legion_resume_fill.py
 test_legion_status.py
+test_legion_team_chat.py
 test_log_redirect_hyg.py
 test_memory_gate_196.py
 test_memory_metadata.py

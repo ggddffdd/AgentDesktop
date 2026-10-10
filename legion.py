@@ -6998,6 +6998,77 @@ _SK_INTENT_SEARCH = re.compile(
     re.I)
 
 
+_TEAM_BUILD_PREFIXES = (
+    "帮我组个团队", "帮我组建一个团队", "帮我拉个团队", "帮我建个团队",
+    "帮我组建", "帮我组队", "帮我拉队伍",
+    "组建一个团队", "组个班子", "拉起一个团队",
+    "组个团队", "组建团队", "建个团队", "拉个团队", "拉队伍",
+    "组队", "组建", "建队",
+)
+
+
+def parse_team_build_intent(text):
+    """v4.246.0：识别对话里的「组队」意图。返回需求文本或 None。
+
+    只在明确以组队动词开头、且后续是需求时判定，避免把「组队的事」这类
+    普通留言误判成组队命令。前缀按长度降序匹配，确保「组个团队」先于「组队」。
+    """
+    t = str(text or "").strip()
+    if not t or len(t) > 100:
+        return None
+    for kw in sorted(_TEAM_BUILD_PREFIXES, key=len, reverse=True):
+        if t.startswith(kw):
+            need = t[len(kw):].strip(" :：，,。.、~!！")
+            if not need:
+                return None
+            if need.startswith("的"):   # 「组队的事我再想想」→ 不是命令
+                return None
+            return need
+    return None
+
+
+def format_team_plan(plan, lib=None):
+    """v4.246.0：把组队方案排成可读文本（理解置顶 + 阵容 + 理由）。
+
+    从 TeamBuildDialog._fmt 提取成数据层纯函数，组队弹窗与对话页共用，
+    避免两处各写一份、日后排版行为漂移。
+    """
+    lib = lib or []
+    lines = []
+    und = (plan.get("understanding") or "").strip()
+    lines.append("① PM 对你需求的理解（先看这个，理解错了后面全白搭）")
+    lines.append("   " + (und or "（PM 没写理解 —— 建议打回重来）"))
+    lines.append("")
+    lines.append("② 阵容编排")
+    if plan.get("name"):
+        lines.append("   【%s %s】%s" % (plan.get("emoji", ""),
+                                        plan.get("name"),
+                                        plan.get("description") or ""))
+    for i, w in enumerate(plan.get("waves") or [], 1):
+        lines.append("   第 %d 波（并行）：" % i)
+        for m in (w.get("members") or []):
+            nm = m.get("name", "?")
+            em = ""
+            tools = []
+            for r in lib:
+                if r.get("name") == nm:
+                    em = r.get("emoji", "")
+                    tools = [t for t in (r.get("tools") or []) if t]
+                    break
+            seg = "     · %s %s" % (em, nm)
+            if m.get("why"):
+                seg += " —— %s" % m["why"]
+            seg += "\n         🔧 工具：%s" % (
+                "、".join(tools) if tools
+                else "（无 —— 一个工具都调不了，开工时需项目经理在【能力配置】里配）")
+            if m.get("skills"):
+                seg += "\n         技能：%s" % "、".join(m["skills"])
+            lines.append(seg)
+    if plan.get("reason"):
+        lines.append("\n③ 组队理由：%s" % plan["reason"])
+    return "\n".join(lines)
+
+
 def parse_skill_intent(text):
     """v4.139 P2：解析对话里的「技能」意图。返回 (kind, arg)。
 

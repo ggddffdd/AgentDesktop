@@ -108,6 +108,11 @@ class LegionChatPanel(QWidget):
         self._send_pm_cb = None         # LegionWindow 注入：把留言投进 worker
         self._auth_cb = None            # LegionWindow 注入：把授权结果送回 worker
         self._auth_dialog_cb = None     # LegionWindow 注入：打开兜底模态弹窗
+        # v4.246.0 组队对话化：组队命令/审批回调 + 组队状态机
+        self._team_build_cb = None       # 组队命令回调（LegionWindow 注入，出方案）
+        self._team_approve_cb = None     # 组队审批回调（pass/reject/abort）
+        self._team_building = False      # 正在等 PM 出组队方案
+        self._pending_team_plan = None   # 组队方案待审批：{"plan", "need"} 或 None
         self._save_counter = 0
         self._build_ui()
         self._load_history()
@@ -245,6 +250,39 @@ class LegionChatPanel(QWidget):
         """cb(task_text) —— v4.148.1：聊天框直接「启动 <任务>」开团（UI 化繁为简）。"""
         self._launch_cb = cb
 
+    def set_team_builder(self, cb):
+        """cb(need) —— v4.246.0：组队命令回调（LegionWindow 复用 TeamBuildWorker 出方案）。"""
+        self._team_build_cb = cb
+
+    def set_team_approver(self, cb):
+        """cb(intent, text) —— v4.246.0：组队审批回调（intent∈pass/reject/abort）。"""
+        self._team_approve_cb = cb
+
+    def on_team_plan(self, plan_text, lib=None):
+        """v4.246.0：收到 PM 的组队方案 → 解析 + 渲染卡片 + 进入待审批态。"""
+        self._team_building = False
+        plan = legion.parse_team_plan(plan_text)
+        if not plan:
+            self._record("系统", "⚠️ PM 没按格式输出组队方案，可再说一次需求重试。")
+            return
+        self._pending_team_plan = {"plan": plan}
+        self._record("项目经理", legion.format_team_plan(plan, lib))
+        self._record("系统", "⏸ 等你审批：写「批准 / 打回 + 意见 / 放弃」")
+
+    def on_team_plan_fail(self, msg):
+        """v4.246.0：PM 出组队方案失败。"""
+        self._team_building = False
+        self._record("系统", "❌ " + (msg or "组队失败，换个说法再试。"))
+
+    def _resolve_team_approve(self, intent, text):
+        """v4.246.0：把组队审批结果送回 LegionWindow（复用 parse_intent 的 pass/reject/abort）。"""
+        if callable(self._team_approve_cb):
+            try:
+                self._team_approve_cb(intent, text)
+            except Exception:
+                pass
+        self._pending_team_plan = None
+
     def _on_skill_install_clicked(self):
         """🔧 装技能（GitHub）—— 真实实现在 LegionWindow._install_skill。"""
         cb = getattr(self, "_skill_install_cb", None)
@@ -300,6 +338,21 @@ class LegionChatPanel(QWidget):
             self._route_message(text, urgent=False)
             self._record("系统", "（授权还开着，写「放行 / 打回 / 终止」完成这次授权）")
             return
+        # v4.246.0：组队方案待审批 —— 复用 parse_intent 把一句话路由成批准/打回/放弃
+        if self._pending_team_plan is not None:
+            intent = parse_intent(text)
+            if intent in ("pass", "reject", "abort"):
+                self._record("你", text)
+                self._resolve_team_approve(intent, text)
+                return
+            self._record("你", text)
+            self._record("系统", "（组队方案还等你批，写「批准 / 打回 + 意见 / 放弃」）")
+            return
+        # v4.246.0：正在等 PM 出组队方案
+        if self._team_building:
+            self._record("你", text)
+            self._record("系统", "🧙 项目经理正在拟组队方案，稍等…")
+            return
         # v4.139 P2：技能指令（查缺口 / 去 GitHub 找 / 装 X）—— 对话内闭环：
         # 不必等跑完弹模态框、也不必去开组队弹窗点按钮。授权态已在上面的分支
         # 拦掉（授权优先），这里是非授权态的普通对话。
@@ -318,6 +371,18 @@ class LegionChatPanel(QWidget):
                 cb(_task)
             else:
                 self._record("系统", "启动入口未接线（军团窗口还没准备好）。")
+            return
+        # v4.246.0：组队命令 —— 对话里直接说需求，PM 出方案（只认组队动词开头，保守识别）
+        _need = legion.parse_team_build_intent(text)
+        if _need:
+            self._record("你", text)
+            cb = getattr(self, "_team_build_cb", None)
+            if callable(cb):
+                self._team_building = True
+                self._record("系统", "🧙 项目经理正在拟组队方案…")
+                cb(_need)
+            else:
+                self._record("系统", "组队入口未接线（军团窗口还没准备好）。")
             return
         # 普通留言 → PM
         self._record("你", text)
@@ -570,12 +635,15 @@ class LegionChatPanel(QWidget):
             border = ("border:1px solid %s;border-left:4px solid %s;"
                       % (border_c, color))
         body = _esc(text).replace(chr(10), "<br>")
+        # 注意：`%` 只作用于「最后一个字符串字面量」，中间插 `+ THEME[...] +`
+        # 会把 %s 与参数对不上（TypeError）。font_micro 也走 %s 参数，
+        # 让整段成为纯相邻字面量拼接后再统一格式化。
         html = (
             '<div style="margin:0 0 8px 0;padding:%s;background:transparent;'
             '%s;border-radius:8px;">'
-            '<div style="margin:0 0 4px 0;font-size:' + THEME['font_micro'] + ';color:%s;">'
+            '<div style="margin:0 0 4px 0;font-size:%s;color:%s;">'
             '<span style="font-weight:700;color:%s;">%s</span>'
-            % (pad, border, faint_c, color, _esc(role))
+            % (pad, border, THEME['font_micro'], faint_c, color, _esc(role))
         )
         if wave:
             html += ('<span style="color:%s;"> · 第 %d 波</span>'
