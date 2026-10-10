@@ -566,6 +566,46 @@ def _mask_recursive(obj):
     return obj
 
 
+def sanitize_for_model(text: str) -> str:
+    """v4.256.0（P1-1）：**发给模型之前**的统一出口脱敏 = 路径类 + 凭据类。
+
+    为什么要有它：此前两条流水线是割裂的 ——
+      · 本文件的 `_mask_sensitive`（路径/用户名/机器名/IPv4）在 `tools.exec_tool`
+        出口调用，管的是**发往 API** 的内容；
+      · `evidence._mask_secrets`（sk- / Bearer / JWT / Cookie 等五类）只在
+        `evidence.register` **入库**时调用。
+    结果：工具读到 `.env`、命令回显出 key 时，`sk-...` 会原样进 messages 发给
+    API，还会被 sessions.json 存下来。入库的脱了敏、发 API 的没脱 —— 同一个
+    秘密两套规则，等于没规则。
+
+    修法：出口侧统一走本函数，凭据规则**复用** `evidence._mask_secrets`
+    （函数内 import 避开循环依赖），不另抄一份词表 —— 抄了就会漂。
+    fail-open：凭据模块不可用时仍返回路径类脱敏结果，不阻断调用。
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    out = _mask_sensitive(text)
+    try:
+        from evidence import _mask_secrets as _ms
+        _after = _ms(out)
+        if isinstance(_after, str):
+            out = _after
+    except Exception:
+        pass
+    return out
+
+
+def sanitize_for_model_recursive(obj):
+    """与 `sanitize_for_model` 同口径的结构化版（dict/list/tuple 递归）。"""
+    if isinstance(obj, str):
+        return sanitize_for_model(obj)
+    if isinstance(obj, dict):
+        return {k: sanitize_for_model_recursive(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [sanitize_for_model_recursive(v) for v in obj]
+    return obj
+
+
 # ============================================================
 # 影响范围预检注册表
 # ============================================================

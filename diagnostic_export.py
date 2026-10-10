@@ -34,6 +34,39 @@ def _is_secret(key):
     return any(w in k for w in _SECRET_KEYWORDS)
 
 
+def _fmt_value(key, val, depth=0):
+    """v4.256.0（P0-2）：递归格式化一个配置值 —— **任意层级**的子键都跑 _is_secret。
+
+    为什么必须递归：旧实现是 `for key, val in cfg.items()`，只判**顶层**键名。
+    顶层键 `model_profiles` 不含任何关键词 → 走"普通值"分支 `str(val)[:200]`；
+    而它是 `{"档位名": {"base_url":..., "api_key": "sk-真key", ...}}` ——
+    真 key 就落在前 200 字符内（实测确认）。一键导出 = 一次点击泄露全部渠道
+    key，而报告尾部还写着"把本文件发给开发者即可"。
+
+    递归但不一刀切：档位名、base_url、model 照常输出（排障要看），
+    只有命中 _is_secret 的子键换成"已设置(N位)"。
+    """
+    if depth > 6:
+        return "…（层级过深，已省略）"
+    if _is_secret(key):
+        return _mask(val)
+    if isinstance(val, dict):
+        if not val:
+            return "{}"
+        parts = ["%s: %s" % (k, _fmt_value(k, v, depth + 1))
+                 for k, v in list(val.items())[:25]]
+        return "{" + "; ".join(parts) + "}"
+    if isinstance(val, (list, tuple)):
+        if not val:
+            return "[]"
+        return "[" + "; ".join(_fmt_value(key, v, depth + 1)
+                               for v in list(val)[:25]) + "]"
+    s = str(val)
+    if len(s) > 200:
+        s = s[:200] + " …(截断)"
+    return s
+
+
 def _collect_env():
     lines = []
     lines.append(f"运行环境      : {platform.system()} {platform.release()} "
@@ -66,14 +99,8 @@ def _collect_config():
             s = str(val)
             lines.append(f"{key:16}: （已省略，{len(s)} 字符）")
             continue
-        if _is_secret(key):
-            lines.append(f"{key:16}: {_mask(val)}")
-        else:
-            # 普通值：长度截断，避免把大段内容塞进诊断包
-            s = str(val)
-            if len(s) > 200:
-                s = s[:200] + " …(截断)"
-            lines.append(f"{key:16}: {s}")
+        # v4.256.0（P0-2）：一律走 _fmt_value（递归判子键），不再只判顶层键名。
+        lines.append(f"{key:16}: {_fmt_value(key, val)}")
     return lines
 
 

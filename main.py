@@ -572,10 +572,13 @@ def main():
     # 浏览器扩展桥接服务（v4.103：抓网页进对话）
     # 仅本机 127.0.0.1:9100，带 token 校验，安全无外部暴露。
     try:
+        # v4.256.0（P0-1）：多导入 build_inject_block —— 拼块（含不可信边界包裹）
+        # 已搬到 browser_bridge，这里只拿函数名，避免在 UI 线程里重新拼裸正文。
         from browser_bridge import (browser_bridge_start, browser_bridge_stop,
                                     set_event_callback as _bridge_set_cb,
                                     set_persist_callback as _bridge_set_persist,
-                                    report_delivery as _bridge_report_delivery)
+                                    report_delivery as _bridge_report_delivery,
+                                    build_inject_block)
 
         def _persist_bridge_token(new_tok):
             """v4.125 M-20：/pair 重置 token → 立刻写回 config，重启不再 401。"""
@@ -624,28 +627,15 @@ def main():
                         if not isinstance(meta, dict):
                             meta = {}
                         autosend = bool(p.get("autosend", False))
-                        # L1.2/L1.4：优先用 Markdown 正文，其次选中文字，最后纯文本正文
-                        body = markdown if markdown else (sel if sel else text)
-                        if not body:
+                        # v4.256.0（P0-1）：拼块改走 browser_bridge.build_inject_block
+                        # —— 网页正文在里面过不可信边界（含伪造闭合标签中和）。
+                        # 此前正文是**裸拼**进输入框的：配合 autosend 等于把攻击者
+                        # 可控的网页文字当成用户亲口说的话发给模型，全程零审核。
+                        # 安全边界 fail-closed：包裹失败也不许裸发（见 _fallback_wrap）。
+                        block = build_inject_block(p)
+                        if not block:
                             _ok, _detail = True, "空正文已忽略"
                             return
-                        block = "请帮我处理这个网页内容"
-                        if note:
-                            block += "（要求：" + note + "）"
-                        block += "\n\n"
-                        block += "标题：" + title + "\n链接：" + url + "\n"
-                        # L1.8：页面元信息增强（来源站点 / 字数 / 抓取时间）
-                        site = meta.get("siteName", "") or ""
-                        wc = meta.get("wordCount", 0) or 0
-                        cap = meta.get("capturedAt", "") or ""
-                        if site or wc or cap:
-                            block += "来源：" + site
-                            if wc:
-                                block += "　字数：" + str(wc)
-                            if cap:
-                                block += "　抓取于：" + cap
-                            block += "\n"
-                        block += "\n---\n" + body + "\n---"
 
                         # #756(P1)：草稿保护——输入框已有未发送内容时，不覆盖，
                         # 改为追加到末尾，且本批不自动发送（避免把用户半截话一起发出去）。

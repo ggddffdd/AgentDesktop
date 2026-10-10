@@ -40,6 +40,8 @@ from database_tools import DatabaseTools
 db_tools = DatabaseTools()
 # v4.220：工具调用统一契约（结构化返回 + 脱敏 + 影响范围）
 from tool_contract import (ToolResult, _mask_sensitive, _mask_recursive,
+                           sanitize_for_model,  # v4.256.0（P1-1）发 API 出口脱敏
+                           sanitize_for_model_recursive,
                            compute_impact_scope,
                            validate_for_tool,  # v4.223：统一参数校验入口
                            apply_post_verification)  # v4.224：执行后验证
@@ -890,7 +892,8 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
     调用时必须传角色 tools，双层防线。
     """
     def _reject(msg, ok=False):
-        _m = _mask_sensitive(msg) if isinstance(msg, str) else msg
+        # v4.256.0（P1-1）：拒绝分支也是出口（异常文本里可能带 key），同口径脱敏
+        _m = sanitize_for_model(msg) if isinstance(msg, str) else msg
         return ToolResult(ok=ok, msg=_m)
 
     if allowed_tools is not None and name not in allowed_tools:
@@ -938,9 +941,13 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
             # v4.223：传 name/args，让已登记结局契约的工具按真实信号判定成败
             _tr = ToolResult.from_legacy(_r, name=name, args=args)
             _trace_fetch(name, args, _tr.msg, ok=_tr.ok)
-            _tr.msg = _mask_sensitive(_tr.msg)
-            _tr.data = _mask_recursive(_tr.data)
-            _tr.evidence = _mask_recursive(_tr.evidence)
+            # v4.256.0（P1-1）：出口脱敏由「只脱路径」升级为「路径 + 凭据」。
+            # 旧口径 `_mask_sensitive` 无 sk-/Bearer 规则，工具回显里的真 key
+            # 会原样进 messages 发往 API。凭据规则复用 evidence._mask_secrets，
+            # 与入库脱敏同一真源。
+            _tr.msg = sanitize_for_model(_tr.msg)
+            _tr.data = sanitize_for_model_recursive(_tr.data)
+            _tr.evidence = sanitize_for_model_recursive(_tr.evidence)
             # v4.224：执行后验证（查副作用是否真生效；只降级不升级）
             try:
                 apply_post_verification(_tr, name, args)
@@ -976,7 +983,8 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
     _tr = ToolResult.from_legacy((result_str, deliverables, schedule),
                                  name=name, args=args)
     _trace_fetch(name, args, _tr.msg, ok=_tr.ok)
-    _tr.msg = _mask_sensitive(_tr.msg)
+    # v4.256.0（P1-1）：同上，MCP/兜底分支出口同样走「路径 + 凭据」双脱敏
+    _tr.msg = sanitize_for_model(_tr.msg)
     # v4.224：执行后验证（查副作用是否真生效；只降级不升级）
     try:
         apply_post_verification(_tr, name, args)
@@ -1357,6 +1365,51 @@ def _is_sensitive_file(path):
             return True
     if p.rstrip("/").endswith("config.json"):
         return True
+    return False
+
+
+# v4.256.0（P1-2）：run_command 是敏感文件的**旁路**。
+# `_is_sensitive_file` 只在 web_fetch / read_file 两处 enforcing，
+# 但 `type ...\config.json`、`cat ~/.ssh/id_rsa` 这类命令串完全不受约束 ——
+# 同一份秘密，走工具被拦、走命令放行，等于闸门只挡了一半。
+#
+# 口径（与安全边界的 fail-closed 不同，这里是**不拦截**）：
+#   · 拦截代价高 —— `type config.json` 也可能是用户的合法排障动作，一刀切会误伤；
+#   · 所以只做两件事：① WARNING 留痕（事后能查到谁读了什么）；
+#     ② 出口脱敏（真 key 不进模型上下文、不进 sessions.json）。
+#
+# 判据构成 = 读类动词 ∩ 敏感路径 token。两个条件都要满足才命中，
+# 任意放宽一边都会把普通命令（`dir D:\tmp` / `git status`）判成敏感。
+_CMD_READ_VERB_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(type|cat|get-content|gc|more|less|head|tail|bat|sed|awk)"
+    r"(?![A-Za-z0-9_])", re.I)
+_CMD_READ_VERB_ZH = ("读取", "显示", "查看")
+# 路径 token：双引号/单引号整段 → %ENV%\path → 裸串（含 ~/、./、盘符、POSIX 路径）
+_CMD_PATH_TOKEN_RE = re.compile(
+    r'"[^"]+"|\'[^\']+\'|%[A-Za-z_][A-Za-z0-9_]*%[\\/\w.~\-]*|\S+')
+
+
+def _cmd_targets_sensitive_file(command):
+    """判断一条 shell/PowerShell 命令是否在**读**敏感文件。
+
+    返回严格 True/False（不返回类真值）—— 判据要能当布尔用，不能被 `if x is True` 打脸。
+    fail-open：空/非字符串 → False（识别不了就不报，绝不因此阻断执行）。
+    """
+    if not command or not isinstance(command, str):
+        return False
+    cmd = command.strip()
+    if not cmd:
+        return False
+    low = cmd.lower()
+    if not _CMD_READ_VERB_RE.search(low) and not any(
+            z in cmd for z in _CMD_READ_VERB_ZH):
+        return False
+    for _tok in _CMD_PATH_TOKEN_RE.findall(cmd):
+        _t = _tok.strip().strip('"\'').strip()
+        if not _t:
+            continue
+        if _is_sensitive_file(_t):
+            return True
     return False
 
 
@@ -1871,6 +1924,15 @@ def tool_run_command(app_dir, command, cwd=None, env=None, progress=None,
     _deny = _dangerous_command_check(command)
     if _deny:
         return _deny
+    # v4.256.0（P1-2）：命令串读敏感文件 —— 不拦截（误伤代价高），只留痕 + 出口脱敏
+    _cmd_sens = _cmd_targets_sensitive_file(command)
+    if _cmd_sens:
+        try:
+            log.warning(
+                "run_command 命中敏感文件读取（未拦截，已留痕 + 出口脱敏）：%s",
+                command[:200])
+        except Exception:
+            pass
     # v4.164.0：命令的工作目录由 app_dir（= exe 目录 = dist = 分发源）改为 WORKSPACE_DIR
     # ——Agent 用相对路径写出的文件（output/notes/pages/multi_platform…）此前全堆进
     # dist，会被连带打包分发。资源类查找仍走 app_dir，不受影响。
@@ -1965,6 +2027,9 @@ def tool_run_command(app_dir, command, cwd=None, env=None, progress=None,
         out = _clip_output(out, False, 0)
     if _cwd_warn:
         out += "\n" + _cwd_warn
+    # v4.256.0（P1-2）：读的是敏感文件 → 回显先脱敏再上送（真 key 不进模型上下文）
+    if _cmd_sens:
+        out = sanitize_for_model(out)
     return out
 
 

