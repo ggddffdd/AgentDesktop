@@ -2219,8 +2219,11 @@ def default_role_library():
                         "- 上游没说风格 → 默认中性专业风并在开头声明「本批统一采用 XX 风格」。",
             tools=["image_gen"],
             output_format="按条编号，每条一句完整提示词（含风格+主体+构图+光线）",
-            quality="提示词要具体到能直接出图，避免抽象形容词堆砌",
-            self_check="检查每条提示词是否含风格与主体，缺一补上",
+            quality="提示词要具体到能直接出图，避免抽象形容词堆砌；"
+                    "交付物数量必须对上清单（约定 N 张就生 N 张，路径逐条可验证），缺图即未交付",
+            self_check="检查每条提示词是否含风格与主体，缺一补上；"
+                      "逐条核对清单里每张图是否都真的调用 image_gen 生成、文件路径是否都落盘存在；"
+                      "少一张都判未交付，回去补生，不许只交提示词清单",
         ),
         new_role(
             name="审校", emoji="🔎",
@@ -2329,17 +2332,21 @@ def default_role_library():
             # 技能要的执行权限只能由**角色卡**提供，不能走 PM 授权。
             # v4.135.0：再补 browser_open + browser_read（真实 Edge 走 CDP，能渲染 JS 页）
             # + 挂「浏览器自动化」技能。
-            tools=["web_search", "web_fetch", "browser_open", "browser_read",
-                   "run_command", "read_file"],
+            # v4.248.0：移除 web_fetch —— 对齐研究员/竞品分析师（v4.147.9 A 方案）：
+            # 成员从不主动用 browser，靠提示倒逼已证无效，必须从工具白名单移除 web_fetch
+            # 逼它走 browser_read 抓实时页面。
+            tools=["web_search", "browser_open", "browser_read",
+                   "browser_scroll", "browser_click", "browser_fill",
+                   "run_command", "run_python", "read_file"],
             skills=["浏览器自动化"],
             output_format="候选商品 3-5 个，每个含【市场趋势】【目标人群】【利润预估】【风险点】",
             quality="每个候选必须给出至少 1 条可辩护的支撑理由（带来源 URL），禁止「感觉不错」；"
                     "利润/价格类数字必须来自实时页面（browser_read 抓到的到手价/工厂价），非估算。"
                     "成功指标：唯一标的收敛、每个维度有依据或如实标「未获取到」",
             self_check="逐条检查是否都有依据，无依据的候选删掉；"
-                      "若 `web_fetch` 返「页面无可用文本」而标的在 JS 电商页，必须先 `browser_read` 重试，"
-                      "仍拿不到才标「数据待确认」并写清缺什么（禁止 web_fetch 失败即交差）；"
-                      "挂了决策类技能（多模型圆桌）就必须真跑出结果文件",
+                      "**形态自检（v4.248.0）**：①目标页是 JS 站（TikTok/kalodata/Shopee 等）"
+                      "而没调用 browser_read → 回去补抓；②价格/销量类数字必须指到 browser_read 抓到的"
+                      "实时页面来源，指不到就写「未获取」；③挂了决策类技能（多模型圆桌）就必须真跑出结果文件",
         ),
         new_role(
             name="竞品分析师", emoji="⚔️",

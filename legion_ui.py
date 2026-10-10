@@ -2193,11 +2193,10 @@ class LegionWindow(QWidget):
         self._team_advice = ""
         self._team_plan = None
         self._team_created_proj = None
-        p = self._cur_project()
-        if not p:
-            p = legion.new_project(name="新军团", emoji="🧙")
-            self.data.setdefault("projects", []).append(p)
-            self._team_created_proj = p
+        # v4.248.0：组队 = 新建团队，绝不覆盖选中的老团队
+        p = legion.new_project(name="新军团", emoji="🧙")
+        self.data.setdefault("projects", []).append(p)
+        self._team_created_proj = p
         self._team_target_proj = p
         lib = self.data.get("role_library") or []
         self._tb_worker = TeamBuildWorker(self.mw, need, lib, self.data)
