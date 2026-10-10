@@ -7,6 +7,19 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.250.0 — 2026-10-10
+
+军团数据抓取收尾 + UI 收尾。
+
+- **browser_read 纳入抓取留痕**：_FETCH_TRACE_TOOLS 加 browser_read，浏览器抓取也进留痕仓，PM 能核查「成员是否真的抓了实时页面」。
+- **数据闸识别 browser_read 原文堆砌**：audit_data_quality 新增 _BROWSER_READ_DUMP_RE，识别「已读取网页文本（N 字）」直接贴进产出（未加工 = 未交付），补齐 web_fetch 移除后数据闸的识别盲区。
+- **技能列表 description 副行**：RoleEditor 挂技能列表每项直接显示描述副行（不再只靠悬停 tooltip），治「记不得技能是干嘛的」。
+- **团队库 CRUD 折叠**：克隆/编辑/删除 改成选中团队后才浮现，平时只留「▶ 启动」，治「按钮多」。
+- 判据 test_legion_data_verify_250 2/0 + test_legion_ui_polish_250 2/0；扰动 _perturb_legion_polish_250 4/4 零哑弹。
+- 10 处 VERSION 对齐 v4.250.0。
+
+---
+
 ## v4.249.0 — 2026-10-10
 
 军团数据抓取系统性清 web_fetch：统一走 browser_read（web_fetch 的超集，能抓 JS 渲染页 + 静态页）。

@@ -52,7 +52,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QCheckBox, QSpinBox, QInputDialog, QStackedWidget,
     QSplitter, QTextBrowser, QPlainTextEdit,
 )
-from PySide6.QtCore import Qt, QThread, Signal, QTimer
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize
 from PySide6.QtGui import QBrush, QColor
 
 import legion
@@ -233,15 +233,19 @@ class RoleEditor(QDialog):
             slug = sk.get("slug", "")
             name = sk.get("name") or slug
             emoji = sk.get("emoji", "")
+            # v4.250.0：description 副行直接可见（不再只靠悬停 tooltip），治「记不得技能是干嘛的」
+            desc = (sk.get("description") or "").strip()
             label = f"{emoji} {name}".strip() if emoji else name
+            if desc:
+                label += "\n  " + desc[:50]
             it = QListWidgetItem(label)
             it.setData(Qt.UserRole, ("installed", slug))
-            tip = sk.get("description", "") or ""
+            tip = desc[:120] + ("…" if len(desc) > 120 else "")
             if tip:
-                tip = tip[:120] + ("…" if len(tip) > 120 else "")
                 it.setToolTip(f"slug: {slug}\n{tip}")
             else:
                 it.setToolTip(f"slug: {slug}")
+            it.setSizeHint(QSize(0, 42))
             self.e_skills.addItem(it)
             if slug in mounted:
                 it.setSelected(True)
@@ -1964,6 +1968,7 @@ class LegionWindow(QWidget):
         self.teams_list = QListWidget()
         self.teams_list.setSpacing(4)
         self.teams_list.itemDoubleClicked.connect(self._on_team_launch)
+        self.teams_list.currentItemChanged.connect(self._on_team_sel_changed)
         lay.addWidget(self.teams_list, 1)
         brow = QHBoxLayout()
         b_launch = QPushButton("▶ 启动此团队")
@@ -1974,12 +1979,22 @@ class LegionWindow(QWidget):
         b_edit.clicked.connect(self._on_team_edit)
         b_del = QPushButton("🗑 删除")
         b_del.clicked.connect(self._on_team_delete)
+        # v4.250.0：克隆/编辑/删除是选中后才需要的低频操作，默认隐藏、选中浮现
+        self._team_edit_btns = (b_clone, b_edit, b_del)
+        for b in (b_clone, b_edit, b_del):
+            b.setVisible(False)
         for b in (b_launch, b_clone, b_edit, b_del):
             b.setCursor(Qt.PointingHandCursor)
             brow.addWidget(b)
         brow.addStretch(1)
         lay.addLayout(brow)
         return page
+
+    def _on_team_sel_changed(self, cur, prev):
+        """v4.250.0：团队库选中才有克隆/编辑/删除，没选中隐藏（治「按钮多」）。"""
+        has = cur is not None
+        for b in self._team_edit_btns:
+            b.setVisible(has)
 
     def _refresh_teams_page(self):
         """团队列表：emoji + 名称 + 成员头像串 + 波次流程线 + 续跑标记。"""

@@ -818,7 +818,7 @@ def _h_send_email(cfg, app_dir, args, progress=None):
 # 成品正文，正文写得像模像样就放行 —— 实际上成员可能一个字都没搜、纯靠模型
 # 记忆编（实测：研究员交 4006 字网页堆砌、竞品分析师交 881 字无关搜索结果，
 # 都是「搜偏了还硬交」）。留痕后 PM 能先查「搜的词对不对」，再判内容。
-_FETCH_TRACE_TOOLS = ("web_search", "web_fetch")
+_FETCH_TRACE_TOOLS = ("web_search", "web_fetch", "browser_read")
 
 
 def _trace_fetch(name, args, result, ok=None):

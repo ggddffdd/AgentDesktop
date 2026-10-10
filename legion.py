@@ -8004,6 +8004,8 @@ _NAV_NOISE = (
 )
 # 「搜索「xxx」结果（来源：bing）：」—— 工具返回原文被直接贴进产出
 _SEARCH_DUMP_RE = re.compile(r"搜索[「\"'『]?[^」\"'』\n]{2,60}[」\"'』]?结果（来源：")
+# browser_read 返回原文被直接贴进产出（「已读取网页文本（N 字）：…」）—— v4.250 数据闸补识别
+_BROWSER_READ_DUMP_RE = re.compile(r"已读取网页文本（\d+\s*字）")
 # 搜索结果三行体：标题 / 摘要 / URL
 _SEARCH_LINE_RE = re.compile(r"^\s*\d+\.\s+\S[^\n]{4,}\n\s{2,}\S[^\n]{4,}\n\s{2,}https?://", re.M)
 _URL_RE = re.compile(r"https?://[^\s)）\"'」』>]+")
@@ -8082,6 +8084,8 @@ def audit_data_quality(text, role_name="", wave=0):
     evidence = []
     for m in _SEARCH_DUMP_RE.finditer(t):
         evidence.append("搜索结果原文：" + m.group(0)[:40])
+    for m in _BROWSER_READ_DUMP_RE.finditer(t):
+        evidence.append("浏览器读取原文：" + m.group(0))
     for m in _SEARCH_LINE_RE.finditer(t):
         evidence.append("搜索条目：" + re.sub(r"\s+", " ", m.group(0))[:80])
     # 导航噪音
