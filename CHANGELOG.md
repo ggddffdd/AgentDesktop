@@ -7,6 +7,32 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.258.0 — 2026-10-11
+
+工具成败判定归一到单一真源（P1-6）。
+
+评审报告 P1-6 说「两个 `_tool_outcome`」。实地核对后发现**问题比报告说的严重**：
+
+- **两份已经漂移**，不是"重复代码"。同一个 ToolResult（`msg` 是抛异常的 property）：
+  `agent_task_mixin` 那份**崩**（无 try 保护），`agent_result_mixin` 那份返回 `(False, '')`。
+- **运行时跑的是会崩的那份**。`AgentWorker(AgentTaskMixin, …, AgentResultMixin, …)`
+  的 MRO 里 Task 在前 → `agent_task_mixin:257` 遮蔽了 `agent_result_mixin:100`，
+  后者是**死代码**。
+- **判据测了个寂寞**。`test_toolresult_wiring_226.py` 的桩只继承 `AgentResultMixin`，
+  那 44 条全打在运行时根本不会被调用的影子实现上，真出 bug 的那份零覆盖。
+
+修法：判定逻辑抽到 `tool_contract.tool_outcome` / `tool_contract.tr_err_head`
+（纯函数，符合 `agent_result_mixin` 头注释里既定的分工），两个 mixin 保留
+`_tool_outcome` 方法名并**委托**过去（agent.py:1513/1663 调用方不动）。
+语义取健壮的那份（try 保护），只加不减；`.ok` 读不出来仍 fail-open 按成功记。
+
+- 判据 tests/test_tool_outcome_single_258.py 19/0；扰动 _perturb_tool_outcome_single_258.py 7/7 零哑弹。
+- 判据一律打在**与运行时 MRO 一致**的宿主上，并用「打补丁看两个入口是否都命中」
+  验证真归一 —— 杜绝再测影子（本轮最大教训）。
+- 10 处 VERSION 对齐 v4.258.0。
+
+---
+
 ## v4.257.0 — 2026-10-11
 
 失败日志真落库（P0-5）+ TTS 失败不再二次抛错（P0-6）。

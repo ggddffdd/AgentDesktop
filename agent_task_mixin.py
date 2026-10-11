@@ -27,10 +27,11 @@ task_state.py**（那里才是账本本体，且已被判据 126 项覆盖）。
 """
 import json
 import logging
+import tool_contract  # v4.258.0（P1-6）：成败判定归一到单一真源（整模块导入）
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.257.0"
+VERSION = "v4.258.0"
 
 
 class AgentTaskMixin(object):
@@ -287,41 +288,18 @@ class AgentTaskMixin(object):
 
         返回的 `err_head` 供证据登记用（截到 300 字，与旧口径同长度）。
         """
-        # ---- 1) 有结构化结果：以 .ok 为唯一权威 ----
-        if tool_result is not None and hasattr(tool_result, "ok"):
-            try:
-                _ok = bool(tool_result.ok)
-            except Exception:
-                _ok = True
-            _err = None
-            if not _ok:
-                #优先用机器可读原因，缺失才退回文案；都不好用完整 msg。
-                _parts = []
-                try:
-                    _ec = getattr(tool_result, "error_code", None)
-                    if _ec:
-                        _parts.append("[%s]" % _ec)
-                except Exception:
-                    pass
-                try:
-                    _em = getattr(tool_result, "error", None)
-                    if _em:
-                        _parts.append(str(_em))
-                except Exception:
-                    pass
-                if not _parts:
-                    _parts.append(str(getattr(tool_result, "msg", "") or ""))
-                _err = " ".join(_parts)[:300]
-            return (bool(_ok), _err)
-
-        # ---- 2) 非结构化：沿用注入的旧判据 ----
-        try:
-            _failed = bool(failed_checker(name, result_str))
-        except Exception:
-            # 注入方报错 → 按成功记（fail-open，与 v4.225 同口径）
-            return (True, None)
-        return (not _failed,
-                ((str(result_str) or "")[:300] if _failed else None))
+        # v4.258.0（P1-6）：**删掉本文件那份内联判定**，改委托到单一真源。
+        #
+        # 原状：本文件与 agent_result_mixin 各有一份实现，且已漂移 ——
+        #   · 本份 `getattr(tr,"msg")` 没有 try 保护 → msg 是抛异常的 property
+        #     时直接崩；result_mixin 那份返回 (False, '')。
+        #   · AgentWorker 的 MRO 里 AgentTaskMixin 在 AgentResultMixin 之前，
+        #     所以**运行时跑的正是这份会崩的**，而既有判据的桩只继承
+        #     AgentResultMixin —— 判据打在了一份根本不会被调用的影子上。
+        # 归一口径取**健壮的那份**（result_mixin 的 try 保护版），只加不减。
+        # 上面的 docstring 里那句「本方法不重复实现」至此才名副其实。
+        return tool_contract.tool_outcome(
+            tool_result, name, result_str, failed_checker)
 
     def _tr_notable_flags(self, tool_result):
         """取ToolResult 上值得记账的诊断字段（供日志/排障，不参与判定）。

@@ -607,6 +607,81 @@ def sanitize_for_model_recursive(obj):
 
 
 # ============================================================
+# 工具成败判定（v4.258.0 P1-6：单一真源）
+#
+# 为什么搬到这里：此前 `agent_result_mixin._tool_outcome` 与
+# `agent_task_mixin._tool_outcome` **各有一份**判定实现，且已经漂移 ——
+#   ① 同一个 ToolResult（`msg` 是抛异常的 property）：
+#        task_mixin 版崩（无 try 保护）  vs  result_mixin 版返回 (False, '')
+#   ② `AgentWorker(AgentTaskMixin, ..., AgentResultMixin, ...)` 的 MRO 里
+#      Task 在前 → **运行时跑的是会崩的那份**，result_mixin 那份是死代码；
+#   ③ 而既有判据的桩只继承 AgentResultMixin —— 44 条判据全打在影子实现上。
+#
+# 本文件按 `agent_result_mixin` 头注释里的既定分工（"tool_contract.py =
+# ToolResult 定义 / 结局契约 / 纯逻辑"）承接判定逻辑，两个 mixin 只做委托。
+# ============================================================
+
+def tr_err_head(tool_result):
+    """从失败的 ToolResult 里取一句话原因（最多 300 字）。
+
+    口径：先机器可读（error_code → error），都没有才退回 msg。
+    每一层 getattr 都包 try —— 属性可能是 property，访问本身就会抛。
+    """
+    parts = []
+    try:
+        _ec = getattr(tool_result, "error_code", None)
+        if _ec:
+            parts.append("[%s]" % _ec)
+    except Exception:
+        pass
+    try:
+        _em = getattr(tool_result, "error", None)
+        if _em:
+            parts.append(str(_em))
+    except Exception:
+        pass
+    if not parts:
+        try:
+            parts.append(str(getattr(tool_result, "msg", "") or ""))
+        except Exception:
+            parts.append("")
+    return " ".join(parts)[:300]
+
+
+def tool_outcome(tool_result, name, result_str, failed_checker):
+    """判定一次工具调用**实质**成功与否 —— 返回 (ok, err_head)。
+
+    口径（优先级从高到低）：
+      1. `tool_result` 带 `.ok`（ToolResult）→ **以它为准**，字符串不参与判定，
+         纯展示。`.ok` 本身读不出来（抛非 AttributeError 的异常）→ fail-open
+         按成功记（宁可少提示，不可误报未完成）。
+      2. 不带 `.ok`（占位 / 批内去重 / 用户取消 / 异常兜底这些根本没走
+         exec_tool 的分支）→ 退回注入的 `failed_checker` 旧口径，不改变它们
+         原有的成败结论；注入方报错同样 fail-open 按成功记。
+
+    `err_head` 供证据登记用（截到 300 字，与旧口径同长度）。
+    """
+    if tool_result is not None:
+        try:
+            _ok = bool(getattr(tool_result, "ok"))
+        except AttributeError:
+            _ok = None            # 没有 .ok → 走旧判据
+        except Exception:
+            _ok = True            # .ok 读不出来 → fail-open（与历史两版一致）
+        if _ok is not None:
+            if _ok:
+                return (True, None)
+            return (False, tr_err_head(tool_result))
+    # ---- 2) 非结构化：沿用注入的旧判据 ----
+    try:
+        _failed = bool(failed_checker(name, result_str))
+    except Exception:
+        return (True, None)
+    return (not _failed,
+            ((str(result_str) or "")[:300] if _failed else None))
+
+
+# ============================================================
 # 影响范围预检注册表
 # ============================================================
 

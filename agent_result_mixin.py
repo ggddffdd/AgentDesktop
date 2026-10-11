@@ -57,12 +57,14 @@ import logging
 import os
 
 import task_state  # v4.226：原代码在 agent.py 内可见，本文件须显式 import
+import tool_contract  # v4.258.0（P1-6）：成败判定的单一真源（整模块导入，
+#                        便于判据打补丁验证"两个入口都真走同一份"）
 from config import TOOL_RESULT_LIMIT
 from token_compressor import compress
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.257.0"
+VERSION = "v4.258.0"
 
 
 def _wrap_tool_content_local(name, content, evidence_id=None):
@@ -110,49 +112,22 @@ class AgentResultMixin(object):
 
         `err_head` 供证据登记用（截到 300 字，与旧口径同长度）。
         优先取机器可读的 `error_code` / `error`，都没有才退回 msg。
-        """
-        # ---- 1) 有结构化结果：以 .ok 为唯一权威 ----
-        if tool_result is not None and hasattr(tool_result, "ok"):
-            try:
-                _ok = bool(tool_result.ok)
-            except Exception:
-                _ok = True
-            if _ok:
-                return (True, None)
-            return (False, self._tr_err_head(tool_result))
 
-        # ---- 2) 非结构化：沿用注入的旧判据 ----
-        try:
-            _failed = bool(failed_checker(name, result_str))
-        except Exception:
-            # 注入方报错 → 按成功记（fail-open，与 v4.225 同口径：
-            # 宁可少提示，不可误报未完成）
-            return (True, None)
-        return (not _failed,
-                ((str(result_str) or "")[:300] if _failed else None))
+        v4.258.0（P1-6）：判定逻辑已归一到 `tool_contract.tool_outcome`
+        （单一真源），本方法只做委托 —— 此前 `agent_task_mixin` 里还有
+        第二份实现，两份已经漂移（详见 tool_contract 里的说明）。
+        """
+        return tool_contract.tool_outcome(
+            tool_result, name, result_str, failed_checker)
 
     @staticmethod
     def _tr_err_head(tool_result):
-        """从失败的 ToolResult 里取一句话原因（最多 300 字）。"""
-        parts = []
-        try:
-            _ec = getattr(tool_result, "error_code", None)
-            if _ec:
-                parts.append("[%s]" % _ec)
-        except Exception:
-            pass
-        try:
-            _em = getattr(tool_result, "error", None)
-            if _em:
-                parts.append(str(_em))
-        except Exception:
-            pass
-        if not parts:
-            try:
-                parts.append(str(getattr(tool_result, "msg", "") or ""))
-            except Exception:
-                parts.append("")
-        return " ".join(parts)[:300]
+        """从失败的 ToolResult 里取一句话原因（最多 300 字）。
+
+        v4.258.0（P1-6）：同样归一到 `tool_contract.tr_err_head`；保留本方法
+        名（既有用方与判据 C6 都认它），实现不再留在 mixin 里。
+        """
+        return tool_contract.tr_err_head(tool_result)
 
     def _tr_diag(self, tool_result):
         """取 ToolResult 上值得记日志的诊断字段（**不参与**成败判定）。
