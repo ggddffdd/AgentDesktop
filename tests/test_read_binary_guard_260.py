@@ -12,7 +12,7 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import tools
 
-REPO = r"D:\小臭玩AI\deepseek-desktop"
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 仓库根，与上方 sys.path 同源（CI Linux 无 D:\ 盘，写死必炸）
 tools.WORKSPACE_DIR = REPO
 
 PASS = FAIL = 0
