@@ -232,6 +232,7 @@ _DEGRADED = {
     "context_compress": "返回值即推导结果，验证无意义（自证）",
     "analyze_image": "返回值即推导结果，验证无意义（自证）",
     "read_file": "返回值即磁盘内容，验证无意义（自证）",
+    "read_xlsx_json": "返回值即磁盘结构化内容，验证无意义（自证）",
     "clipboard_read": "返回值即剪贴板内容，验证无意义（自证）",
     "app_get_text": "返回值即目标应用界面文字，验证无意义（自证）",
     "app_list_controls": "返回值即控件枚举结果，验证无意义（自证）",
