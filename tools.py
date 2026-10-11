@@ -1722,6 +1722,90 @@ def tool_read_file(app_dir, path, offset=0, limit=None):
     return head + seg + tail
 
 
+@register_tool("read_xlsx_json")
+def _h_read_xlsx_json(cfg, app_dir, args, progress=None):
+    return (tool_read_xlsx_json(app_dir, args.get("path", ""),
+                               args.get("limit", 0), args.get("sheet", "")), [], None)
+
+
+def tool_read_xlsx_json(app_dir, path, limit=0, sheet=""):
+    """③（2026-10-11 根治）：结构化读 xlsx，直接返回 JSON 行数据
+    {file, sheets, active_sheet, total_data_rows, rows:[{__row__, cells}]}。
+    路径继承统一 WORKSPACE_DIR 根（与 tool_read_file / run_python 同根），
+    不再引入一遍路径坑。灭掉「read_file 只拿解压文本流于是编造题型」的幻觉空间。
+    相对路径 incoming/X 按 WORKSPACE_DIR 解析（与 run_python cwd 一致）。"""
+    if not path:
+        return _read_fail("未提供路径")
+    if _is_sensitive_file(path):
+        return _read_fail("已阻止：目标文件是敏感配置（可能含 API key），禁止读取。")
+    roots = _tool_roots(app_dir)
+    # 与 tool_read_file 完全同根的解析（WORKSPACE_DIR 优先 + incoming/ 回退）
+    p = os.path.abspath(os.path.join(WORKSPACE_DIR, path))
+    if not os.path.isfile(p):
+        _alt = os.path.abspath(os.path.join(app_dir, path))
+        if os.path.isfile(_alt):
+            p = _alt
+    if not os.path.isfile(p) and "/" not in path and "\\" not in path:
+        _base = os.path.basename(path)
+        for _r in roots:
+            cand = os.path.abspath(os.path.join(_r, "incoming", _base))
+            if os.path.isfile(cand):
+                p = cand
+                break
+    if _within_roots(p, roots) is None:
+        return _read_fail(f"拒绝：只能读取工作区目录内文件（{WORKSPACE_DIR}）")
+    if not os.path.isfile(p):
+        return _read_fail(f"文件不存在：{p}")
+    ext = os.path.splitext(p)[1].lower()
+    if ext not in (".xlsx", ".xlsm", ".xls"):
+        return _read_fail(f"不是 Excel 文件：{os.path.basename(p)}（{ext}）")
+    try:
+        import openpyxl
+    except Exception:
+        return _read_fail("openpyxl 未安装，无法结构化读取 xlsx（请 pip install openpyxl 后重试）")
+    try:
+        wb = openpyxl.load_workbook(p, data_only=True, read_only=True)
+    except Exception as e:
+        return _read_fail(f"打开工作簿失败：{e}")
+    try:
+        names = wb.sheetnames
+        target = sheet if sheet in names else names[0]
+        ws = wb[target]
+        rows = []
+        max_rows = 2000
+        try:
+            if limit and str(limit).strip():
+                mv = int(limit)
+                if mv > 0:
+                    max_rows = mv
+        except (TypeError, ValueError):
+            pass
+        for i, row in enumerate(ws.iter_rows(values_only=True), 1):
+            if i > max_rows:
+                break
+            cells = [("" if c is None else str(c)) for c in row]
+            if all(not v.strip() for v in cells):
+                continue
+            rows.append({"__row__": i, "cells": cells})
+        out = {
+            "file": os.path.basename(p),
+            "sheets": names,
+            "active_sheet": target,
+            "total_data_rows": len(rows),
+            "truncated_at": max_rows,
+            "rows": rows,
+        }
+        import json as _json
+        return _json.dumps(out, ensure_ascii=False, indent=1)
+    except Exception as e:
+        return _read_fail(f"读取工作表失败：{e}")
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
+
+
 def tool_write_file(app_dir, path, content):
     if not path:
         return "未提供路径"
@@ -1881,6 +1965,40 @@ def _clip_output(out, hard_trunc, approx_bytes, limit=None):
         return clipped + (f"\n…[输出过大已截断：原始约 {approx_bytes:,} 字节，"
                           f"仅回传前 {limit} 字符]")
     return clipped + f"\n…[输出超长已截断：完整 {len(out):,} 字符，仅回传前 {limit} 字符]"
+
+
+def _preserve_traceback_tail(raw, out):
+    """②（2026-10-11 根治）：Python 报错时，stderr 的 traceback 末行
+    `ExceptionType: message` 含**错误类型 + 失败路径**（如
+    `FileNotFoundError: [Errno 2] No such file or directory: 'incoming/理论题库.xlsx'`），
+    是定位 bug 的唯一关键行。当 out 因超长被裁剪时，这行极易被裁掉，导致模型
+    以为『文件读到了』或乱甩锅（如误怪全角冒号）。
+
+    本函数把该末行**钉在 out 尾部**——无论怎么裁，错误类型 + 失败路径始终可见。
+    注意：相对路径（incoming/理论题库.xlsx）不会被 _mask_sensitive 误脱敏
+    （它只脱绝对路径 C:\\/ /home/ /Users/），安全与可诊断性兼得。"""
+    if not raw:
+        return out
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            txt = raw.decode("utf-8", "ignore")
+        except Exception:
+            return out
+    else:
+        txt = raw
+    last_err = None
+    for line in txt.splitlines():
+        s = line.strip()
+        # 末行错误形如 `...Error: ...` / `...Exception: ...`；Traceback 首行也捕获以防万一
+        if re.search(r"\b\w*(?:Error|Exception|Warning)\b\s*:", s) \
+                or s.startswith("Traceback (most recent call last)"):
+            last_err = s
+    if not last_err:
+        return out
+    # 若末行已在 out 尾部（近似），不重复追加
+    if out.rstrip().endswith(last_err):
+        return out
+    return out.rstrip() + "\n\n[错误末行已保留] " + last_err
 
 
 def _stream_collect(proc, timeout, progress=None, should_stop=None, stop_event=None):
@@ -2235,6 +2353,12 @@ def tool_run_python(app_dir, code, cfg=None, progress=None,
     # run_python 产物落进了空壳目录——改回真实用户数据目录（小臭玩AI）。
     ws = os.path.join(USER_DATA_DIR, "workspace")
     os.makedirs(ws, exist_ok=True)
+    # ①（2026-10-11 根治）：执行 cwd 用 WORKSPACE_DIR（与 tool_read_file 解析根一致），
+    # 让相对路径 incoming/X 能正确解析。此前 cwd=ws（USER_DATA_DIR/workspace），
+    # 导致 `openpyxl.load_workbook("incoming/理论题库.xlsx")` 在不存在的子目录下
+    # FileNotFoundError、glob incoming/ 返回空——小臭误甩锅全角冒号。
+    # 产物仍落 ws（隔离），仅执行根统一为 WORKSPACE_DIR。
+    run_cwd = WORKSPACE_DIR
     # 审计修复 E8：秒级文件名在同秒并发（首次确认后 trust_tool → _run_concurrent
     # 可并行两个 run_python）时互相覆盖，先完成者 finally 删脚本会删掉对方正在
     # 执行的文件 → "can't open file"。加毫秒+随机后缀（同 _save_gen_image v4.120 做法）。
@@ -2257,7 +2381,7 @@ def tool_run_python(app_dir, code, cfg=None, progress=None,
         # ③-B：改用 Popen + communicate（与 run_command 同机制），超时可直接拿到 pid
         # 杀整棵进程树，避免用户代码拉起的 ffmpeg / 子 python 成孤儿（run_command 的 E9 修复，
         # 此前 run_python 漏了，导致超时后后台进程残留）。
-        proc = subprocess.Popen([exe, fpath], cwd=ws,
+        proc = subprocess.Popen([exe, fpath], cwd=run_cwd,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 creationflags=_NO_WINDOW, env=_py_env)
     except Exception as e:
@@ -2284,6 +2408,10 @@ def tool_run_python(app_dir, code, cfg=None, progress=None,
             out = f"（已执行，退出码 {proc.returncode}，无输出）"
         # P2-2：统一裁剪（>6000 字符必附标记；硬截断档标原始字节数）
         out = _clip_output(out, _trunc, _approx)
+        # ②（2026-10-11 根治）：报错时 traceback 末行（错误类型+失败路径）钉在尾部，
+        # 超长裁剪也保留——否则模型看不到 FileNotFoundError: 'incoming/理论题库.xlsx'，
+        # 会乱甩锅全角冒号或谎称读到了文件。相对路径不会被 _mask_sensitive 误脱敏。
+        out = _preserve_traceback_tail(raw, out)
     except Exception as e:
         return f"执行失败：{e}", []
     finally:

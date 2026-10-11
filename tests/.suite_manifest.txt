@@ -82,6 +82,7 @@ test_param_validation_223.py
 test_permission_failclosed_226.py
 test_permission_gates.py
 test_perturb_harness.py
+test_python_cwd_xxx.py
 test_popup_clamp.py
 test_post_exec_verify_224.py
 test_post_exec_verify_227.py
