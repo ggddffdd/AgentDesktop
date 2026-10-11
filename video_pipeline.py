@@ -1944,6 +1944,13 @@ class VideoPipeline:
         chars = [] if self.portrait_mode else self._shot_characters(i)
         # 1) 本镜关键帧：开场画面与构图的最强锚点
         _add(_kf, "keyframe")
+        # 1.5) 口播模式（本人形象）尾帧接力提前占位：
+        #   口播片全片同一背景、同一机位，跨段唯一有效的物理连续锚点就是上一段尾帧。
+        #   原来它排在第 6 位，前面被场景图/clue 占满 5 槽就挤不进来（AGNES_MAX_REF_IMAGES=5），
+        #   每段各自独立采样 → 背景中途换一小会。这里在关键帧之后立刻占位，保证它进得来。
+        #   （下方第 6 步仍会再调一次 _add，去重会让它安全空转。）
+        if self.portrait_mode and self.relay:
+            _add(prev_tail, "tail")
         # 2) 出场角色三视图正面：人物外观锁定
         for c in chars:
             views = [v for v in (c.get("views") or []) if v]
@@ -1959,13 +1966,18 @@ class VideoPipeline:
             if len(views) > 1:
                 _add(views[1], f"character:{lead.get('name', '')}")
         # 4) 本场景环境图：场景锁定
-        sc = (self.shots[i].get("scene") or 1) if i < len(self.shots) else 1
-        # ⚠️ 只在**压根没有场景图**时才去资产库补位。若 _add 失败是因为与关键帧
-        # 撞图（去重），不能再去库里拉一张 —— 那会把无关场景塞进本镜。
-        if self.scene_images.get(sc):
-            _add(self.scene_images.get(sc), "scene")
-        else:
-            _add(self._asset_scene_ref(sc), "scene")
+        # ⚠️ 口播模式（本人形象）整段跳过：与 1584 行「口播模式跳过场景关键帧」对齐。
+        #   口播片 scene_images 必然为空，走 else 就会去**资产库**拉一张别的项目的场景图
+        #   塞进参考槽（1968）。视频模型同时看到「本人照片背景」+「资产库场景」两个背景，
+        #   二者打架 → 中途换背景一小会（大哥实测现象）。口播片不需要任何场景图。
+        if not self.portrait_mode:
+            sc = (self.shots[i].get("scene") or 1) if i < len(self.shots) else 1
+            # ⚠️ 只在**压根没有场景图**时才去资产库补位。若 _add 失败是因为与关键帧
+            # 撞图（去重），不能再去库里拉一张 —— 那会把无关场景塞进本镜。
+            if self.scene_images.get(sc):
+                _add(self.scene_images.get(sc), "scene")
+            else:
+                _add(self._asset_scene_ref(sc), "scene")
         # 5) 本镜出现的关键道具/场景资产（clue，抗崩坏 v3）
         if not self.portrait_mode:
             for c in self._shot_clues(i):
