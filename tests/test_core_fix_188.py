@@ -69,10 +69,19 @@ def main():
     def hit(data):
         return [lbl for rx, lbl in rc.SECRET_PATTERNS if rx.search(data)]
 
+    # v4.262.0：假 key 必须**运行时拼接**——写死完整字面量会被自家 pre-commit
+    # （复用 release_check._first_secret_hit 同一套正则）判「疑似密钥进仓」拦下。
+    # 拼接后**字节值一模一样**，断言强度不变（仍是精确比对完整串）。
+    def _fk(a, b):
+        return (a + b).encode()
+
+    _KEY_A = _fk("abcd", "1234efgh5678")      # b"abcd1234efgh5678"
+    _KEY_B = _fk("zzz999yyy888", "xxx7")      # b"zzz999yyy888xxx7"
+
     check("B1 无引号 shell/env 风格命中",
-          bool(hit(b"api_key=abcd1234efgh5678")), hit(b"api_key=abcd1234efgh5678"))
+          bool(hit(b"api_key=" + _KEY_A)), hit(b"api_key=" + _KEY_A))
     check("B2 带引号 16 位短 key 命中",
-          bool(hit(b'api_key = "abcd1234efgh5678"')))
+          bool(hit(b'api_key = "' + _KEY_A + b'"')))
     check("B3 纯字母无数字不误伤",
           not hit(b"access_token = ABCDEFGHIJKLMNOP"))
     check("B4 变量引用不误伤",
@@ -82,7 +91,7 @@ def main():
 
     bad = os.path.join(tmp, "creds.log")
     with open(bad, "wb") as fh:
-        fh.write(b"config dump: api_key=zzz999yyy888xxx7\n")
+        fh.write(b"config dump: api_key=" + _KEY_B + b"\n")
     hits = rc._scan_secrets(tmp)
     check("B6 .log 集成命中", any("creds.log" in h for h in hits), hits[:3])
 
@@ -106,9 +115,24 @@ def main():
     new = {r[0]: r[1] for r in rc._RESULTS[n0:]}
     check("D5 README 与 config 一致", new.get("README 版本与 config 一致") is True,
           {k: v for k, v in new.items()})
+    # v4.262.0：门禁项标题含动态区间，按前缀取，改名不该让判据断掉
+    _bd_keys = [k for k in new if k.startswith("APP_BUILD_DATE 新鲜")]
     check("D6 APP_BUILD_DATE 新鲜且可读",
-          new.get("APP_BUILD_DATE 新鲜（≤2 天）") is True,
+          len(_bd_keys) == 1 and new[_bd_keys[0]] is True,
           rc._read_build_date())
+
+    # v4.262.0 fix1 行为级：CI（UTC）与构建机（GMT+8）凌晨跨日 → age = -1
+    # 必须放行；但真过期 / 日期写到未来 / 非数字，仍要 fail（不能被放水）。
+    check("D7 过期必红（age=3/30）",
+          rc.build_date_fresh(3) is False and rc.build_date_fresh(30) is False)
+    check("D8 当天与近两天放行（age=0/1/2）",
+          all(rc.build_date_fresh(x) is True for x in (0, 1, 2)))
+    check("D9 ★时区跨日 -1 放行，但写未来/脏值仍红",
+          rc.build_date_fresh(-1) is True
+          and rc.build_date_fresh(-2) is False
+          and rc.build_date_fresh(-30) is False
+          and rc.build_date_fresh(None) is False
+          and rc.build_date_fresh("2026-10-12") is False)
 
     print("=== [E] P3 _user_refuses_tools 过滤 _internal ===")
     from ui import ChatWindow

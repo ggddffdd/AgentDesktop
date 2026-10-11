@@ -343,6 +343,25 @@ def _read_app_version():
         return None
 
 
+# v4.262.0 fix1：构建日期新鲜度的上下界（负值是「未来」，正值是「过去」）。
+# BUILD_DATE_MAX_AGE=2 是原语义（忘了更新日期就别发）；
+# BUILD_DATE_MIN_AGE=-1 是时区容忍 —— CI runner 走 UTC，构建机在 GMT+8，
+# 凌晨打包时本机日历日已经是「明天」，而 CI 的今天（UTC）还是「昨天」，
+# 于是 age = -1。**这不是忘了更新日期，是跨时区跨日**，必须放行。
+# 边界仍然 fail-closed：≤ -2（日期写到了未来）与 > 2（真过期）都判红。
+BUILD_DATE_MAX_AGE = 2
+BUILD_DATE_MIN_AGE = -1
+
+
+def build_date_fresh(age_days) -> bool:
+    """age_days：今天 − 构建日期（天）。负=构建日期在未来。"""
+    try:
+        age = int(age_days)
+    except (TypeError, ValueError):
+        return False
+    return BUILD_DATE_MIN_AGE <= age <= BUILD_DATE_MAX_AGE
+
+
 def _read_build_date():
     try:
         txt = (ROOT / "config.py").read_text(encoding="utf-8")
@@ -458,8 +477,11 @@ def check_version(scan_dist=True):
         import datetime as _dt
         try:
             age = (_dt.date.today() - _dt.date.fromisoformat(bd)).days
-            check("APP_BUILD_DATE 新鲜（≤2 天）", 0 <= age <= 2,
-                  f"{bd}（{age} 天前）")
+            # v4.262.0 fix1：上界防「忘了更新」，下界容忍 UTC↔本地时区跨日（-1）
+            check("APP_BUILD_DATE 新鲜（%d ≤ age ≤ %d 天，含时区跨日 -1）"
+                  % (BUILD_DATE_MIN_AGE, BUILD_DATE_MAX_AGE),
+                  build_date_fresh(age),
+                  f"{bd}（{age} 天前）" if age >= 0 else f"{bd}（早 {abs(age)} 天·时区跨日）")
         except ValueError:
             check("APP_BUILD_DATE 格式", False, f"{bd} 非 ISO 日期")
     else:
