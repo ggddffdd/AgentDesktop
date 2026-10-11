@@ -48,6 +48,7 @@ test_image_payload_guard.py
 test_impact_scope_220.py
 test_intent_dag_239.py
 test_intent_guard_negation.py
+test_intent_low_conf_clarify_260.py
 test_intent_routing.py
 test_intent_scope.py
 test_intent_strong_254.py
@@ -88,6 +89,7 @@ test_postref_fix_186.py
 test_precommit_hooks_237.py
 test_probe_graphics.py
 test_radius_norm.py
+test_read_binary_guard_260.py
 test_readability_197.py
 test_receipt_copy_209.py
 test_resume_api_error_221.py
@@ -151,6 +153,7 @@ test_version_single_source_235.py
 test_video_core_home.py
 test_video_dialogue_229.py
 test_video_director_fix_188.py
+test_video_gen_breaker_260.py
 test_vision_channel.py
 test_vision_qc.py
 test_welcome_ia_199.py

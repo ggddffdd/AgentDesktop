@@ -159,6 +159,67 @@ _TARGET_WORDS = ("视频", "图片", "文件", "表格", "ppt", "pdf", "word", "
 
 _ROUTE_BY_NAME = {r["name"]: r for r in ROUTE_REGISTRY}
 
+# v4.260.x（意图识别护栏，借鉴业界 LLM-Router 第二判据 + 本项目 fail-closed 哲学）
+# --------------------------------------------------------------------------
+# 高风险外部生成工具：误调代价大（耗 token / 时长，且易触发 503 队列满空转，
+# 见 tools.py tool_video_gen 熔断）。低置信意图下**不直接调**，fail-closed 回退澄清。
+HIGH_RISK_TOOLS = ("video_gen", "image_gen")
+# 低置信澄清回退阈值：规则层仅靠关键词命中（无显式 force_tool）时 conf 偏低，
+# 低于此值且命中高风险工具 + 非明确指令语境 → 澄清而非直接调。
+# （conf 算法见文件头：纯关键词命中≈0.30~0.50，远低于此阈值；显式点名含
+#  force_tool 或 tgt 命中，仍可能低于 0.85，但那些路径被 `not force` / kind 条件排除。）
+LOW_CONF_THRESHOLD = 0.85
+
+
+# v4.260.x：能力确认疑问（「你会做X吗」「能不能做」）—— 这类低置信提到高风险
+# 工具才视为「可能要生成」，触发澄清回退；排除「问需要什么工具 / 怎么生成」(问信息)
+# 与「分析下…这件事」(讨论)。避免误触发 CL4 类反例（test_clarify_gate_238.py）。
+_CAPABILITY_KW = ("会做", "能做", "你会", "可以", "能不能", "会不会",
+                  "能吗", "会吗", "可以吗", "行吗")
+
+
+def _is_capability_confirm_question(text):
+    """是否「能力确认疑问」—— 确认对方能否做某事（会做 / 能做 / 可以）。
+
+    纯函数、fail-open（异常 → False）。非疑问句或不含能力确认词 → False。
+    """
+    try:
+        if not isinstance(text, str) or not text:
+            return False
+        if not any(k in text for k in _CAPABILITY_KW):
+            return False
+        # 疑问句（尾 吗/? 或 agent_text 共认）才算能力确认，否则是陈述/讨论
+        if text.rstrip().endswith(("吗", "？", "?")):
+            return True
+        return _is_question(text)
+    except Exception:
+        return False
+
+
+def _low_conf_high_risk_guard(kind, force, req, conf, text):
+    """v4.260.x：低置信高风险生成工具澄清回退（fail-closed）。
+
+    规则层 detect 到「命中高风险生成工具(video_gen/image_gen) + 无显式强制(force=None)
+    + 非指令语境(question/unknown/discuss/reference) + confidence<阈值
+    + 能力确认疑问(你会做X吗/能不能做)」→ 返回
+    (needs_clarify, reason, options)，调用方据此置澄清、不直接调工具。
+    纯函数、无副作用；不满足条件返回 (False, "", ())。
+    """
+    if (not force
+            and kind in (KIND_QUESTION, KIND_UNKNOWN, KIND_DISCUSS, KIND_REFERENCE)
+            and conf < LOW_CONF_THRESHOLD
+            and any(t in HIGH_RISK_TOOLS for t in req)
+            and _is_capability_confirm_question(text)):
+        _hr = [t for t in req if t in HIGH_RISK_TOOLS]
+        _hr_desc = "、".join(
+            (_ROUTE_BY_NAME[t]["desc"].split("（")[0] if _ROUTE_BY_NAME.get(t) else t)
+            for t in _hr)
+        return (True,
+                ("这句话里提到了%s，但不确定你是想让我生成，还是只是确认能力 / 在问。"
+                 "为避免做错方向，先确认一下？" % _hr_desc),
+                (("confirm_generate", "生成/做"), ("just_asking", "只是问问")))
+    return (False, "", ())
+
 
 def _route_hint_text():
     """v4.225：从 ROUTE_REGISTRY 自动生成系统提示里的工具路由段。
@@ -430,9 +491,21 @@ def classify(text, prev_text=None, messages=None):
         pass
     try:
         if agent_text._ref_by_position(text) or agent_text._ref_existing_artifact(text):
-            return Intent(kind=KIND_REFERENCE, confidence=0.55,
-                          target=tgt_early, force_tool=None,
-                          needs_action=False, reason="引用/质疑既有产物语境")
+            # v4.260.x：reference 语境也可能是指着产物问「这种你会做吗」
+            # （用户指着 Grokbot 视频说「这种动画你会做吗」）。若同时命中高风险生成
+            # 工具且为疑问句 → 与 question 语境同待遇，澄清回退，不直接调。
+            _ref_req = tuple(h[0] for h in _matched_routes(text))
+            _ref_intent = Intent(kind=KIND_REFERENCE, confidence=0.55,
+                                  target=tgt_early, force_tool=None,
+                                  needs_action=False, reason="引用/质疑既有产物语境")
+            _gc, _gr, _go = _low_conf_high_risk_guard(
+                KIND_REFERENCE, None, _ref_req, 0.55, text)
+            if _gc:
+                _ref_intent.needs_clarification = True
+                _ref_intent.clarify_reason = _gr
+                _ref_intent.clarify_options = _go
+                _ref_intent.reason = "引用语境+高风险工具疑问，澄清回退"
+            return _ref_intent
     except Exception:
         pass
     # v4.225：状态追问必须**结合产物语境**才算。
@@ -594,6 +667,23 @@ def classify(text, prev_text=None, messages=None):
             clarify_options = (("confirm_fix", "动手改"),
                                ("chat_only", "只是说说"))
 
+    # v4.260.x：低置信高风险工具澄清回退（借鉴点 3 / fail-closed）
+    # ------------------------------------------------------------------
+    # 真实事故：用户说「这种代码做的动画你会做吗」「你会做视频吗」，规则层仅靠
+    # 关键词（动画/视频）命中 video_gen，但用户是在**确认能力 / 提问**，并非明确
+    # 下指令；旧逻辑 confidence 不参与决策 → 下游直接调 video_gen 空转（与
+    # tools.py tool_video_gen 熔断同一类根因）。
+    # 修法：规则层 detect 到「命中高风险生成工具 + 无显式强制(force=None) +
+    # 语境是非指令(question/unknown/discuss/reference) + confidence<阈值」→ 置
+    # needs_clarification，反问确认意图，不直接调。
+    # 只加不减：force 有值（明确点名）或 kind 已是 action 语境时不触发；
+    # 与上方多候选/隐含祈使澄清互斥叠加时保留原话术（用 `not needs_clarify` 守）。
+    _gc, _gr, _go = _low_conf_high_risk_guard(kind, force, req, conf, text)
+    if not needs_clarify and _gc:
+        needs_clarify = True
+        clarify_reason = _gr
+        clarify_options = _go
+
     return Intent(kind=kind, confidence=conf, explicit=explicit, target=tgt,
                   requested_tools=req, force_tool=force,
                   needs_action=needs_action, text_only=text_only,
@@ -604,8 +694,39 @@ def classify(text, prev_text=None, messages=None):
                   continuation=continuation)
 
 
+def route_second_opinion(text, intent, llm_router):
+    """v4.260.x（借鉴点 1：LLM Router 作第二判据）—— 可选扩展位。
+
+    当规则层 classify 给出「低置信 + 命中高风险工具」的模糊结论时，调用方**可选**
+    传入 llm_router（callable: (text) -> dict）做轻量 LLM 二分类，细化意图：
+        LLM 返回 {"confirm": True}  → 视为明确要生成（消澄清，直接派活）
+        LLM 返回 {"confirm": False} 或异常 → 视为只是问 / 确认能力（保持澄清）
+    本函数不强制联网、不影响 classify 既有路径；未接入时规则层 fail-closed 回退已
+    足够防误调。fail-open：llm_router 非可调用 / 抛异常 / 返回异常 → 返回原 intent。
+
+    设计纪律（与 intent.py 同源）：
+      · 不重写既有判据、不改行为；只在 needs_clarification 已为真时**按需消解**。
+      · 只加不减：LLM 否认或不回 → 沿用规则层澄清，绝不反向强制派活。
+    """
+    if not callable(llm_router):
+        return intent
+    if not (getattr(intent, "needs_clarification", False)
+            and any(t in HIGH_RISK_TOOLS for t in getattr(intent, "requested_tools", ()))):
+        return intent
+    try:
+        res = llm_router(text)
+        if isinstance(res, dict) and res.get("confirm") is True:
+            intent.needs_clarification = False
+            intent.clarify_reason = ""
+            intent.clarify_options = ()
+    except Exception:
+        pass
+    return intent
+
+
 __all__ = [
     "VERSION", "Intent", "classify", "detect_continuation",
+    "route_second_opinion", "HIGH_RISK_TOOLS", "LOW_CONF_THRESHOLD",
     "ROUTE_REGISTRY", "KIND_ACTION", "KIND_CONTENT", "KIND_QUESTION",
     "KIND_DISCUSS", "KIND_STATUS", "KIND_NEGATED", "KIND_REFERENCE",
     "KIND_UNKNOWN", "KIND_ALL",
