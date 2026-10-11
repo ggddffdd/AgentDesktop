@@ -7,6 +7,27 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.260.4 — 2026-10-11（已发布 exe）
+
+#36（0144f80）绿后的发布打包；根治「小臭读 xlsx 附件失败」的收口。
+
+### 根治：读附件路径分叉（run_python cwd 与 read_file 根不统一）
+
+- `tool_run_python` 执行 cwd 原用 `USER_DATA_DIR/workspace`，而 `tool_read_file` /
+  `tool_write_file` 的解析根是 `WORKSPACE_DIR`——两者在大哥机器上**指向不同目录**，
+  相对路径 `incoming/X.xlsx` 被解析到不存在的位置 → `FileNotFoundError`，小臭又把锅甩给
+  全角冒号、让用户重命名。真因是 cwd 分叉，与文件名无关。
+- #36 已落地 ①②③④ 根治（672e758 + 0144f80）：
+  ① `tool_run_python` cwd 改统一为 `WORKSPACE_DIR`；
+  ② 新增 `_preserve_traceback_tail`，报错末行 `错误类型: 失败路径` 钉在输出尾部，裁剪
+    不丢，避免小臭只看最后一行胡乱归因；
+  ③ 新增 `read_xlsx_json` 工具，直接返回 `{sheets, rows:[{__row__, cells}]}` 结构化
+    JSON，路径继承 `WORKSPACE_DIR` 根；
+  ④ 新增扰动判据 `test_python_cwd_xxx` + `_perturb_python_cwd_xxx`（PERTURB PASS=3），
+    锁死 cwd 统一 / 末行保留 / 注册三项，防复发。
+- `read_xlsx_json` 已补登 `tool_verifiers_227._DEGRADED` 分档表（自证型工具，验证无意义），
+  消除 #35 漏登红。
+
 ## v4.260.3 — 2026-10-11（已发布 exe）
 
 v4.260.2 + v4.260.x 意图护栏的发布打包；顺带修两处判据在 CI（Linux）上的平台依赖。
