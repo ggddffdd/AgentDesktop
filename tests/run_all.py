@@ -62,6 +62,23 @@ FIXTURE_PREFIX = "test_zz_"
 TEST_LOG_DIR = os.path.join(tempfile.gettempdir(), "dsb_test_logs")
 
 
+def _child_env():
+    """构造子进程环境：**必须以完整 os.environ 为底**，再叠加少量强制键。
+
+    ⚠️ 铁律（2026-10-11 复盘）：**绝不允许** `env={"QT_QPA_PLATFORM": ...}` 这种
+    部分字典起手 —— 那样会抹掉 PATH / TEMP / HOME，子进程里 tempfile / PySide6
+    一 import 就 `KeyError('PATH')` 崩，表现为「回归整片假红」却不是代码问题。
+    本函数把「从完整环境继承」固化成唯一入口，任何 subprocess 都走它，
+    从根上消除这类踩坑（之前那次 1558 个残留文件就是它漏网的后果）。
+    """
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    env["QT_QPA_PLATFORM"] = "offscreen"   # 需要 Qt 的套件不弹窗
+    env.setdefault("XC_LOG_DIR", TEST_LOG_DIR)   # 套件日志→临时目录，不污染用户真实 debug.log
+    return env
+
+
 def is_real_suite(p):
     """是不是「真套件」（排除扰动脚本造的临时夹具）。"""
     return not p.name.startswith(FIXTURE_PREFIX)
@@ -175,9 +192,7 @@ def run_guard_preflight():
     """
     if not PERTURB_GUARD.is_file():
         return None, "（未找到 _perturb_guard.py，跳过残留检查）"
-    env = dict(os.environ)
-    env["PYTHONIOENCODING"] = "utf-8"
-    env["PYTHONUTF8"] = "1"
+    env = _child_env()
     try:
         p = subprocess.run([sys.executable, str(PERTURB_GUARD)],
                            cwd=str(ROOT), env=env,
@@ -190,11 +205,7 @@ def run_guard_preflight():
 def run_one(path, timeout=None):
     """在子进程中跑单个套件，返回 (name, n_pass, n_fail, status, seconds, output)。"""
     timeout = timeout or TIMEOUT
-    env = dict(os.environ)
-    env["PYTHONIOENCODING"] = "utf-8"
-    env["PYTHONUTF8"] = "1"
-    env["QT_QPA_PLATFORM"] = "offscreen"   # 需要 Qt 的套件不弹窗
-    env.setdefault("XC_LOG_DIR", TEST_LOG_DIR)   # 套件日志→临时目录，不污染用户真实 debug.log
+    env = _child_env()
 
     t0 = time.time()
     try:
