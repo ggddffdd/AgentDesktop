@@ -6183,13 +6183,46 @@ def audit_skill_text(txt):
         return "P0", ["安全审计器不可用/异常（%s），未扫描即视为高危，本次拒绝安装" % e]
 
 
+def _skill_loadable(md_path, slug):
+    """v4.259.0（P1-8）：这份 SKILL.md **真正的加载器**能不能加载出来。
+
+    为什么非得单开一个判据
+    ----------------------
+    装前验货以前直接用 `legion._parse_skill_md`（本模块那份**宽松版**，注释自己
+    写着「没有 frontmatter 也允许」）—— 只要文件读得到就返回非空 dict，**校验
+    永远放行**，那句「解析不了说明格式不对，回滚删掉」从来没生效过。
+
+    而真正把技能列进技能列表的是 `skill_loader._parse_skill_md`，它对本模块那份
+    判不出来的东西（内容 `strip()` 后为空，如 `"   \\n\\t\\n"`）返回 **None**。
+    于是出现：装的时候提示「✅ 已安装」，技能列表里**根本没有它**；更糟的是这个
+    空壳**物理占住 slug**，而本函数开头有「已经装过了，不覆盖已有版本」，
+    用户想删掉重装都装不上——死循环。
+
+    修法：判据直接复用加载器那份，做到 **装得进 = 加载得出**。
+    本模块那份宽松版继续供 `scan_available_skills` / `_load_skill_prompt` 使用
+    （它要 `requires_tools` 字段，skill_loader 版不解析，不能顶掉）—— 只加不减。
+
+    fail-open：**加载器不可用（import/解析异常）时放行**。不能因为解析器抽风就
+    装不了技能，那比装个空壳更糟（空壳至少能手动删）。
+    """
+    try:
+        from skill_loader import _parse_skill_md as _loader_parse
+    except Exception:
+        return True
+    try:
+        return _loader_parse(md_path, slug) is not None
+    except Exception:
+        return True
+
+
 def install_skill_from_github(repo, path, branch=None, skills_dir=None,
                               slug=None, timeout=25):
     """把一个远程 SKILL.md 装进本地技能目录。返回 (ok, msg)。
 
     - 目录：~/Documents/小臭玩AI/skills/<slug>/SKILL.md
     - **不覆盖**已存在的技能（避免顶掉用户改过的版本），要覆盖先手动删
-    - 装完立刻用 _parse_skill_md 验一遍，解析不了说明格式不对，回滚删掉
+    - 装完立刻验一遍：判据**复用真正加载器**（v4.259.0），做到装得进=加载得出，
+      加载不出来的当场回滚，不留空壳占位
     """
     skills_dir = skills_dir or DEFAULT_SKILLS_DIR
     target_slug = _safe_slug(slug or "")
@@ -6229,7 +6262,7 @@ def install_skill_from_github(repo, path, branch=None, skills_dir=None,
         # 实现直接吐 NA（未扫描态），同样硬拒，不再"警告即放行"。
         return False, ("⛔ 安全审计未能完成（%s），未扫描即视为高危，拒绝安装「%s」。"
                        % ("；".join(_why[:1]) or "审计器返回 NA", target_slug))
-    # 装前先验货：解析不了 frontmatter 的技能装进去也是废的
+    # 装前先验货：加载不出来的技能装进去就是个占位空壳（挡住同名重装），回滚删掉
     try:
         os.makedirs(dst_dir, exist_ok=True)
         with open(dst, "w", encoding="utf-8") as f:
@@ -6240,13 +6273,16 @@ def install_skill_from_github(repo, path, branch=None, skills_dir=None,
         info = _parse_skill_md(dst)
     except Exception:
         info = None
-    if not info:
+    # v4.259.0（P1-8）：`info` 是**宽松版**判据（无 frontmatter 也算过），只能证明
+    # "文件能读"；真正决定它会不会出现在技能列表里的是加载器那份。两条都要过。
+    if not info or not _skill_loadable(dst, target_slug):
         try:
             os.remove(dst)
             os.rmdir(dst_dir)
         except Exception:
             pass
-        return False, "装是装进去了，但 SKILL.md 解析不了（缺 frontmatter？），已回滚。"
+        return False, ("装是装进去了，但这份 SKILL.md 加载不出来"
+                       "（内容为空或无法解析），已回滚——没留下占位空壳。")
     nm = info.get("name") or target_slug
     return True, "✅ 已安装技能「%s」（%s）→ %s%s" % (nm, target_slug, dst, _warn)
 

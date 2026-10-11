@@ -63,6 +63,7 @@ _perturb_runtime_dir_hygiene_236.py
 _perturb_screenshot_fence_218.py
 _perturb_sensitive_mask_220.py
 _perturb_skill_gate_b4_226.py
+_perturb_skill_install_gate_259.py
 _perturb_skill_meta_226.py
 _perturb_structured_return_220.py
 _perturb_structured_return_223.py
