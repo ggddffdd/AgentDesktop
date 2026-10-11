@@ -77,7 +77,7 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.260.4"
+APP_VERSION = "v4.261.0"
 APP_BUILD_DATE = "2026-10-11"
 # v4.164.0（2026-09-27）**运行数据归口：彻底治「dist 既是运行目录又是分发源」**：
 #   新增 config.WORKSPACE_DIR（默认 ~/Documents/小臭玩AI，与 USER_DATA_DIR 同值，
@@ -1103,6 +1103,13 @@ DEFAULT_CONFIG = {
         # 正确端点是 api/paas/v4。这是写入新用户 config.json 的默认值，必须保持可用
         # （老用户需自行改 ~/Documents/小臭玩AI/config.json，默认值不会覆盖已有配置）。
         "智谱 GLM": {"base_url": "https://open.bigmodel.cn/api/paas/v4", "model": "glm-4-flash", "api_key": ""},
+        # v4.261：GLM-5.3-Flash（智谱 GLM-5 系列首个原生多模态，320B 总参 / 18B 激活，
+        # 1M 上下文，图/视频/文件/文本进、文本出）。端点与 key 和 glm-4-flash 完全通用，
+        # 只是 model 名不同 —— 所以独立成档位，免费档 glm-4-flash 原样保留。
+        # ⚠️ 计费提示（国内站标准价，元/百万 tokens）：输入 0.8 / 输出 2.8 / 缓存命中 0.23，
+        # **是付费档**（glm-4-flash 才免费）；同基座提速版 glm-5.3-flashx 价为其 2.5 倍，
+        # 按需另加。用不用由大哥在下拉框选，配置本身不产生费用。
+        "智谱 GLM-5.3": {"base_url": "https://open.bigmodel.cn/api/paas/v4", "model": "glm-5.3-flash", "api_key": ""},
         # 端点修正：混元 2026-06-22 已迁移 TokenHub，旧平台域名 api.hunyuan.cloud.tencent.com
         # 连同 hunyuan-lite 一起下线——旧端点拿同一把 key 会报 401 invalid_api_key，
         # 极易误判成"key 失效"。新端点 + 新模型名配对才通（实测 1.5s 返回）。
