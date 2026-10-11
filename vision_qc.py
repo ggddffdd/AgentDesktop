@@ -198,6 +198,33 @@ Answer in EXACTLY this format, no other text:
 VERDICT: PASS
 ISSUES: <one short sentence, or "none">
 
+Replace PASS with FAIL if the identity changed, OR if the face/anatomy is broken,
+OR if the background is clearly a DIFFERENT PLACE than the reference photo
+(a different room / wall / furniture / window / outdoor scene).
+IMPORTANT: only flag a REAL change of place — ignore minor lighting, exposure,
+color or blur differences. When in doubt, PASS.
+"""
+
+# v4.262.0：keep_bg=False（用户**主动要求换背景**）时用这版 —— 背景本来就该变，
+# 再判「背景不一致」就是误判，会把好好的段反复判 FAIL 触发无意义重生成。
+# 除了去掉背景那一条，其余判定与 REVIEW_QUESTION_IDENTITY 完全一致。
+REVIEW_QUESTION_IDENTITY_NOBG = """You are a strict QC inspector for AI-generated digital human videos.
+Picture 1 is the ORIGINAL reference photo of the real person.
+Picture 2 is a frame from the generated video.
+
+Check ONLY these, in order of importance:
+1) IDENTITY: Is the person in Picture 2 clearly the SAME individual as Picture 1?
+   Compare face shape, facial features, skin tone, hairstyle, apparent age and gender.
+   Minor lighting/angle differences are acceptable; a DIFFERENT PERSON is not.
+2) FACE INTEGRITY: Any warped, melted, blurred, duplicated or distorted face?
+3) ANATOMY: Extra/missing fingers, extra arms, distorted hands, broken limbs?
+4) The background was intentionally changed by the user — do NOT judge the
+   background at all, and do NOT fail the frame because of it.
+
+Answer in EXACTLY this format, no other text:
+VERDICT: PASS
+ISSUES: <one short sentence, or "none">
+
 Replace PASS with FAIL if the identity changed, OR if the face/anatomy is broken.
 """
 
@@ -348,8 +375,15 @@ def review_keyframe(cfg, image_path, shot_desc, character_lock="", log=None,
     return r if with_meta else (r["passed"], r["note"])
 
 
-def review_identity(cfg, ref_path, frame_path, log=None, with_meta=False):
-    """数字人质检：比对参考照与生成画面是否同一人。默认返回 (passed, note)。"""
+def review_identity(cfg, ref_path, frame_path, log=None, with_meta=False, keep_bg=True):
+    """数字人质检：比对参考照与生成画面是否同一人。默认返回 (passed, note)。
+
+    keep_bg=True（用户要求锁背景）→ 背景**也纳入判定**：判据里本来就有
+      「BACKGROUND」一问，但 v4.262.0 之前 FAIL 规则只写了 identity/face/anatomy，
+      背景漂移不会被判 FAIL → 过检、不触发重生成（实测「背景变一小会」漏网）。
+    keep_bg=False（用户**主动换背景**）→ 用 NOBG 版问题，背景不参与判定，
+      否则会把自己要的效果判成 FAIL、反复重生成。
+    """
     if not ref_path or not frame_path:
         _bump("qc_skipped_nofile")
         r = {"status": QC_SKIP_NOFILE, "label": status_label(QC_SKIP_NOFILE),
@@ -360,5 +394,6 @@ def review_identity(cfg, ref_path, frame_path, log=None, with_meta=False):
         r = {"status": QC_SKIP_NOFILE, "label": status_label(QC_SKIP_NOFILE),
              "passed": True, "note": "", "meta": {}}
         return r if with_meta else (True, "")
-    r = qc_call(cfg, [ref_path, frame_path], REVIEW_QUESTION_IDENTITY, log=log)
+    q = REVIEW_QUESTION_IDENTITY if keep_bg else REVIEW_QUESTION_IDENTITY_NOBG
+    r = qc_call(cfg, [ref_path, frame_path], q, log=log)
     return r if with_meta else (r["passed"], r["note"])

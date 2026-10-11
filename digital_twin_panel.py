@@ -313,11 +313,12 @@ def build_twin_panel(app):
         "不通过自动重生成（每段最多重试 2 次）。\n"
         "⚠️ 调用大哥已付费订阅的 DeepSeek，会产生少量费用；关掉则只靠参考图锁定。")
 
-    # 形象/背景锁定（reference 模式）：默认开 —— 背景不跳 + 可并发
+    # 形象/背景锁定（v4.262.0 起走 keyframe 首/尾帧强锁）：默认开 —— 背景不跳 + 可并发
     app.twin_ref_lock = QCheckBox("🔒 形象/背景锁定")
     app.twin_ref_lock.setChecked(True)
     app.twin_ref_lock.setToolTip(
-        "默认**勾选**（推荐）：每一段都以本人照片作**同一张参考图**生成。\n"
+        "默认**勾选**（推荐）：每一段都以本人照片**同时作为首帧与尾帧**生成\n"
+        "（首尾双帧夹住，背景锚定最强）。\n"
         "· 背景与形象全程锚定同一张图，段与段之间不会各说各话 → **背景不跳**；\n"
         "· 各段互相独立 → **可并发出片，速度更快**。\n"
         "关掉则退回旧模式（首尾帧 + 上一段末帧接力）：误差会逐段累积、\n"
@@ -868,8 +869,10 @@ def concat_videos(paths, out, ffmpeg=None, log=None):
 #       重跑时已完成段直接复用，只补缺失的段。
 # 关键取舍：
 #   · 指纹只含**决定段内容**的输入（口播稿 / 参考图 / 场景 / 画幅 / 单段时长 /
-#     保持背景 / 双帧锁定），**不含 qc 与 ai_mark** —— 那两个是后处理，
+#     保持背景 / 双帧锁定 / 生成模式版本），**不含 qc 与 ai_mark** —— 那两个是后处理，
 #     改了不该让历史段作废。
+#   · v4.262.0：新增「生成模式版本」g=2。模式实现变了（reference → keyframe 强锁），
+#     同输入产出的段内容已不同，必须让指纹变，否则断点续跑会复用旧模式段混成片。
 #   · 段复用还要求**台词 hash 一致**，挡住「指纹没变但文本被改」这类边角。
 #   · 任务**全部成功即清理**（不残留）；**有缺段才保留**供下次续跑。
 #   · state.json 原子写（os.replace）；复用前校验文件真实存在且非空。
@@ -885,7 +888,12 @@ def _twin_fingerprint(dialogue, portrait, scene, resolution, dur,
     payload = json.dumps(
         {"d": dialogue or "", "p": p_img, "s": scene or "",
          "r": resolution or "", "t": int(dur or 0),
-         "b": bool(keep_bg), "f": bool(dual_frame), "m": bool(ref_mode)},
+         "b": bool(keep_bg), "f": bool(dual_frame), "m": bool(ref_mode),
+         # v4.262.0：生成模式版本。锁定模式由 reference 弱参考改为 keyframe 双帧锁
+         # （见 _gen_serial / _gen_parallel），同一批输入**产出的段内容已不同**，
+         # 故抬版本号 → 指纹必变 → 旧的 reference 段不再被断点续跑复用，
+         # 避免「一半旧模式一半新模式」混合成片。
+         "g": 2},
         ensure_ascii=False, sort_keys=True)
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
 
@@ -964,6 +972,16 @@ class TwinGenThread(QThread):
       为参考 → 背景/形象锚定一致、不跳；且段与段**互相独立、无需尾帧接力**
       → 正好**可以并发出片**（`workers`，默认 3）。
       `ref_mode=False` 保留旧的 keyframe + 尾帧接力（串行），作为回退。
+
+    v4.262.0 —— **锁定模式由 reference 改为 keyframe 首/尾帧强锁**：
+      v4.179.0 的 reference 只解决了"段间累积漂移"，但 reference 是**弱风格参考**，
+      模型在单段内（最长 12s）仍会把背景重新诠释 —— 大哥实测「背景变一小会」。
+      现在 `ref_mode=True` 时**不传 images**（传了就永远是 reference，内核
+      `agnes.py:291-301` 三模式互斥且多图优先）、改为 `first_frame=参考图`，
+      `dual_frame` 时 `last_frame` 同图 → 走 **keyframe 强锁**，首尾都锚死。
+      段间依旧互相独立 → 并发照旧（`workers`，默认 3）。
+      配套：① 指纹加模式版本号 `g=2`，旧 reference 段不再被续跑复用（防混模式）；
+            ② 数字人质检补上「背景漂移判 FAIL」（此前问项问了、裁决规则漏了）。
     """
 
     log = Signal(str)
@@ -1199,17 +1217,25 @@ class TwinGenThread(QThread):
 
     def _gen_serial(self, todo, tmp_dir, ff, state, state_path, seg_map,
                     portrait_uri, total):
-        """串行逐段 + 尾帧接力（keyframe 模式；reference 模式也可用，只是慢）。"""
+        """串行逐段。锁定模式（ref_mode=True）每段独立走 keyframe 强锁；否则尾帧接力。"""
         prev_tail = None
         for (i, text, sec, seg_file) in todo:
             if self._cancel:
                 self.log.emit("已取消。")
                 break
             if self.ref_mode:
-                # reference：每段都锚定同一张参考图（首尾帧不用 —— 三模式互斥）
-                images, first_frame, last_frame = [portrait_uri], None, None
+                # 锁定模式：每段都以**同一张本人参考图**为首帧（dual_frame 时尾帧同图双锁）。
+                # v4.262.0 换实现：原来传 images=[参考图] 走 reference（弱风格参考），
+                # 模型仍会在段内重诠释背景 —— 大哥实测「背景变一小会」。
+                # 内核三模式互斥且 images 优先（video-agent/core/agnes.py:291-301），
+                # 只要传 images 就永远是 reference、first_frame 被忽略。
+                # 改为 images 置空 + first/last_frame 同图 → 走 keyframe **首帧强锁**，
+                # 背景锚定强度远高于弱参考；段间仍各自独立（不接力）→ 并发不受影响。
+                images = None
+                first_frame = portrait_uri
+                last_frame = portrait_uri if self.dual_frame else None
             else:
-                # keyframe：第 1 段用参考图，之后用上一段末帧（尾帧接力）
+                # 接力模式（回退）：第 1 段用参考图，之后用上一段末帧做首帧
                 images = None
                 first_frame = portrait_uri if i == 0 else (prev_tail or portrait_uri)
                 last_frame = portrait_uri if self.dual_frame else None
@@ -1248,14 +1274,16 @@ class TwinGenThread(QThread):
 
     def _gen_parallel(self, todo, tmp_dir, ff, state, state_path, seg_map,
                       portrait_uri, total):
-        """并发出片（reference 模式专属：每段都锚定同一张参考图，段间无依赖）。
+        """并发出片（锁定模式专属：每段都锚定同一张参考图，段间无依赖）。
 
+        v4.262.0：锚定手段由 reference 弱参考改为 keyframe 首/尾帧强锁
+        （见 `_gen_serial` 注释）；段间依然互相独立，故并发度不受影响。
         保守并发（`workers` 默认 3）—— 免费队列并发过高会全线限流，反而更慢。
         落盘/记账/进度统一切回本线程做，避免多线程改同一份 state。
         """
         n = max(1, min(self.workers, len(todo)))
         self.log.emit(f"🚀 并发出片：待生成 {len(todo)} 段 / 并发 {n} 路"
-                      f"（参考图模式：每段锚定同一张图，段间独立）")
+                      f"（背景锁定：每段锚定同一张参考图，段间独立）")
 
         def _job(item):
             i, text, sec, seg_file = item
@@ -1265,9 +1293,12 @@ class TwinGenThread(QThread):
             # 与主线程 as_completed 循环里的 _record_seg 串行化）
             _on_sub = (lambda tid, _i=i: self._record_task(
                 state, state_path, _i + 1, tid)) if self.job_dir else None
+            # v4.262.0：与 _gen_serial 一致 —— 走 keyframe 双帧锁（首/尾帧同图），
+            # 不再传 images（那会强制走 reference 弱参考，背景锁不住）。
             seg_path, note = self._gen_one(
-                i, prompt, sec, None, None, tmp_dir, ff, images=[portrait_uri],
-                on_submit=_on_sub)
+                i, prompt, sec, first_frame=portrait_uri,
+                last_frame=(portrait_uri if self.dual_frame else None),
+                tmp_dir=tmp_dir, ff=ff, images=None, on_submit=_on_sub)
             return i, text, seg_file, seg_path, note
 
         with ThreadPoolExecutor(max_workers=n) as ex:
@@ -1352,7 +1383,8 @@ class TwinGenThread(QThread):
                 self.log.emit(f"  [第{i+1}段] ⚠️ 抽质检帧失败，放行。")
                 return last_ok, ""
             passed, note = vq.review_identity(
-                self.cfg, self.portrait, probe, log=self.log.emit)
+                self.cfg, self.portrait, probe, log=self.log.emit,
+                keep_bg=self.keep_bg)
             last_note = note
             if passed:
                 self.log.emit(f"  [第{i+1}段] ✅ 质检通过（仍是本人，无畸变）")
@@ -1413,7 +1445,7 @@ def _twin_generate(app):
     total_sec = sum(s for _t, s in segs)
     tip = f"共 {len(segs)} 段 / 约 {total_sec} 秒"
     if len(segs) > 1:
-        tip += ("（参考图模式：背景锁定 + 并发出片）" if ref_lock
+        tip += ("（背景锁定：强锁首尾帧 + 并发出片）" if ref_lock
                 else "（首尾帧接力模式：只能串行）")
     if done_n:
         tip += (f"｜♻️ 检测到上次进度：已完成 {done_n} 段，本次跳过"
