@@ -1639,6 +1639,11 @@ def _read_fail(msg):
     return msg + _READ_NOT_FOUND
 
 
+# 二进制媒体扩展名：read_file 一律拦截，改走抽帧/图像分析（护栏 #2，2026-10-11 复盘）。
+_BINARY_MEDIA_EXTS = (".mp4", ".avi", ".mov", ".mkv", ".webm",
+                      ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp")
+
+
 def tool_read_file(app_dir, path, offset=0, limit=None):
     if not path:
         return _read_fail("未提供路径")
@@ -1665,6 +1670,14 @@ def tool_read_file(app_dir, path, offset=0, limit=None):
     if not os.path.isfile(p):
         return _read_fail(f"文件不存在：{p}")
     ext = os.path.splitext(p)[1].lower()
+    # 护栏 #2（2026-10-11 复盘）：二进制媒体文件禁止按文本读取——按 utf-8 读只会得到
+    # 乱码，且会让 Agent 误以为「读到了内容」进而空转分析。直接声明非文本，
+    # 指引走抽帧 + 图像分析路径，不要 read_file 整个文件。
+    if ext in _BINARY_MEDIA_EXTS:
+        return _read_fail(
+            f"已拦截：{os.path.basename(p)} 是二进制媒体文件（{ext}），"
+            f"无法按文本读取（读出来只是一堆乱码）。如需理解画面/内容，"
+            f"请改用抽帧 + 图像分析路径，不要用 read_file 读整个文件。")
     # v4.66：Office / PDF 抽出真实文本，否则按二进制读会是一堆乱码 zip
     text = None
     if ext in (".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt"):
@@ -2954,6 +2967,42 @@ def is_silent_clip(rel):
         return False
 
 
+# ── 视频生成熔断（circuit breaker）──────────────────────────────────────
+# 复盘（2026-10-11）：生视频服务队列满(503)/参数错(400)时，Agent 会在对话循环里
+# 反复调用 video_gen，每次再打一次网络、再失败一次，表现为「状态一直闪、无结论」。
+# 这里在 tool 层加断路：连续 2 次非成功即开路（进程内），后续调用直接返回
+# fail-closed 回退（建议改用代码/HTML 动画），绝不再打第 3 次网络；任一次成功即
+# 复位；开路 10 分钟冷却后才允许下一次探测（半开），失败则继续开路。
+_VIDEO_GEN_BREAKER = {"consecutive_fail": 0, "open": False, "open_at": 0.0}
+_VIDEO_GEN_BREAKER_THRESHOLD = 2
+_VIDEO_GEN_BREAKER_COOLDOWN = 600.0
+
+
+def _video_gen_breaker_open():
+    """开路且未冷却完 → True（调用方应直接 fail-closed，不再打网络）。"""
+    b = _VIDEO_GEN_BREAKER
+    if not b["open"]:
+        return False
+    if time.time() - b["open_at"] >= _VIDEO_GEN_BREAKER_COOLDOWN:
+        b["open"] = False
+        b["consecutive_fail"] = 0
+        return False
+    return True
+
+
+def _video_gen_record_failure():
+    b = _VIDEO_GEN_BREAKER
+    b["consecutive_fail"] += 1
+    if b["consecutive_fail"] >= _VIDEO_GEN_BREAKER_THRESHOLD:
+        b["open"] = True
+        b["open_at"] = time.time()
+
+
+def _video_gen_record_success():
+    _VIDEO_GEN_BREAKER["consecutive_fail"] = 0
+    _VIDEO_GEN_BREAKER["open"] = False
+
+
 def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=None,
                    image=None, first_frame=None, last_frame=None, dialogue=None,
                    progress=None, images=None, ref_images=None,
@@ -2986,6 +3035,12 @@ def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=
     """
     if not prompt:
         return "未提供视频描述"
+    # 护栏 #1（2026-10-11 复盘）：连续失败熔断 —— 开路时直接 fail-closed 回退，
+    # 不再打第 3 次网络，避免对话循环里空转（「状态一直闪」）。
+    if _video_gen_breaker_open():
+        return ("视频生成服务熔断中：近两次调用连续失败（队列满/参数错误），"
+                "已停止继续请求，避免空转。建议改用**代码/HTML 动画**方案，"
+                "或稍后重试（冷却约 10 分钟）。")
     try:
         from core_agnes import AgnesClient, AgnesError, is_cancel_error
     except Exception as e:
@@ -3063,10 +3118,12 @@ def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=
         # 而不是把"用户点了停止"写成"视频生成失败"。
         if is_cancel_error(e):
             raise
+        _video_gen_record_failure()   # 连续 2 次失败 → 开路（护栏 #1）
         if isinstance(e, AgnesError):
             return f"视频生成失败（统一内核）：{e.msg}"
         return f"视频生成失败（统一内核）：{e}"
     if not path or not os.path.isfile(path):
+        _video_gen_record_failure()
         return "视频生成未返回本地文件"
     # P1-9（v4.186.0 审查）：只验存在不验大小 → CDN 静默截断/磁盘写满/
     # ffmpeg 残留产生的 0 字节或半截 mp4 会通过 isfile 校验，被打上 done
@@ -3077,6 +3134,7 @@ def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=
     except OSError:
         _vsz = -1
     if 0 <= _vsz < 10 * 1024:
+        _video_gen_record_failure()
         return (f"视频产物异常：文件仅 {_vsz} 字节（疑似下载残片或空文件），"
                 f"已拒绝交付")
     rel = _safe_relpath(path, app_dir)
@@ -3086,6 +3144,7 @@ def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=
             VIDEO_SILENT_MARK[rel] = True
     except Exception:
         pass
+    _video_gen_record_success()   # 任一次成功 → 复位熔断（护栏 #1）
     return (rel, "video", os.path.basename(rel))
 
 
