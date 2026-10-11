@@ -7,6 +7,21 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.260.3 — 2026-10-11（已发布 exe）
+
+v4.260.2 + v4.260.x 意图护栏的发布打包；顺带修两处判据在 CI（Linux）上的平台依赖。
+
+### 判据 CI 适配（不影响运行行为）
+
+- `test_read_binary_guard_260` / `test_video_gen_breaker_260` 原把仓库根写死成
+  Windows 盘符 `D:\小臭玩AI\deepseek-desktop`，且 breaker 判据模块级 `import core_agnes`
+  （依赖大哥本地 video-agent 的 `core` 包，不在仓库依赖、CI 干净 Linux 装不了）→
+  run #29~#32 连续红（套件 0.1s 即崩，本地 Windows 全绿掩盖）。
+- 修复：REPO 一律从 `__file__` 推导；breaker 判据主体改测 `tools.py` 内部熔断状态机 +
+  开路短路回退（短路在 `from core_agnes import` 之前 return，不碰 core），CI 必过；
+  仅本地可导入 core_agnes 时加跑集成段，CI 不可导入则 SKIP（不冒充通过、不崩）。
+- run #33（51d127e）转绿，本版为首个通过 CI 的发布包。
+
 ## v4.260.2 — 2026-10-11（未发布 exe，仅入源码）
 
 两道 Agent 工具护栏（复盘「视频生成空转 / 读二进制空转」）。
