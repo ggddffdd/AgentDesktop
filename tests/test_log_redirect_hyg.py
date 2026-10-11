@@ -10,7 +10,8 @@ RuntimeError 116 / tool_audit 失败用例 99 / legion_chat 的 Temp\\lc_probe_*
 且全部集中在回归窗口 14:00–17:10。测试噪音灌进真实日志 = 把线索池搅浑、「今天有多少
 告警」这类读数失真。
 
-修复 = `tests/run_all.py` 的 `run_one` 给子进程 env 注入 `XC_LOG_DIR`（临时目录）；
+修复 = `tests/run_all.py` 的 `_child_env()`（v4.260 起的 env 唯一入口，
+`run_one` / `run_guard_preflight` 统一走它）给子进程 env 注入 `XC_LOG_DIR`（临时目录）；
 `tests/test_workspace_routing.py` 因要验「默认路由」而自行 pop 掉该变量。
 
 本套件自己也要 pop（见下方模块级那行）：它验的是「run_one **自己**会不会注入」，
@@ -74,10 +75,24 @@ def group_A():
     fns = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "run_one"]
     check("A1 run_all 里 run_one 函数唯一", len(fns) == 1, "找到 %d 个" % len(fns))
     seg = ast.get_source_segment(src, fns[0]) if fns else ""
-    check("A2 run_one 注入 XC_LOG_DIR（setdefault）",
-          'setdefault("XC_LOG_DIR"' in seg or "setdefault('XC_LOG_DIR'" in seg)
-    check("A3 run_one 仍设 QT_QPA_PLATFORM=offscreen",
-          'env["QT_QPA_PLATFORM"] = "offscreen"' in seg)
+    # v4.260.1 修（CI run #27 红根因）：env 注入已收敛进唯一入口 _child_env()，
+    # A2/A3 随真源迁移改盯 _child_env 段；并新增 A2b/A3b 接线判据，
+    # 确保 run_one / run_guard_preflight 真走它（改判据不删判据）。
+    ce_fns = [n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_child_env"]
+    check("A0 _child_env 唯一入口存在", len(ce_fns) == 1, "找到 %d 个" % len(ce_fns))
+    ce_seg = ast.get_source_segment(src, ce_fns[0]) if ce_fns else ""
+    check("A2 _child_env 注入 XC_LOG_DIR（setdefault）",
+          'setdefault("XC_LOG_DIR"' in ce_seg or "setdefault('XC_LOG_DIR'" in ce_seg)
+    check("A3 _child_env 仍设 QT_QPA_PLATFORM=offscreen",
+          'env["QT_QPA_PLATFORM"] = "offscreen"' in ce_seg)
+    check("A2b run_one 走 _child_env 唯一入口（不许自拼 env 字典）",
+          "_child_env()" in seg and "dict(os.environ)" not in seg)
+    gp_fns = [n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "run_guard_preflight"]
+    gp_seg = ast.get_source_segment(src, gp_fns[0]) if gp_fns else ""
+    check("A3b run_guard_preflight 走 _child_env 唯一入口",
+          "_child_env()" in gp_seg and "dict(os.environ)" not in gp_seg)
 
     assigns = [n for n in tree.body
                if isinstance(n, ast.Assign)
