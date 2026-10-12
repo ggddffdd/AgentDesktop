@@ -181,6 +181,53 @@ def build_twin_panel(app):
     app.twin_selected_portrait = None
     _refresh_twin_portraits(app)
 
+    # ---------------- 自定义背景（可选 · 主动换背景） ----------------
+    # v4.263.0（P2）：不靠「关掉保持背景」让模型乱造背景，而是先选一张背景图，
+    # 用 Agnes 图生图把本人融进去合成首帧，再 keyframe 首尾双帧强锁 → 背景恒定锚定、
+    # 不漂移。这是比「模型凭空重诠释背景」稳得多的换背景方式。
+    bg_box = QGroupBox("自定义背景（可选 · 主动换背景）")
+    bg_box.setStyleSheet(
+        f"QGroupBox{{background:{THEME['card']};border:1px solid {THEME['border']};"
+        f"border-radius:10px;padding:12px 12px;font-size:13px;color:{THEME['text']};"
+        f"margin-top:8px;}} QGroupBox::title{{subcontrol-origin:margin;left:10px;padding:0 8px;}}")
+    bg_lay = QHBoxLayout(bg_box)
+    bg_lay.setContentsMargins(12, 12, 12, 12)
+    bg_lay.setSpacing(12)
+
+    app.twin_bg_preview = QLabel("未选择")
+    app.twin_bg_preview.setFixedSize(120, 120)
+    app.twin_bg_preview.setAlignment(Qt.AlignCenter)
+    app.twin_bg_preview.setStyleSheet(
+        f"QLabel{{background:{THEME['bg']};border:1px solid {THEME['border']};"
+        f"border-radius:8px;color:{THEME['dim']};font-size:12px;}}")
+    bg_lay.addWidget(app.twin_bg_preview)
+
+    bg_col = QVBoxLayout()
+    bg_col.setSpacing(8)
+    bg_tip = QLabel("选一张背景图 → 系统先用图生图把本人融进该背景合成首帧，"
+                    "再首尾双帧强锁：换背景更可控、且全程不漂移。")
+    bg_tip.setWordWrap(True)
+    bg_tip.setStyleSheet(label_second())
+    bg_col.addWidget(bg_tip)
+    bg_btn_row = QHBoxLayout()
+    bg_btn_row.setSpacing(8)
+    bg_add = QPushButton("＋ 添加背景图")
+    bg_add.setFixedHeight(32)
+    bg_add.setCursor(Qt.PointingHandCursor)
+    bg_add.setStyleSheet(_btn_style())
+    bg_add.clicked.connect(lambda: _twin_add_bg_image(app))
+    bg_clear = QPushButton("清除背景图")
+    bg_clear.setFixedHeight(32)
+    bg_clear.setCursor(Qt.PointingHandCursor)
+    bg_clear.setStyleSheet(_btn_style())
+    bg_clear.clicked.connect(lambda: _twin_clear_bg_image(app))
+    bg_btn_row.addWidget(bg_add)
+    bg_btn_row.addWidget(bg_clear)
+    bg_col.addLayout(bg_btn_row)
+    bg_lay.addLayout(bg_col)
+    lay.addWidget(bg_box)
+    app.twin_bg_image = None
+
     # ---------------- 衣橱 / 场景 + 口播台词 ----------------
     mid = QHBoxLayout()
     mid.setSpacing(16)
@@ -488,6 +535,56 @@ def _twin_context_menu(app, pos):
     del_act.triggered.connect(lambda: _twin_delete_portrait(app))
     menu.addAction(del_act)
     menu.exec(lw.mapToGlobal(pos))
+
+
+def _twin_add_bg_image(app):
+    """选一张背景图（本地文件），存绝对路径用于图生图换背景。"""
+    path, _ = QFileDialog.getOpenFileName(
+        app, "选择背景图", "", "图片 (*.png *.jpg *.jpeg *.webp *.bmp)")
+    if not path:
+        return
+    app.twin_bg_image = os.path.abspath(path)
+    pm = QPixmap(path)
+    if not pm.isNull():
+        pm = pm.scaled(116, 116, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        app.twin_bg_preview.setPixmap(pm)
+        app.twin_bg_preview.setText("")
+        app.twin_status.setText(f"已选背景图：{os.path.basename(path)}"
+                                f"（生成时先用图生图把本人融进去）")
+    else:
+        app.twin_status.setText("背景图读取失败，请换一张。")
+
+
+def _twin_clear_bg_image(app):
+    """清除已选背景图，回退「保持原图背景」模式。"""
+    app.twin_bg_image = None
+    app.twin_bg_preview.setPixmap(QPixmap())
+    app.twin_bg_preview.setText("未选择")
+    app.twin_status.setText("已清除背景图（将保持本人原图背景）")
+
+
+def _build_composite_prompt(ref_count=2):
+    """组装图生图「换背景」首帧的合成 prompt（抽出来为了可单测）。
+
+    Agnes 多图合成：第一张=本人参考图（保身份），第二张=背景图（取环境）。
+    措辞刻意避开「文字/字幕/水印/logo/caption/text」等词 —— tool_image_gen 内部对
+    2.5 模型有「用户没要字就强约束防加字」逻辑（_WANT_TEXT_RE），一旦命中这些词
+    反而会放开加字约束、可能往画面塞字。保持纯视觉描述最稳。
+    """
+    if ref_count >= 2:
+        subject = ("Keep the person in the FIRST reference image exactly as they are — "
+                   "same face, hairstyle, outfit, skin tone and identity.")
+        scene_part = "Place them into the setting and surroundings of the SECOND reference image."
+    else:
+        subject = ("Keep the subject of the reference image exactly as they are — "
+                   "same face, hairstyle, outfit, skin tone and identity.")
+        scene_part = "Change only the background and surroundings to a new setting."
+    return (
+        f"{subject} {scene_part} "
+        "Blend light, perspective and shadow naturally so the person truly belongs in "
+        "that scene. The person is the clear main subject, centered, facing the camera, "
+        "lifelike and realistic. Do not alter the person's face, identity or likeness."
+    )
 
 
 def _build_twin_prompt(scene, dialogue, keep_bg=True):
@@ -878,22 +975,31 @@ def concat_videos(paths, out, ffmpeg=None, log=None):
 #   · state.json 原子写（os.replace）；复用前校验文件真实存在且非空。
 
 def _twin_fingerprint(dialogue, portrait, scene, resolution, dur,
-                      keep_bg, dual_frame, ref_mode=True):
+                      keep_bg, dual_frame, ref_mode=True, bg_image=None):
     """同一批输入 → 同一个任务目录（断点续跑的基础）。"""
     try:
         st = os.stat(portrait)
         p_img = f"{st.st_size}:{int(st.st_mtime)}"
     except OSError:
         p_img = "?"
+    try:
+        bst = os.stat(bg_image) if bg_image else None
+        b_img = f"{bst.st_size}:{int(bst.st_mtime)}" if bst else "?"
+    except OSError:
+        b_img = "?"
     payload = json.dumps(
         {"d": dialogue or "", "p": p_img, "s": scene or "",
          "r": resolution or "", "t": int(dur or 0),
          "b": bool(keep_bg), "f": bool(dual_frame), "m": bool(ref_mode),
+         "bg": b_img,
          # v4.262.0：生成模式版本。锁定模式由 reference 弱参考改为 keyframe 双帧锁
          # （见 _gen_serial / _gen_parallel），同一批输入**产出的段内容已不同**，
          # 故抬版本号 → 指纹必变 → 旧的 reference 段不再被断点续跑复用，
          # 避免「一半旧模式一半新模式」混合成片。
-         "g": 2},
+         # v4.263.0（P2）：新增「自定义背景图」机制 —— 选了背景图会先用图生图
+         # 合成首帧、再 keyframe 强锁。同输入产出的段内容已不同（首帧图变了），
+         # 故再抬版本号 → 指纹必变 → 旧的无背景图段不再被续跑复用。
+         "g": 3},
         ensure_ascii=False, sort_keys=True)
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
 
@@ -992,7 +1098,7 @@ class TwinGenThread(QThread):
                  resolution, dual_frame=True, ai_mark=True, qc=True,
                  max_qc_retry=2, max_gen_retry=2, gen_retry_delay=3.0,
                  resume=True, job_dir=None,
-                 ref_mode=True, workers=3, parent=None):
+                 ref_mode=True, workers=3, parent=None, bg_image=None):
         super().__init__(parent)
         self.cfg = cfg
         self.app_dir = app_dir
@@ -1004,6 +1110,7 @@ class TwinGenThread(QThread):
         self.dual_frame = dual_frame
         self.ai_mark = ai_mark
         self.qc = qc
+        self.bg_image = bg_image      # v4.263.0（P2）：自定义背景图路径（图生图换背景）
         self.max_qc_retry = max_qc_retry
         self.max_gen_retry = max_gen_retry        # 生成失败（瞬时错误）重试次数
         self.gen_retry_delay = gen_retry_delay    # 重试基础退避（秒，线性递增）
@@ -1076,6 +1183,34 @@ class TwinGenThread(QThread):
             else:
                 self.log.emit(f"⚠️ 参考图未能按 {tw}x{th} 预处理，"
                               f"成片比例可能跟随原图而非所选画幅")
+
+        # ---- 阶段 0：自定义背景图合成首帧（v4.263.0 P2）----
+        # 选了背景图 → 先用 Agnes 图生图把本人融进该背景，合成一张首帧图，
+        # 再 keyframe 首尾双帧强锁这张合成图 → 换背景可控 + 全程不漂移。
+        # 合成失败不阻塞：回退用原参考图（保持原背景）。
+        # bg 模式下强制 keep_bg=True：合成图即被锁定的参考图，背景必须锁住
+        # （否则模型可能又把合成好的背景改掉）。
+        if self.bg_image and os.path.isfile(self.bg_image) and tw > 0 and th > 0:
+            self.keep_bg = True
+            self.log.emit("🌄 合成首帧（本人 + 自定义背景）…")
+            comp = tools_mod.tool_image_gen(
+                self.cfg, self.app_dir, _build_composite_prompt(),
+                size=self.resolution, image=[portrait_uri, self.bg_image],
+                progress=self.log.emit)
+            if isinstance(comp, tuple) and len(comp) == 3:
+                comp_path = os.path.join(self.app_dir, comp[0])
+                fit_comp = os.path.join(tmp_dir, "composite_fit.png")
+                if fit_image_to_aspect(comp_path, fit_comp, tw, th,
+                                       ffmpeg=ff, log=self.log.emit):
+                    portrait_uri = fit_comp
+                    self.log.emit("✅ 首帧已合成（本人融入自定义背景，"
+                                  "keyframe 强锁 → 背景恒定不漂移）")
+                else:
+                    portrait_uri = comp_path
+                    self.log.emit("⚠️ 合成图裁剪失败，直接用原合成图作首帧")
+            else:
+                self.log.emit(f"⚠️ 背景合成失败（{comp}），"
+                              f"回退用原参考图（保持原背景）")
 
         seg_map = {}              # 段号(0基) -> 段文件路径（最后按序拼）
         total = len(self.segs)
@@ -1435,7 +1570,8 @@ def _twin_generate(app):
     # 断点续跑：按输入指纹定位任务目录，并查上次进度
     # （指纹含 ref_mode —— 换了生成模式，旧段不该被复用）
     fp = _twin_fingerprint(dialogue, app.twin_selected_portrait, scene, res, dur,
-                           keep_bg, True, ref_lock)
+                           keep_bg, True, ref_lock,
+                           bg_image=getattr(app, "twin_bg_image", None))
     products = getattr(tools_mod, "PRODUCTS_DIR", None) or "products"
     job_dir = _twin_job_dir(os.path.join(APP_DIR, products), fp)
     done_n = _job_done_count(
@@ -1456,7 +1592,8 @@ def _twin_generate(app):
         app.cfg, APP_DIR, app.twin_selected_portrait, segs, scene, keep_bg, res,
         dual_frame=True, ai_mark=ai_mark, qc=qc,
         resume=resume, job_dir=(job_dir if resume else None),
-        ref_mode=ref_lock)
+        ref_mode=ref_lock,
+        bg_image=getattr(app, "twin_bg_image", None))
     app.twin_thread.log.connect(lambda m: app.twin_status.setText(m))
     app.twin_thread.progress.connect(
         lambda a, b: app.twin_status.setText(f"已完成 {a}/{b} 段…"))

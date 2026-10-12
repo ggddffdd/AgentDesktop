@@ -2557,17 +2557,28 @@ def tool_screenshot(cfg, app_dir, args, progress=None,
                  stop_event=stop_event, should_stop=should_stop)
 
 
-def tool_image_gen(cfg, app_dir, prompt, size=None, progress=None):
+def tool_image_gen(cfg, app_dir, prompt, size=None, progress=None, image=None):
     """多后端生图：根据 cfg["image_gen_provider"] 选择后端。
 
     支持 gateway / deepseek / local_stability 三种模式。
     size 为可选 "WxH" 字符串（如 "1024x768"），不传则用 cfg["image_gen_size"]。
     成功返回 (rel_path, 'image', filename)，失败返回错误字符串。
+
+    image（可选）：图生图 / 多图合成输入。支持单张（路径/URL/dataURI）或列表
+    （[本人照, 背景图] 这类多图合成）。图生图**仅 Agnes 通道支持且永久免费**，
+    传入 image 会忽略 provider 直接走 Agnes 直连（见 _gen_agnes_image 的 image 分支）。
+    契约遵循 agnes-ai SKILL.md：image 必须放 extra_body 且为数组、不要加
+    tags=["img2img"]（新版会报错）、response_format 必须放 extra_body。
     """
     if progress:
         progress("🖼 生成图片中…（可能需数十秒，可随时点停止）")
     if not prompt:
         return "未提供图片描述"
+
+    # 图生图/多图合成：只有 Agnes 通道支持，且永久免费 —— 忽略 provider 直接走直连。
+    if image is not None:
+        return _gen_agnes_image(cfg, app_dir, prompt, size, progress=progress,
+                                image=image)
 
     provider = cfg.get("image_gen_provider", "gateway")
     model = cfg.get("image_gen_model", "agnes")
@@ -2921,8 +2932,14 @@ def _letterbox_to_size(fpath, w, h):
     return (w, h)
 
 
-def _gen_agnes_image(cfg, app_dir, prompt, size=None, progress=None):
-    """agnes 模式：直连 Agnes 图像生成接口，不经过本地网关。"""
+def _gen_agnes_image(cfg, app_dir, prompt, size=None, progress=None, image=None):
+    """agnes 模式：直连 Agnes 图像生成接口，不经过本地网关。
+
+    image（可选）：图生图 / 多图合成。传入则走 img2img 分支：
+      · 经 _image_to_payload_value 归一为 data URI（本地路径/URL/dataURI 都支持）；
+      · 放进 extra_body["image"]（数组），**不**加 tags=["img2img"]（新版会报错）；
+      · 其余（重试 / 下载 / 落盘 / 尺寸对齐）复用文生图逻辑。
+    """
     base, key = _agnes_creds(cfg)
     model = cfg.get("image_gen_model", "agnes-image-2.5-flash")
     if model == "agnes":  # 兼容旧值
@@ -2939,6 +2956,20 @@ def _gen_agnes_image(cfg, app_dir, prompt, size=None, progress=None):
     # 否则默认可能返回 base64 而非 URL；_save_gen_image 无法处理裸 base64 串会保存失败。
     # 技能文档（agnes-ai/SKILL.md:76,96）实测确认：response_format 必须放 extra_body。
     body["extra_body"] = {"response_format": "url"}
+    # v4.263.0（P2）：图生图 / 多图合成。image 必须放 extra_body 且为数组，
+    # 不要加 tags（新版文档明确图生图不需要 tags，加了反而可能报错）。
+    if image is not None:
+        _imgs = image if isinstance(image, (list, tuple)) else [image]
+        _norm = []
+        for _im in _imgs:
+            _v = _image_to_payload_value(_im, app_dir)
+            if _v:
+                _norm.append(_v)
+        if not _norm:
+            return "图生图失败：参考图无法解析（image 为空或读取失败）"
+        body["extra_body"]["image"] = _norm
+        if progress:
+            progress(f"🖼 Agnes {model} 图生图（{len(_norm)} 张参考图）合成中…")
     want_wh = None
     if is_25 and isinstance(size, str) and "x" in size:
         try:

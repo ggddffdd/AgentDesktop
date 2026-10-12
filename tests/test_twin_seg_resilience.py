@@ -474,14 +474,15 @@ def main():
     check("S1 同输入同指纹", dt._twin_fingerprint(**_b2) == _f2)
     check("S2 ref_mode 变化 → 指纹变",
           dt._twin_fingerprint(**{**_b2, "ref_mode": False}) != _f2)
-    # S3（v4.262.0）：锁定模式的**实现**由 reference 改成 keyframe 后，同一批输入
-    # 产出的段内容已经不同。指纹若不抬版本号，断点续跑会把旧 reference 段当"已完成"
-    # 复用 → 一半旧模式一半新模式混成片。这里锁住这个版本字段的存在。
+    # S3（v4.262.0 → v4.263.0）：锁定模式由 reference 改 keyframe（g=2），
+    # 继而又加了「自定义背景图」合成首帧机制（g=3）—— 每次实现变了同一批输入产出的
+    # 段内容就不同。指纹若不抬版本号，断点续跑会把旧段当"已完成"复用 → 混合成片。
+    # 这里锁住这个版本字段的存在与当前取值。
     import inspect as _ins
     import re as _re
     _fsrc = _re.sub(r"\s+", "", _ins.getsource(dt._twin_fingerprint))
     check("S3 指纹含生成模式版本 g（换模式实现后旧缓存必须作废）",
-          '"g":2' in _fsrc)
+          '"g":3' in _fsrc)
 
     print()
     print("=" * 60)

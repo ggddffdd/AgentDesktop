@@ -140,6 +140,7 @@ test_tokens_200.py
 test_tool_audit_c.py
 test_tool_outcome_single_258.py
 test_toolresult_wiring_226.py
+test_twin_bg_image_264.py
 test_twin_seg_resilience.py
 test_ui_a11y_2102.py
 test_ui_hex_guard_fallback.py
