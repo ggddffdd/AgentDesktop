@@ -257,6 +257,24 @@ if os.path.isfile(FIXTURE):
         "automation_panel.py": collections.Counter({
             ("QCheckBox", '{"color": "#202124", "font-size": "13px"}'): 1,
         }),
+        # v4.263.0（P2 数字人自定义背景图）：数字人面板新增「自定义背景（可选）」
+        # 区 —— 一个 QGroupBox 外壳（带 title 子控件，故展开为 QGroupBox +
+        # QGroupBox::title + QGroupBox:title 标记 3 条）+ 一张背景预览 QLabel +
+        # 一行灰字说明。这些样式全部复用既有 token（THEME['bg'] 等），属「新增
+        # 控件实例」而非「样式走样」，按登记制吸收；条数写死 5，多来一份照样红。
+        "digital_twin_panel.py": collections.Counter({
+            ('', '{"color": "#5F6368", "font-size": "12px"}'): 1,
+            ('QGroupBox', '{"background": "#FFFFFF", "border": "1px solid #E5E7EB",'
+                          ' "border-radius": "10px", "color": "#202124",'
+                          ' "font-size": "13px", "margin-top": "8px",'
+                          ' "padding": "12px 12px"}'): 1,
+            ('', '{"QGroupBox": ":title"}'): 1,
+            ('QGroupBox::title', '{"left": "10px", "padding": "0 8px",'
+                                 ' "subcontrol-origin": "margin"}'): 1,
+            ('QLabel', '{"background": "#F7F8FC", "border": "1px solid #E5E7EB",'
+                       ' "border-radius": "8px", "color": "#5F6368",'
+                       ' "font-size": "12px"}'): 1,
+        }),
     }
 
     files = sorted(set(before) | set(after))
