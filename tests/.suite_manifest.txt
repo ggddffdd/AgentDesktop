@@ -108,6 +108,7 @@ test_runall_utf8_238.py
 test_runtime_dir_hygiene_236.py
 test_screenshot_delegate_260.py
 test_screenshot_path_fence_218.py
+test_security_align_264.py
 test_sensitive_mask_220.py
 test_session_goal_automation.py
 test_shot_prompt_method_261.py

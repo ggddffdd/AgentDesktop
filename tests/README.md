@@ -37,6 +37,10 @@ python tests/run_all.py --verbose       # 失败时打印该套件完整输出
 
 合计 **410 项断言**，约 15 秒跑完。
 
+> 上表与「410 项断言」是早期样例，不是当前全量。活清单以
+> `python tests/run_all.py --list` 为准：目前 `tests/test_*.py` **164** 个，
+> 根目录扰动脚本 `_perturb_*.py` **98** 个（不含护栏 `_perturb_guard.py`）。
+
 > `test_task_wiring.py`、`test_legion_resume_fill.py`、`test_agent_node_failure.py`、
 > `test_director_cancel_retry.py` 都含**静态契约测试**（只读源码不执行）。它的价值在于
 > 挡住那类「不报错、只静默劣化」的回归 —— 例如有人重构时删掉了某个 `task_status.fail(...)`，

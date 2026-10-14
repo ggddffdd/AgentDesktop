@@ -57,6 +57,8 @@ FORCE_CONFIRM_RULES = (
     "always_confirm",       # v4.169.0 P0-3：装/建技能、删数据、删自动化
     "high_risk_exec",       # ①-B：高危命令/代码参数级（rm -rf / git push -f …）
     "task_risk_critical",   # v4.196 批⑬：高风险任务的写入与执行
+    "implicit_intent",      # v4.264 P0-2：来源闸。decide 虽在会话信任之前返回
+                            # needs_user，但弹窗层 force=False 仍会被 session_trusted 短路
 )
 
 
@@ -441,9 +443,10 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         """危险操作：向主线程请求确认，子线程阻塞等待结果。
 
         v4.169.0（P0-3 配套）：`force=True` 时**跳过**"本次会话已全部信任"的短路。
-        硬确认档（装/建技能、删自动化、删数据）必须真的弹一次 ——
-        否则用户早先点过一回"全部信任"，这些不可逆操作就再也不会被问，
-        decide() 里那道 always_confirm 等于白设。
+        硬确认档（装/建技能、删自动化、删数据）、高危命令、任务级 critical、
+        以及来源闸 `implicit_intent` 必须真的弹一次 ——
+        否则用户早先点过一回"全部信任"，这些操作就再也不会被问，
+        decide() 里先于会话信任的那几道闸等于白设。
         """
         engine = getattr(self.mw, "permission_engine", None)
         if not force:
@@ -1469,8 +1472,8 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 schedule = None
             elif dec.needs_user:
                 # 危险/外部操作 → 弹确认框
-                # v4.169.0：硬确认档（装/建技能、删数据）要 force —— 它必须真的问一次，
-                # 不能被"本次会话已全部信任"短路掉。
+                # v4.169.0 / v4.264：硬确认档与来源闸要 force —— 必须真的问一次，
+                # 不能被"本次会话已全部信任"短路掉。清单见 FORCE_CONFIRM_RULES。
                 title, detail = self._build_confirm_detail(name, args)
                 ok = self._maybe_confirm(title, detail,
                                          force=(dec.rule in FORCE_CONFIRM_RULES))
@@ -1734,7 +1737,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                                        force=(dec.rule in FORCE_CONFIRM_RULES)):
                 return "（你取消了子代理工作流）"
             try:
-                engine.trust_tool("run_workflow")
+                engine.trust_tool("run_workflow", args or {})
             except Exception:
                 pass
         return self._run_workflow(wf_type, task)
