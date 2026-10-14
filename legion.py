@@ -1206,7 +1206,73 @@ def new_wave():
 SKILL_PROGRESSIVE_WHEN_MANY = 3
 
 
-def build_role_prompt(role: dict, skills_dir: str = None, full_skill_body: bool = None) -> str:
+def _skill_hits_task(slug, sk, task):
+    """本波任务文本是否点名了这个技能（slug 或技能名，不做描述词模糊）。"""
+    task_l = str(task or "").strip().lower()
+    if not task_l:
+        return False
+    slug_l = str(slug or "").strip().lower()
+    if slug_l and (slug_l in task_l or slug_l.replace("-", " ") in task_l):
+        return True
+    name = str((sk or {}).get("name") or "").strip()
+    if len(name) >= 2 and name.lower() in task_l:
+        return True
+    return False
+
+
+def skill_disclosure_plan(role, task="", skills_dir=None, full_skill_body=None):
+    """决定每个挂载技能注入全文还是摘要。
+
+    · full_skill_body True，或技能数 ≤ SKILL_PROGRESSIVE_WHEN_MANY：全部全文。
+    · full_skill_body False：全部摘要（调用方显式要求，不再下发全文）。
+    · 否则（技能数超过阈值）：有 requires_tools、或本波任务命中的 slug 全文，
+      其余摘要。一个都不命中时仍保留第一条全文，避免方法论整段消失。
+    """
+    slugs = [s for s in ((role or {}).get("skills") or [])
+             if isinstance(s, str) and s.strip()]
+    if full_skill_body is True or (
+            full_skill_body is None and len(slugs) <= SKILL_PROGRESSIVE_WHEN_MANY):
+        return {"mode": "all_full", "full": list(slugs), "summary": []}
+    if full_skill_body is False:
+        return {"mode": "summary", "full": [], "summary": list(slugs)}
+    skills_dir = skills_dir or DEFAULT_SKILLS_DIR
+    full = []
+    for slug in slugs:
+        sk = _load_skill_prompt(slug, skills_dir) or {}
+        req = [t for t in (sk.get("requires_tools") or []) if t]
+        if req or _skill_hits_task(slug, sk, task):
+            full.append(slug)
+    if not full and slugs:
+        full.append(slugs[0])
+    full_set = set(full)
+    summary = [s for s in slugs if s not in full_set]
+    return {"mode": "mixed", "full": full, "summary": summary}
+
+
+def _legion_skill_meta_note(sk):
+    """军团装载不走 skill_loader 的拒用闸，只附加 skill_meta 的未审提示。
+
+    老技能大多没有 source/version。这里 strict=False：缺元数据照常注入，
+    但让模型看见「未经审计」。校验器自身出错则不加提示、不拦技能。
+    """
+    try:
+        import skill_meta
+        verdict = skill_meta.check_skill(sk or {}, strict=False)
+        return skill_meta.unverified_note(verdict) or ""
+    except Exception:
+        return ""
+
+
+def _skill_body_with_meta_note(sk):
+    body = ((sk or {}).get("prompt") or "").strip()
+    if not body:
+        return ""
+    note = _legion_skill_meta_note(sk)
+    return body + note if note else body
+
+
+def build_role_prompt(role: dict, skills_dir: str = None, full_skill_body: bool = None,
+                      task: str = "") -> str:
     """把角色 7 要素 + 挂载的技能拼成 system prompt。
 
     只拼非空字段，避免把一堆空标题塞进上下文白烧 token。
@@ -1217,6 +1283,9 @@ def build_role_prompt(role: dict, skills_dir: str = None, full_skill_body: bool 
       · None（默认）→ 技能数 ≤ SKILL_PROGRESSIVE_WHEN_MANY 时全文注入，
         否则只给概要（name+emoji+desc），省 context；
       · True  → 强制全文；False → 强制概要。
+    v4.268.0：超过阈值时，对有 requires_tools 或本波任务命中的 slug
+    调用 skill_full_body_block 下发全文（全不命中则至少保留第一条）。
+    task 是本波任务文本，用来判断「任务命中」。
     """
     if not role:
         return ""
@@ -1278,27 +1347,33 @@ def build_role_prompt(role: dict, skills_dir: str = None, full_skill_body: bool 
     # ---- 挂载的技能 / 方法论（v4.121.3 新增）----
     skill_slugs = [s for s in (role.get("skills") or []) if isinstance(s, str) and s.strip()]
     if skill_slugs:
-        if full_skill_body is None:
-            full_skill_body = len(skill_slugs) <= SKILL_PROGRESSIVE_WHEN_MANY
+        disc = skill_disclosure_plan(
+            role, task=task, skills_dir=skills_dir, full_skill_body=full_skill_body)
         skills_dir = skills_dir or DEFAULT_SKILLS_DIR
-        if full_skill_body:
+        log.info(
+            "技能披露·%s：全文=%s；摘要=%s。"
+            "军团读 SKILL.md 不经 skill_loader 的 skill_meta 拒用闸，"
+            "未审技能只在全文末附加提示。",
+            name,
+            "、".join(disc.get("full") or []) or "无",
+            "、".join(disc.get("summary") or []) or "无")
+        if disc.get("mode") == "all_full":
             parts.append("\n【挂载的技能 / 方法论】\n以下是本角色本次任务需要遵循的方法论/工作流：")
             for slug in skill_slugs:
                 sk = _load_skill_prompt(slug, skills_dir)
                 if sk:
                     emoji = sk.get("emoji", "")
                     sname = sk.get("name") or slug
-                    body = (sk.get("prompt") or "").strip()
+                    body = _skill_body_with_meta_note(sk)
                     if body:
-                        parts.append(f"\n### {emoji} {sname}\n{body}")
+                        parts.append("\n### %s %s\n%s" % (emoji, sname, body))
                 else:
-                    parts.append(f"\n### ⚠️ {slug}\n（技能文件未找到，跳过）")
+                    parts.append("\n### ⚠️ %s\n（技能文件未找到，跳过）" % slug)
         else:
-            # v4.136（P2-⑤）：渐进式披露 —— 只给概要，不摊全文（省 context）。
-            # 全文按需由上层在确信该技能命中时再下发（见 skill_full_body_block）。
+            # 超过阈值：先给全部概要，再对关键 slug 调 skill_full_body_block。
             parts.append("\n【挂载的技能 / 方法论（概要，全文按需下发）】\n"
-                         "以下技能已挂给本角色；每条的**完整方法论**会由调度在确认命中时下发，"
-                         "不要凭概要臆测步骤：")
+                         "以下技能已挂给本角色；带 requires_tools 或被本波任务命中的，"
+                         "完整方法论紧接在概要之后，不要凭概要臆测步骤：")
             for slug in skill_slugs:
                 sk = _load_skill_prompt(slug, skills_dir)
                 if sk:
@@ -1307,9 +1382,13 @@ def build_role_prompt(role: dict, skills_dir: str = None, full_skill_body: bool 
                     desc = (sk.get("description") or "").strip()[:80]
                     req = sk.get("requires_tools") or []
                     req_s = ("；需要工具：" + "、".join(req)) if req else ""
-                    parts.append(f"\n### {emoji} {sname}\n{desc}{req_s}")
+                    parts.append("\n### %s %s\n%s%s" % (emoji, sname, desc, req_s))
                 else:
-                    parts.append(f"\n### ⚠️ {slug}\n（技能文件未找到，跳过）")
+                    parts.append("\n### ⚠️ %s\n（技能文件未找到，跳过）" % slug)
+            for slug in (disc.get("full") or []):
+                blk = skill_full_body_block(role, slug, skills_dir)
+                if blk:
+                    parts.append(blk)
 
     return "\n".join(parts)
 
@@ -1353,7 +1432,7 @@ def skill_full_body_block(role, slug, skills_dir=None):
     替代概要，避免一次性把所有技能全文塞进 context。
     """
     sk = _load_skill_prompt(slug, skills_dir) or {}
-    body = (sk.get("prompt") or "").strip()
+    body = _skill_body_with_meta_note(sk)
     if not body:
         return ""
     return ("\n【挂载技能全文 · %s】\n%s"
@@ -4882,6 +4961,52 @@ def _valid_gap_name(nm, headings=()):
 _TOOL_POOL_CACHE = None
 
 
+def role_editor_tool_names(pool=None):
+    """RoleEditor 勾选列表：tool_pool() 的全部名字（不含 legion_ 调度工具）。
+
+    池读不到时退回 TOOL_CANDIDATES 里的非 legion_ 项，避免编辑器空白。
+    """
+    if pool is None:
+        pool = tool_pool()
+    names = []
+    seen = set()
+    for item in pool or []:
+        if isinstance(item, (list, tuple)) and item:
+            nm = str(item[0] or "").strip()
+        else:
+            nm = str(item or "").strip()
+        if not nm or nm in seen or nm.startswith("legion_"):
+            continue
+        seen.add(nm)
+        names.append(nm)
+    if names:
+        return names
+    for t in TOOL_CANDIDATES:
+        t = str(t or "").strip()
+        if t and t not in seen and not t.startswith("legion_"):
+            seen.add(t)
+            names.append(t)
+    return names
+
+
+def merge_saved_role_tools(selected, original, listed):
+    """保存角色工具：勾选结果，外加「列表里没有、卡上原来就有」的工具。
+
+    列表里有、但用户取消勾选的，不复活。
+    """
+    listed_set = set(listed or [])
+    out = []
+    seen = set()
+    extras = [t for t in (original or []) if t and t not in listed_set]
+    for t in list(selected or []) + extras:
+        t = str(t or "").strip()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out
+
+
 def tool_pool(use_cache=True):
     """公开工具池（进程级缓存）——派发侧每波每成员都要用，别重复扫 78 个定义。"""
     global _TOOL_POOL_CACHE
@@ -5820,7 +5945,11 @@ def save_team_capability(recipe_id, need, cap):
 
 
 def team_capability_for(data, need):
-    """同类任务历史班子的能力配置（注入 PM 开工提示，让 PM 抄而不是重新发明）。"""
+    """同类任务历史班子的能力配置。
+
+    v4.268.0 起执行器不再把这段写进开工提示：v4.148 之后能力配置不落地，
+    喂给 PM 只是一条落不了地的死链。函数保留，需要时可以单独查。
+    """
     if not need:
         return ""
     try:
@@ -6889,7 +7018,7 @@ def _capability_audit_report_text(task, cov, crit, imp, opt, threshold, pass_gat
     lines = ["🧠 **能力审计**（开工前）", "任务：%s" % str(task or "")[:80],
              "能力覆盖率：**%d%%**（阈值 %d%%）" % (pct, int(threshold * 100))]
     if crit:
-        lines.append("🔴 **Critical 缺口（不许开工，需请示大哥补位）**：")
+        lines.append("🔴 **Critical 缺口（建议先补位；程序不因此暂停开工）**：")
         for g in crit:
             need = "、".join(g.get("need_tools") or []) or "（补角色/职责）"
             if g.get("need_skills"):
@@ -6903,7 +7032,7 @@ def _capability_audit_report_text(task, cov, crit, imp, opt, threshold, pass_gat
     if pass_gate:
         lines.append("✅ 通过闸门，可以开工。")
     else:
-        lines.append("⛔ 未通过闸门（Critical 拦截 或 覆盖率不足），不自动开工，等大哥决策。")
+        lines.append("⛔ 未达覆盖阈值（Critical 只提示、不因此暂停），请大哥决定是否补位后再跑。")
     return "\n".join(lines)
 
 
@@ -7107,8 +7236,31 @@ def format_team_plan(plan, lib=None):
             if m.get("skills"):
                 seg += "\n         技能：%s" % "、".join(m["skills"])
             lines.append(seg)
+    lines.append("")
+    lines.append("③ 缺角（库里没有；对话里批准会先按草案入库再落地）")
+    mr = plan.get("missing_roles") or []
+    if not mr:
+        lines.append("   （无）")
+    else:
+        for g in mr:
+            if not isinstance(g, dict):
+                continue
+            lines.append("   · %s —— %s" % (
+                g.get("name") or "?", g.get("why") or "未说明"))
+    lines.append("")
+    lines.append("④ 缺技能")
+    ms = plan.get("missing_skills") or []
+    if not ms:
+        lines.append("   （无）")
+    else:
+        for s in ms:
+            if not isinstance(s, dict):
+                continue
+            who = s.get("for_role") or "未指定角色"
+            lines.append("   · %s（给 %s）—— %s" % (
+                s.get("name") or "?", who, s.get("why") or "未说明"))
     if plan.get("reason"):
-        lines.append("\n③ 组队理由：%s" % plan["reason"])
+        lines.append("\n⑤ 组队理由：%s" % plan["reason"])
     return "\n".join(lines)
 
 
@@ -7219,30 +7371,82 @@ def adopt_missing_roles(data, items):
     return len(added), msg
 
 
+def _norm_role_key(s):
+    """名字比对用：去空白和符号、英文大小写折叠。不做子串。"""
+    s = str(s or "").strip().casefold()
+    return re.sub(r"[\s\W_]+", "", s, flags=re.UNICODE)
+
+
+def _role_alias_list(role):
+    raw = (role or {}).get("aliases") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    out = []
+    for a in raw:
+        a = str(a or "").strip()
+        if a:
+            out.append(a)
+    return out
+
+
+def match_role_by_name(name, lib):
+    """按名字从角色库取角色：精确名、去符号后的精确名、或 aliases 精确名。
+
+    多名同时命中则不猜，返回 None。不再用「名字互相包含」的子串匹配，
+    避免「分析」配上「竞品分析师」、「视频」配上「短视频写手」。
+    """
+    key = str(name or "").strip()
+    if not key or not lib:
+        return None
+    exact = []
+    for r in lib:
+        if not isinstance(r, dict):
+            continue
+        nm = str(r.get("name") or "").strip()
+        if nm == key or key in _role_alias_list(r):
+            exact.append(r)
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        return None
+    nk = _norm_role_key(key)
+    if not nk:
+        return None
+    hits = []
+    for r in lib:
+        if not isinstance(r, dict):
+            continue
+        cands = [str(r.get("name") or "").strip()] + _role_alias_list(r)
+        for c in cands:
+            if c and _norm_role_key(c) == nk:
+                hits.append(r)
+                break
+    uniq = []
+    seen = set()
+    for r in hits:
+        i = id(r)
+        if i in seen:
+            continue
+        seen.add(i)
+        uniq.append(r)
+    if len(uniq) == 1:
+        return uniq[0]
+    return None
+
+
 def apply_team_plan(proj, plan, lib=None):
     """把组队方案写进项目，返回 (proj, 报告文本)。
 
-    - 角色按**名字**从角色库匹配（大小写/空格/emoji 都做了容错）
+    - 角色按名字精确匹配（可去掉 emoji/空白；角色卡 aliases 也算精确名）
     - 匹配不上的角色不会硬塞，会写进报告
+    - 一整波都匹配不上时删掉该波，并在报告里写明序号前移
     - 技能 slug 只在角色库里存在时才覆盖写入，避免写脏数据
     - 会**覆盖**项目现有的波次（组队是重来一次，不是追加）
     """
     lib = lib if lib is not None else default_role_library()
-    by_name = {}
-    for r in lib:
-        by_name[(r.get("name") or "").strip()] = r
 
     def _find(nm):
-        key = (nm or "").strip()
-        if key in by_name:
-            return by_name[key]
-        # 容错：去掉 emoji、空格后比对
-        for k, v in by_name.items():
-            kk = re.sub(r"[\s\W_]+", "", k)
-            nk = re.sub(r"[\s\W_]+", "", key)
-            if kk and (kk in nk or nk in kk):
-                return v
-        return None
+        return match_role_by_name(nm, lib)
 
     # v4.124：PM 编造的 slug 不写进项目（技能库扫得到了才校验，
     # 扫不到说明环境里本来就没技能，此时不误伤合法 slug）。
@@ -7252,7 +7456,8 @@ def apply_team_plan(proj, plan, lib=None):
         _avail = set()
     bad_slugs = []
     waves, hit, miss = [], [], []
-    for w in (plan.get("waves") or []):
+    emptied = []
+    for wave_i, w in enumerate(plan.get("waves") or [], 1):
         members = []
         for m in (w.get("members") or []):
             role = _find(m.get("name", ""))
@@ -7282,9 +7487,15 @@ def apply_team_plan(proj, plan, lib=None):
             hit.append(mem.get("name", ""))
         if members:
             waves.append({"members": members})
+        else:
+            emptied.append(wave_i)
 
     if not waves:
-        return proj, "❌ 一个角色都没匹配上，方案未应用。"
+        extra = ""
+        if emptied:
+            extra = "第 %s 波整波无人匹配，已放弃，未写入空波。" % "、".join(
+                str(n) for n in emptied)
+        return proj, "❌ 一个角色都没匹配上，方案未应用。" + ((" " + extra) if extra else "")
 
     proj["waves"] = waves
     if plan.get("name"):
@@ -7304,7 +7515,10 @@ def apply_team_plan(proj, plan, lib=None):
             "%s%s" % (m.get("emoji", ""), m.get("name", "")) for m in w["members"])
         parts.append("  第 %d 波：%s" % (i, names))
     if miss:
-        parts.append("⚠️ 没匹配上的角色：%s（已跳过）" % "、".join(miss))
+        parts.append("⚠️ 没匹配上的角色：%s（已跳过）" % "、".join(str(x) for x in miss))
+    if emptied:
+        parts.append("⚠️ 第 %s 波整波无人匹配，已删除该波，后续波次序号前移。"
+                     % "、".join(str(n) for n in emptied))
     # v4.124：缺角 / 缺技能不静默吞掉，明确报告给用户
     mr = plan.get("missing_roles") or []
     if mr:
@@ -7320,6 +7534,42 @@ def apply_team_plan(proj, plan, lib=None):
     if plan.get("reason"):
         parts.append("💡 组队理由：%s" % plan["reason"])
     return proj, "\n".join(parts)
+
+
+def drop_empty_team_draft(projects, draft):
+    """解析失败或组队失败时，丢掉还没写入成员的草稿项目。
+
+    只按对象身份删除。已经有成员的项目不动。
+    返回 (projects, removed)。
+    """
+    if not isinstance(projects, list) or draft is None:
+        return list(projects or []), False
+    if draft not in projects:
+        return list(projects), False
+    waves = draft.get("waves") if isinstance(draft, dict) else None
+    for w in waves or []:
+        if isinstance(w, dict) and (w.get("members") or []):
+            return list(projects), False
+    return [p for p in projects if p is not draft], True
+
+
+def approve_team_plan(data, proj, plan, lib=None, adopt_missing=False):
+    """批准组队方案。adopt_missing 时先把 missing_roles 入库，再匹配落地。
+
+    对话路径没有勾选框，用户说「批准」即同意草案，所以先采纳再 apply。
+    弹窗路径仍由用户勾选后单独 adopt，这里默认不自动入库。
+    """
+    adopt_msg = ""
+    if lib is None and isinstance(data, dict):
+        lib = data.get("role_library")
+    if adopt_missing and isinstance(data, dict):
+        _n, adopt_msg = adopt_missing_roles(
+            data, (plan or {}).get("missing_roles") or [])
+        lib = data.get("role_library") or lib
+    proj, rep = apply_team_plan(proj, plan, lib)
+    if adopt_msg:
+        rep = adopt_msg + "\n" + rep
+    return proj, rep
 
 
 # ============ 验收结论解析（v4.122）============

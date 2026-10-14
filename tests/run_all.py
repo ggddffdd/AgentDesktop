@@ -149,6 +149,7 @@ PERTURB_CRITICAL = (
     "_perturb_unified_intent_225.py",            # 路由 / 意图
     "_perturb_continuation_sticky_255.py",       # 路由粘性
     "_perturb_legion_perm_265.py",               # 军团权限
+    "_perturb_legion_review_268.py",             # 军团审阅：派发前授权 / 技能全文 / 精确匹配
     "_perturb_legion_quality_248.py",            # 军团
     "_perturb_untrusted_boundary_222.py",        # 不可信边界（权限相邻）
 )

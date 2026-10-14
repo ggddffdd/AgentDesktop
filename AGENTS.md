@@ -17,8 +17,8 @@
 | 安全 | `untrusted_boundary.py` `tool_verifiers_227.py` `risk.py` `permissions.py` | |
 | 运维脚本 | `scripts/cleanup_products.py` | 产物清理，避免和根目录 `tools.py` 抢 `tools/` |
 | 过程文档 | `docs/handover/` `docs/release/` | 交接记录与旧版发布说明 |
-| 测试 | `tests/test_*.py`（167 个，另加 `regression.py`） | **自研 runner，不是 pytest** |
-| 元测试 | `_perturb/_perturb_*.py`（103 个，不含 `_perturb_guard.py`） | 「判据的疫苗」，见 §5 |
+| 测试 | `tests/test_*.py`（168 个，另加 `regression.py`） | **自研 runner，不是 pytest** |
+| 元测试 | `_perturb/_perturb_*.py`（104 个，不含 `_perturb_guard.py`） | 「判据的疫苗」，见 §5 |
 | 构建 / 门禁 | `build_safe.py` `release_check.py` `_scan_exe_secrets.py` | |
 | 归档 | `_dev_history/` | 旧版核验脚本（`_verify_pyz_v*.py`） |
 
