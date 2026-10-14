@@ -338,7 +338,8 @@ if os.path.isfile(FIXTURE):
             ("QPushButton:hover", '{"border-color": "#EA4335", "color": "#EA4335"}'): 2,
             ("QPushButton:hover", '{"background": "#E4E8F2", "color": "#202124"}'): 1,
             # v4.271.0：高级五档里多一句 route_complex_v1 提示，复用 12px 灰字。
-            ("", '{"color": "#6B7280", "font-size": "12px", "padding-left": "4px"}'): 3,
+            # v4.274.0：高级选项上方再加一句「日常用上面三档就够」，同一条样式 +1。
+            ("", '{"color": "#6B7280", "font-size": "12px", "padding-left": "4px"}'): 4,
             ("QPushButton", '{"background": "transparent", "border": "none",'
                             ' "color": "#5F6368", "font-size": "12px",'
                             ' "padding": "0 4px", "text-align": "left"}'): 1,
