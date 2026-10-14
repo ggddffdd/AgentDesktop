@@ -16,6 +16,7 @@ import _perturb_guard  # noqa: E402
 
 UI = os.path.join(HERE, "ui.py")
 FOCUS = os.path.join(HERE, "ui_focus.py")
+HOST = os.path.join(HERE, "ui_focus_host.py")
 JUDGE = os.path.join(HERE, "tests", "test_focus_chrome_264.py")
 
 CASES = [
@@ -57,6 +58,34 @@ CASES = [
      "class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):",
      "class ChatWindow(ChatAuditMixin, QMainWindow):  # 扰动：丢掉专注对话 mixin",
      ["F15"]),
+    ("V8 助手做事又关工具",
+     FOCUS,
+     '    return True, "interactive"',
+     '    return False, "interactive"  # 扰动：助手做事又关工具',
+     ["F9"]),
+    ("V9 信息卡不刷新 Agent 开",
+     HOST,
+     '        lbl.setText("开" if on else "关")',
+     '        lbl.setText("关")  # 扰动：信息卡不刷新',
+     ["F44"]),
+    ("V10 旧档助手做事不升工具",
+     FOCUS,
+     '        cfg["agent_mode"] = True',
+     '        cfg["agent_mode"] = False  # 扰动：旧档助手做事不升工具',
+     ["F37"]),
+    ("V11 启动不再对齐旧档",
+     UI,
+     "        if ui_focus.reconcile_persona_cfg(self.cfg):\n"
+     "            self._save_cfg()\n",
+     "        if False:  # 扰动：启动不再对齐旧档\n"
+     "            self._save_cfg()\n",
+     ["F41"]),
+    ("V12 输入区不对齐人话档",
+     UI,
+     "        self._sync_persona_widgets()\n"
+     "        return input_area\n",
+     "        return input_area  # 扰动：输入区不对齐人话档\n",
+     ["F42"]),
 ]
 
 
@@ -93,7 +122,7 @@ def run_judge():
 
 
 def main():
-    _perturb_guard.arm([UI, FOCUS])
+    _perturb_guard.arm([UI, FOCUS, HOST])
     npass = nfail = 0
     verbose_tail = []
 
@@ -107,7 +136,7 @@ def main():
         print("BASELINE GREEN（判据当前全绿）")
 
     originals = {}
-    for path in (UI, FOCUS):
+    for path in (UI, FOCUS, HOST):
         originals[path] = io.open(path, encoding="utf-8").read()
 
     for label, path, old, new, want in CASES:

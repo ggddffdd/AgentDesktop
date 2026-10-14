@@ -70,6 +70,14 @@ class FocusChromeMixin:
         self._sync_persona_widgets()
         self.status_label.setText(ui_focus.persona_status(tier))
 
+    def _refresh_agent_mode_card(self):
+        """设置页顶部「Agent 模式」只在建卡时读过一次 cfg，这里改那枚值标签。"""
+        lbl = getattr(self, "_agent_mode_value", None)
+        if lbl is None:
+            return
+        on = bool(getattr(self, "agent_mode", False))
+        lbl.setText("开" if on else "关")
+
     def _sync_persona_widgets(self):
         tier = ui_focus.persona_from_state(
             getattr(self, "agent_mode", False),
@@ -85,6 +93,7 @@ class FocusChromeMixin:
             combo.blockSignals(False)
         if not tier and getattr(self, "_perm_advanced_btn", None) is not None:
             self._perm_advanced_btn.setChecked(True)
+        self._refresh_agent_mode_card()
 
     def _sync_trust_badge(self):
         trusted = bool(getattr(self, "session_trusted", False))
