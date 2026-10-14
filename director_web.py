@@ -376,6 +376,10 @@ def clip_card_html(i, status, path=None, kf=None, error="", info_text=None,
                 f'<a onclick="act(\'view\',{i})">🔍看原因</a>'
                 f'<a onclick="act(\'regen\',{i})">↻重生成</a>{rb}</div>')
         return f'<div class="card">{thumb}<div class="info">{_esc(info)}</div>{btns}</div>'
+    if status == "stopped":
+        thumb = '<div class="thumb"><div class="ph">⏹ 已停止</div></div>'
+        info = info_text or f"镜{i+1} · 已停止"
+        return f'<div class="card">{thumb}<div class="info">{_esc(info)}</div></div>'
     # queued / generating
     thumb = '<div class="thumb"><div class="ph">⏳ 排队中…</div></div>'
     info = info_text or f"镜{i+1} · ⏳ 排队中"

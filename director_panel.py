@@ -255,6 +255,7 @@ class DirectorThread(QThread):
     clips_done = Signal(int, int, str)
     merge_ready = Signal(bool, str, str)
     error = Signal(str)
+    stopped = Signal(str)
 
     def __init__(self, pipeline, task, feedback=None, idx=None, note=None):
         super().__init__()
@@ -263,6 +264,27 @@ class DirectorThread(QThread):
         self.feedback = feedback
         self.idx = idx
         self.note = note
+
+    def _stopped_now(self, exc=None):
+        """本轮是否已被用户停止。取消异常也算，不能再当成普通失败。"""
+        p = self.pipeline
+        try:
+            if p is not None and p._is_cancelled():
+                return True
+        except Exception:
+            if getattr(p, "cancelled", False):
+                return True
+        if exc is None:
+            return False
+        try:
+            from video_pipeline import _is_cancel_error
+            if isinstance(exc, BaseException) and _is_cancel_error(exc):
+                return True
+        except Exception:
+            if type(exc).__name__ in ("CancelledError", "AgnesCancelled"):
+                return True
+        text = str(exc)
+        return ("已取消" in text) or ("CancelledError" in text)
 
     def run(self):
         p = self.pipeline
@@ -273,26 +295,43 @@ class DirectorThread(QThread):
         try:
             if self.task == "story":
                 p.gen_story(feedback=self.feedback)
-                self.story_ready.emit(p.story)
+                if self._stopped_now():
+                    self.stopped.emit("story")
+                else:
+                    self.story_ready.emit(p.story)
             elif self.task == "shots":
                 p.gen_shots(feedback=self.feedback)
-                self.shots_ready.emit(p.shots)
+                if self._stopped_now():
+                    self.stopped.emit("shots")
+                else:
+                    self.shots_ready.emit(p.shots)
             elif self.task == "characters":
                 p.gen_characters(feedback=self.feedback)
-                self.characters_ready.emit(p.characters)
+                if self._stopped_now():
+                    self.stopped.emit("characters")
+                else:
+                    self.characters_ready.emit(p.characters)
             elif self.task == "clues":
                 # 关键道具 / 场景资产追踪（抗崩坏 v3）
                 p.gen_clues(feedback=self.feedback)
-                self.clues_ready.emit(p.clues)
+                if self._stopped_now():
+                    self.stopped.emit("clues")
+                else:
+                    self.clues_ready.emit(p.clues)
             elif self.task == "clue_one":
                 name, image = p.regenerate_clue(self.idx, feedback=self.feedback)
-                if image:
+                if self._stopped_now():
+                    self.stopped.emit("clue_one")
+                elif image:
                     self.clues_ready.emit(p.clues)
                 else:
                     self.error.emit(f"道具/资产「{name or self.idx + 1}」参考图重生成失败")
             elif self.task == "keyframes":
                 p.gen_keyframes(feedback=self.feedback)
-                self.keyframes_ready.emit(p.keyframes)
+                if self._stopped_now():
+                    self.stopped.emit("keyframes")
+                else:
+                    self.keyframes_ready.emit(p.keyframes)
             elif self.task == "clips":
                 def on_clip(i, path):
                     if path:
@@ -300,32 +339,44 @@ class DirectorThread(QThread):
                     else:
                         self.clip_failed.emit(i, p.last_errors.get(i, "生成失败（未返回视频）"))
                 ok = p.generate_all_clips(on_clip=on_clip)
-                self.clips_done.emit(ok, len(p.shots), "逐镜生成完成")
+                if self._stopped_now():
+                    self.stopped.emit("clips")
+                else:
+                    self.clips_done.emit(ok, len(p.shots), "逐镜生成完成")
             elif self.task == "clip_one":
                 path = p.regenerate_clip(self.idx, feedback=self.note)
-                if path:
-                    self.clip_ready.emit(self.idx, path)
+                if self._stopped_now():
+                    self.stopped.emit("clip_one")
                 else:
-                    self.clip_failed.emit(self.idx, p.last_errors.get(self.idx, "生成失败（未返回视频）"))
-                ok = sum(1 for x in p.clip_paths if x)
-                self.clips_done.emit(ok, len(p.shots), "单镜重生成完成")
+                    if path:
+                        self.clip_ready.emit(self.idx, path)
+                    else:
+                        self.clip_failed.emit(self.idx, p.last_errors.get(self.idx, "生成失败（未返回视频）"))
+                    ok = sum(1 for x in p.clip_paths if x)
+                    self.clips_done.emit(ok, len(p.shots), "单镜重生成完成")
             elif self.task == "keyframe_one":
                 # v4.106 对话框指令：只重生成第 idx 镜的关键帧
                 path = p.regenerate_keyframe(self.idx, feedback=self.feedback)
-                if path:
+                if self._stopped_now():
+                    self.stopped.emit("keyframe_one")
+                elif path:
                     self.keyframes_ready.emit(p.keyframes)
                 else:
                     self.error.emit(f"镜{self.idx + 1} 关键帧重生成失败")
             elif self.task == "character_one":
                 # v4.106 对话框指令：只重生成第 idx 个角色的三视图
                 name, views = p.regenerate_character(self.idx, feedback=self.feedback)
-                if views:
+                if self._stopped_now():
+                    self.stopped.emit("character_one")
+                elif views:
                     self.characters_ready.emit(p.characters)
                 else:
                     self.error.emit(f"角色「{name or self.idx + 1}」三视图重生成失败")
             elif self.task == "merge":
                 out, err = p.merge()
-                if out:
+                if self._stopped_now():
+                    self.stopped.emit("merge")
+                elif out:
                     # v4.188 P2-6：成片消息明示缺镜——不用翻卡片才知道少了几镜
                     #（对照数字人面板 failed_segs 的既有明示做法）。
                     try:
@@ -346,7 +397,10 @@ class DirectorThread(QThread):
                 else:
                     self.merge_ready.emit(False, err or "合成失败", "")
         except Exception as e:
-            self.error.emit(f"{self.task} 异常：{e}")
+            if self._stopped_now(e):
+                self.stopped.emit(self.task or "")
+            else:
+                self.error.emit(f"{self.task} 异常：{e}")
         finally:
             # v4.133.1：线程跑完必须把 cb 摘掉。
             # 否则 cb 里的 lambda 一直指向这个「已结束的 QThread」的信号——之后
@@ -1306,15 +1360,16 @@ def _set_busy(app, busy):
                 # 禁止回填 ok:True 让导演 Agent 向用户谎报"已完成"。
                 _err = getattr(app, "_director_agent_error", None)
                 _cancelled = getattr(app, "_director_agent_cancelled", False)
-                if _err:
-                    snap["ok"] = False
-                    snap["state"] = "failed"
-                    snap["msg"] = f"任务失败：{_err}"
-                elif _cancelled:
-                    # v4.141 P1：取消是独立结果态，不能让 Agent 误读成「完成」或「失败」。
+                if _cancelled:
+                    # 用户点了停止时，取消优先于错误标记。否则「已取消」会被
+                    # 收成「任务失败」，对话回执把主动停止说成出错。
                     snap["ok"] = False
                     snap["state"] = "cancelled"
                     snap["msg"] = "任务已被用户取消（未完成，也非失败）"
+                elif _err:
+                    snap["ok"] = False
+                    snap["state"] = "failed"
+                    snap["msg"] = f"任务失败：{_err}"
                 app._director_agent_result = snap
             except Exception as e:
                 app._director_agent_result = {"ok": False, "msg": f"状态收集失败：{e}"}
@@ -2214,6 +2269,15 @@ def _director_start_now(app):
     _run_thread(app, "story")
 
 
+def _director_job_name(task, idx=None):
+    """与流水线 begin_job 使用的任务名对齐，供 arm_job 复用同一枚令牌。"""
+    if task == "clips":
+        return "generate_all_clips"
+    if task == "clip_one":
+        return "regenerate_clip#%s" % idx
+    return task or "director"
+
+
 def _run_thread(app, task, feedback=None, idx=None, note=None):
     # 运行锁：已有线程在跑时拒绝新任务，避免两个 generate_all_clips 并发
     # 操作同一 pipeline / 同时跑 ffmpeg / 网络导致冻结 EXE 硬崩。
@@ -2224,9 +2288,17 @@ def _run_thread(app, task, feedback=None, idx=None, note=None):
         _set_status(app, "流程未初始化，请先点「开始导演」。", err=True)
         return
     _set_busy(app, True)
+    _pl_arm = app.director_pipeline
+    if _pl_arm is not None and hasattr(_pl_arm, "arm_job"):
+        try:
+            # 先于线程换发令牌。用户若在工作线程跑到 begin_job 之前点停止，
+            # 后面的 begin_job 会复用这枚已取消的令牌，而不是把停止清掉。
+            _pl_arm.arm_job(_director_job_name(task, idx))
+        except Exception:
+            pass
     th = DirectorThread(app.director_pipeline, task, feedback=feedback, idx=idx, note=note)
     th.log.connect(lambda t: _log(app, t))
-    th.status.connect(lambda t, e=False: _set_status(app, t, e))
+    th.status.connect(lambda t, e=False: _status_unless_stopped(app, t, e))
     # v4.153 P2-03：统一 generation 守卫（复用 _on_web_action 的项目令牌机制）。
     # 跨线程信号是排队投递——线程跑完、emit 已入队，但项目已「开始导演/重置」换发新令牌，
     # 旧项目的迟到结果若直接落盘会污染新项目的剧本框 / 分镜 / 成片。
@@ -2242,6 +2314,7 @@ def _run_thread(app, task, feedback=None, idx=None, note=None):
     th.clips_done.connect(lambda ok, tot, msg, _tok=tok: _gen_guard(_tok, app, _on_clips_done, app, ok, tot, msg))
     th.merge_ready.connect(lambda ok, msg, p, _tok=tok: _gen_guard(_tok, app, _on_merge_ready, app, ok, msg, p))
     th.error.connect(lambda e, _tok=tok: _gen_guard(_tok, app, _on_error, app, e))
+    th.stopped.connect(lambda task, _tok=tok: _gen_guard(_tok, app, _on_director_stopped, app, task))
     app.director_thread = th
     # v4.150：对话发起的任务记下「该看哪一页」，跑完自动切过去，省掉用户翻页找新图。
     # 只对对话发起生效（面板按钮本来就在对应页上），避免手动浏览时被强行拽走。
@@ -2268,8 +2341,101 @@ def _gen_guard(tok, app, fn, *args, **kwargs):
     return fn(*args, **kwargs)
 
 
+def _director_run_stopped(app):
+    """用户已经点过停止，或流水线本轮已被取消。"""
+    if getattr(app, "_director_agent_cancelled", False):
+        return True
+    p = getattr(app, "director_pipeline", None)
+    try:
+        return bool(p is not None and p._is_cancelled())
+    except Exception:
+        return bool(getattr(p, "cancelled", False))
+
+
+def _status_unless_stopped(app, text, err=False):
+    """停止之后，流水线迟到的状态行不得盖掉「已停止」。"""
+    if _director_run_stopped(app):
+        return
+    _set_status(app, text, err)
+
+
+def _usable_clip(path):
+    return bool(path and os.path.isfile(str(path)))
+
+
+def _clip_path_at(app, i):
+    """工程里这一镜目前还能用的片段。卡片上的路径只在文件还在时才算。"""
+    p = getattr(app, "director_pipeline", None)
+    paths = getattr(p, "clip_paths", None) or []
+    if 0 <= i < len(paths) and _usable_clip(paths[i]):
+        return paths[i]
+    cards = getattr(app, "director_clips_state", None) or []
+    if 0 <= i < len(cards) and _usable_clip(cards[i].get("path")):
+        return cards[i].get("path")
+    return None
+
+
+def _settle_clips_after_stop(app):
+    """停止后：有旧片段的镜恢复成可播放；没有的镜标成已停止，不再挂「排队中」。"""
+    cards = getattr(app, "director_clips_state", None)
+    if not cards:
+        return 0, 0
+    kept = 0
+    for i, c in enumerate(cards):
+        path = _clip_path_at(app, i)
+        if path:
+            c["status"] = "done"
+            c["path"] = path
+            c["error"] = ""
+            if not c.get("info"):
+                c["info"] = f"镜{i+1} · ✅ 完成"
+            kept += 1
+        elif c.get("status") in ("queued", "generating", "stopped", None, ""):
+            c["status"] = "stopped"
+            c["path"] = None
+            c["error"] = ""
+            c["info"] = f"镜{i+1} · 已停止"
+    try:
+        _render_clips(app)
+    except Exception:
+        pass
+    return kept, len(cards)
+
+
+def _on_director_stopped(app, task=""):
+    """把一轮被停止的任务收成「已停止」，不写成完成，也不写成出错。"""
+    app._director_agent_cancelled = True
+    app._director_agent_error = None
+    try:
+        if getattr(app, "director_phase", "") == DirectorPhase.ERROR:
+            _set_director_phase(app, DirectorPhase.RUNNING)
+    except Exception:
+        pass
+    kept = total = 0
+    if getattr(app, "director_clips_state", None):
+        kept, total = _settle_clips_after_stop(app)
+    if task in ("clips", "clip_one") and total:
+        msg = f"已停止：{kept}/{total} 镜仍可用，未完成的不算成功"
+    else:
+        msg = "已停止，这一轮未写完的结果不会写入"
+    _set_status(app, msg)
+    _log(app, "⏹ " + msg)
+    _set_busy(app, False)
+    try:
+        app.director_stop.setEnabled(False)
+    except Exception:
+        pass
+    try:
+        _save_session(app)
+    except Exception:
+        pass
+
+
 @_safe
 def _on_story_ready(app, text):
+    if _director_run_stopped(app):
+        _on_director_stopped(app, "story")
+        return
     app.director_story_edit.setPlainText(text)
     _set_status(app, "剧本已生成。可编辑后「采用剧本」，或「重写」并附意见。")
     _log(app, "✅ 剧本生成完成。进入编辑/确认。")
@@ -2384,6 +2550,9 @@ def _shot_desc(p, i):
 
 
 def _on_characters_ready(app, characters):
+    if _director_run_stopped(app):
+        _on_director_stopped(app, "characters")
+        return
     _build_character_cards(app, characters)
     _register_assets(app, "characters")
     n = len(characters)
@@ -2423,6 +2592,9 @@ def _gen_clues(app):
 
 @_safe
 def _on_clues_ready(app, clues):
+    if _director_run_stopped(app):
+        _on_director_stopped(app, "clues")
+        return
     _build_clue_cards(app, clues)
     _register_assets(app, "clues")
     n = len(clues or [])
@@ -2466,6 +2638,9 @@ def _adopt_characters(app):
 # ---------- ② 分镜 ----------
 @_safe
 def _on_shots_ready(app, shots):
+    if _director_run_stopped(app):
+        _on_director_stopped(app, "shots")
+        return
     _build_shot_rows(app, shots)
     # v4.154：AI 实际决定的镜数回写数字框（智能模式让框反映真实结果；手动模式本就相等）
     try:
@@ -2619,6 +2794,9 @@ def _adopt_shots(app):
 
 @_safe
 def _on_keyframes_ready(app, keyframes):
+    if _director_run_stopped(app):
+        _on_director_stopped(app, "keyframes")
+        return
     # v4.141：整批关键帧重新生成完成，本阶段的过期标记作废
     _get_stale(app)["kf"].clear()
     _build_keyframe_cards(app, keyframes)
@@ -2920,7 +3098,7 @@ def _on_clip_ready(app, i, path):
         return
     # v4.125 P2-3：抽帧挪后台线程——先落 done 状态渲染卡片，帧抽完再补图
     cards[i].update({
-        "status": "done", "path": path, "error": "", "kf": None,
+        "status": "done", "path": path, "error": "", "kf": None, "info": None,
     })
     # v4.141：本镜已重新生成，过期标记作废（否则 ⚠️ 会一直挂着误导）
     _get_stale(app)["clip"].discard(i)
@@ -2938,25 +3116,54 @@ def _on_clip_ready(app, i, path):
 
 @_safe
 def _on_clip_failed(app, i, reason=""):
+    if _director_run_stopped(app):
+        return
     cards = getattr(app, "director_clips_state", None)
     if cards is None or i < 0 or i >= len(cards):
         return
-    cards[i].update({"status": "fail", "error": reason or "", "path": None})
+    old = _clip_path_at(app, i)
+    if old:
+        # 重生成没成功：工程里的上一版还在，卡片继续指向它，合成仍能用。
+        cards[i].update({
+            "status": "done",
+            "path": old,
+            "error": reason or "",
+            "info": f"镜{i+1} · 重生成未成功，仍用上一版",
+        })
+    else:
+        cards[i].update({"status": "fail", "error": reason or "", "path": None})
     _render_clips(app)
     _save_session(app)
 
 
 @_safe
 def _on_clips_done(app, ok, total, msg):
-    _set_status(app, f"逐镜生成完成：{ok}/{total} 成功。可单镜「✎改/↻」，或「去合成」。")
-    _log(app, f"✅ {msg}：{ok}/{total} 成功。")
-    # v4.125 M-15：部分镜失败必须置错误标记——此前只更新卡片不置
-    # _director_agent_error，线程正常结束时快照仍 ok:True，导演 Agent 会
-    # 以为全部成功、基于残缺片段去合成（H-14 残留）。
-    if ok < total:
+    if _director_run_stopped(app):
+        _on_director_stopped(app, "clips")
+        return
+    paths = list(getattr(getattr(app, "director_pipeline", None), "clip_paths", None) or [])
+    try:
+        total_n = int(total or 0)
+        ok_n = int(ok or 0)
+    except (TypeError, ValueError):
+        total_n, ok_n = 0, 0
+    missing = 0
+    if total_n:
+        missing = sum(1 for i in range(total_n) if i >= len(paths) or not paths[i])
+    kept_old = max(0, total_n - ok_n - missing)
+    if kept_old and not missing:
+        # 这一轮有镜没换成新片段，但上一版还在。可以合成，不要报成「没有片段」。
+        _set_status(app, f"逐镜生成结束：{ok_n}/{total_n} 镜已更新，其余仍用上一版。")
+        _log(app, f"✅ {msg}：{ok_n}/{total_n} 更新，未替换的镜仍用上一版，可以合成。")
+    else:
+        _set_status(app, f"逐镜生成完成：{ok_n}/{total_n} 成功。可单镜「✎改/↻」，或「去合成」。")
+        _log(app, f"✅ {msg}：{ok_n}/{total_n} 成功。")
+    # v4.125 M-15：真的缺片段才置错误标记。旧口径用 ok<total，全部重生成时
+    # 失败镜若仍留着上一版，会被误报成「不可合成」。
+    if missing:
         app._director_agent_error = (
-            f"逐镜生成有失败：{total - ok}/{total} 镜未成功，请先单镜重试失败项")
-        _log(app, f"⚠️ 有 {total - ok} 镜失败，快照将如实报失败，不可直接合成")
+            f"逐镜生成有失败：{missing}/{total_n} 镜没有可用片段，请先单镜重试失败项")
+        _log(app, f"⚠️ 有 {missing} 镜没有可用片段，快照将如实报失败")
     _set_busy(app, False)
     _save_session(app)
 
@@ -3114,12 +3321,12 @@ def _regenerate_all(app):
     if app.director_pipeline is None:
         _set_status(app, "流程未初始化，请先点「开始导演」。", err=True)
         return
-    # v4.108 M-09：先把各卡片状态重置为排队中并立即刷新——否则全量重生成期间
-    # 卡片仍显示旧的「已生成」结果，用户无法感知进度、容易误以为没生效而重复点击。
+    # 卡片改成排队，让人看见这一轮在跑。路径先留着：新片段成功才替换。
+    # 中途停止或某一镜失败时，没被替换的旧片段仍能播放、仍能合成。
     for _c in state:
         _c["status"] = "queued"
-        _c["path"] = None
         _c["error"] = ""
+        _c["info"] = None
     try:
         _render_clips(app)
     except Exception:
@@ -3148,6 +3355,9 @@ def _do_merge(app):
 
 @_safe
 def _on_merge_ready(app, ok, msg, path):
+    if _director_run_stopped(app):
+        _on_director_stopped(app, "merge")
+        return
     # v4.141 P0：绝不在结果落地前解锁。_set_busy(False) 会立刻抓快照回给等待中的
     # Agent 工具，而本函数原本第一行就解锁 → ① 合成失败时 _director_agent_error
     # 尚未置位（失败分支原本从不置），H-14 保护形同虚设，Agent 收到 ok=True 的假
@@ -3305,6 +3515,9 @@ def _director_reset(app):
 
 @_safe
 def _on_error(app, e):
+    if _director_run_stopped(app):
+        _on_director_stopped(app, "")
+        return
     # v4.108 H-14：先记失败原因再解锁（_set_busy(False) 会抓快照回给 Agent）。
     app._director_agent_error = str(e)
     _set_director_phase(app, DirectorPhase.ERROR)   # v4.153.3 P3-11
