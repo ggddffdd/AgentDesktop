@@ -60,7 +60,22 @@ CASES = [
 ]
 
 
+def _drop_pyc():
+    """P19：同一秒内改回源码，.pyc 的 mtime 可能仍新于源码，变异等于没发生。"""
+    cache = os.path.join(HERE, "__pycache__")
+    if not os.path.isdir(cache):
+        return
+    for name in ("ui_focus", "ui", "ui_widgets", "ui_focus_host"):
+        for fn in os.listdir(cache):
+            if fn.startswith(name + "."):
+                try:
+                    os.remove(os.path.join(cache, fn))
+                except OSError:
+                    pass
+
+
 def run_judge():
+    _drop_pyc()
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
