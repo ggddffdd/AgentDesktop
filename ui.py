@@ -72,6 +72,7 @@ _WM_NCLBUTTONDBLCLK = 0x00A3
 
 import config
 import prompt_cache
+import tool_schema_budget
 from config import (
     APP_DIR, WORKSPACE_DIR, CONFIG_PATH, load_config, load_skills,
     AGENT_SYS_APPEND, TOOL_RESULT_LIMIT, load_dynamic_skills,
@@ -8614,11 +8615,6 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
     def _agent_call(self, messages, tools, on_delta=None, force_required=False, force_tool=None, force_complex=False, model_override="", thinking=False):
         import urllib.request as urllib_req
         import logging as _logging
-        # 工具定义的顺序也算前缀。按名字排死，避免每次请求顺序不同把缓存打掉。
-        try:
-            tools = prompt_cache.order_tool_schemas(tools)
-        except Exception:
-            pass
         # v4.128：Agnes 文本模型调用层（3.0/2.5 两档 + 失败自动回退 + 回退率统计）
         try:
             import agnes_text as _at
@@ -8714,6 +8710,19 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         if _ctx:
             messages = prompt_cache.with_dynamic_context(messages, _ctx)
             body["messages"] = messages
+        # 工具顺序算进缓存前缀。全量目录默认只发固定的核心段，
+        # 用到的工具接在后面；full_tool_schema 才恢复整表。
+        # 放在当轮背景拼上之后：技能正文在这条背景里，点到的工具才能同一轮带上。
+        try:
+            tools = tool_schema_budget.select_for_call(
+                tools, getattr(self, "cfg", None), messages, force_tool)
+            body["tools"] = tools
+        except Exception:
+            try:
+                tools = prompt_cache.order_tool_schemas(tools)
+                body["tools"] = tools
+            except Exception:
+                pass
         # ---- 层 3（v4.168.0）：模型调用前的最终保险 ----
         # 即使用户手动开了 Agent 模式，若最后一句是纯评价 / 引用 / 咨询句，
         # 也强制 tool_choice="none"。这一步同时挡住：

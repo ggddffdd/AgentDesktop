@@ -12,6 +12,7 @@
   "search_top_k": 5,
   "search_api_key": "",
   "agent_skip_confirm": false,
+  "full_tool_schema": false,
   "onboarded": false,
   "image_gen_provider": "agnes",
   "image_gen_model": "agnes-image-2.5-flash",

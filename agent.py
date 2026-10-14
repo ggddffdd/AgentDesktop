@@ -1755,9 +1755,25 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 pass
         return self._run_workflow(wf_type, task)
 
+    def _peel_schema_requests(self, tool_calls):
+        """request_tools 不执行业务，只让下一轮带上对应 schema。"""
+        import tool_schema_budget as _tsb
+        catalog = _tsb.catalog_names(getattr(self, "tool_defs", None))
+        kept, replies = _tsb.split_schema_requests(tool_calls, catalog)
+        for tc_id, text in replies:
+            self.messages.append({
+                "role": "tool",
+                "tool_call_id": tc_id,
+                "content": text,
+            })
+        return kept
+
     def _exec_tool_calls(self, tool_calls, mw, APP_DIR):
         """执行一批工具调用（串行/并发由权限引擎决策），供主循环与续跑共用。"""
         # v4.245.0（审查报告 T-3）：空批次直接返回，防 max_workers=0 抛 ValueError。
+        if not tool_calls:
+            return
+        tool_calls = self._peel_schema_requests(tool_calls)
         if not tool_calls:
             return
         self._app_dir = APP_DIR  # v4.222：缓存，供 _handle_tool_result 绝对化交付物路径
