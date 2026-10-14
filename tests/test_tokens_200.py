@@ -261,8 +261,20 @@ if os.path.isfile(FIXTURE):
         # 区 —— 一个 QGroupBox 外壳（带 title 子控件，故展开为 QGroupBox +
         # QGroupBox::title + QGroupBox:title 标记 3 条）+ 一张背景预览 QLabel +
         # 一行灰字说明。这些样式全部复用既有 token（THEME['bg'] 等），属「新增
-        # 控件实例」而非「样式走样」，按登记制吸收；条数写死 5，多来一份照样红。
+        # 控件实例」而非「样式走样」，按登记制吸收；P2 那 5 条写死，多来一份照样红。
+        # v4.265.0：缺视觉 key 横幅（导演台 + 数字人各一处）。琥珀底是「跳过 ≠ 通过」
+        # 的产品色，不是主题漂移；各文件条数写死 1，多挂一份照样红。
+        "director_panel.py": collections.Counter({
+            ('', '{"background": "#FFF4D6", "border": "1px solid #E8C36A",'
+                 ' "border-radius": "8px", "color": "#9A6700",'
+                 ' "font-size": "12px", "font-weight": "600",'
+                 ' "padding": "6px 10px"}'): 1,
+        }),
         "digital_twin_panel.py": collections.Counter({
+            ('', '{"background": "#FFF4D6", "border": "1px solid #E8C36A",'
+                 ' "border-radius": "8px", "color": "#9A6700",'
+                 ' "font-size": "12px", "font-weight": "600",'
+                 ' "padding": "6px 10px"}'): 1,
             ('', '{"color": "#5F6368", "font-size": "12px"}'): 1,
             ('QGroupBox', '{"background": "#FFFFFF", "border": "1px solid #E5E7EB",'
                           ' "border-radius": "10px", "color": "#202124",'

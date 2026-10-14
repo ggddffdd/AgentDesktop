@@ -29,6 +29,12 @@ from PySide6.QtWebEngineCore import (
 )
 from chat_web import _ChatPage
 
+# skipped_* 的样式必须醒目（琥珀底加粗）。改回灰字会被判据抓住。
+QC_SKIP_CSS = (
+    ".qc.skip{color:#9A6700;background:#FFF4D6;font-weight:700;"
+    "padding:4px 8px;border-radius:6px;}"
+)
+
 _SCHEME = b"localres"
 _scheme_registered = False
 _handler_installed = set()
@@ -199,9 +205,9 @@ html,body{margin:0;padding:0;background:var(--bg);
 .btns a:hover{background:var(--accent);color:#fff;border-color:var(--accent);}
 .qc{font-size:12px;padding:0 8px 8px;}
 .qc.fail{color:#d98c3f;}
-/* v4.168.0：质检跳过要看得见 —— 灰蓝色，与"通过(默认色)/未通过(橙)"都不同，
-   避免"没质检"在视觉上被当成"通过" */
-.qc.skip{color:#7a8290;}
+/* v4.265.0：skipped_* 用琥珀底加粗，不能再用灰字混进「已通过」。
+   通过仍是默认色，未通过仍是橙。 */
+__QC_SKIP_CSS__
 .qclink{color:var(--accent);cursor:pointer;}
 .empty{padding:24px;text-align:center;color:var(--dim);font-size:13px;}
 /* lightbox */
@@ -261,6 +267,7 @@ class DirectorWebView(QWebEngineView):
     def _skeleton(self, cards_html):
         t = {k: v for k, v in self._theme.items() if isinstance(v, str)}
         return (_SKELETON
+                .replace("__QC_SKIP_CSS__", QC_SKIP_CSS)
                 .replace("__BG__", t.get("bg", "#F7F8FC"))
                 .replace("__CARD__", t.get("card", "#FFFFFF"))
                 .replace("__BORDER__", t.get("border", "#E5E7EB"))
@@ -306,8 +313,42 @@ def _ver_btn(idx, can_versions, sig="vers", label="🔀版本"):
             f'title="并排对比全部历史版本，挑一版">{label}</a>')
 
 
+def qc_badge_html(qc_status="", note="", required=False):
+    """成片 / 关键帧徽标。有 qc_status 时只显示 vision_qc.status_label。
+
+    没有状态时：note 明确 FAIL 仍标未通过；已生成的卡片（required）
+    强制标「未记录」，禁止把空 note 或 PASS note 画成通过。
+    """
+    unrecorded = "⏭ 质检状态未记录（不要当成已通过）"
+    label = ""
+    cls = "qc skip"
+    if qc_status:
+        try:
+            import vision_qc as _vq
+            label = _vq.status_label(qc_status)
+            real = _vq.is_real_qc(qc_status)
+        except Exception:
+            label = str(qc_status)
+            real = qc_status in ("pass", "fail")
+        if qc_status == "fail":
+            cls = "qc fail"
+        elif real:
+            cls = "qc"
+        else:
+            cls = "qc skip"
+    elif note and "VERDICT: FAIL" in str(note).upper():
+        label = "⚠️ 质检未通过"
+        cls = "qc fail"
+    elif required:
+        label = unrecorded
+        cls = "qc skip"
+    else:
+        return ""
+    return f'<div class="{cls}">{_esc(label)}</div>'
+
+
 def clip_card_html(i, status, path=None, kf=None, error="", info_text=None,
-                   can_rollback=False, can_versions=False):
+                   can_rollback=False, can_versions=False, qc_status=""):
     """分镜卡：视频内嵌播放（status=done）、排队/失败占位。idx 从 0 计。"""
     rb = _rb_btn("rollback_clip", i, can_rollback)
     vb = _ver_btn(i, can_versions)
@@ -317,13 +358,15 @@ def clip_card_html(i, status, path=None, kf=None, error="", info_text=None,
                  f'controls preload="metadata"{poster} onclick="act(\'play\',{i})"></video>'
                  f'<div class="play-overlay"></div></div>')
         info = info_text or f"镜{i+1} · ✅ 完成"
+        qc = qc_badge_html(qc_status, required=True)
         btns = (f'<div class="btns">'
                 f'{_ask_btn("ask_clip", i, "✎说一句怎么改")}'
                 f'<a onclick="act(\'regen\',{i})" title="不加意见，直接重生成">↻</a>'
                 f'<a onclick="act(\'view\',{i})" title="看这镜实际发出去的提示词">🔍</a>'
                 f'{vb}{rb}'
                 f'</div>')
-        return f'<div class="card">{thumb}<div class="info">{_esc(info)}</div>{btns}</div>'
+        return (f'<div class="card">{thumb}<div class="info">{_esc(info)}</div>'
+                f'{qc}{btns}</div>')
     if status == "fail":
         thumb = '<div class="thumb"><div class="ph">❌ 生成失败</div></div>'
         info = info_text or f"镜{i+1} · ❌ 失败"
@@ -361,21 +404,8 @@ def keyframe_card_html(i, kf, note="", can_rollback=False, can_versions=False,
         info = f"镜{i+1} · 生成失败"
     if stale and kf and os.path.isfile(kf):
         info += " · ⚠️ 基于旧资产"
-    qc = ""
-    if qc_status:
-        try:
-            import vision_qc as _vq
-            label = _vq.status_label(qc_status)
-            real = _vq.is_real_qc(qc_status)
-        except Exception:
-            label, real = qc_status, qc_status in ("pass", "fail")
-        cls = "qc fail" if qc_status == "fail" else ("qc" if real else "qc skip")
-        qc = f'<div class="{cls}">{_esc(label)}</div>'
-    elif note:
-        failed = "VERDICT: FAIL" in note.upper()
-        label = "⚠️ 质检未通过" if failed else "✅ 质检通过"
-        cls = "qc fail" if failed else "qc"
-        qc = f'<div class="{cls}">{_esc(label)}</div>'
+    has_img = bool(kf and os.path.isfile(kf))
+    qc = qc_badge_html(qc_status, note, required=has_img)
     btns = (f'<div class="btns">{_ask_btn("ask_kf", i, "✎说一句怎么改")}'
             f'<a onclick="act(\'regen_kf\',{i})" title="不加意见，直接重生成这一镜">↻重生成</a>'
             f'{_ver_btn(i, can_versions, "verskf")}'
@@ -431,7 +461,7 @@ def clue_card_html(idx, c, can_rollback=False, can_versions=False):
             f'<div class="desc">{desc}</div>{btns}</div>')
 
 
-def merge_card_html(path, kf=None, stale=False):
+def merge_card_html(path, kf=None, stale=False, qc_status=""):
     """合成预览卡：成片视频内嵌播放（或首帧图）。
 
     v4.141：stale=True 表示成片合成之后，上游（角色/线索/关键帧/视频）又回滚过，
@@ -446,5 +476,7 @@ def merge_card_html(path, kf=None, stale=False):
         info = "成片预览（可内嵌播放）"
         if stale:
             info += " · ⚠️ 上游已变更，建议重新合成"
-        return f'<div class="card">{thumb}<div class="info">{_esc(info)}</div></div>'
+        qc = qc_badge_html(qc_status, required=True)
+        return (f'<div class="card">{thumb}<div class="info">{_esc(info)}</div>'
+                f'{qc}</div>')
     return '<div class="empty">尚未合成</div>'

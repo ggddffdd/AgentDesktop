@@ -37,13 +37,15 @@ os.environ.setdefault(
 #    （2,100 字节 / 12 行）。见 LEARNINGS L055。
 # 注：本版（v4.134.8）已把 v4.134.7 误加的 `--log-level=2` 撤掉 —— 它净效果为零，
 # 留着只会让人误以为"已经压住了"。真正干活的是下面那个代滚动调用。
-# v4.121.6：关 Chromium 沙箱——必须在 import PySide6 之前设置。
+# v4.121.6 / v4.265.0（审查 P1-8）：关 Chromium 沙箱只在冻结版。
 # 实测（2026-09-07 冻结 exe）：不带开关时 QtWebEngineProcess 启动即被 Killed
 # （exit_code=1），聊天区 renderProcessTerminated 崩溃-重建死循环（日志 9 次/60s）；
-# 设了之后同机立刻拉起 6 个渲染进程、页面正常。这是 Qt 官方支持的开关，
-# 本地桌面应用不加载外部不可信页面，关闭沙箱无实际安全损失。
-# setdefault：用户若已显式设置则尊重其值。
-os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
+# 设了之后同机立刻拉起 6 个渲染进程、页面正常。开发版不关沙箱。
+# 用户若已显式设置 QTWEBENGINE_DISABLE_SANDBOX 则尊重其值。
+# 导航另有白名单（webengine_policy.navigation_allowed）：localres / 工作区 / 显式域。
+import webengine_policy as _webengine_policy
+_webengine_policy.apply_sandbox_env(
+    os.environ, frozen=bool(getattr(sys, "frozen", False)))
 
 # v4.188 P2-14：**早期**崩溃兜底——赶在 import PySide6 / ui 之前装上。
 # 原实现的 crash logger 在 main():_install_crash_logger() 才装，而顶层

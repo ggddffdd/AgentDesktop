@@ -277,6 +277,98 @@ def main():
         check("快照列出能力类", set(s["granted"]["2"]) == {"exec", "external"},
               s["granted"])
 
+        print("\n=== 11) 本波已授权仍要再确认（规则来自 risk.py） ===")
+        import risk as _risk
+        src_lp = open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "legion_permissions.py"),
+            encoding="utf-8").read()
+        check("引用 risk.ALWAYS_CONFIRM", "ALWAYS_CONFIRM" in src_lp
+              and "from risk import" in src_lp)
+        check("引用 command_danger_level（不自抄高危表）",
+              "command_danger_level" in src_lp and "_HIGH_RISK_PATTERNS" not in src_lp)
+        check("引用 task_risk_level", "task_risk_level" in src_lp)
+        check("硬确认集合与 risk 同一对象",
+              lp.ALWAYS_CONFIRM is _risk.ALWAYS_CONFIRM)
+
+        a = new_adapter(tmp)
+        a.grant_wave(1, by="user")
+        d = a.check("db_delete", {"table": "notes"}, wave=1)
+        check("★ ALWAYS_CONFIRM 本波已 grant 仍拒绝",
+              not d.allowed and d.rule == "always_confirm", d.rule)
+        check("  标记 needs_reconfirm", d.needs_reconfirm is True)
+        d = a.check("skill_install", {"name": "x"}, wave=1)
+        check("★ skill_install 同样二次确认",
+              not d.allowed and d.needs_reconfirm and d.rule == "always_confirm",
+              d.rule)
+        seen = {}
+
+        def _cb(tool, args, dec):
+            seen["tool"] = tool
+            seen["rule"] = dec.rule
+            return True
+
+        a.reconfirm_cb = _cb
+        d = a.check("db_delete", {"table": "notes"}, wave=1)
+        check("二次确认回调通过后放行", d.allowed and d.rule == "write_local", d.rule)
+        check("回调看到的是 always_confirm", seen.get("rule") == "always_confirm")
+        d = a.check("db_delete", {"table": "other"}, wave=1)
+        check("参数一变要重新确认（回调仍可通过）", d.allowed, d.rule)
+
+        a2 = new_adapter(tmp)
+        a2.grant_wave(1, by="user")
+        d = a2.check("run_command", {"command": "rm -rf ./build"}, wave=1)
+        check("★ 高危命令命中 command_danger_level（不是短黑名单）",
+              not d.allowed and d.rule == "high_risk_exec" and d.needs_reconfirm,
+              f"{d.rule} {d.reason}")
+        check("短黑名单仍硬拒 rm -rf /",
+              a2.check("run_command", {"command": "rm -rf /"}, wave=1).rule
+              == "dangerous_cmd")
+        d = a2.check("run_python", {"code": "import shutil; shutil.rmtree('x')"}, wave=1)
+        check("★ run_python 高危代码同样再确认",
+              not d.allowed and d.rule == "high_risk_exec", d.rule)
+        a2.reconfirm_cb = lambda tool, args, dec: True
+        d = a2.check("run_command", {"command": "rm -rf ./build"}, wave=1)
+        check("高危命令二次确认后放行", d.allowed and d.rule == "grant", d.rule)
+        # 上面的回调会把任何再确认都点成通过。process_kill 必须在「已 grant、
+        # 但还没人点二次确认」时仍被 ALWAYS_CONFIRM 拦住，所以先摘掉回调。
+        a2.reconfirm_cb = None
+        d = a2.check("process_kill", {"pid": 1}, wave=1)
+        check("★ process_kill 在 ALWAYS_CONFIRM，grant 后仍再确认",
+              not d.allowed and d.rule == "always_confirm", d.rule)
+        a3 = new_adapter(tmp)
+        d = a3.check("process_kill", {"pid": 1}, wave=1)
+        check("未 grant 的 EXEC 硬确认先卡在本波授权",
+              not d.allowed and d.rule == "needs_auth" and not d.needs_reconfirm,
+              d.rule)
+
+        a4 = new_adapter(tmp)
+        a4.set_task("帮我把这份报税材料写进工作区")
+        d = a4.check("write_file", {"path": os.path.join(WS, "tax.txt")}, wave=1)
+        check("★ critical 任务收紧 write（未再确认则拒）",
+              not d.allowed and d.rule == "task_risk_critical" and d.needs_reconfirm,
+              f"{d.rule} {d.reason}")
+        d = a4.check("read_file", {"path": os.path.join(WS, "tax.txt")})
+        check("critical 不拦只读", d.allowed and d.rule == "read", d.rule)
+        a4.grant_wave(1, by="user")
+        d = a4.check("run_command", {"command": "echo hi"}, wave=1)
+        check("★ critical 任务收紧 exec（普通命令也要再确认）",
+              not d.allowed and d.rule == "task_risk_critical", d.rule)
+        a4.reconfirm_cb = lambda *a, **k: False
+        d = a4.check("write_file", {"path": os.path.join(WS, "tax.txt")})
+        check("二次确认回调拒绝则仍拒", not d.allowed, d.rule)
+        a4.reconfirm_cb = lambda *a, **k: True
+        d = a4.check("write_file", {"path": os.path.join(WS, "tax.txt")})
+        check("critical 写入二次确认后放行", d.allowed and d.rule == "write_local", d.rule)
+
+        src_w = open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "legion_worker.py"),
+            encoding="utf-8").read()
+        check("worker 把二次确认接到 reconfirm_cb",
+              "p.reconfirm_cb = self._perm_reconfirm" in src_w)
+        check("二次确认走 _request_auth",
+              "decision = self._request_auth(title, detail, timeout=180)" in src_w)
+        check("worker 把任务原文交给 set_task", "p.set_task(" in src_w)
+
         print("\n=== 10) 未知工具保守拒绝 ===")
         a = new_adapter(tmp)
 

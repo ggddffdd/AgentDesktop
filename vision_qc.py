@@ -101,6 +101,69 @@ def is_real_qc(status):
     return status in (QC_PASS, QC_FAIL)
 
 
+def resolve_qc_status(note, meta_status=""):
+    """把质检原文收成状态。
+
+    meta 已给出状态时原样采用（skipped_* / off 不会被改写成 pass）。
+    没有状态且 note 为空：不再沿用「空回答 = QC_PASS」。
+    放行与否仍由调用方决定（质检不可用一律放行），但状态必须是 skipped_error。
+    """
+    given = (meta_status or "").strip()
+    if given:
+        return given
+    text = (note or "").strip()
+    if not text:
+        return QC_SKIP_ERROR
+    if "VERDICT: FAIL" in text.upper():
+        return QC_FAIL
+    return QC_PASS
+
+
+def account_resolved(note, meta_status=""):
+    """解析状态，并只在 meta 没给状态时补记统计桶（避免和 review_images 双计）。"""
+    given = (meta_status or "").strip()
+    status = resolve_qc_status(note, given)
+    if not given:
+        if status == QC_SKIP_ERROR:
+            _bump("qc_skipped_error")
+        elif status == QC_PASS:
+            _bump("qc_pass")
+        elif status == QC_FAIL:
+            _bump("qc_fail")
+    return status
+
+
+QC_KEY_BANNER = (
+    "质检未真正运行：未配置视觉 key（DeepSeek 官方）。"
+    "画面放行不等于已质检通过。"
+)
+
+
+def missing_key_banner(cfg):
+    """缺视觉 key 时返回横幅文案；已配置则返回空串（横幅应隐藏）。"""
+    _base, key, _model = vision_profile(cfg)
+    if (key or "").strip():
+        return ""
+    return QC_KEY_BANNER
+
+
+def aggregate_status(statuses):
+    """成片汇总：未通过优先，其次任一 skipped_*，再未开启，全通过才是 pass。"""
+    sts = [s for s in (statuses or []) if s]
+    if not sts:
+        return ""
+    if any(s == QC_FAIL for s in sts):
+        return QC_FAIL
+    for s in sts:
+        if str(s).startswith("skipped"):
+            return s
+    if any(s == QC_OFF for s in sts):
+        return QC_OFF
+    if all(s == QC_PASS for s in sts):
+        return QC_PASS
+    return sts[0]
+
+
 # --------------------------------------------------------------------------
 # 图片编码：降采样 + 真实 MIME
 # --------------------------------------------------------------------------
@@ -337,13 +400,11 @@ def qc_call(cfg, image_paths, question, max_tokens=400, log=None):
     meta = {}
     text = review_images(cfg, image_paths, question, max_tokens=max_tokens,
                          log=log, meta=meta)
-    status = meta.get("status") or ""
-    if not status:
+    status = account_resolved(text, meta.get("status") or "")
+    if is_real_qc(status):
         passed, note = parse_verdict(text)
-        status = QC_PASS if passed else QC_FAIL
-        _bump("qc_pass" if passed else "qc_fail")
     else:
-        # review_images 已经计入跳过桶
+        # 跳过 / 空回答：放行，但状态不是 pass（review_images 或 account_resolved 已计数）
         passed, note = True, ""
     if log and is_real_qc(status):
         meta_line = ""

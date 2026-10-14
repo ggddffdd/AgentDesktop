@@ -75,7 +75,19 @@ class _ChatPage(QWebEnginePage):
             self.anchorActivated.emit(f"{kind}:{idx}" if idx else kind)
             return False
         if s.startswith(("http://", "https://")) and nav_type == QWebEnginePage.NavigationTypeLinkClicked:
+            # 外链交给系统浏览器，WebEngine 自己不打开
             QDesktopServices.openUrl(url)
+            return False
+        # v4.265.0：主框架只留白名单（localres / 工作区 file / 显式域 / about:blank）
+        try:
+            import webengine_policy as _wep
+            if not _wep.navigation_allowed(
+                    s, workspace_roots=_wep.workspace_roots(),
+                    allow_hosts=_wep.allow_hosts()):
+                _we_diag("导航被白名单拒绝: " + s[:180])
+                return False
+        except Exception:
+            _we_diag("导航白名单异常，按拒绝处理: " + s[:180])
             return False
         return super().acceptNavigationRequest(url, nav_type, isMainFrame)
 

@@ -49,7 +49,8 @@ import threading
 
 import tool_audit
 from permissions import PermissionEngine
-from risk import RiskClass, classify
+from risk import (RiskClass, classify, ALWAYS_CONFIRM, command_danger_level,
+                  task_risk_level, TASK_CONFIRM_LEVELS)
 
 # 军团里明确禁止的命令模式（即便本波已放行也不放）——危险且不可逆。
 # 注意：这是"最低底线"，不是完整防护；真正的边界是路径作用域 + 授权。
@@ -59,6 +60,16 @@ DANGEROUS_CMD_PATTERNS = (
     "bcdedit", "vssadmin delete", "cipher /w",
     "shutdown /", "net user ", "netsh advfirewall set",
 )
+
+def _exec_blob(args):
+    """取出命令/代码文本，供 risk.command_danger_level 使用（不另写探测器）。"""
+    if not isinstance(args, dict):
+        return str(args or "")
+    raw = args.get("command") or args.get("cmd") or args.get("code") or ""
+    if not isinstance(raw, str):
+        raw = str(raw)
+    return raw
+
 
 # 非只读决策才写审计（只读量大且无风险，全记会把账本淹掉）
 #
@@ -80,13 +91,16 @@ _redact = tool_audit.redact
 class LegionDecision:
     """一次军团工具权限决策。"""
 
-    __slots__ = ("allowed", "reason", "rule", "needs_auth")
+    __slots__ = ("allowed", "reason", "rule", "needs_auth", "needs_reconfirm")
 
-    def __init__(self, allowed, reason, rule, needs_auth=False):
+    def __init__(self, allowed, reason, rule, needs_auth=False,
+                 needs_reconfirm=False):
         self.allowed = allowed
         self.reason = reason
         self.rule = rule
         self.needs_auth = needs_auth   # 因"本波未获授权"而拒（供回执文案区分）
+        # v4.265.0：本波已 grant 仍要人手再点一次（ALWAYS_CONFIRM / 高危参数 / critical）
+        self.needs_reconfirm = needs_reconfirm
 
     def __repr__(self):
         return f"<LegionDecision {'allow' if self.allowed else 'deny'} {self.rule}>"
@@ -131,6 +145,12 @@ class LegionPermissionAdapter:
 
         # 授权账：wave -> {"exec": set, "external": set, ...}；"*" 表示全波通用
         self._grants = {}
+        # v4.265.0：用户原始任务文本（task_risk_level 的单一真源输入，不另抄规则）
+        self.task_text = ""
+        # 逐次二次确认账：(wave, tool, args_digest)。波次 grant 不能代替它。
+        self._reconfirmed = set()
+        # 可选回调 (tool, args, decision) -> bool。未挂回调时二次确认一律拒绝。
+        self.reconfirm_cb = None
         # 审计落点
         self._audit_dir = audit_dir or self._default_audit_dir()
         self._audit_failed_logged = False
@@ -222,6 +242,24 @@ class LegionPermissionAdapter:
 
     # ---------- 核心决策 ----------
 
+    def set_task(self, text: str) -> None:
+        """记下用户原始任务，供 task_risk_level 收紧 write/exec。"""
+        self.task_text = str(text or "")
+
+    def grant_reconfirm(self, tool: str, args=None, wave=0) -> None:
+        """记下「这一笔」已经人手二次确认（参数一变就失效）。"""
+        key = self._reconfirm_key(tool, args, wave)
+        with self._lock:
+            self._reconfirmed.add(key)
+
+    def _reconfirm_key(self, tool, args, wave):
+        return (self._wave_key(wave), str(tool or ""), _digest(args))
+
+    def _is_reconfirmed(self, tool, args, wave) -> bool:
+        key = self._reconfirm_key(tool, args, wave)
+        with self._lock:
+            return key in self._reconfirmed
+
     def check(self, tool: str, args=None, role: str = "", wave=0) -> LegionDecision:
         """成员要执行某工具 → 返回是否放行（非只读决策一律落审计）。"""
         args = args or {}
@@ -231,6 +269,22 @@ class LegionPermissionAdapter:
             risk = RiskClass.EXTERNAL     # 分类失败按最保守处理
 
         dec = self._decide(tool, args, risk, wave)
+        if (not dec.allowed) and dec.needs_reconfirm:
+            cb = self.reconfirm_cb
+            ok = False
+            if callable(cb):
+                try:
+                    ok = bool(cb(tool, args, dec))
+                except Exception:
+                    ok = False
+            if ok:
+                self.grant_reconfirm(tool, args, wave)
+                dec = self._decide(tool, args, risk, wave)
+                if (not dec.allowed) and dec.needs_reconfirm:
+                    dec = LegionDecision(
+                        False,
+                        dec.reason + "（二次确认未能解除，按拒绝处理）",
+                        dec.rule, needs_auth=True, needs_reconfirm=False)
 
         # 只读不记（量大且无风险）；其余全记，可抽查
         if risk != RiskClass.READ:
@@ -258,11 +312,15 @@ class LegionPermissionAdapter:
                 return LegionDecision(
                     False, f"对外操作 '{tool}' 需本波授权（默认只读）",
                     "needs_auth", needs_auth=True)
-            return LegionDecision(True, "对外操作已在白名单且本波已授权", "external")
+            return self._finish_allow(
+                tool, args, risk, wave,
+                "对外操作已在白名单且本波已授权", "external")
 
-        # ③ EXEC：命令底线黑名单 → 授权门槛
+        # ③ EXEC：命令底线黑名单 → 授权门槛 → 参数级高危再确认
+        #    短黑名单只是不可逆底线；高危但可逆的操作走 risk.command_danger_level
+        #    （规则表留在 risk.py，这里禁止再抄一份）。
         if risk == RiskClass.EXEC:
-            if tool == "run_command":
+            if tool in ("run_command", "run_python"):
                 bad = self._dangerous_command(args)
                 if bad:
                     return LegionDecision(
@@ -273,7 +331,8 @@ class LegionPermissionAdapter:
                     False,
                     f"'{tool}' 属执行类，成员默认只读；需本波放行后才可调用",
                     "needs_auth", needs_auth=True)
-            return LegionDecision(True, "执行类操作：本波已授权", "grant")
+            return self._finish_allow(
+                tool, args, risk, wave, "执行类操作：本波已授权", "grant")
 
         # ④ WRITE_LOCAL：写入必须留在工作区内
         if risk == RiskClass.WRITE_LOCAL:
@@ -285,10 +344,53 @@ class LegionPermissionAdapter:
                     return LegionDecision(
                         False,
                         f"写入超出工作区范围（{p}），军团只允许写自己的工作区", "scope")
-            return LegionDecision(True, "本地写入（工作区内）", "write_local")
+            return self._finish_allow(
+                tool, args, risk, wave, "本地写入（工作区内）", "write_local")
 
         # ⑤ 未知类别：保守拒绝
         return LegionDecision(False, f"未知风险类别，保守拒绝：{tool}", "unknown")
+
+    def _finish_allow(self, tool, args, risk, wave, reason, rule) -> LegionDecision:
+        """本会放行时，再套主链同一套「必须再确认」规则。
+
+        规则只从 risk.py 引用：ALWAYS_CONFIRM / command_danger_level /
+        task_risk_level。本波 grant 与会话信任都不能跳过。
+        """
+        erule, ereason = self._extra_confirm(tool, args, risk)
+        if erule and not self._is_reconfirmed(tool, args, wave):
+            return LegionDecision(
+                False, ereason, erule, needs_auth=True, needs_reconfirm=True)
+        return LegionDecision(True, reason, rule)
+
+    def _extra_confirm(self, tool, args, risk):
+        """返回 (rule, reason)；不需要再确认时返回 ("", "")。"""
+        if tool in ALWAYS_CONFIRM:
+            return (
+                "always_confirm",
+                f"'{tool}' 属必须人工确认的操作（规则来自 risk.ALWAYS_CONFIRM），"
+                f"本波授权不能代替逐次确认",
+            )
+        if risk == RiskClass.EXEC and tool in ("run_command", "run_python"):
+            label = command_danger_level(_exec_blob(args))
+            if label:
+                return (
+                    "high_risk_exec",
+                    f"'{tool}' 含高危操作（{label}），需再次确认后才执行",
+                )
+        if risk in (RiskClass.WRITE_LOCAL, RiskClass.EXEC):
+            lab = self._task_critical_label()
+            if lab:
+                return (
+                    "task_risk_critical",
+                    f"本任务属高风险（{lab}），'{tool}' 需逐次确认",
+                )
+        return ("", "")
+
+    def _task_critical_label(self):
+        lvl, lab = task_risk_level(getattr(self, "task_text", "") or "")
+        if lvl in TASK_CONFIRM_LEVELS:
+            return lab or lvl
+        return ""
 
     @staticmethod
     def _dangerous_command(args):

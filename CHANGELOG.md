@@ -7,6 +7,39 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.266.0 — 2026-10-14
+
+军团权限与发布质量（审查「下周」项）。界面减噪在 v4.264.0，权限语义在 v4.265.0，本版接在两者之后。
+
+### 军团权限（P1-1）
+
+成员闸门不再只靠短黑名单。`LegionPermissionAdapter` 直接引用 `risk.py` 的
+`ALWAYS_CONFIRM`、`command_danger_level`、`task_risk_level`：本波已经 grant，
+硬确认工具、高危命令、critical 任务的写入/执行仍要人手再确认。拒绝二次确认则不执行。
+
+### 质检展示（P1-6）
+
+关键帧、分镜、成片卡片强制显示真实质检状态。`skipped_*` 用琥珀底加粗。
+缺视觉 key 时导演台和数字人面板挂横幅。空的质检回答不再记成通过，改为 `skipped_error`。
+放行仍然放行，但界面不再把它画成「已质检通过」。
+
+### 测试（P1-7）
+
+新增 `tests/run_all.py --perturb-critical`，只抽权限 / 路由 / 军团扰动。
+`.github/workflows/perturb-nightly.yml` 每周日跑这批抽样，手动也可选全量 `--with-perturb`。
+日常 CI 的 `test` 作业仍然不跑全量扰动。`AGENTS.md` / `tests/README.md` 的套件与扰动数量改为 166 与 102。
+
+### WebEngine（P1-8）
+
+导航只留 `localres://`、工作区内文件、以及配置里显式允许的域名。
+关 Chromium 沙箱只发生在冻结打包；源码运行默认不关。
+
+### 许可证与文档（P1-9）
+
+新增 `LICENSE`：源码可获得，禁止商用。README 保留 v4.265.0 的热键口径
+（系统级 `Ctrl+Alt+X`，可配置默认 `ctrl+shift+d`）和 84 个工具，并写上 WebEngine 安全提醒。
+GitHub topics 仍需在仓库设置里把 `pyqt6` 换成 `pyside6`（代码改不到 topics）。
+
 ## v4.265.0 — 2026-10-14
 
 本周安全与语义对齐（审阅 P0-2 / P0-3 / P1-3 / P1-4）。不拆界面大文件。界面减噪已在 v4.264.0 落地，本版只改权限语义，版本号因此再抬一档。

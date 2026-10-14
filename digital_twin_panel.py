@@ -369,7 +369,8 @@ def build_twin_panel(app):
         "· 背景与形象全程锚定同一张图，段与段之间不会各说各话 → **背景不跳**；\n"
         "· 各段互相独立 → **可并发出片，速度更快**。\n"
         "关掉则退回旧模式（首尾帧 + 上一段末帧接力）：误差会逐段累积、\n"
-        "背景容易漂移，且只能一段一段串行生成。")
+        "背景容易漂移，且只能一段一段串行生成。\n"
+        "关掉锁定 = 背景可漂移。")
 
     # 断点续跑开关（默认自动续跑；勾上则无视上次进度全部重生成）
     app.twin_force_redo = QCheckBox("♻ 全部重新生成")
@@ -389,6 +390,13 @@ def build_twin_panel(app):
     app.twin_status = QLabel("")
     app.twin_status.setStyleSheet(label_second())
     lay.addWidget(app.twin_status)
+    app.twin_qc_banner = QLabel("")
+    app.twin_qc_banner.setWordWrap(True)
+    app.twin_qc_banner.setStyleSheet(
+        "color:#9A6700;background:#FFF4D6;border:1px solid #E8C36A;"
+        "border-radius:8px;padding:6px 10px;font-size:12px;font-weight:600;")
+    lay.addWidget(app.twin_qc_banner)
+    _refresh_twin_qc_banner(app)
 
     # ---------------- 结果列表 ----------------
     app.twin_paths = []
@@ -1515,12 +1523,19 @@ class TwinGenThread(QThread):
 
             probe = os.path.join(tmp_dir, f"probe_{i}_{gen_try}_{qc_try}.png")
             if not extract_probe_frame(last_ok, probe, ffmpeg=ff, log=self.log.emit):
-                self.log.emit(f"  [第{i+1}段] ⚠️ 抽质检帧失败，放行。")
-                return last_ok, ""
+                _lb = vq.status_label(vq.QC_SKIP_ERROR)
+                self.log.emit(f"  [第{i+1}段] {_lb}（抽帧失败，放行不等于通过）")
+                return last_ok, _lb
             passed, note = vq.review_identity(
                 self.cfg, self.portrait, probe, log=self.log.emit,
                 keep_bg=self.keep_bg)
             last_note = note
+            if passed and not (note or "").strip():
+                _base, _key, _model = vq.vision_profile(self.cfg)
+                _st = vq.QC_SKIP_NO_KEY if not (_key or "").strip() else vq.QC_SKIP_ERROR
+                _lb = vq.status_label(_st)
+                self.log.emit(f"  [第{i+1}段] {_lb}（放行不等于通过）")
+                return last_ok, _lb
             if passed:
                 self.log.emit(f"  [第{i+1}段] ✅ 质检通过（仍是本人，无畸变）")
                 return last_ok, note
@@ -1530,6 +1545,20 @@ class TwinGenThread(QThread):
                               + (note[:120] if note else ""))
                 return last_ok, note
             self.log.emit(f"  [第{i+1}段] ⚠️ 质检未通过，重生成（第 {qc_try+1} 次）…")
+
+
+def _refresh_twin_qc_banner(app):
+    """缺视觉 key 时在数字人面板挂横幅。"""
+    try:
+        import vision_qc as _vq
+        text = _vq.missing_key_banner(getattr(app, "cfg", None) or {})
+    except Exception:
+        text = ""
+    lab = getattr(app, "twin_qc_banner", None)
+    if lab is not None:
+        lab.setText(text)
+        lab.setVisible(bool(text))
+    return text
 
 
 def _twin_generate(app):
@@ -1586,6 +1615,7 @@ def _twin_generate(app):
     if done_n:
         tip += (f"｜♻️ 检测到上次进度：已完成 {done_n} 段，本次跳过"
                 f"（只补剩 {len(segs) - done_n} 段）")
+    _refresh_twin_qc_banner(app)
     app.twin_status.setText(f"提交任务中…{tip}（可能需数分钟，请勿关闭窗口）")
 
     app.twin_thread = TwinGenThread(

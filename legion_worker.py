@@ -203,6 +203,8 @@ class LegionWorker(QThread):
         self._pname = ""        # run() 里赋项目显示名，供 record_message 审计用
         # v4.167.0（审查 #1）：军团权限适配器（run() 里按 gate_mode 创建并预授）
         self._perm = None
+        # v4.265.0：波内并行成员可能同时要二次确认，串行弹窗避免抢同一把 Event
+        self._reconfirm_lock = threading.Lock()
         # v4.167.0（审查 §3）：本 run 取消令牌（abort / 授权中止时广播）
         self._cancel = None
 
@@ -213,24 +215,42 @@ class LegionWorker(QThread):
         适配器内部自建权限引擎（范围比主对话链窄），**不复用**主链那个
         （它可能带 session trust，会把信任外溢到无人值守的军团）。
         """
-        if getattr(self, "_perm", None) is not None:
-            return self._perm
-        try:
-            from legion_permissions import LegionPermissionAdapter
-            self._perm = LegionPermissionAdapter(
-                run_id=getattr(self, "run_id", "") or "",
-                project_id=getattr(self, "pid", "") or "",
-                project_name=getattr(self, "_pname", "") or "",
-            )
-        except Exception as e:
-            # fail-closed：闸门建不起来时，用「拒绝一切非只读」的哨兵兜底，
-            # 宁可军团工具报"闸门不可用"，也不静默放行。
+        if getattr(self, "_perm", None) is None:
             try:
-                log.error("军团权限适配器创建失败，降级为保守拒绝: %s", e)
-            except Exception:
-                pass
-            self._perm = _DenyAllAdapter()
-        return self._perm
+                from legion_permissions import LegionPermissionAdapter
+                self._perm = LegionPermissionAdapter(
+                    run_id=getattr(self, "run_id", "") or "",
+                    project_id=getattr(self, "pid", "") or "",
+                    project_name=getattr(self, "_pname", "") or "",
+                )
+            except Exception as e:
+                # fail-closed：闸门建不起来时，用「拒绝一切非只读」的哨兵兜底，
+                # 宁可军团工具报"闸门不可用"，也不静默放行。
+                try:
+                    log.error("军团权限适配器创建失败，降级为保守拒绝: %s", e)
+                except Exception:
+                    pass
+                self._perm = _DenyAllAdapter()
+        p = self._perm
+        try:
+            if hasattr(p, "set_task"):
+                p.set_task(getattr(self, "task", "") or "")
+            if hasattr(p, "reconfirm_cb") and getattr(p, "reconfirm_cb", None) is None:
+                p.reconfirm_cb = self._perm_reconfirm
+        except Exception:
+            pass
+        return p
+
+    def _perm_reconfirm(self, tool, args, dec):
+        """本波已授权后，高危 / 硬确认 / critical 仍要人手再点一次。
+
+        超时、异常、非 pass 一律当拒绝（fail-closed）。
+        """
+        title = f"军团二次确认 · {tool}"
+        detail = getattr(dec, "reason", "") or ""
+        with self._reconfirm_lock:
+            decision = self._request_auth(title, detail, timeout=180)
+        return decision == "pass"
 
 
     # ---- v4.167.0：本 run 统一取消令牌（审查 §3）----

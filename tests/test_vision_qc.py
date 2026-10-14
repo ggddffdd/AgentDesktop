@@ -364,6 +364,19 @@ def part_d():
         check("跳过：仍然放行（铁律）", ok3 is True)
         check("跳过：状态是 skipped_error 而不是 pass",
               pl3.qc_status.get(0) == vq.QC_SKIP_ERROR, str(pl3.qc_status))
+
+        def _fake_empty(cfg, paths, q, max_tokens=400, log=None, meta=None):
+            if meta is not None:
+                meta.update({"status": ""})
+            return ""
+
+        vq.review_images = _fake_empty
+        pl_empty = _Pl()
+        ok_e, _ = fn(pl_empty, 0, __file__)
+        check("空 note：仍然放行", ok_e is True)
+        check("★ 空 note 不再标 QC_PASS，改为 skipped_error",
+              pl_empty.qc_status.get(0) == vq.QC_SKIP_ERROR,
+              str(pl_empty.qc_status))
         check("跳过：日志明确说『不代表画面合格』",
               any("不代表画面合格" in t for t in pl3.logs), str(pl3.logs))
 
@@ -387,7 +400,8 @@ def part_e():
     check("卡片接受 qc_status 参数", "qc_status=\"\"" in src)
     check("有 .qc.skip 样式（跳过要看得见）", ".qc.skip" in src)
     fn_src = _extract_func_src(src, "keyframe_card_html")
-    check("取到 keyframe_card_html 源码", bool(fn_src))
+    badge_src = _extract_func_src(src, "qc_badge_html")
+    check("取到 keyframe_card_html 源码", bool(fn_src) and bool(badge_src))
 
     def _esc(s):
         return (str(s).replace("&", "&amp;").replace("<", "&lt;")
@@ -396,7 +410,7 @@ def part_e():
     ns = {"os": os, "_esc": _esc, "_localres_url": lambda p: "u",
           "_ask_btn": lambda *a, **k: "", "_ver_btn": lambda *a, **k: "",
           "_rb_btn": lambda *a, **k: "", "__name__": "director_web"}
-    exec(compile(fn_src, "<dw.keyframe_card_html>", "exec"), ns)
+    exec(compile(badge_src + "\n" + fn_src, "<dw.keyframe_card_html>", "exec"), ns)
     card = ns["keyframe_card_html"]
 
     p = _mk(os.path.join(_SBX, "kf.png"), (64, 64), "RGB", "PNG")
@@ -422,14 +436,71 @@ def part_e():
     h_off = card(0, p, qc_status=vq.QC_OFF)
     check("off → 显示『质检未开启』", "质检未开启" in h_off, h_off)
 
-    print("\n-- E2 向后兼容（旧调用方式只传 note）--")
+    print("\n-- E2 有图但没有真实状态：不得把 note 画成通过 --")
     h_old = card(0, p, "VERDICT: FAIL xxx")
-    check("旧调用仍显示质检未通过", "质检未通过" in h_old, h_old)
+    check("FAIL note 仍显示质检未通过", "质检未通过" in h_old, h_old)
     h_old2 = card(0, p, "VERDICT: PASS xxx")
-    check("旧调用仍显示质检通过", "质检通过" in h_old2, h_old2)
+    check("★ PASS note 无 qc_status 不显示质检通过",
+          "质检通过" not in h_old2 and "未记录" in h_old2, h_old2)
+    check("未记录用醒目 skip 类", 'class="qc skip"' in h_old2, h_old2)
     h_none = card(0, p)
-    check("无 note 无状态 → 不出徽标（也绝不当成通过）",
-          "qc" not in h_none.split("btns")[0].replace("qc\"", ""), h_none)
+    check("无 note 无状态的已生成关键帧仍标未记录",
+          "未记录" in h_none and "质检通过" not in h_none, h_none)
+
+    print("\n-- E2b 成片卡 / 分镜完成卡强制徽标 --")
+    clip_src = _extract_func_src(src, "clip_card_html")
+    merge_src = _extract_func_src(src, "merge_card_html")
+    check("取到成片/分镜/徽标函数",
+          bool(clip_src) and bool(merge_src) and bool(badge_src))
+    ns2 = dict(ns)
+    exec(compile(badge_src + "\n" + clip_src + "\n" + merge_src,
+                 "<dw.cards>", "exec"), ns2)
+    clip = ns2["clip_card_html"]
+    merge = ns2["merge_card_html"]
+    h_clip = clip(0, "done", p, qc_status=vq.QC_SKIP_NO_KEY)
+    check("分镜完成卡展示真实跳过标签",
+          "质检跳过" in h_clip and 'class="qc skip"' in h_clip, h_clip)
+    check("分镜跳过卡不写通过", "质检通过" not in h_clip, h_clip)
+    h_clip_miss = clip(0, "done", p)
+    check("分镜完成但缺状态 → 未记录", "未记录" in h_clip_miss, h_clip_miss)
+    h_merge = merge(p, qc_status=vq.QC_SKIP_ERROR)
+    check("成片卡展示调用失败标签",
+          "调用失败" in h_merge and 'class="qc skip"' in h_merge, h_merge)
+    h_merge_miss = merge(p)
+    check("成片缺状态 → 未记录且不写通过",
+          "未记录" in h_merge_miss and "质检通过" not in h_merge_miss, h_merge_miss)
+    check("skipped 样式用醒目琥珀而不是旧灰字",
+          ".qc.skip{color:#9A6700" in src and ".qc.skip{color:#7a8290" not in src)
+
+    print("\n-- E2c 缺 key 横幅与空 note 语义 --")
+    check("缺 key 横幅文案",
+          "质检未真正运行" in vq.missing_key_banner({}) )
+    check("有 key 不挂横幅",
+          vq.missing_key_banner({"model_profiles": {"DeepSeek 官方": {"api_key": "k"}}}) == "")
+    check("空 note 解析为 skipped_error",
+          vq.resolve_qc_status("", "") == vq.QC_SKIP_ERROR)
+    check("已有 skipped 状态不被改写成 pass",
+          vq.resolve_qc_status("", vq.QC_SKIP_NO_KEY) == vq.QC_SKIP_NO_KEY)
+    check("FAIL 原文解析为 fail",
+          vq.resolve_qc_status("VERDICT: FAIL\nx", "") == vq.QC_FAIL)
+    agg = vq.aggregate_status([vq.QC_PASS, vq.QC_SKIP_NO_KEY, vq.QC_PASS])
+    check("成片汇总优先露出 skipped", agg == vq.QC_SKIP_NO_KEY, agg)
+    check("成片汇总 fail 优先于 skip",
+          vq.aggregate_status([vq.QC_SKIP_ERROR, vq.QC_FAIL]) == vq.QC_FAIL)
+
+    dsrc_early = (ROOT / "director_panel.py").read_text(encoding="utf-8-sig")
+    check("导演台有缺 key 横幅", "director_qc_banner" in dsrc_early
+          and "missing_key_banner" in dsrc_early)
+    check("分镜卡把 qc_status 传下去", "qc_status=qcs.get(i" in dsrc_early)
+    check("成片走汇总质检", "_aggregate_qc_status" in dsrc_early)
+    twin = (ROOT / "digital_twin_panel.py").read_text(encoding="utf-8-sig")
+    check("数字人空回答不叫质检通过", "放行不等于通过" in twin)
+    check("数字人缺 key 横幅", "twin_qc_banner" in twin)
+    check("关掉锁定写明可漂移", "关掉锁定 = 背景可漂移" in twin)
+    vps = (ROOT / "video_pipeline.py").read_text(encoding="utf-8-sig")
+    check("流水线空 note 走 account_resolved", "vq.account_resolved" in vps)
+    check("流水线不再把空 note 写成 QC_PASS",
+          "有响应但没内容" not in vps)
 
     print("\n-- E3 director_panel 把状态传下去 --")
     dsrc = (ROOT / "director_panel.py").read_text(encoding="utf-8-sig")

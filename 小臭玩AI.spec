@@ -12,6 +12,9 @@ hiddenimports = ['toast', 'empty_state', 'PySide6', 'PySide6.QtPrintSupport', 'P
                'core_agnes', 'core', 'core.agnes', 'core.media', 'core.config', 'core.models', 'core.pipeline', 'core.script', 'core.zhipu', 'core.__init__',
                # v4.120.1 补漏：数字人分身 + 视频导演台共用的 VLM QC 模块，打包前缺失导致启动崩溃
                'vision_qc',
+               # v4.265.0 WebEngine 白名单：chat_web.acceptNavigationRequest 内延迟导入，
+               # 静态分析扫不到。漏登记则打包后导航白名单整段按拒绝（聊天区外链全灭）。
+               'webengine_policy',
                # v4.121 Agent 军团：数据层 + 波次执行器 + 面板界面。
                # legion_ui 在 ui.py 里是函数内延迟导入（防御式），静态分析扫不到，必须显式登记，
                # 否则打包后点「⚔️ Agent 军团」按钮会报 ModuleNotFoundError。

@@ -12,6 +12,8 @@ python tests/run_all.py
 python tests/run_all.py --list          # 只看有哪些套件，不执行
 python tests/run_all.py --only bridge   # 只跑文件名含 bridge 的套件
 python tests/run_all.py --verbose       # 失败时打印该套件完整输出
+python tests/run_all.py --with-perturb  # 追加全量扰动（慢，独占源码）
+python tests/run_all.py --perturb-critical  # 只跑权限/路由/军团扰动抽样
 ```
 
 退出码：`0` = 全部通过，`1` = 有失败。可直接挂在构建前或提交前检查。
@@ -30,16 +32,14 @@ python tests/run_all.py --verbose       # 失败时打印该套件完整输出
 | `test_agent_node_failure.py` | **成员失败不得伪装成功**：模型调用异常必须抛 `AgentExecutionError`（不是 `break`）、跑满轮次无正文要标 `incomplete`、`state` 写入标记 | 纯标准库（只读源码） |
 | `test_director_recover.py` | **导演台紧急收口**：回调异常后解锁运行锁、阶段转 ERROR（不覆盖 DONE）、失败回执不污染 cancelled、幂等 | 需 PySide6（离屏） |
 | `test_cancel_token.py` | **取消令牌**：一次性幂等、父链继承（子取消不影响父）、阶段追踪与兜底、回调（已取消后注册立即触发 / 回调内再操作不自死锁）、并发 cancel 只有一个赢 | 纯标准库 |
-| `test_legion_permissions.py` | **军团权限闸门**：成员默认只读、执行类需本波授权、写入限工作区、外发需白名单+授权双条件、危险命令底线、围栏先于信任、审计（参数摘要哈希 + 脱敏 + 并发不串行损坏） | 纯标准库 |
+| `test_legion_permissions.py` | **军团权限闸门**：成员默认只读、执行类需本波授权、写入限工作区、外发需白名单+授权双条件、危险命令底线、围栏先于信任、审计（参数摘要哈希 + 脱敏 + 并发不串行损坏）；本波已 grant 时 `ALWAYS_CONFIRM` / `command_danger_level` / critical 任务仍要再确认（规则引用 `risk.py`） | 纯标准库 |
 | `test_task_graph_cancel.py` | **任务图取消**：派发前取消则 executor 零调用、执行中取消则立刻停手、终态区分（before_start / during_model_call / after_tool_call）、已完成者保持 completed、不传令牌时行为不变 | 纯标准库 |
 | `test_director_cancel_retry.py` | **导演台停止后可重试**：`cancel_job` 只终结当前一轮、`begin_job` 换发令牌即复位（核心）、外部置旧标志也能复位、后台任务收口五步齐备、回调带项目令牌校验 | 纯标准库（只读源码） |
 | `regression.py` | 记忆层（钉住召回 / 关键词召回 / 冲突合并 / 中文搜索 / 备份自愈）、上下文隔离、记忆加密 | 纯标准库 |
 
-合计 **410 项断言**，约 15 秒跑完。
+上表只列早期套件，不是全量清单。v4.266.0 起磁盘上有 **166** 个 `tests/test_*.py`（另加 `regression.py`）和 **102** 个扰动脚本（不含 `_perturb_guard.py`）。旧文「合计 410 项断言」已过时，不再当门禁数字；全量以 `python tests/run_all.py --list` 为准。
 
-> 上表与「410 项断言」是早期样例，不是当前全量。活清单以
-> `python tests/run_all.py --list` 为准：目前 `tests/test_*.py` **164** 个，
-> 根目录扰动脚本 `_perturb_*.py` **98** 个（不含护栏 `_perturb_guard.py`）。
+扰动默认不进日常 CI 的 `test` 作业。`.github/workflows/perturb-nightly.yml` 每周日与手动 `workflow_dispatch` 跑 `--perturb-critical`（权限 / 路由 / 军团）；选 `full` 才跑 `--with-perturb`。
 
 > `test_task_wiring.py`、`test_legion_resume_fill.py`、`test_agent_node_failure.py`、
 > `test_director_cancel_retry.py` 都含**静态契约测试**（只读源码不执行）。它的价值在于

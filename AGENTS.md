@@ -15,8 +15,8 @@
 | Agent 侧 | `agent_*.py` `intent*.py` `task_state.py` `task_graph.py` | v4.216 从 `agent.py` 拆出 |
 | UI 侧 | `ui_*.py` `theme_tokens.py` | `theme_tokens.py` 的 `THEME` 是配色唯一真源 |
 | 安全 | `untrusted_boundary.py` `tool_verifiers_227.py` `risk.py` `permissions.py` | |
-| 测试 | `tests/test_*.py`（164 个） | **自研 runner，不是 pytest** |
-| 元测试 | 根目录 `_perturb_*.py`（98 个，不含 `_perturb_guard.py`） | 「判据的疫苗」，见 §5 |
+| 测试 | `tests/test_*.py`（166 个，另加 `regression.py`） | **自研 runner，不是 pytest** |
+| 元测试 | 根目录 `_perturb_*.py`（102 个，不含护栏） | 「判据的疫苗」，见 §5 |
 | 构建 / 门禁 | `build_safe.py` `release_check.py` `_scan_exe_secrets.py` | |
 | 归档 | `_dev_history/` | 旧版核验脚本（`_verify_pyz_v*.py`） |
 
@@ -74,7 +74,10 @@ post-commit），会先备份再追加。
 - `test` —— 在 `windows-latest` 上装 `requirements.txt` 后跑 `tests/run_all.py`
   （offscreen Qt）。用 Windows 是因为依赖清单含 `pywinauto` / `pyautogui` 等 Windows-only 包，
   Linux 上 `pip install` 会直接失败。
-CI 不开 `--with-perturb`（扰动极慢且独占源码，留给本地提交前 / 发布前跑）。
+CI 的 `test` 作业不开 `--with-perturb`（扰动极慢且独占源码，留给本地提交前 / 发布前跑）。
+另有 `.github/workflows/perturb-nightly.yml`：每周日定时，以及 `workflow_dispatch`，
+默认跑 `python tests/run_all.py --perturb-critical`（`PERTURB_CRITICAL`：权限 / 路由 / 军团），
+手动选 `full` 才跑全量 `--with-perturb`。
 版本单一真源由 `test_version_single_source_235` 在 `test` 作业里兜住：漏 bump 任一 `VERSION` 即红。
 
 ## 4. 改代码前必须知道的硬纪律
