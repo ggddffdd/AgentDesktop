@@ -1,0 +1,25 @@
+Source Available License — Non-Commercial
+源码可获得许可 — 禁止商用
+
+Copyright (c) 2026 小臭玩AI contributors
+
+本仓库公开源代码，供学习、研究与个人非商业使用。这不是 MIT / Apache 等允许商用的开源许可证。
+
+允许：
+
+1. 查看、学习、修改源码。
+2. 在个人设备上运行，供本人非商业使用。
+3. 在保留本声明与版权说明的前提下，以非商业方式分享修改版。
+
+禁止：
+
+1. 将本软件、其修改版或实质部分用于商业目的，包括出售、出租、作为付费服务的一部分提供、或嵌入商业产品。
+2. 移除本声明后分发。
+
+第三方组件、模型与 API（包括但不限于 PySide6、各模型服务商）仍受其各自条款约束。本声明不授予这些第三方的任何额外权利。
+
+软件按「现状」提供，不提供任何明示或暗示的担保。作者不对使用本软件造成的损失承担责任。执行系统操作、调用付费 API 或分发修改版之前，请自行确认。
+
+---
+
+English summary: source is available for learning, research, and personal non-commercial use. Commercial use of this software or a substantial portion of it is not permitted. Third-party components and model/API terms still apply. Provided as-is, without warranty.

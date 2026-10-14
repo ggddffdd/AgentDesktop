@@ -1805,13 +1805,8 @@ class VideoPipeline:
         meta = {}
         note = vq.review_images(self.cfg, [image_path], question,
                                 max_tokens=400, log=self.log, meta=meta)
-        status = meta.get("status") or ""
-        if not status:
-            if not note:
-                status = vq.QC_PASS       # 有响应但没内容：沿用旧语义（放行）
-            else:
-                status = (vq.QC_PASS if "VERDICT: FAIL" not in note.upper()
-                          else vq.QC_FAIL)
+        # v4.265.0：空 note 不再标成 pass。状态只走 vision_qc.resolve/account。
+        status = vq.account_resolved(note, meta.get("status") or "")
         self.qc_status[i] = status
         if note:
             self.review_notes[i] = note

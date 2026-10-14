@@ -77,7 +77,7 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.265.0"
+APP_VERSION = "v4.266.0"
 APP_BUILD_DATE = "2026-10-14"
 # v4.164.0（2026-09-27）**运行数据归口：彻底治「dist 既是运行目录又是分发源」**：
 #   新增 config.WORKSPACE_DIR（默认 ~/Documents/小臭玩AI，与 USER_DATA_DIR 同值，
@@ -948,6 +948,8 @@ DEFAULT_CONFIG = {
     "base_url": "https://api.deepseek.com",
     "model": "deepseek-chat",
     "hotkey": "ctrl+shift+d",
+    # v4.265.0：WebEngine 内可导航的显式域名（空 = 只许 localres / 工作区 / about:blank）
+    "webengine_allow_hosts": [],
     "system_prompt": (
         "你是「小臭玩AI」—— 一个 Windows 本地桌面工作台。\n\n"
         "## 强制路由表 — 命中以下关键词必须调用对应工具，禁止只给文字回答\n"

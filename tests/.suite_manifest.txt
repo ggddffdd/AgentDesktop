@@ -37,6 +37,7 @@ test_evidence_mask.py
 test_evidence_registry_195.py
 test_exec_tool_gate_219.py
 test_fail_log_tts_257.py
+test_focus_chrome_264.py
 test_frozen_smoke.py
 test_guardrail_conflicts.py
 test_hard_confirm_bypass_221.py
@@ -160,6 +161,7 @@ test_video_director_fix_188.py
 test_video_gen_breaker_260.py
 test_vision_channel.py
 test_vision_qc.py
+test_webengine_policy_265.py
 test_welcome_ia_199.py
 test_workflow_fail_visibility_233.py
 test_workspace_routing.py

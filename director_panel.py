@@ -847,6 +847,14 @@ def build_director_panel(app):
     app.director_status = QLabel("")
     app.director_status.setStyleSheet(label_second())
     lay.addWidget(app.director_status)
+    # v4.265.0：缺视觉 key 时横幅写明「质检未真正运行」，避免把放行看成通过。
+    app.director_qc_banner = QLabel("")
+    app.director_qc_banner.setWordWrap(True)
+    app.director_qc_banner.setStyleSheet(
+        "color:#9A6700;background:#FFF4D6;border:1px solid #E8C36A;"
+        "border-radius:8px;padding:6px 10px;font-size:12px;font-weight:600;")
+    lay.addWidget(app.director_qc_banner)
+    _refresh_qc_banner(app)
 
     # ---------- 步骤内容（堆叠） ----------
     app.director_stack = QStackedWidget()
@@ -1164,6 +1172,38 @@ def _set_step(app, step):
 
 def _log(app, text):
     app.director_log.append(text)
+
+
+def _refresh_qc_banner(app):
+    """缺视觉 key 时显示横幅；已配置则隐藏。"""
+    try:
+        import vision_qc as vq
+        text = vq.missing_key_banner(getattr(app, "cfg", None) or {})
+    except Exception:
+        text = ""
+    lab = getattr(app, "director_qc_banner", None)
+    if lab is not None:
+        lab.setText(text)
+        lab.setVisible(bool(text))
+    return text
+
+
+def _qc_status_map(app):
+    pl = getattr(app, "director_pipeline", None)
+    return (getattr(pl, "qc_status", {}) or {}) if pl else {}
+
+
+def _aggregate_qc_status(app):
+    try:
+        import vision_qc as vq
+        return vq.aggregate_status(list(_qc_status_map(app).values()))
+    except Exception:
+        return ""
+
+
+def _merge_card(app, path, kf=None, stale=False):
+    """成片卡：带上真实质检汇总。调用方漏传时卡片仍会标「未记录」。"""
+    return merge_card_html(path, kf, stale=stale, qc_status=_aggregate_qc_status(app))
 
 
 def _set_status(app, text, err=False):
@@ -2649,13 +2689,14 @@ def _render_merge_stale(app):
     fp = getattr(app, "director_final_path", None)
     if fp and os.path.isfile(fp):
         app.director_merge_web.render_cards(
-            merge_card_html(fp, None, stale=bool(_get_stale(app)["final"])))
+            _merge_card(app, fp, None, stale=bool(_get_stale(app)["final"])))
 
 
 def _render_clips(app):
     """全量重渲染分镜网格（逐镜生成完/失败时调用）。"""
     cards = getattr(app, "director_clips_state", []) or []
     vers = _versions_of(app, "clip_versions")
+    qcs = _qc_status_map(app)
     stale = _get_stale(app)["clip"]
 
     def _info(i, c):
@@ -2668,7 +2709,8 @@ def _render_clips(app):
         clip_card_html(i, c.get("status", "queued"), c.get("path"),
                        c.get("kf"), c.get("error", ""), _info(i, c),
                        can_rollback=bool(vers.get(i)),
-                       can_versions=bool(vers.get(i)))
+                       can_versions=bool(vers.get(i)),
+                       qc_status=qcs.get(i, ""))
         for i, c in enumerate(cards)
     )
     app.director_clips_web.render_cards(html)
@@ -3121,13 +3163,13 @@ def _on_merge_ready(app, ok, msg, path):
         # v4.141：新成片已产出，成片的「上游已变更」标记作废
         _get_stale(app)["final"] = False
         # v4.125 P2-3：抽帧挪后台——先渲染无帧卡片，帧到了再补
-        app.director_merge_web.render_cards(merge_card_html(path, None))
+        app.director_merge_web.render_cards(_merge_card(app, path, None))
         app.director_merge_play.setEnabled(True)
 
         def _kf_item(_idx, kf):
             fp = getattr(app, "director_final_path", None)
             if fp and os.path.isfile(fp):
-                app.director_merge_web.render_cards(merge_card_html(fp, kf))
+                app.director_merge_web.render_cards(_merge_card(app, fp, kf))
 
         _kick_kf_queue(app, [(-1, path)], _kf_item)
         _register_assets(app, "final")
@@ -3574,13 +3616,13 @@ def _load_session(app):
         fp = data.get("final_path")
         if fp and os.path.isfile(fp):
             app.director_final_path = fp
-            app.director_merge_web.render_cards(merge_card_html(fp, None))
+            app.director_merge_web.render_cards(_merge_card(app, fp, None))
             app.director_merge_play.setEnabled(True)
 
             def _kf_final(_idx, kf):
                 f2 = getattr(app, "director_final_path", None)
                 if f2 and os.path.isfile(f2):
-                    app.director_merge_web.render_cards(merge_card_html(f2, kf))
+                    app.director_merge_web.render_cards(_merge_card(app, f2, kf))
 
             _kick_kf_queue(app, [(-1, fp)], _kf_final)
 

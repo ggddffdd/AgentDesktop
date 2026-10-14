@@ -1,0 +1,56 @@
+# 小臭玩AI — 扰动抽样（审查 P1-7）
+#
+# 日常 CI（ci.yml）故意不跑 --with-perturb：扰动要改坏源码再还原，慢且必须独占。
+# 这里给出两条路：
+#   · schedule / workflow_dispatch 默认只跑 PERTURB_CRITICAL（权限 / 路由 / 军团）
+#   · workflow_dispatch 选 full 时跑全量 --with-perturb（不跑正向套件，避免双倍耗时）
+#
+# 与 ci.yml 一样用 windows-latest：requirements.txt 含 Windows-only 依赖。
+
+name: Perturb nightly
+
+on:
+  schedule:
+    # 每周日 18:00 UTC。全量扰动留给手动 full，定时只抽 critical。
+    - cron: "0 18 * * 0"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "critical = 权限/路由/军团抽样；full = 全量 --with-perturb"
+        type: choice
+        options:
+          - critical
+          - full
+        default: critical
+
+concurrency:
+  group: perturb-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  perturb:
+    name: 扰动（critical 抽样或全量）
+    runs-on: windows-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: 跑扰动
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONUTF8: "1"
+        shell: pwsh
+        run: |
+          $mode = "${{ github.event.inputs.mode }}"
+          if (-not $mode) { $mode = "critical" }
+          if ($mode -eq "full") {
+            python tests/run_all.py --with-perturb
+          } else {
+            python tests/run_all.py --perturb-critical
+          }

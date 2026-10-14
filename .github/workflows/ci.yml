@@ -16,6 +16,8 @@
 #     --no-verify → 防线瘫痪。所以只扫 diff，不扫整仓。
 #   · test 不开 --with-perturb：扰动是「元测试」（改坏源码再验判据），极慢且必须
 #     独占源码，留给本地提交前 / 发布前跑（见 AGENTS.md）。CI 跑常规回归套件即可。
+#     轻量抽样在 perturb-nightly.yml：每周日 + workflow_dispatch 跑
+#     --perturb-critical（权限 / 路由 / 军团），手动选 full 才跑全量 --with-perturb。
 #   · 版本单一真源由 test_version_single_source_235 在 test 作业里兜住：
 #     若哪个 VERSION 漏 bump，该套件直接红。
 

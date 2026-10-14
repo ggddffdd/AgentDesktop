@@ -6,6 +6,7 @@
     python tests/run_all.py --list          # 只列出发现的套件，不执行
     python tests/run_all.py --only bridge   # 只跑文件名含 bridge 的套件
     python tests/run_all.py --with-perturb  # 追加跑根目录的扰动脚本（元测试，数分钟）
+    python tests/run_all.py --perturb-critical  # 只跑权限/路由/军团抽样（见 nightly）
 
 退出码：0=全部通过，1=有失败。
 
@@ -133,6 +134,22 @@ PERTURB_PREFIX = "_perturb_"
 PERTURB_EXCLUDE = {"_perturb_guard.py"}   # 护栏自身，不是扰动 case
 PERTURB_MANIFEST = HERE / ".perturb_manifest.txt"
 PERTURB_GUARD = ROOT / "_perturb_guard.py"
+
+# v4.265.0（审查 P1-7）：CI 不跑全量 --with-perturb（慢且独占源码）。
+# nightly / workflow_dispatch 用 --perturb-critical 只抽这批（权限 / 路由 / 军团）。
+# 名单是接线契约：缺文件应让抽样作业红，而不是静默少跑。
+PERTURB_CRITICAL = (
+    "_perturb_hard_confirm_bypass_221.py",       # 权限：ALWAYS_CONFIRM
+    "_perturb_permission_failclosed_226.py",     # 权限：fail-closed
+    "_perturb_exec_tool_gate_219.py",            # 权限：执行闸
+    "_perturb_skill_install_gate_259.py",        # 权限：技能安装
+    "_perturb_system_prompt_routing_221.py",     # 路由
+    "_perturb_unified_intent_225.py",            # 路由 / 意图
+    "_perturb_continuation_sticky_255.py",       # 路由粘性
+    "_perturb_legion_perm_265.py",               # 军团权限
+    "_perturb_legion_quality_248.py",            # 军团
+    "_perturb_untrusted_boundary_222.py",        # 不可信边界（权限相邻）
+)
 
 
 def discover_perturb():
@@ -301,6 +318,9 @@ def main():
                     help="只跑文件名含该子串的扰动脚本（隐含 --with-perturb）。"
                          "分段跑用：沙箱对每轮删除次数有上限，而扰动脚本"
                          "每个 case 都要建/删一个临时副本，很吃配额")
+    ap.add_argument("--perturb-critical", action="store_true",
+                    help="只跑 PERTURB_CRITICAL 抽样（权限/路由/军团），不跑正向套件。"
+                         "供 nightly / workflow_dispatch；全量仍用 --with-perturb。")
     ap.add_argument("--refresh-perturb-manifest", action="store_true",
                     help="重建扰动脚本基线清单（故意删除/改名扰动脚本后使用）")
     args = ap.parse_args()
@@ -332,10 +352,12 @@ def main():
     suites = all_suites
     if args.only:
         suites = [s for s in suites if args.only in s.name]
+    if args.perturb_critical:
+        suites = []
     if not suites:
-        # 允许「只跑扰动」：--perturb-only 常常要配合「不跑套件」（分段跑省时间、
-        # 也省沙箱删除配额），此时 suites 为空是预期状态而不是错误。
-        if not (args.with_perturb or args.perturb_only):
+        # 允许「只跑扰动」：--perturb-only / --perturb-critical 常常不跑套件
+        # （分段跑省时间、也省沙箱删除配额），此时 suites 为空是预期状态。
+        if not (args.with_perturb or args.perturb_only or args.perturb_critical):
             print("未发现任何测试套件（tests/test_*.py 或 tests/regression.py）")
             return 0 if args.list else 1
 
@@ -383,9 +405,20 @@ def main():
               "故意删除请用 --refresh-perturb-manifest）")
 
     # 注：--only 只筛**套件**，不影响扰动（扰动用自己的 --perturb-only）。
-    if args.with_perturb or args.perturb_only:
+    if args.with_perturb or args.perturb_only or args.perturb_critical:
         _p_list = perturb_files
-        if args.perturb_only:
+        if args.perturb_critical:
+            have = {p.name: p for p in perturb_files}
+            _p_list = []
+            for n in PERTURB_CRITICAL:
+                if n in have:
+                    _p_list.append(have[n])
+                else:
+                    p_rows.append((n, 0, 1, "MISSING", 0.0,
+                                   f"critical 抽样清单里的脚本不存在：{n}"))
+                    print(f"\n>>> {n}")
+                    print("   -> MISSING（PERTURB_CRITICAL 点名的脚本不在磁盘上）")
+        elif args.perturb_only:
             _p_list = [p for p in perturb_files if args.perturb_only in p.name]
         print("\n" + "=" * 62)
         print(f"扰动脚本（元测试）· 共 {len(_p_list)} 个"
@@ -469,7 +502,7 @@ def main():
             print("   沙箱对每轮删除次数有阈值，超了之后的删除会被拦、进程被杀；"
                   "扰动脚本每个 case 都要建/删一份临时副本，最吃配额。")
             print("   对策：① 换一轮重跑；② 用 --perturb-only <子串> 分段跑。")
-    elif not (args.with_perturb or args.perturb_only) and perturb_files:
+    elif not (args.with_perturb or args.perturb_only or args.perturb_critical) and perturb_files:
         print("-" * 62)
         print(f"扰动脚本：{len(perturb_files)} 个已在基线内"
               f"（用 --with-perturb 执行，本次未跑）")
