@@ -25,9 +25,12 @@ from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTextEdit,
-                               QPushButton)
+                               QPushButton, QLineEdit, QLabel)
 
 import legion  # 仅取数据层目录 LEGION_DIR；不触碰引擎，保证改 UI 不破壳
+from legion_feedback import (
+    failure_oneline, fold_log_line, is_failure_log, team_lineup_brief,
+)
 
 log = logging.getLogger(__name__)
 
@@ -115,6 +118,7 @@ class LegionChatPanel(QWidget):
         self._pending_team_plan = None   # 组队方案待审批：{"plan", "need"} 或 None
         self._manage_cb = None           # v4.247.0 项目管理命令回调（LegionWindow 注入）
         self._save_counter = 0
+        self._detail_chunks = []
         self._build_ui()
         self._load_history()
 
@@ -140,6 +144,57 @@ class LegionChatPanel(QWidget):
             f"border-radius:10px;padding:12px 14px;font-size:13.5px;color:{THEME['text']};}}")
         lay.addWidget(self.log, 1)
 
+        # 组队方案出来后贴在输入框上方：阵容 + 缺角/缺技能 + 一键批准。
+        self.team_bar = QWidget()
+        self.team_bar.setStyleSheet(
+            f"background:{THEME['card']};border:1px solid {THEME['border']};"
+            f"border-radius:10px;")
+        tb = QVBoxLayout(self.team_bar)
+        tb.setContentsMargins(10, 8, 10, 8)
+        tb.setSpacing(6)
+        self.team_lineup = QLabel("")
+        self.team_lineup.setWordWrap(True)
+        self.team_lineup.setStyleSheet(
+            f"color:{THEME['text']};font-size:14px;font-weight:600;")
+        self.team_gap = QLabel("")
+        self.team_gap.setWordWrap(True)
+        tb.addWidget(self.team_lineup)
+        tb.addWidget(self.team_gap)
+        ar = QHBoxLayout()
+        ar.setSpacing(8)
+        self.team_advice = QLineEdit()
+        self.team_advice.setPlaceholderText("打回意见，一句话")
+        self.btn_team_approve = QPushButton("批准组建")
+        self.btn_team_reject = QPushButton("打回")
+        self.btn_team_abort = QPushButton("放弃")
+        self.btn_team_approve.setStyleSheet(
+            f"QPushButton{{background:{THEME['accent']};color:{THEME['white']};"
+            f"border:none;border-radius:8px;padding:6px 14px;font-weight:600;}}")
+        for b in (self.btn_team_reject, self.btn_team_abort):
+            b.setStyleSheet(
+                f"QPushButton{{background:{THEME['card']};color:{THEME['text']};"
+                f"border:1px solid {THEME['border']};border-radius:8px;"
+                f"padding:6px 12px;}}")
+        self.btn_team_approve.clicked.connect(self._on_team_approve_clicked)
+        self.btn_team_reject.clicked.connect(self._on_team_reject_clicked)
+        self.btn_team_abort.clicked.connect(self._on_team_abort_clicked)
+        ar.addWidget(self.btn_team_approve)
+        ar.addWidget(self.team_advice, 1)
+        ar.addWidget(self.btn_team_reject)
+        ar.addWidget(self.btn_team_abort)
+        tb.addLayout(ar)
+        self.team_bar.setVisible(False)
+        lay.addWidget(self.team_bar)
+
+        self.detail_view = QTextEdit()
+        self.detail_view.setReadOnly(True)
+        self.detail_view.setVisible(False)
+        self.detail_view.setFixedHeight(120)
+        self.detail_view.setStyleSheet(
+            f"QTextEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
+            f"border-radius:8px;padding:8px;font-size:12px;color:{THEME['dim']};}}")
+        lay.addWidget(self.detail_view)
+
         row = QHBoxLayout()
         row.setSpacing(8)
         self.input = QTextEdit()
@@ -152,6 +207,9 @@ class LegionChatPanel(QWidget):
         self.input.installEventFilter(self)
         row.addWidget(self.input, 1)
 
+        self.detail_btn = QPushButton("详情")
+        self.detail_btn.setVisible(False)
+        self.detail_btn.setToolTip("展开过程日志和失败原文")
         self.clear_btn = QPushButton("清空")
         self.auth_btn = QPushButton("授权弹窗")
         self.stop_btn = QPushButton("⛔ 停止")
@@ -164,7 +222,7 @@ class LegionChatPanel(QWidget):
         self.stop_btn.setVisible(False)   # 仅军团执行时由 LegionWindow 显形
         self.stop_btn.setToolTip(
             "向军团发出停止指令：跑完当前这一步就收尾，产出保留、可续跑。")
-        for b in (self.clear_btn, self.auth_btn, self.stop_btn, self.send_btn):
+        for b in (self.detail_btn, self.clear_btn, self.auth_btn, self.stop_btn, self.send_btn):
             b.setFixedHeight(52)
             b.setCursor(Qt.PointingHandCursor)
         self.send_btn.setStyleSheet(
@@ -184,10 +242,12 @@ class LegionChatPanel(QWidget):
             f"border:1px solid {THEME['border']};border-radius:10px;padding:0 12px;"
             f"font-size:13px;}}"
             f"QPushButton:disabled{{color:{THEME['faint']};}}")
+        self.detail_btn.clicked.connect(self._toggle_detail)
         self.clear_btn.clicked.connect(self._clear_chat)
         self.send_btn.clicked.connect(self.send)
         self.auth_btn.clicked.connect(self._on_auth_dialog_clicked)
         self.stop_btn.clicked.connect(self._on_stop_clicked)
+        row.addWidget(self.detail_btn)
         row.addWidget(self.clear_btn)
         row.addWidget(self.auth_btn)
         row.addWidget(self.stop_btn)
@@ -246,15 +306,76 @@ class LegionChatPanel(QWidget):
         self._manage_cb = cb
 
     def on_team_plan(self, plan_text, lib=None):
-        """v4.246.0：收到 PM 的组队方案 → 解析 + 渲染卡片 + 进入待审批态。"""
+        """收到组队方案：阵容和缺角贴在输入框上方，长文收进详情。"""
         self._team_building = False
         plan = legion.parse_team_plan(plan_text)
         if not plan:
-            self._record("系统", "⚠️ PM 没按格式输出组队方案，可再说一次需求重试。")
+            self._hide_team_bar()
+            self._record("系统", "项目经理没按格式给出组队方案，再说一次需求即可。")
             return
         self._pending_team_plan = {"plan": plan}
-        self._record("项目经理", legion.format_team_plan(plan, lib))
-        self._record("系统", "⏸ 等你审批：写「批准 / 打回 + 意见 / 放弃」")
+        brief = team_lineup_brief(plan)
+        self._show_team_bar(brief)
+        self._stash_detail(legion.format_team_plan(plan, lib))
+        self._record("项目经理", brief["headline"] + "\n" + brief["gap_line"])
+        self._record("系统", "看清阵容后点「批准组建」。要改就写一句，再点「打回」。")
+
+    def _show_team_bar(self, brief):
+        brief = brief or {}
+        self.team_lineup.setText(brief.get("headline") or "")
+        self.team_gap.setText(brief.get("gap_line") or "")
+        hot = bool(brief.get("missing_roles") or brief.get("missing_skills"))
+        color = THEME["danger"] if hot else THEME["ok"]
+        self.team_gap.setStyleSheet(
+            f"color:{color};font-size:13px;font-weight:600;")
+        self.team_advice.clear()
+        self.team_bar.setVisible(True)
+        self.input.setPlaceholderText("也可打字：批准 / 打回 + 意见 / 放弃")
+
+    def _hide_team_bar(self):
+        self.team_bar.setVisible(False)
+        try:
+            self.input.setPlaceholderText(
+                "说句话做决策，或给项目经理留言 · Enter 发送 / Shift+Enter 换行")
+        except Exception:
+            pass
+
+    def _on_team_approve_clicked(self):
+        if self._pending_team_plan is None:
+            return
+        self._resolve_team_approve("pass", "")
+
+    def _on_team_reject_clicked(self):
+        if self._pending_team_plan is None:
+            return
+        advice = self.team_advice.text().strip()
+        if not advice:
+            self.team_gap.setText("先写一句哪里不对，再打回。")
+            self.team_gap.setStyleSheet(
+                f"color:{THEME['danger']};font-size:13px;font-weight:600;")
+            self.team_advice.setFocus()
+            return
+        self._resolve_team_approve("reject", advice)
+
+    def _on_team_abort_clicked(self):
+        if self._pending_team_plan is None:
+            return
+        self._resolve_team_approve("abort", "")
+
+    def _stash_detail(self, text):
+        text = str(text or "").strip()
+        if not text:
+            return
+        self._detail_chunks.append(text)
+        self.detail_view.setPlainText("\n\n".join(self._detail_chunks[-30:]))
+        self.detail_btn.setText("详情 %d" % len(self._detail_chunks))
+        self.detail_btn.setVisible(True)
+
+    def detail_text(self):
+        return self.detail_view.toPlainText()
+
+    def _toggle_detail(self):
+        self.detail_view.setVisible(not self.detail_view.isVisible())
 
     def on_team_plan_fail(self, msg):
         """v4.246.0：PM 出组队方案失败。"""
@@ -269,6 +390,7 @@ class LegionChatPanel(QWidget):
             except Exception:
                 pass
         self._pending_team_plan = None
+        self._hide_team_bar()
 
     def _handle_skill_intent(self, kind, arg):
         cb = getattr(self, "_skill_cb", None)
@@ -463,6 +585,23 @@ class LegionChatPanel(QWidget):
         chunk = text.strip()
         if not chunk:
             return
+        lines = [ln for ln in chunk.splitlines() if ln.strip()]
+        show, folded = [], []
+        for ln in lines:
+            if fold_log_line(ln):
+                folded.append(ln.strip())
+            else:
+                show.append(ln.strip())
+        if folded:
+            self._stash_detail("\n".join(folded))
+        if not show:
+            return
+        chunk = "\n".join(show)
+        if is_failure_log(chunk):
+            one = failure_oneline(chunk, 64)
+            if one != " ".join(chunk.split()):
+                self._stash_detail(chunk)
+                chunk = one
         # 整段作为一张卡片渲染（内部换行保留为 <br>），不再逐行拆；
         # 连续的普通系统日志并吞进同一张紧凑卡（治「密」），PM/你/成果等出现时先落卡。
         # 注意优先级：先判「💬 联系项目经理」回声（也含「项目经理」字样），再判普通 PM 行。

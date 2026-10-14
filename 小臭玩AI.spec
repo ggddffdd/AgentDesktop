@@ -18,7 +18,7 @@ hiddenimports = ['toast', 'empty_state', 'PySide6', 'PySide6.QtPrintSupport', 'P
                # v4.121 Agent 军团：数据层 + 波次执行器 + 面板界面。
                # legion_ui 在 ui.py 里是函数内延迟导入（防御式），静态分析扫不到，必须显式登记，
                # 否则打包后点「⚔️ Agent 军团」按钮会报 ModuleNotFoundError。
-               'legion', 'legion_worker', 'legion_ui',
+               'legion', 'legion_worker', 'legion_ui', 'legion_feedback',
                # v4.128 Agnes 文本模型调用层：在 ui._agent_call / video_pipeline 里
                # 均为函数内延迟导入，静态分析扫不到，必须显式登记，否则打包后
                # 军团与导演台的文本环节会 ModuleNotFoundError。
