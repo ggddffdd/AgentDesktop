@@ -21,7 +21,7 @@ import json
 
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QGroupBox, QComboBox, QVBoxLayout,
+    QGroupBox, QComboBox, QVBoxLayout, QPushButton,
 )
 from PySide6.QtCore import Qt
 
@@ -131,6 +131,9 @@ class LegionStatusStrip(QWidget):
         self._nodes = {}            # node_key -> {role, wave, status}
         self._cur_wave = 0
         self._total_waves = 0
+        self._manual = ""
+        self._fail_pin = False
+        self._fail_lines = []
         self._build()
 
     def _build(self):
@@ -138,8 +141,29 @@ class LegionStatusStrip(QWidget):
         self.setStyleSheet(
             f"background:{t['card']};border:1px solid {t['border']};"
             f"border-radius:8px;")
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 6, 10, 6)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 6, 10, 6)
+        root.setSpacing(4)
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        self._lbl_now = QLabel("还没开工")
+        self._lbl_now.setWordWrap(True)
+        self._lbl_now.setStyleSheet(
+            f"font-size:{t['font_body']};color:{t['text']};font-weight:600;")
+        top.addWidget(self._lbl_now, 1)
+        self._detail_btn = QPushButton("详情")
+        self._detail_btn.setVisible(False)
+        self._detail_btn.setCursor(Qt.PointingHandCursor)
+        self._detail_btn.clicked.connect(self._toggle_detail)
+        top.addWidget(self._detail_btn)
+        root.addLayout(top)
+        self._detail = QLabel("")
+        self._detail.setWordWrap(True)
+        self._detail.setVisible(False)
+        self._detail.setStyleSheet(
+            f"font-size:{t['font_second']};color:{t['dim']};")
+        root.addWidget(self._detail)
+        lay = QHBoxLayout()
         lay.setSpacing(14)
         self._lbl_wave = QLabel("波 —/—")
         self._lbl_members = QLabel("成员 运行中0 完成0 异常0")
@@ -154,6 +178,64 @@ class LegionStatusStrip(QWidget):
         self._dot_lay.setContentsMargins(0, 0, 0, 0)
         self._dot_lay.setSpacing(4)
         lay.addWidget(self._dot_host)
+        root.addLayout(lay)
+
+    def set_sentence(self, text):
+        """表单/前置条件写到置顶一句，不开弹窗。板上有成员后会被进度句盖掉。"""
+        self._manual = str(text or "")
+        self._fail_pin = False
+        self._lbl_now.setText(self._manual)
+
+    def detail_text(self):
+        return self._detail.text()
+
+    def _toggle_detail(self):
+        self._detail.setVisible(not self._detail.isVisible())
+
+    def note_log(self, text):
+        """失败日志收成置顶一句，原文留在可展开的详情里。"""
+        from legion_feedback import failure_oneline, is_failure_log, wave_marker
+        wn = wave_marker(text or "")
+        if wn:
+            self._cur_wave = max(int(self._cur_wave or 0), wn)
+            self._refresh()
+        if not is_failure_log(text or ""):
+            return
+        raw = str(text or "").strip()
+        if raw:
+            self._fail_lines.append(raw)
+            self._detail.setText("\n".join(self._fail_lines[-8:]))
+        self._detail_btn.setVisible(True)
+        self._fail_pin = True
+        self._lbl_now.setText(failure_oneline(text or ""))
+
+    def _has_members(self):
+        for k, n in self._nodes.items():
+            if k.startswith("gate_") or k in ("run", "pm_plan"):
+                continue
+            if isinstance(n, dict):
+                return True
+        return False
+
+    def _member_running(self):
+        for k, n in self._nodes.items():
+            if k.startswith("gate_") or k in ("run", "pm_plan"):
+                continue
+            if isinstance(n, dict) and n.get("status") == "running":
+                return True
+        return False
+
+    def _apply_sentence(self):
+        from legion_feedback import progress_sentence
+        if self._member_running():
+            self._fail_pin = False
+        if self._fail_pin:
+            return
+        if self._manual and not self._has_members():
+            self._lbl_now.setText(self._manual)
+            return
+        self._lbl_now.setText(
+            progress_sentence(self._nodes, self._cur_wave, self._total_waves))
 
     def set_total_waves(self, n):
         self._total_waves = int(n) if n else 0
@@ -163,6 +245,12 @@ class LegionStatusStrip(QWidget):
         self._nodes = {}
         self._cur_wave = 0
         self._total_waves = 0
+        self._manual = ""
+        self._fail_pin = False
+        self._fail_lines = []
+        self._detail.setText("")
+        self._detail.setVisible(False)
+        self._detail_btn.setVisible(False)
         self._refresh()
 
     def on_board(self, pid, node_key, role, wave, status):
@@ -223,6 +311,7 @@ class LegionStatusStrip(QWidget):
         self._lbl_gate.setText(f"闸门 {gate}")
         self._lbl_gate.setStyleSheet(
             f"font-size:{t['font_second']};color:{gcolor};")
+        self._apply_sentence()
         self._render_dots()
 
     def _render_dots(self):

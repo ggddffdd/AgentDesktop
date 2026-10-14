@@ -63,6 +63,7 @@ from empty_state import empty_state
 from legion_status_widget import LegionStatusStrip, LegionAuditFeed
 from ui import THEME
 from ui import clamp_dialog_to_screen as _clamp_dlg
+from legion_feedback import notice as _notice, team_lineup_brief
 
 log = logging.getLogger("legion")
 
@@ -257,6 +258,18 @@ class RoleEditor(QDialog):
         form.addRow("① 使命", self.e_mission)
         form.addRow("② 约束", self.e_constraints)
         form.addRow("③ 工具白名单", self.e_tools)
+        extra = [t for t in self._orig_tools if t not in set(self._tool_listed)]
+        self._keep_note = QLabel(
+            ("保存时会保留名单外的工具：" + "、".join(extra)) if extra else "")
+        self._keep_note.setWordWrap(True)
+        self._keep_note.setStyleSheet("color:%s;" % THEME["dim"])
+        form.addRow("", self._keep_note)
+        self._more = QCheckBox("更多设定（模型、输出、质量、自检）")
+        _filled_more = any(str(r.get(k) or "").strip() for k in
+                           ("model", "output_format", "quality", "self_check"))
+        self._more.setChecked(_filled_more)
+        self._more.toggled.connect(self._toggle_more)
+        form.addRow("", self._more)
         form.addRow("④ 模型", self.e_model)
         form.addRow("⑤ 输出格式", self.e_output)
         form.addRow("⑥ 质量标准", self.e_quality)
@@ -269,6 +282,9 @@ class RoleEditor(QDialog):
         sv.addWidget(self.e_skill_filter)
         sv.addWidget(self.e_skills)
         form.addRow("⑧ 挂载技能", skill_box)
+        self._form = form
+        if not _filled_more:
+            self._toggle_more(False)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.button(QDialogButtonBox.Ok).setText("确定")
@@ -283,16 +299,28 @@ class RoleEditor(QDialog):
         host = QWidget()
         host.setLayout(form)
         scroll.setWidget(host)
+        self._err = QLabel("")
+        self._err.setWordWrap(True)
+        self._err.setStyleSheet("color:%s;" % THEME["danger"])
         lay.addWidget(scroll, 1)
+        lay.addWidget(self._err)
         lay.addWidget(QLabel(
             "说明：勾选的工具写入白名单；列表里没有、卡上原有的工具会保留。"
             "勾选的技能会在执行时拼进 system prompt 末尾。"))
         lay.addWidget(btns)
 
+    def _toggle_more(self, on):
+        form = getattr(self, "_form", None)
+        if form is None:
+            return
+        for i in (6, 7, 8, 9):
+            form.setRowVisible(i, bool(on))
+
     def _on_ok(self):
         if not self.e_name.text().strip():
-            QMessageBox.warning(self, "缺角色名", "给这个成员起个名字，比如「研究员」。")
+            self._err.setText("给这个成员起个名字，比如「研究员」。")
             return
+        self._err.setText("")
         self.accept()
 
     def exec(self):
@@ -465,6 +493,9 @@ class RolePicker(QDialog):
             self.lst.addItem(it)
         self.lst.itemDoubleClicked.connect(lambda _i: self._pick())
         lay.addWidget(self.lst, 1)
+        self._hint = QLabel("")
+        self._hint.setStyleSheet("color:%s;" % THEME["danger"])
+        lay.addWidget(self._hint)
 
         row = QHBoxLayout()
         b_pick = QPushButton("用选中的")
@@ -483,7 +514,7 @@ class RolePicker(QDialog):
         cur = self.lst.currentItem()
         # 分组标题行没有 UserRole，点它不算选择
         if not cur or not cur.data(Qt.UserRole):
-            QMessageBox.information(self, "未选择", "在分组下面的角色里选一个。")
+            self._hint.setText("在分组下面的角色里选一个。")
             return
         self._picked = cur.data(Qt.UserRole)
         self.accept()
@@ -576,10 +607,23 @@ class TeamBuildDialog(QDialog):
         lay.addLayout(row)
 
         self.status = QLabel("")
+        self.status.setWordWrap(True)
         lay.addWidget(self.status)
-        lay.addWidget(QLabel("PM 的方案（**你批准前不会有任何角色入职**）："))
+        self.lineup = QLabel("方案出来后，这里会用一句话写清阵容。")
+        self.lineup.setWordWrap(True)
+        self.lineup.setStyleSheet(
+            "color:%s;font-size:14px;font-weight:600;" % THEME["text"])
+        self.gaps_lbl = QLabel("")
+        self.gaps_lbl.setWordWrap(True)
+        lay.addWidget(self.lineup)
+        lay.addWidget(self.gaps_lbl)
+        self.b_detail = QPushButton("方案详情")
+        self.b_detail.setCheckable(True)
         self.out = QTextEdit()
         self.out.setReadOnly(True)
+        self.out.setVisible(False)
+        self.b_detail.toggled.connect(self.out.setVisible)
+        lay.addWidget(self.b_detail)
         lay.addWidget(self.out, 1)
 
         # ---- 缺角区：角色库里没有的角色，PM 起草了定义草案等你点头 ----
@@ -602,15 +646,23 @@ class TeamBuildDialog(QDialog):
 
         # ---- 审批三按钮 ----
         brow = QHBoxLayout()
-        self.b_approve = QPushButton("✅ 批准组建（写入项目）")
+        self.b_approve = QPushButton("批准组建")
         self.b_approve.setEnabled(False)
+        self.b_approve.setStyleSheet(
+            "QPushButton{background:%s;color:%s;border:none;border-radius:8px;"
+            "padding:6px 14px;font-weight:600;}"
+            "QPushButton:disabled{background:%s;color:%s;}"
+            % (THEME["accent"], THEME["white"], THEME["card"], THEME["faint"]))
         self.b_approve.clicked.connect(self._approve)
-        self.b_reject = QPushButton("↩ 打回重来（说清哪里不对）")
+        self.advice_edit = QLineEdit()
+        self.advice_edit.setPlaceholderText("打回意见，一句话")
+        self.b_reject = QPushButton("打回")
         self.b_reject.setEnabled(False)
         self.b_reject.clicked.connect(self._reject_plan)
         b_close = QPushButton("❌ 终止")
         b_close.clicked.connect(self.reject)
         brow.addWidget(self.b_approve)
+        brow.addWidget(self.advice_edit, 1)
         brow.addWidget(self.b_reject)
         brow.addStretch(1)
         brow.addWidget(b_close)
@@ -620,8 +672,7 @@ class TeamBuildDialog(QDialog):
     def _build(self):
         need = self.ed.toPlainText().strip()
         if len(need) < 6:
-            QMessageBox.information(self, "说清楚点",
-                                    "至少写 6 个字，PM 才知道你要干什么。")
+            self.status.setText("至少写 6 个字，说清要干什么。")
             return
         # 打回重来：把意见原样带进去，让 PM 照着改
         if self.advice.strip():
@@ -647,10 +698,13 @@ class TeamBuildDialog(QDialog):
             return
         self.plan = plan
         self.out.setPlainText(self._fmt(plan))
+        self._paint_lineup(plan)
         self._fill_gaps(plan)
         self.b_approve.setEnabled(True)
         self.b_reject.setEnabled(True)
-        self.status.setText("⏸ 等你审批：先看懂没懂你的需求，再看名单。批准后才会写入项目。")
+        self.out.setVisible(False)
+        self.b_detail.setChecked(False)
+        self.status.setText("看清阵容和缺角后，点「批准组建」。批准前不会有人入职。")
 
     def _on_fail(self, msg):
         self.b_go.setEnabled(True)
@@ -665,6 +719,15 @@ class TeamBuildDialog(QDialog):
         self.skill_box.setVisible(False)
         self.gap_list.clear()
         self.skill_list.clear()
+
+    def _paint_lineup(self, plan):
+        brief = team_lineup_brief(plan)
+        self.lineup.setText(brief.get("headline") or "")
+        self.gaps_lbl.setText(brief.get("gap_line") or "")
+        hot = bool(brief.get("missing_roles") or brief.get("missing_skills"))
+        color = THEME["danger"] if hot else THEME["ok"]
+        self.gaps_lbl.setStyleSheet(
+            "color:%s;font-size:13px;font-weight:600;" % color)
 
     def _fmt(self, plan):
         """方案排版：**理解置顶** —— 用户审批时第一眼看的就是这个。
@@ -707,13 +770,15 @@ class TeamBuildDialog(QDialog):
             if it.checkState() == Qt.Checked:
                 picked.append(it.data(Qt.UserRole))
         if not picked:
-            QMessageBox.information(self, "没勾", "先勾选要采纳的缺角草案。")
+            self.status.setText("先勾选要采纳的缺角。")
             return
         n, msg = legion.adopt_missing_roles(self.data, picked)
         if n:
             self.library = self.data.get("role_library") or self.library
             _ui_save_legion(self.data)
-        QMessageBox.information(self, "缺角入库", msg)
+        self.status.setText(msg or "")
+        _notice("缺角已入库" if n else "没有新角色入库",
+                kind="success" if n else "info", detail=(msg or "")[:180])
         if n:
             # 已入库的角色从缺角区移除，方案里对应的成员下次就能匹配上
             adopted = {str(p.get("name") or "") for p in picked}
@@ -747,28 +812,21 @@ class TeamBuildDialog(QDialog):
                 break
         if not target:
             return
-        r = QMessageBox.question(
-            self, "挂上技能", "把「%s」挂给 %s？" % (slug, target.get("name")),
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-        if r != QMessageBox.Yes:
-            return
-        # v4.134.2：挂载改走数据层唯一落地点 —— 与主窗口「🔧 装技能」共用同一段
-        # 逻辑（plan 与 proj 的 waves 结构相同），免得两处各写一份、日后行为漂移。
+        # 用户刚为这个缺技能装完，直接挂上，不再多问一次。
         _waves, _msg = legion.attach_skill_to_project(
             self.plan, slug, target.get("name"))
         self.out.setPlainText(self._fmt(self.plan))
-        self.status.setText(_msg if _waves else ("⚠️ " + _msg))
+        self._paint_lineup(self.plan)
+        self.status.setText(_msg if _waves else ("未挂上：" + _msg))
+        _notice("已把技能挂上" if _waves else "技能没挂上",
+                kind="success" if _waves else "warn", detail=(_msg or "")[:180])
 
     def _reject_plan(self):
-        """打回重来：把意见记下来，连同原需求再喂给 PM。"""
-        txt, ok = QInputDialog.getMultiLineText(
-            self, "打回方案", "告诉 PM 哪里不对（会原样带进下一轮）：",
-            self.advice)
-        if not ok:
-            return
-        self.advice = (txt or "").strip()
+        """打回重来：意见就在旁边那一行，不再另开输入框。"""
+        self.advice = self.advice_edit.text().strip()
         if not self.advice:
-            QMessageBox.information(self, "写点什么", "不写意见 PM 不知道改哪儿。")
+            self.status.setText("先写一句哪里不对，再打回。")
+            self.advice_edit.setFocus()
             return
         self._clear_gates()
         self._build()
@@ -810,7 +868,7 @@ class TeamBuildDialog(QDialog):
                 reason="批准组队方案：%s（%d 人）" % ("、".join(names)[:120], len(names)))
         except Exception as e:
             log.warning("组队审计写入失败: %s", e)
-        QMessageBox.information(self, "已批准，班子入职", rep)
+        _notice("班子已入职", kind="success", detail=(rep or "")[:180])
         self.accept()
 
 
@@ -845,7 +903,8 @@ class GHWorker(QThread):
                 ok, msg = legion.install_skill_from_github(
                     self.kw.get("repo", ""), self.kw.get("path", ""),
                     branch=self.kw.get("branch"), slug=self.kw.get("slug"))
-                payload, err = {"ok": ok, "msg": msg}, None
+                payload, err = {"ok": ok, "msg": msg,
+                                "slug": self.kw.get("slug") or ""}, None
         except Exception as e:
             payload, err = None, "%s" % e
         self.done.emit(payload, err)
@@ -908,8 +967,8 @@ class SkillInstallDialog(QDialog):
 
         lay = QVBoxLayout(self)
         lay.addWidget(QLabel(
-            "PM 找完后给你结构化报告（⭐/📅/📜/安全等级），你批了才装。"
-            "建议搜完先点「🛡 安全审查」。"))
+            "搜到仓库后点进去，选中技能文件就会填好名字，再点安装。"
+            "安全审查可选；有风险时安装前仍会再问你。"))
 
         row = QHBoxLayout()
         self.ed_q = QLineEdit(query or "")
@@ -928,20 +987,20 @@ class SkillInstallDialog(QDialog):
         self.status = QLabel("")
         lay.addWidget(self.status)
 
-        lay.addWidget(QLabel("① 候选仓库（按 star 排序，审查后会有 ✅/⚠️/❌ 标签）："))
+        lay.addWidget(QLabel("候选仓库（点一个就列出里面的技能文件）："))
         self.lst_repo = QListWidget()
         self.lst_repo.setMaximumHeight(180)
         self.lst_repo.itemSelectionChanged.connect(self._on_repo)
         lay.addWidget(self.lst_repo)
 
-        lay.addWidget(QLabel("② PM 的安全审查报告（选仓库看详情；没审查时点上方「🛡 安全审查」）："))
+        lay.addWidget(QLabel("安全审查（可选）："))
         self.report = QTextEdit()
         self.report.setReadOnly(True)
         self.report.setMaximumHeight(120)
         self.report.setPlaceholderText("（未审查）")
         lay.addWidget(self.report)
 
-        lay.addWidget(QLabel("③ 仓库里的 SKILL.md："))
+        lay.addWidget(QLabel("技能文件（选中后名字会自动填上）："))
         self.lst_file = QListWidget()
         self.lst_file.setMaximumHeight(120)
         self.lst_file.itemSelectionChanged.connect(self._on_file)
@@ -961,7 +1020,7 @@ class SkillInstallDialog(QDialog):
         row2.addWidget(b_close)
         lay.addLayout(row2)
 
-        lay.addWidget(QLabel("④ 内容预览（前 600 字）："))
+        lay.addWidget(QLabel("内容预览："))
         self.preview = QTextEdit()
         self.preview.setReadOnly(True)
         self.preview.setMaximumHeight(120)
@@ -976,7 +1035,7 @@ class SkillInstallDialog(QDialog):
     def _search(self):
         q = self.ed_q.text().strip()
         if not q:
-            QMessageBox.information(self, "填点东西", "先写个搜索词。")
+            self.status.setText("先写个搜索词。")
             return
         self._busy(True, "⏳ 正在搜 GitHub…")
         self.lst_repo.clear()
@@ -990,11 +1049,10 @@ class SkillInstallDialog(QDialog):
     def _audit(self):
         """让 PM 调 LLM 给每个候选出结构化评估（安全等级/推荐度/风险点）。"""
         if not self.candidates:
-            QMessageBox.information(self, "还没搜", "先搜出候选，再点安全审查。")
+            self.status.setText("先搜出候选，再点安全审查。")
             return
         if not self.mw:
-            QMessageBox.warning(self, "没法审查",
-                                "缺少主程序上下文（mw），无法调 PM。请把对话框从军团面板打开。")
+            self.status.setText("缺少主程序，没法让项目经理审查。从军团面板打开再试。")
             return
         from agent_node import AgentNode
         prompt = legion.evaluate_skill_candidates_prompt(self.ed_q.text().strip(),
@@ -1057,13 +1115,11 @@ class SkillInstallDialog(QDialog):
             msg = (payload or {}).get("msg") or ""
             self._busy(False, msg)
             if ok:
-                self.installed_slug = slug
-                _tail = "\n\n关掉这个窗口后，可以把技能直接挂给需要的角色。"
-                # v4.134.1：静态安全审计给了 P1 提示（或审计器不可用）时抬成警告弹窗
-                if "⚠️" in msg:
-                    QMessageBox.warning(self, "装好了（有提示）", msg + _tail)
-                else:
-                    QMessageBox.information(self, "装好了", msg + _tail)
+                self.installed_slug = (
+                    (payload or {}).get("slug") or self.ed_slug.text().strip())
+                kind = "warn" if "⚠️" in msg else "success"
+                _notice("技能已装好", kind=kind, detail=(msg or "")[:180])
+                self.status.setText(msg or "技能已装好")
 
     # ---- 结构化候选 + 审查报告 ----
     _TAG = {
@@ -1185,7 +1241,7 @@ class SkillInstallDialog(QDialog):
         d = it.data(Qt.UserRole) or {}
         slug = self.ed_slug.text().strip()
         if not slug:
-            QMessageBox.information(self, "给个名字", "填一下安装后的 slug（技能目录名）。")
+            self.status.setText("填一下安装后的名字（只能字母、数字和 -）。")
             return
         # v4.124.1：审查结果=不推 或 有 danger 时必须二次确认
         repo_d = None
@@ -1503,13 +1559,17 @@ class ProjectEditor(QDialog):
         btns.accepted.connect(self._on_ok)
         btns.rejected.connect(self.reject)
 
+        self._err = QLabel("")
+        self._err.setWordWrap(True)
+        self._err.setStyleSheet("color:%s;" % THEME["danger"])
         lay = QVBoxLayout(self)
         lay.addLayout(form)
+        lay.addWidget(self._err)
         lay.addWidget(btns)
 
     def _on_ok(self):
         if not self.e_name.text().strip():
-            QMessageBox.warning(self, "缺项目名", "给项目起个名字，比如「公众号养生文」。")
+            self._err.setText("给项目起个名字，比如「公众号养生文」。")
             return
         # v4.148.2：inputs 必须是合法 JSON 数组（留空 = 无填空变量）
         if self.e_inputs.toPlainText().strip():
@@ -1521,9 +1581,9 @@ class ProjectEditor(QDialog):
                     if not isinstance(item, dict) or not item.get("key"):
                         raise ValueError("每项都要有 key 字段")
             except Exception as e:
-                QMessageBox.warning(self, "填空变量格式不对",
-                                    f"inputs 需要是 JSON 数组，每项含 key：\n{e}")
+                self._err.setText("填空变量要是 JSON 数组，每项含 key：%s" % e)
                 return
+        self._err.setText("")
         self.accept()
 
     def get_data(self):
@@ -1574,9 +1634,13 @@ class RecipeLaunchDialog(QDialog):
         btns.accepted.connect(self._on_ok)
         btns.rejected.connect(self.reject)
 
+        self._err = QLabel("")
+        self._err.setWordWrap(True)
+        self._err.setStyleSheet("color:%s;" % THEME["danger"])
         lay = QVBoxLayout(self)
         lay.addLayout(form)
         lay.addWidget(hint)
+        lay.addWidget(self._err)
         lay.addWidget(btns)
 
     def _on_ok(self):
@@ -1584,8 +1648,7 @@ class RecipeLaunchDialog(QDialog):
         # 但既然弹了表单，填全体验更顺）
         for key, ed in self._edits.items():
             if not ed.text().strip():
-                QMessageBox.warning(self, "还有没填的", f"「{key}」还没填 —— "
-                                    "留空的话请回团队库直接启动（跳过填空）。")
+                self._err.setText("「%s」还没填。留空的话请回团队库直接启动。" % key)
                 return
         self.accept()
 
@@ -1989,7 +2052,7 @@ class LegionWindow(QWidget):
                     ov[name][k] = new[k]
             legion._cm_json_save(legion.ROLE_OVERRIDE_PATH, ov)
         except Exception as e:
-            QMessageBox.warning(self, "保存失败", f"角色改动未能写入成长库：{e}")
+            _notice("角色没保存上", kind="error", detail=str(e)[:180])
         self._refresh_roles_page(keep_sel=True)
 
     def _add_standalone_role(self):
@@ -2009,7 +2072,7 @@ class LegionWindow(QWidget):
             }
             legion._cm_json_save(legion.ROLE_OVERRIDE_PATH, ov)
         except Exception as e:
-            QMessageBox.warning(self, "保存失败", f"新角色未能写入成长库：{e}")
+            _notice("新角色没保存上", kind="error", detail=str(e)[:180])
         self._refresh_roles_page(keep_sel=False)
 
     # ---- v4.148.1：团队库页 ----
@@ -2108,6 +2171,14 @@ class LegionWindow(QWidget):
         else:
             self.teams_list.setCurrentRow(0)
 
+    def _surface(self, msg):
+        """表单没填完、还没选项目：写到顶部一句话，不弹窗。"""
+        strip = getattr(self, "status_strip", None)
+        if strip is not None and hasattr(strip, "set_sentence"):
+            strip.set_sentence(msg)
+            return
+        _notice(msg, kind="warn")
+
     def _save_as_recipe(self):
         """v4.148.2（跑通即存配方）：把当前项目冻结成命名配方。
 
@@ -2117,12 +2188,10 @@ class LegionWindow(QWidget):
         """
         p = self._cur_project()
         if not p:
-            QMessageBox.information(self, "未选择项目",
-                                    "先在左侧或团队库选中要固化的项目。")
+            self._surface("先在左侧或团队库选中要固化的项目。")
             return
         if not legion.wave_members(p):
-            QMessageBox.information(self, "还没有成员",
-                                    "这个项目还没有成员，先给波次里加人。")
+            self._surface("这个项目还没有成员，先给波次里加人。")
             return
         dlg = ProjectEditor(p, self)
         dlg.setWindowTitle("存为配方")
@@ -2147,12 +2216,9 @@ class LegionWindow(QWidget):
         _ui_save_legion(self.data)
         self._refresh_projects(select_id=np["id"])
         self._refresh_teams_page()
-        QMessageBox.information(
-            self, "已存为配方",
-            f"「{np['name']}」已进团队库（📦配方）。\n"
-            + ("配了填空变量 —— 团队库点「▶ 启动此团队」即可填空开跑。"
-               if np["inputs"] else
-               "未配填空变量 —— 启动时手动输任务即可。"))
+        _notice("已存为配方", kind="success",
+                detail=("团队库点启动即可填空开跑" if np["inputs"]
+                        else "启动时手动输任务即可"))
 
     def _teams_cur_project(self):
         it = self.teams_list.currentItem() if hasattr(self, "teams_list") else None
@@ -2544,15 +2610,12 @@ class LegionWindow(QWidget):
         """手工补录文件归属管理：挂载到本项目 / 归档（移出自动扫描）。"""
         p = self._cur_project()
         if not p:
-            QMessageBox.information(self, "补录数据", "先选一个项目。")
+            self._surface("先选一个项目。")
             return
         files = legion.list_manual_files(include_archived=True)
         if not files:
-            QMessageBox.information(
-                self, "补录数据",
-                f"还没发现手工补录文件。\n\n"
-                f"把 JSON 放进：{legion.MANUAL_DIR}\n"
-                f"文件名以 manual_ 开头（例：manual_competitor_research_xxx.json）")
+            _notice("还没有补录文件", kind="info",
+                    detail="把 manual_ 开头的 JSON 放进补录目录后再来。")
             return
         attached = set(p.get("manual_files") or [])
 
@@ -2627,7 +2690,7 @@ class LegionWindow(QWidget):
         """清空本项目的标的记忆 / 否决名单 / 教训本。"""
         p = self._cur_project()
         if not p:
-            QMessageBox.information(self, "清空记忆", "先选一个项目。")
+            self._surface("先选一个项目。")
             return
         raw = p.get("locked_target")
         lt = (raw.get("text", "") if isinstance(raw, dict) else str(raw or "")).strip()
@@ -2665,8 +2728,9 @@ class LegionWindow(QWidget):
         # **一个都没清**，标题和正文自相矛盾（对话框级别的"文案说谎"，与 P2-2 同类）。
         # 标题跟着 did 走；「没有可清的内容」保留原句式（DESIGN §13.5：
         # "可清的内容"不是用户要补的东西，属状态说明，不该说"还没有"）。
-        QMessageBox.information(self, "已清空" if did else "无需清空",
-                                did or "没有可清的内容")
+        _notice("已清空" if did else "无需清空",
+                kind="success" if did else "info",
+                detail=(did or "没有可清的内容")[:180])
 
     # ---- 项目增删改 ----
     def _add_project(self):
@@ -2706,7 +2770,7 @@ class LegionWindow(QWidget):
     def _edit_project(self):
         p = self._cur_project()
         if not p:
-            QMessageBox.information(self, "未选择项目", "先选一个项目。")
+            self._surface("先选一个项目。")
             return
         dlg = ProjectEditor(p, self)
         if dlg.exec() != QDialog.Accepted:
@@ -2718,7 +2782,7 @@ class LegionWindow(QWidget):
     def _dup_project(self):
         p = self._cur_project()
         if not p:
-            QMessageBox.information(self, "未选择项目", "先选一个项目。")
+            self._surface("先选一个项目。")
             return
         np = copy.deepcopy(p)
         np["id"] = str(__import__("uuid").uuid4())
@@ -2975,12 +3039,8 @@ class LegionWindow(QWidget):
             # 与旧字段保持同步：非 off 即启用闸门
             p["gate_enabled"] = (str(mode) != "off")
             if str(mode) != "off" and not legion.pm_role(self.data):
-                QMessageBox.information(
-                    self, "缺少项目经理",
-                    # v4.210.0：角色是用户能补的（正文第二句就让他去角色库新建）
-                    # → 待办语义，按 DESIGN §13.5 用「还没有」
-                    "角色库里还没有「项目经理」角色，调度验收不会生效。\n"
-                    "重启程序会自动补上该预置角色；或到角色库手动新建一个同名角色。")
+                _notice("还没有项目经理", kind="warn",
+                        detail="调度验收不会生效。重启会补上预置角色，或到角色库新建同名角色。")
         if enabled is not None:
             p["gate_enabled"] = bool(enabled)
         if retry is not None:
@@ -3020,16 +3080,14 @@ class LegionWindow(QWidget):
     # ---- 授权：一键收回信任 / 查看审计 ----
     def _on_revoke_trust(self):
         n = legion.revoke_trust()
-        QMessageBox.information(
-            self, "已收回",
-            f"已清空 {n} 条「同类自动放行」的信任记录，并记进授权审计日志。\n\n"
-            f"此后每波都会重新等你亲手批准 —— 信任是累积的，也是可撤销的。")
+        _notice("已收回信任", kind="success",
+                detail="清了 %s 条自动放行。之后每波都要你再批。" % n)
 
     def _on_view_auth(self):
         recs = legion.read_auth(60)
         if not recs:
-            QMessageBox.information(self, "授权记录",
-                                    "还没有任何授权记录。跑一次带验收的军团后这里就有。")
+            _notice("还没有授权记录", kind="info",
+                    detail="跑一次带验收的军团后这里就有。")
             return
         by_txt = {"user": "👤 你批的", "auto": "🔓 围栏自动", "timeout": "⏱ 超时未授权",
                   "advisory": "📋 顾问模式（按建议执行，非授权）"}
@@ -3056,7 +3114,7 @@ class LegionWindow(QWidget):
     def _add_wave(self):
         p = self._cur_project()
         if not p:
-            QMessageBox.information(self, "未选择项目", "先选一个项目。")
+            self._surface("先选一个项目。")
             return
         p.setdefault("waves", []).append(legion.new_wave())
         _ui_save_legion(self.data)
@@ -3105,11 +3163,8 @@ class LegionWindow(QWidget):
         role = dlg.get_role()
         # 宪法第二章配套：调度器不当运动员 —— 项目经理不占波次执行位
         if legion.is_pm_role(role):
-            QMessageBox.information(
-                self, "项目经理不进波次",
-                "「项目经理」是全局调度台：它跨波调度、验收并**催你授权**，\n"
-                "不占某一波的执行位 —— 否则既浪费一个位置，又让它给自己那一波当裁判。\n\n"
-                "开启「调度与授权」后，它会自动参与每一波（不消耗成员位）。")
+            _notice("项目经理不进波次", kind="info",
+                    detail="它跨波调度和验收。开启调度后会自动参加，不占成员位。")
             return
         p["waves"][wi].setdefault("members", []).append(role)
         _ui_save_legion(self.data)
@@ -3466,6 +3521,10 @@ class LegionWindow(QWidget):
         row.addWidget(b_save)
         row.addWidget(b_del)
         lay.addLayout(row)
+        tpl_hint = QLabel("")
+        tpl_hint.setWordWrap(True)
+        tpl_hint.setStyleSheet("color:%s;" % THEME["danger"])
+        lay.addWidget(tpl_hint)
 
         def _project_roles():
             if not self.cur_project_id:
@@ -3483,7 +3542,7 @@ class LegionWindow(QWidget):
         def _apply():
             it = lst.currentItem()
             if not it:
-                QMessageBox.information(dlg, "提示", "先选中一个模板。")
+                tpl_hint.setText("先选中一个模板。")
                 return
             tpl = tpls.get(it.text()) or {}
             hint = tpl.get("task_hint") or ""
@@ -3540,7 +3599,7 @@ class LegionWindow(QWidget):
         """
         p = self._cur_project()
         if not p:
-            QMessageBox.information(self, "未选择项目", "先在左侧选一个项目。")
+            self._surface("先在左侧选一个项目。")
             return
         task = self.task_edit.text().strip()
         # v4.124.8 修复：续跑模式下任务框可能为空（用户中断后没重新填），
@@ -3551,11 +3610,10 @@ class LegionWindow(QWidget):
                 task = ck["task"].strip()
                 self.task_edit.setText(task)
         if not task:
-            QMessageBox.information(self, "缺任务", "给军团下个任务再启动。")
+            self._surface("给军团下个任务再启动。")
             return
         if not legion.wave_members(p):
-            QMessageBox.information(self, "团队是空的",
-                                    "这个项目还没有成员，先给波次里加人。")
+            self._surface("这个项目还没有成员，先给波次里加人。")
             return
         if self.worker is not None and self.worker.isRunning():
             # v4.137：分两种情况。项目还在 → 维持「等它跑完」（现在多了 ⛔ 停止 可选）；
@@ -3567,10 +3625,8 @@ class LegionWindow(QWidget):
             _still_exists = (not _wpid) or any(
                 x.get("id") == _wpid for x in self.data.get("projects", []))
             if _still_exists:
-                QMessageBox.information(
-                    self, "军团运行中",
-                    "已有一个军团在执行，等它跑完再启动。\n"
-                    "（不想等：点右边的「⛔ 停止」让它先收尾）")
+                _notice("军团还在跑", kind="warn",
+                        detail="等它跑完，或点「停止」让它先收尾。")
                 return
             if not self._ask_kill_zombie():
                 return
@@ -3633,15 +3689,12 @@ class LegionWindow(QWidget):
             # v4.210.0（BUG 审核 P2-1）：句式对齐 §13.2 口径一「还没有X」。
             # checkpoint 是**跑出来的**，用"还没有"才对（暗示跑完就有）；
             # 正文补了下一步，两段用句号断开（口径二）。
-            QMessageBox.information(self, "还没有 checkpoint",
-                                    "这个项目还没有存档可续跑。先跑一轮，跑完会自动存档。")
+            _notice("还没有存档", kind="info",
+                    detail="先跑一轮，跑完会自动存档。")
             return
         if ck.get("corrupt"):
-            # v4.125 M-03：损坏存档——告知而非冒充可续跑
-            QMessageBox.warning(
-                self, "存档损坏",
-                "检测到该项目的存档文件已损坏，无法续跑。\n"
-                "旧产出仍在运行记录与军团报告中；重新开跑将从第 1 波全新开始。")
+            _notice("存档损坏，没法续跑", kind="warn",
+                    detail="旧产出还在报告里。重新开跑会从第 1 波开始。")
             return
         # 自定义 QMessageBox 让默认按钮 = "从头重跑"
         box = QMessageBox(self)
@@ -3823,8 +3876,7 @@ class LegionWindow(QWidget):
         if not text:
             return
         if self.worker is None or not self.worker.isRunning():
-            QMessageBox.information(self, "军团未运行",
-                                    "军团没在跑，没有项目经理可联系。")
+            self._surface("军团没在跑，没有项目经理可联系。")
             return
         urgent = self.pm_urgent_cb.isChecked()
         if self.worker.send_message(text, urgent=urgent):
@@ -3859,6 +3911,12 @@ class LegionWindow(QWidget):
         self.log_view.insertPlainText(text)
         sb = self.log_view.verticalScrollBar()
         sb.setValue(sb.maximum())
+        strip = getattr(self, "status_strip", None)
+        if strip is not None and hasattr(strip, "note_log"):
+            try:
+                strip.note_log(text)
+            except Exception:
+                pass
 
     def _log_line(self, text):
         """往执行日志区追加一行本地提示（续跑/重跑选择等，不走 worker 信号）。
@@ -3951,29 +4009,17 @@ class LegionWindow(QWidget):
                 self.log_view.append("📦 已加入交付物区（主界面右侧，双击可打开）")
         except Exception as e:
             log.warning("登记交付物失败: %s", e)
-        # 直接问一句要不要打开 —— 跑完最想要的就是看到它
-        try:
-            box = QMessageBox(self)
-            box.setWindowTitle("军团跑完了")
-            box.setText("报告已生成，要现在打开吗？")
-            box.setInformativeText(path)
-            b_open = box.addButton("📄 打开报告", QMessageBox.AcceptRole)
-            box.addButton("稍后", QMessageBox.RejectRole)
-            box.setDefaultButton(b_open)
-            box.exec()
-            if box.clickedButton() is b_open:
-                self._open_path(path)
-        except Exception:
-            pass
+        _notice("报告已生成", kind="success", detail=os.path.basename(path))
+        self._surface("报告已生成。说「上次报告」就能打开。")
 
     def _open_last_report(self):
         """打开最近一份报告（手动入口，防止弹窗被略过后找不回来）。"""
         path = getattr(self, "_last_report", "") or legion.latest_report()
         if not path or not os.path.exists(path):
-            QMessageBox.information(self, "报告", "还没有生成过报告。跑完一波就会出来。")
+            _notice("还没有报告", kind="info", detail="跑完一波就会出来。")
             return
         if not self._open_path(path):
-            QMessageBox.information(self, "报告", f"已找到但打不开：\n{path}")
+            _notice("报告打不开", kind="error", detail=path)
 
     @staticmethod
     def _open_path(path):

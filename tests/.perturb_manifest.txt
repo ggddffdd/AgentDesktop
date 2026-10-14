@@ -45,6 +45,7 @@ _perturb_legion_quality_248.py
 _perturb_legion_review_268.py
 _perturb_legion_team_chat.py
 _perturb_legion_ui_polish_252.py
+_perturb_legion_ux_269.py
 _perturb_log_redirect_hyg.py
 _perturb_memory_meta.py
 _perturb_msg_budget_cap_224.py
