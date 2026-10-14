@@ -655,6 +655,9 @@ class VideoPipeline:
         self._job_seq = 0
         self._job_name = ""
         self._job_lock = threading.Lock()
+        # 界面在线程启动前 arm_job() 换发的令牌。工作线程里同名 begin_job
+        # 只复用这一枚：用户若已在窗口期点了停止，不得再换发未取消的令牌。
+        self._armed_job = None
         # 运行期状态
         self.shots = []
         self.width = 768
@@ -1156,10 +1159,17 @@ class VideoPipeline:
 
     def gen_story(self, feedback=None):
         """第1步：生成（或直通）剧本。feedback 为修改意见（修订模式）。"""
+        if self._is_cancelled():
+            return self.story
         if self.portrait_mode and self.passthrough_script:
             self.story = self.passthrough_script
             return self.story
-        self.story = self._gen_story(self.topic, self.n, self.with_dialogue, feedback=feedback)
+        text = self._gen_story(self.topic, self.n, self.with_dialogue, feedback=feedback)
+        # 文本接口无法硬中断。请求返回时若用户已经点了停止，结果不得落进工程。
+        if self._is_cancelled():
+            self.log("⏹ 已停止：剧本结果未写入")
+            return self.story
+        self.story = text
         return self.story
 
     def set_story(self, text):
@@ -1167,22 +1177,30 @@ class VideoPipeline:
 
     def gen_shots(self, feedback=None):
         """第2步：把剧本拆成分镜。feedback 为修改意见（修订模式）。"""
+        if self._is_cancelled():
+            return self.shots
         if self.portrait_mode and self.passthrough_script:
             segs = split_voiceover_script(self.passthrough_script, self.n)
             if not segs:
                 raise RuntimeError("原稿为空，无法切段")
+            if self._is_cancelled():
+                return self.shots
             self.shots = [{"en": "talking head", "zh": s, "line": s,
                            "line_en": "", "scene": 1} for s in segs]
             self.clip_paths = [None] * len(self.shots)
             return self.shots
-        self.shots = self._gen_shots(self.story, self.n, self.with_dialogue, feedback=feedback)
-        self.shots = _enrich_shots_camera(self.shots, self.portrait_mode)
+        shots = self._gen_shots(self.story, self.n, self.with_dialogue, feedback=feedback)
+        shots = _enrich_shots_camera(shots, self.portrait_mode)
         # v4.154：把兜底每镜时长补进每个 shot（智能模式 AI 已给 dur，这里只兜底缺失项）
-        for _s in self.shots:
+        for _s in shots:
             if not isinstance(_s, dict) or not _s.get("dur"):
                 _s["dur"] = max(4, min(12, int(self.duration or 5)))
-        if not self.shots:
+        if self._is_cancelled():
+            self.log("⏹ 已停止：分镜结果未写入")
+            return self.shots
+        if not shots:
             raise RuntimeError("分镜解析为空，请重试")
+        self.shots = shots
         self.clip_paths = [None] * len(self.shots)
         return self.shots
 
@@ -1210,17 +1228,25 @@ class VideoPipeline:
         portrait_mode 下跳过（本人照片已锁定形象，三视图无意义）。
         生成的角色锁定描述会写进逐镜提示词，确保跨镜人物一致。
         """
-        self.characters = []
-        self.character_lock = ""
+        if self._is_cancelled():
+            return self.characters
         if self.portrait_mode:
+            self.characters = []
+            self.character_lock = ""
             self.characters_done = True
             return self.characters
         if not self.story:
             raise RuntimeError("请先生成剧本")
         specs = self._extract_character_specs(feedback=feedback)
+        if self._is_cancelled():
+            self.log("⏹ 已停止：人物结果未写入")
+            return self.characters
         chars = []
         dropped = []
         for spec in specs[:3]:
+            if self._is_cancelled():
+                self.log("⏹ 已停止：人物结果未写入")
+                return self.characters
             name = spec.get("name") or "主角"
             desc = spec.get("desc") or ""
             # v4.151：机器闸门 —— 剧本里若把道具写成了「关键配角」（大哥那次就是
@@ -1235,6 +1261,9 @@ class VideoPipeline:
         if dropped:
             self.log("  ℹ️ 被剔除的条目请用「🔎 抽取关键道具/场景资产」立档，"
                      "让它们走道具锁定而不是人物锁定：" + "、".join(dropped))
+        if self._is_cancelled():
+            self.log("⏹ 已停止：人物结果未写入")
+            return self.characters
         self.characters = chars
         self.character_lock = self._build_character_lock(chars)
         self.characters_done = True
@@ -1409,16 +1438,24 @@ class VideoPipeline:
         portrait_mode 下跳过（口播画面没有跨镜道具叙事）。
         失败/抽不出来时保持 clues 为空 —— 后续全链路不注入，行为与旧版一致。
         """
-        self.clues = []
-        self.clue_lock = ""
+        if self._is_cancelled():
+            return self.clues
         if self.portrait_mode:
+            self.clues = []
+            self.clue_lock = ""
             self.clues_done = True
             return self.clues
         if not self.story:
             raise RuntimeError("请先生成剧本")
         specs = self._extract_clue_specs(feedback=feedback)
+        if self._is_cancelled():
+            self.log("⏹ 已停止：道具/场景结果未写入")
+            return self.clues
         items = []
         for spec in specs[:4]:
+            if self._is_cancelled():
+                self.log("⏹ 已停止：道具/场景结果未写入")
+                return self.clues
             name = (spec.get("name") or "").strip()
             desc = (spec.get("desc") or "").strip()
             if not (name or desc):
@@ -1427,6 +1464,9 @@ class VideoPipeline:
             image = self._gen_clue_image(name or "prop", desc, kind)
             items.append({"name": name or "prop", "desc": desc,
                           "kind": kind, "image": image})
+        if self._is_cancelled():
+            self.log("⏹ 已停止：道具/场景结果未写入")
+            return self.clues
         self.clues = items
         self.clue_lock = self._build_clue_lock(items)
         self.clues_done = True
@@ -1587,8 +1627,10 @@ class VideoPipeline:
         视觉模型审查，不通过就把诊断意见回灌进 prompt 重生成，最多 max_review_retry
         次；仍不通过也保留最后一次结果，绝不卡死流水线。
         """
-        self.keyframes = []
+        if self._is_cancelled():
+            return self.keyframes
         if self.portrait_mode:
+            self.keyframes = []
             self.keyframes_done = True
             return self.keyframes
         if not self.shots:
@@ -1598,14 +1640,18 @@ class VideoPipeline:
         lock = self._locks_text()   # 人物锁 + 道具/资产锁（clue 为空时等于原来的人物锁）
         fb = f"[修改意见：{feedback}] " if feedback else ""
         kfs = []
+        stopped = False
         for i, shot in enumerate(self.shots):
             if self._is_cancelled():
-                kfs.append(None)
-                continue
+                stopped = True
+                break
             qc_fix = ""
             path = None
             base = self.keyframe_prompt_override.get(i) or ""
             for attempt in range(max_review_retry + 1):
+                if self._is_cancelled():
+                    stopped = True
+                    break
                 if base:
                     # 预审改过稿：以用户那版为准，质检诊断仍追加在后面（不覆盖用户文字）
                     prompt = f"{base} {qc_fix}".strip()
@@ -1631,7 +1677,12 @@ class VideoPipeline:
                               f"Keep every other aspect identical.")
                 else:
                     self.log(f"  ⚠️ 镜{i+1} 关键帧已达重生成上限，保留最后一次结果：{issues}")
+            if stopped:
+                break
             kfs.append(path)
+        if stopped or self._is_cancelled():
+            self.log("⏹ 已停止：关键帧结果未覆盖已有图片")
+            return self.keyframes
         self.keyframes = kfs
         self.keyframes_done = True
         return self.keyframes
@@ -1725,15 +1776,21 @@ class VideoPipeline:
         与关键帧的区别：关键帧含人物与构图（作开场画面），场景图只有环境，
         模型可据此稳定「同一个地方」的陈设、光线与建筑，避免场景漂移。
         """
-        self.scene_images = {}
         if self.portrait_mode or not self.shots:
+            self.scene_images = {}
+            return self.scene_images
+        if self._is_cancelled():
             return self.scene_images
         scenes = []
         for s in self.shots:
             sc = s.get("scene") or 1
             if sc not in scenes:
                 scenes.append(sc)
+        built = {}
         for sc in scenes:
+            if self._is_cancelled():
+                self.log("⏹ 已停止：场景图未覆盖已有图片")
+                return self.scene_images
             shot = next((s for s in self.shots if (s.get("scene") or 1) == sc), None)
             if not shot:
                 continue
@@ -1746,7 +1803,11 @@ class VideoPipeline:
                 f"{self._sv()}")
             path = self._gen_one_image(prompt, tag=f"场景{sc} 环境图")
             if path:
-                self.scene_images[sc] = path
+                built[sc] = path
+        if self._is_cancelled():
+            self.log("⏹ 已停止：场景图未覆盖已有图片")
+            return self.scene_images
+        self.scene_images = built
         return self.scene_images
 
     # ---------- VLM 质检闭环（DeepSeek 视觉模型，参考 VideoClaw 的 QA 机制） ----------
@@ -2243,28 +2304,73 @@ class VideoPipeline:
         except Exception:
             return False
 
+    def arm_job(self, name=""):
+        """界面在工作线程启动前换发本轮令牌。
+
+        工作线程随后调用同名 ``begin_job`` 时只复用这枚令牌。这样「线程刚启动、
+        还没跑到 begin_job，用户已经点了停止」不会被一次换发把停止清掉。
+        下一次真正开新任务时再次 arm_job，停止不会粘到下一轮。
+        """
+        with self._job_lock:
+            self._armed_job = None
+        token = self.begin_job(name or "director", reset_cancel=True)
+        with self._job_lock:
+            self._armed_job = {
+                "name": self._job_name,
+                "seq": self._job_seq,
+                "consume": True,
+            }
+        return token
+
     def begin_job(self, name="", reset_cancel=True):
         """开始新一轮生成：**换发新令牌**（这就是「停止后还能重试」的关键）。
 
         为什么必须有这一步：原来的 `cancelled` 一置 True 就永不复位，
         重试路径 `regenerate_clip()` 第一行就 `return None`。
         换发令牌后，新一轮从"未取消"开始，而上一轮的取消状态不会污染它。
+
+        例外：本轮已经由 ``arm_job`` 换发过、且用户已经取消时，同名调用不得
+        再换发。那一次调用是工作线程进入任务，不是用户发起的下一轮。
         """
         try:
             from cancel_token import CancellationToken
         except Exception:
             CancellationToken = None
+        reuse = None
         with self._job_lock:
-            self._job_seq += 1
-            self._job_name = name or f"job{self._job_seq}"
-            if CancellationToken is not None:
-                self._job_token = CancellationToken(
-                    name=f"director/{self._job_name}#{self._job_seq}")
-            if reset_cancel:
-                # 复位历史全局标志 —— 否则旧读点仍会认为"已取消"
-                self.cancelled = False
-            token = self._job_token
-        return token
+            armed = getattr(self, "_armed_job", None)
+            want = name or ""
+            if (isinstance(armed, dict) and armed.get("consume")
+                    and armed.get("name") == want
+                    and armed.get("seq") == self._job_seq):
+                armed["consume"] = False
+                token = self._job_token
+                stopped = bool(self.cancelled) or bool(
+                    token is not None and getattr(token, "is_cancelled", False))
+                if stopped:
+                    self.cancelled = True
+                    reuse = token
+                else:
+                    return token
+            else:
+                self._job_seq += 1
+                self._job_name = name or f"job{self._job_seq}"
+                if CancellationToken is not None:
+                    self._job_token = CancellationToken(
+                        name=f"director/{self._job_name}#{self._job_seq}")
+                if reset_cancel:
+                    # 复位历史全局标志 —— 否则旧读点仍会认为"已取消"
+                    self.cancelled = False
+                if isinstance(armed, dict):
+                    armed["consume"] = False
+                return self._job_token
+        if reuse is not None:
+            try:
+                if not getattr(reuse, "is_cancelled", True):
+                    reuse.cancel("用户点了停止", stage="user_stop")
+            except Exception:
+                pass
+        return reuse
 
     def cancel_job(self, reason="用户点了停止", stage=""):
         """取消**当前这一轮**（幂等）。不动已完成产出，也不影响下一轮。
@@ -2296,16 +2402,35 @@ class VideoPipeline:
             "total_shots": len(getattr(self, "shots", None) or []),
         }
 
+    def _align_clip_slots(self):
+        """让 clip_paths 与分镜等长，并保留已经成功的片段。
+
+        全部重新生成不得在新文件落地前把旧路径写成空。只补齐或截断长度。
+        """
+        n = len(self.shots or [])
+        paths = list(self.clip_paths or [])
+        if len(paths) < n:
+            paths.extend([None] * (n - len(paths)))
+        elif len(paths) > n:
+            paths = paths[:n]
+        self.clip_paths = paths
+        return paths
+
     def generate_all_clips(self, on_clip=None):
         """第3步：顺序生成全部分镜，接力尾帧；每完成一镜回调 on_clip(i, path|None)。返回成功数。"""
         # v4.167.0：整批生成 = 一个新任务（换发令牌 → 上一轮的"停止"不再粘住本轮）
+        # 若界面已 arm_job 且用户在此之前点了停止，begin_job 会保留取消，不得清掉。
         self.begin_job("generate_all_clips")
-        self.clip_paths = [None] * len(self.shots)
+        self._align_clip_slots()
+        if self._is_cancelled():
+            self.log("⏹ 已停止：未开始覆盖已有片段")
+            return sum(1 for x in (self.clip_paths or []) if x)
         prev_tail = None
         prev_scene = None
         ok = 0
         for i, shot in enumerate(self.shots):
             if self._is_cancelled():
+                self.log("⏹ 已停止：未完成的镜保持原片段")
                 break
             # 抗崩坏 v2：为本镜装配最多 5 张参考图（关键帧 > 角色三视图 > 场景图）
             # v4.127：带上一镜尾帧入槽（reference 模式下首帧被置空，靠它续连贯）
@@ -2340,7 +2465,15 @@ class VideoPipeline:
             clip = self._gen_one_clip(prompt, self._shot_dur(shot), f"{self.width}x{self.height}",
                                       first_frame, line if self.with_dialogue else None, i,
                                       ref_images=ref_paths)
+            if self._is_cancelled():
+                # 这一镜被取消：不要记成失败，也不要清掉该镜原来的片段。
+                self.log(f"⏹ 镜{i+1} 已停止，保留原片段")
+                break
             if clip:
+                try:
+                    self._snapshot_current("clip", i)
+                except Exception:
+                    pass
                 self.clip_paths[i] = clip
                 ok += 1
                 if self.relay:
@@ -2360,6 +2493,8 @@ class VideoPipeline:
         # 全局永久 cancelled，一旦停止过就永远 return None，只能重置整个项目。
         # 换发令牌后「停止 → 重试这一镜」成立。
         self.begin_job(f"regenerate_clip#{i}")
+        if self._is_cancelled():
+            return None
         if i < 0 or i >= len(self.shots):
             return None
         # 抗崩坏 v2：重生成同样装配多参考图，保证「改这一镜」不会把人物改崩
@@ -3009,6 +3144,8 @@ class VideoPipeline:
             self.status("未找到 ffmpeg，无法合成成片", err=True)
             self.on_finish(False, "未找到 ffmpeg，无法合成成片")
             return None
+        # 一条龙入口自己换发任务，不复用导演台界面上一次留下的停止令牌。
+        self._armed_job = None
         self.prepare(topic, n, duration, resolution, style_key, ref_image_path,
                      portrait_mode, with_dialogue, relay, transition, transition_dur,
                      burn_subtitles, passthrough_script, clip_dir, smart=smart)
@@ -3404,6 +3541,8 @@ class VideoPipeline:
                 wait = 5 + attempt * 5
                 self.log(f"  ⚠️ 镜{idx+1} 失败（{res}），{wait}秒后自动重试（{attempt+1}/{max_retry}）…")
                 time.sleep(wait)
+                if self._is_cancelled():
+                    return None
             else:
                 if permanent:
                     self.log(f"  ❌ 镜{idx+1} 失败（请求本身错误，不重试）：{res}")

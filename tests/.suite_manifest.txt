@@ -29,6 +29,7 @@ test_director_cancel_retry.py
 test_director_manifest.py
 test_director_project_isolation.py
 test_director_recover.py
+test_director_stop_clips_270.py
 test_dist_hygiene.py
 test_empty_state_206.py
 test_empty_state_207.py
