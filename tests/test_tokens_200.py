@@ -284,6 +284,9 @@ if os.path.isfile(FIXTURE):
                  ' "border-radius": "8px", "color": "#9A6700",'
                  ' "font-size": "12px", "font-weight": "600",'
                  ' "padding": "6px 10px"}'): 1,
+            # v4.270.0：需求卡多一行旁白说明，复用 label_second()（12px dim），
+            # 不是新配色。条数写死 1，再多挂一份照样红。
+            ('', '{"color": "#5F6368", "font-size": "12px"}'): 1,
         }),
         "digital_twin_panel.py": collections.Counter({
             ('', '{"background": "#FFF4D6", "border": "1px solid #E8C36A",'
