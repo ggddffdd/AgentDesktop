@@ -71,6 +71,7 @@ import ctypes
 _WM_NCLBUTTONDBLCLK = 0x00A3
 
 import config
+import prompt_cache
 from config import (
     APP_DIR, WORKSPACE_DIR, CONFIG_PATH, load_config, load_skills,
     AGENT_SYS_APPEND, TOOL_RESULT_LIMIT, load_dynamic_skills,
@@ -6799,49 +6800,28 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         return False
 
     def _build_system_prompt(self):
-        """构建系统提示：L0 常驻(persona+权限+模式) + L1 概览(技能名/经验标题/记忆)
-        + L2 按需(选题模板/命中经验全文)，大幅降低每轮 token 消耗。
+        """整段提示。发给模型时用 `_split_system_prompt`，别把当轮背景放进开头。"""
+        stable, dynamic = self._split_system_prompt()
+        if dynamic:
+            return stable + "\n\n" + dynamic
+        return stable
 
-        分层原则（v4.87，借鉴 OpenViking L0/L1/L2，不引入框架）：
-        - L0 常驻：角色、硬约束、模式说明、权限、本会话目标——每轮必有。
-        - L1 概览：技能仅列「名字+首句摘要」、经验库仅列标题、长期记忆语义召回(已有)——
-          让模型有全局视野但不平铺全文。
-        - L2 按需：选题模板仅在聊选题时注入；经验完整铁律仅在用户消息命中相关标题时展开。
-        """
+    def _split_system_prompt(self):
+        """(稳定前缀, 当轮背景)。前缀不含时间、日期、记忆和当轮状态。"""
         base = self.cfg["system_prompt"]
         base += "\n\n" + self._PERMISSION_RULES
         base += "\n\n" + self._META_SILENCE_RULE
-        # 本会话最初目标——注入到顶部，让模型无论多轮都记得最初要干什么
-        # v4.168.1（BUG 修）：必须**明确标注这只是背景**。
-        # 实测事故：会话首条消息是「帮我写一段人生感悟口播稿…」，之后用户发「继续」
-        # 走的是另一条自动化任务；模型却把这段陈旧的「本会话目标」当成当前任务，
-        # 又去写了一遍口播稿（用户原话：「这次你又自己加上了口播稿任务」）。
-        # v4.168.3（根因修）：加标注只是止血，**真正的根因是这条注入本身不该出现**。
-        #   自动化任务与用户对话共用同一个会话（见 `_fire_automation_run`），
-        #   一旦会话被自动化任务借用过，会话的任务就是**每轮派发而变**的，
-        #   「会话最初目标」不再代表当前任务 —— 继续注入它，等于每轮都塞一条
-        #   陈旧且错误的线索（实测该会话积了 18 条自动化任务消息，goal 却仍是口播稿）。
-        #   → 抽成独立方法（可单测/可负面验证），两路分支都在里面。
         try:
             sess = self.store.active() if hasattr(self, "store") else None
             base += self._prompt_section_session_goal(sess)
         except Exception:
             pass
-        # 按需触发判断用的用户消息（L2）
         user_query = self._recent_user_query()
-
         sk_section = self._prompt_section_skill()
-        if sk_section:
-            base += "\n\n" + sk_section
-        # 模式感知：普通对话模式没有 tools，必须明确告知模型
         agent = getattr(self, "_agent_active", False)
         if agent:
             base += AGENT_SYS_APPEND
             base += self._build_tool_overview()
-            # v4.129：当前产物落盘目录——引导 write_file 之类也写进 日期/项目 分层目录
-            _pd = self._prompt_section_products_dir()
-            if _pd:
-                base += "\n\n" + _pd
         else:
             base += (
                 "\n\n【模式说明：当前为「普通对话模式」，你无法直接调用任何工具】\n"
@@ -6852,26 +6832,35 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
                 "· 覆盖说明：上方系统提示里的「命中路由表关键词必须调工具」「事实问题必须 web_search」两条约束，"
                 "在普通对话模式下不适用，请以本【模式说明】为准。"
             )
-        # L1 概览：技能名 + 首句摘要（compact 省 token；完整 prompt 在 use_skill 时注入）
         base += load_dynamic_skills(compact=True)
         rules = self._prompt_section_rules()
         if rules:
             base += "\n\n" + rules
+        base += "\n\n" + self._prompt_section_permission()
+        base += "\n\n" + self._prompt_section_harness("")
+        dyn_parts = []
+        if sk_section:
+            dyn_parts.append(sk_section)
+        if agent:
+            _pd = self._prompt_section_products_dir()
+            if _pd:
+                dyn_parts.append(_pd)
         mem = self._prompt_section_memory()
         if mem:
-            base += "\n\n" + mem
-        base += "\n\n" + self._prompt_section_permission()
-        # L1 概览：经验库标题列表；L2 按需：命中相关操作时展开完整铁律
-        base += "\n\n" + self._prompt_section_harness(user_query)
-        base += "\n\n" + self._prompt_section_facts()
-        # L2 按需：仅选题/盘点类需求才注入完整选题模板（其余轮次省下这段 token）
+            dyn_parts.append(mem)
+        hits = self._harness_hits_block(user_query)
+        if hits:
+            dyn_parts.append(hits)
+        facts = self._prompt_section_facts()
+        if facts:
+            dyn_parts.append(facts)
         if self._is_topic_request(user_query):
             try:
                 from config import TOPIC_IDEA_TEMPLATE
-                base += "\n\n" + TOPIC_IDEA_TEMPLATE
+                dyn_parts.append(TOPIC_IDEA_TEMPLATE)
             except Exception:
                 pass
-        return base
+        return base, "\n\n".join(dyn_parts)
 
     def _prompt_section_skill(self):
         """当前技能 prompt（普通/Agent 模式都注入）。"""
@@ -6991,21 +6980,34 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         L2 按需：user_query 命中某 note 标题时，展开该 note 完整铁律（不命中只列标题，省 token）。
         基础系统提示锁死，操作经验作为可检索、可版本化、可回滚的 supplemental 状态层。
         文件缺失/损坏时静默跳过，绝不拖垮主程序。
+        缓存前缀只取标题（user_query 传空）；命中展开走 `_harness_hits_block`。
         """
         try:
             import harness
             base = harness.harness_section_text(self.cfg, compact=True)
-            if user_query:
-                data = harness.load_harness_notes(self.cfg)
-                hits = []
-                for e in data.get("entries", []):
-                    title = e.get("title", "")
-                    body = e.get("body", "")
-                    if title and self._harness_hit(title, user_query):
-                        hits.append(f"- {title}：{body}")
-                if hits:
-                    base += "\n\n【命中操作经验详情（按需展开）】\n" + "\n".join(hits)
+            hits = self._harness_hits_block(user_query)
+            if hits:
+                base += "\n\n" + hits
             return base
+        except Exception:
+            return ""
+
+    def _harness_hits_block(self, user_query):
+        """本轮用户的话命中了哪些经验。空查询或没有命中时返回空串。"""
+        if not user_query:
+            return ""
+        try:
+            import harness
+            data = harness.load_harness_notes(self.cfg)
+            hits = []
+            for e in data.get("entries", []):
+                title = e.get("title", "")
+                body = e.get("body", "")
+                if title and self._harness_hit(title, user_query):
+                    hits.append("- %s：%s" % (title, body))
+            if not hits:
+                return ""
+            return "【命中操作经验详情（按需展开）】\n" + "\n".join(hits)
         except Exception:
             return ""
 
@@ -7022,6 +7024,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             return "\n\n【工具能力概览】生成失败，请重试。\n"
         if not tools:
             return "\n\n【工具能力概览】暂无可用工具。\n"
+        tools = prompt_cache.order_tool_schemas(tools)
         # v4.225（P3 统一意图）：工具路由段从 intent.ROUTE_REGISTRY **自动生成**，
         # 替代此前 agent.py 里手写的「跑代码用 run_python、搜索用 web_search、
         # 生图用 image_gen」那句 —— 以前加新工具要记得手改，忘了模型就不知道有这工具。
@@ -7892,8 +7895,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         session = self.store.active()
         self._streaming = False
         self._streaming_text = ""
-        sys_msg = {"role": "system",
-                   "content": self._build_system_prompt()}
+        stable, dynamic = self._split_system_prompt()
         # v4.102 图像输入链路：agent 任务若带图（含 image_url）或命中工具意图，路由会
         # 升级到视觉模型（deepseek-flash）。预判路由结果是否视觉，是则
         # 保留图像 content，让 AgentWorker 真正"看图"干活；非视觉仍归一化纯文本。
@@ -7916,7 +7918,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
                                   max_history=self.cfg["max_history"],
                                   char_budget=self.cfg.get("history_char_budget", 0),
                                   msg_budget=self.cfg.get("msg_budget"))
-        messages = [sys_msg] + hist
+        messages = prompt_cache.prefix_messages(stable, hist)
 
         all_tools = config.get_all_tools(self.cfg)
         # v4.215.0：自动化任务的独立工具权限（外部审核 P1）—— 无人值守触发时
@@ -7939,7 +7941,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         w = AgentWorker(self, messages, all_tools, config.mcp_clients,
                         task_id=resume_task_id, resume=resume,
                         explicit_intent=self._last_user_intent_is_action(),
-                        bound_sid=_bound)
+                        bound_sid=_bound, cache_context=dynamic)
         self._agent_worker = w
         w.status.connect(self.status_label.setText)
         w.status.connect(self._agent_task_progress)
@@ -8612,6 +8614,11 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
     def _agent_call(self, messages, tools, on_delta=None, force_required=False, force_tool=None, force_complex=False, model_override="", thinking=False):
         import urllib.request as urllib_req
         import logging as _logging
+        # 工具定义的顺序也算前缀。按名字排死，避免每次请求顺序不同把缓存打掉。
+        try:
+            tools = prompt_cache.order_tool_schemas(tools)
+        except Exception:
+            pass
         # v4.128：Agnes 文本模型调用层（3.0/2.5 两档 + 失败自动回退 + 回退率统计）
         try:
             import agnes_text as _at
@@ -8698,6 +8705,15 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
                     if any(kw in last_user for kw in _REDO_KEYWORDS):
                         redo = True
                 break
+        # 当轮背景接在历史后面，不进 self.messages，下一轮历史才能对上缓存。
+        # 放在「最后一句用户」判定之后，避免把背景当成用户原话。
+        try:
+            _ctx = prompt_cache.current_turn_context()
+        except Exception:
+            _ctx = None
+        if _ctx:
+            messages = prompt_cache.with_dynamic_context(messages, _ctx)
+            body["messages"] = messages
         # ---- 层 3（v4.168.0）：模型调用前的最终保险 ----
         # 即使用户手动开了 Agent 模式，若最后一句是纯评价 / 引用 / 咨询句，
         # 也强制 tool_choice="none"。这一步同时挡住：
@@ -9051,15 +9067,31 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
                 for tc in tool_calls)
             _pt = _est_in // 2
             _ct = max(_est_out // 2, 1)
+        # 只记命中/未命中/生成 token 和累计命中率，不写提示词或密钥。
+        _route_extra = {}
+        try:
+            _cache_line = prompt_cache.note_and_format(_usage)
+            if _cache_line:
+                log.info("%s", _cache_line)
+                _route_extra = prompt_cache.extract_cache_usage(_usage) or {}
+                _route_extra["cache_hit_rate"] = prompt_cache.running_hit_rate()
+        except Exception:
+            _route_extra = {}
         # v4.109：旁路成本日志（只记录，不干预；拿真实 token 才能算清付费通道花了多少）
         try:
             route_log.log_route(event="usage", model=_model, base_url=_base_url,
                                 prompt_tokens=_pt, completion_tokens=_ct,
                                 total_tokens=_pt + _ct,
                                 reason=getattr(self, "_route_reason", ""),
-                                lock=getattr(self, "_model_lock", "") or "")
+                                lock=getattr(self, "_model_lock", "") or "",
+                                **_route_extra)
         except Exception:
             pass
+        _ret_usage = {"prompt_tokens": _pt, "completion_tokens": _ct,
+                      "total_tokens": _pt + _ct}
+        for _ck in ("prompt_cache_hit_tokens", "prompt_cache_miss_tokens"):
+            if _ck in _route_extra:
+                _ret_usage[_ck] = _route_extra[_ck]
         return {
             "content": full_content,
             "tool_calls": tool_calls,
@@ -9067,8 +9099,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             # 必须带回 assistant 的 `reasoning_content`（缺则 400）；
             # 非思考通道拿到空串无副作用。
             "reasoning_content": _reasoning,
-            "usage": {"prompt_tokens": _pt, "completion_tokens": _ct,
-                      "total_tokens": _pt + _ct},
+            "usage": _ret_usage,
             "model": _model,
             "channel": "deepseek" if "deepseek" in (_base_url or "").lower() else "other",
         }
@@ -9107,7 +9138,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             self._task_model = ""
 
         session = self.store.active()
-        sys_msg = {"role": "system", "content": self._build_system_prompt()}
+        stable, dynamic = self._split_system_prompt()
 
         # v4.102 图像输入链路：用户发图时，强制路由到视觉模型（complex_model profile，
         # 现指向 deepseek-flash），并保留图像 content 让模型真正"看图"；
@@ -9149,11 +9180,9 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
                                     max_history=self.cfg["max_history"],
                                     char_budget=self.cfg.get("history_char_budget", 0),
                                     msg_budget=self.cfg.get("msg_budget"))
-        api_messages = [sys_msg] + others
-        if search_context:
-            api_messages.append({"role": "system", "content": search_context})
 
         # 最后一条用户消息：视觉模型保留图，非视觉归一化纯文本
+        last_api = {"role": "user", "content": text}
         if last_msg and isinstance(last_msg.get("content"), list):
             lc = last_msg["content"]
             if _has_img and _vision_ok:
@@ -9177,12 +9206,15 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
                         for x in norm_lc):
                     norm_lc.insert(0, {"type": "text",
                                        "text": "[图片无法解析，已忽略]"})
-                api_messages.append({"role": "user", "content": norm_lc})
+                last_api = {"role": "user", "content": norm_lc}
             else:
                 # 纯文本 list（语音/粘贴等）或非视觉模型 → 归一化为字符串
-                api_messages.append({"role": "user", "content": _flatten_text_content(lc) or text})
-        else:
-            api_messages.append({"role": "user", "content": text})
+                last_api = {"role": "user",
+                            "content": _flatten_text_content(lc) or text}
+        # 搜索结果并进当轮背景，放在历史之后，避免插在前缀里把缓存打掉。
+        api_messages = prompt_cache.strip_internal(
+            prompt_cache.build_chat_messages(
+                stable, list(others) + [last_api], dynamic, search_context or ""))
 
         url = QUrl(_bu.rstrip("/") + "/chat/completions")
         req = QNetworkRequest(url)

@@ -15,6 +15,7 @@ from PySide6.QtCore import QThread, Signal
 
 import task_resume  # v4.101：断点续传检查点
 import automation  # 自动化任务把会话编号钉在 worker 上，避免写到后切换的会话
+import prompt_cache  # v4.276：当轮背景挂在线程上，多次模型调用共用同一份
 
 from config import MAX_AGENT_STEPS, TOOL_RESULT_LIMIT, get_all_tools, WORKSPACE_DIR
 import tools
@@ -327,7 +328,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
 
     def __init__(self, mw, messages, tool_defs, mcp_clients=None, task_id=None,
                  resume=False, isolated=False, force_complex=False,
-                 explicit_intent=True, bound_sid=None):
+                 explicit_intent=True, bound_sid=None, cache_context=None):
         super().__init__()
         self.mw = mw
         self.messages = messages
@@ -344,6 +345,8 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         # 非只读操作（写入 / 执行 / 外发），只读照旧放行。
         # 由 UI 启动 Agent 时按 intent_guard 判定后传入；默认 True（不改既有行为）。
         self.explicit_intent = bool(explicit_intent)
+        # 当轮背景（记忆、日期等）。None 表示这次调用不附加，导演台等自带提示词的路径不变。
+        self._cache_context = cache_context if cache_context else None
         # 本次确认是否"强制弹窗"（硬确认档用）；UI 侧据此跳过会话信任短路。
         self._confirm_force = False
         # v4.101：断点续传——每个 Agent 任务带唯一 task_id，停止时标记 paused、正常完成删除。
@@ -715,6 +718,17 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
             log.error("Agent 任务轨迹写回失败（已忽略）: %s", e)
 
     def run(self):
+        """本线程的模型调用共用同一份当轮背景；结束时清掉，避免串到下一次。"""
+        try:
+            prompt_cache.set_turn_context(getattr(self, "_cache_context", None))
+            self._run_inner()
+        finally:
+            try:
+                prompt_cache.clear_turn_context()
+            except Exception:
+                pass
+
+    def _run_inner(self):
         mw = self.mw
         # 审计修复 E1：本 worker 线程绑定当前会话的上下文管理器（线程局部，
         # 不污染其他 worker/GUI 线程；tools.py 的 context 工具无 sid 参数走此默认值）

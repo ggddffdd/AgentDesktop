@@ -59,6 +59,7 @@ _perturb_post_exec_verify_224.py
 _perturb_post_exec_verify_227.py
 _perturb_precommit_hooks_237.py
 _perturb_probe_graphics.py
+_perturb_prompt_cache_276.py
 _perturb_python_cwd_xxx.py
 _perturb_resume_api_error_221.py
 _perturb_resume_idempotent_222.py
