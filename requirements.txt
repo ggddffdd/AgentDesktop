@@ -24,6 +24,8 @@ qt-material==2.17
 # chart_generator.py 直接 import matplotlib/numpy，PyInstaller 靠静态分析收集
 matplotlib==3.10.9
 numpy==2.4.4
+# v4.275.0：语音端点（Silero VAD）。只引入 onnxruntime，不引入 torch。
+onnxruntime==1.22.1
 # rag.py 索引 Word、ui.py 导出 Word；spec 的 hiddenimports 已登记 'docx'
 python-docx==1.2.0
 

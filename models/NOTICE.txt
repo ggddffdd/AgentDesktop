@@ -1,0 +1,5 @@
+Silero VAD ONNX model
+Upstream: https://github.com/snakers4/silero-vad
+License: MIT
+File: silero_vad.onnx
+Bundled so the packaged app can detect speech offline without torch.

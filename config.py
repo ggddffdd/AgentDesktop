@@ -77,7 +77,7 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.274.0"
+APP_VERSION = "v4.275.0"
 APP_BUILD_DATE = "2026-10-14"
 # v4.164.0（2026-09-27）**运行数据归口：彻底治「dist 既是运行目录又是分发源」**：
 #   新增 config.WORKSPACE_DIR（默认 ~/Documents/小臭玩AI，与 USER_DATA_DIR 同值，
@@ -1171,6 +1171,17 @@ DEFAULT_CONFIG = {
     "autobackup_time": "03:00",   # HH:MM
     # v4.76：更新检查源（留空=本地构建；填入可访问的 version.json URL 即启用在线检查）
     "update_check_url": "",
+    # v4.275.0：语音对话端点（Silero VAD）。模型加载失败则改回按住说话。
+    "voice": {
+        "speech_enabled": True,
+        "vad_threshold": 0.5,             # 开口判定，越高越不容易被噪声触发
+        "vad_min_silence_ms": 600,        # 连续静音多久算说完
+        "vad_min_speech_ms": 250,         # 短于此时长的一声不算一句
+        "vad_speech_pad_ms": 200,         # 句首留一点，避免切掉字头
+        "vad_barge_threshold": 0.72,      # 正在朗读时抬高阈值，减轻自己的回声
+        "vad_barge_confirm_ms": 320,      # 朗读中要连续这么久才算用户插嘴
+        "vad_barge_onset_guard_ms": 180,  # 刚开口朗读的这一小段先不判插嘴
+    },
 }
 
 # 爆款选题与盘点模板（v4.56）

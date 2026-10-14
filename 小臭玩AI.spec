@@ -2,7 +2,9 @@
 
 datas = [('config.example.json', '.'), ('agent_rules.md', '.'), ('skills', 'skills'), ('images', 'images'), ('icon.ico', '.'), ('browser_runner.py', '.'), ('browser_extension', 'browser_extension'),
           # 统一视频内核：video-agent/core 整包随附为 exe 同目录下的 `core` 包
-          ('../video-agent/core', 'core')]
+          ('../video-agent/core', 'core'),
+          # v4.275.0：Silero VAD 模型，打包后离线做语音端点。不进 torch。
+          ('models/silero_vad.onnx', 'models')]
 binaries = []
 hiddenimports = ['toast', 'empty_state', 'PySide6', 'PySide6.QtPrintSupport', 'PySide6.QtWebEngineWidgets', 'PySide6.QtWebEngineCore', 'chat_web', 'requests', 'psutil', 'watchdog', 'skill_manager_ui', 'clipboard_monitor', 'mcp_client', 'rag', 'ui', 'agent', 'agent_node', 'tools', 'config', 'skill_loader', 'memory_store', 'context_manager', 'session', 'browser_control_tools', 'chart_generator', 'database_tools', 'sandbox', 'search', 'skill_installer_tools', 'software_control_tools', 'step_tracer', 'structured_logger', 'system_control_tools', 'task_graph', 'token_compressor', 'voice', 'webhook_server', 'permissions', 'risk', 'cryptography', 'docx', 'perf_baseline', 'onboarding', 'harness', 'task_resume', 'trace_log', 'skill_review', 'digital_twin_panel', 'director_panel', 'video_pipeline', 'automation', 'automation_panel', 'browser_bridge', 'route_log',
                # v4.111 工具管理器：与 skill_manager_ui 同为函数内延迟导入，
@@ -77,6 +79,9 @@ hiddenimports = ['toast', 'empty_state', 'PySide6', 'PySide6.QtPrintSupport', 'P
                #                          漏登记的表现最阴：不报错，只是提取提示词变空，
                #                          自动记忆从此永远提炼不出任何条目。
                'agent_memory_mixin',
+               # v4.275.0 语音端点。voice_session 在 ui 里延迟导入，静态分析扫不到。
+               # onnxruntime 的运行库由 PyInstaller hook 收集。
+               'voice_vad', 'voice_turn', 'voice_session', 'onnxruntime',
                ]
 
 
