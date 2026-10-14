@@ -55,7 +55,7 @@ ACTION_LABELS = {
 
 def new_task(name, action, message, schedule_type, at_time="09:00",
              at_date="", weekday=0, interval_minutes=60, enabled=True,
-             full_tools=False):
+             full_tools=False, prefer_offpeak=False):
     """构造一个任务字典（新建用）。
 
     full_tools（v4.215.0）：False = 默认受限工具集（查询/生成/本地写，无人值守
@@ -74,6 +74,7 @@ def new_task(name, action, message, schedule_type, at_time="09:00",
         "interval_minutes": max(1, int(interval_minutes or 60)),
         "enabled": bool(enabled),
         "full_tools": bool(full_tools),
+        "prefer_offpeak": bool(prefer_offpeak),
         "last_run": 0.0,
         "last_result": "",
         "last_error": "",
@@ -147,6 +148,7 @@ class AutomationStore:
                     t.setdefault("last_attempt", 0.0)
                     t.setdefault("fail_count", 0)
                     t.setdefault("enabled", True)
+                    t.setdefault("prefer_offpeak", False)
                     self.tasks.append(t)
         except Exception as e:
             log.error("加载 automation_tasks.json 失败: %s", e)
@@ -274,6 +276,155 @@ def _retry_blocked(task, now):
     return now.timestamp() < attempt + RETRY_COOLDOWN_SEC
 
 
+def _as_aware(now):
+    """墙上时间。无时区的 datetime 按本机时区理解（调度器传入的就是 datetime.now()）。"""
+    if now is None:
+        return datetime.now().astimezone()
+    if now.tzinfo is None:
+        return now.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return now
+
+
+def _as_beijing(now):
+    from zoneinfo import ZoneInfo
+    return _as_aware(now).astimezone(ZoneInfo("Asia/Shanghai"))
+
+
+def _peak_windows():
+    from config import DEEPSEEK_PEAK_WINDOWS_BJ
+    return DEEPSEEK_PEAK_WINDOWS_BJ
+
+
+def _statutory_holidays():
+    from config import DEEPSEEK_STATUTORY_HOLIDAYS
+    return DEEPSEEK_STATUTORY_HOLIDAYS
+
+
+def _price_ratio():
+    from config import DEEPSEEK_OFFPEAK_PRICE_RATIO
+    return float(DEEPSEEK_OFFPEAK_PRICE_RATIO)
+
+
+def _max_delay_default():
+    from config import DEEPSEEK_OFFPEAK_MAX_DELAY_SEC
+    return int(DEEPSEEK_OFFPEAK_MAX_DELAY_SEC)
+
+
+def is_deepseek_peak(now=None):
+    """北京时间此刻是否按官方价目算高峰。空闲、周末、法定节假日返回 False。"""
+    bj = _as_beijing(now)
+    if bj.weekday() >= 5:
+        return False
+    if bj.date().isoformat() in _statutory_holidays():
+        return False
+    minute = bj.hour * 60 + bj.minute
+    for start, end in _peak_windows():
+        sh, sm = _parse_hm(start)
+        eh, em = _parse_hm(end)
+        if (sh * 60 + sm) <= minute < (eh * 60 + em):
+            return True
+    return False
+
+
+def _next_offpeak_start(bj):
+    """当前若在高峰，返回这段高峰结束的北京时间；否则就是此刻。"""
+    if not is_deepseek_peak(bj):
+        return bj
+    minute = bj.hour * 60 + bj.minute
+    for start, end in _peak_windows():
+        sh, sm = _parse_hm(start)
+        eh, em = _parse_hm(end)
+        if (sh * 60 + sm) <= minute < (eh * 60 + em):
+            return bj.replace(hour=eh, minute=em, second=0, microsecond=0)
+    return bj
+
+
+def _offpeak_wait_exceeded(waited, remain, max_delay_sec):
+    """已经等够久，或者下一段空闲远到会超过上限。"""
+    if waited >= max_delay_sec:
+        return True
+    return remain > (max_delay_sec - waited)
+
+
+def _due_anchor(task, now_aware):
+    """这次最早该跑的时刻，时区与 now_aware 相同。"""
+    st = task.get("schedule_type", SCHED_DAILY)
+    if st == SCHED_INTERVAL:
+        interval = max(1, int(task.get("interval_minutes") or 60))
+        last = float(task.get("last_run") or 0)
+        base = last if last > 0 else float(task.get("created") or now_aware.timestamp())
+        return datetime.fromtimestamp(base + interval * 60, tz=now_aware.tzinfo)
+    if st == SCHED_ONCE:
+        try:
+            raw = datetime.fromisoformat(
+                "%s %s" % ((task.get("at_date") or "").strip(),
+                           (task.get("at_time") or "09:00").strip()))
+        except Exception:
+            return now_aware
+        if raw.tzinfo is None:
+            return raw.replace(tzinfo=now_aware.tzinfo)
+        return raw.astimezone(now_aware.tzinfo)
+    hh, mm = _parse_hm(task.get("at_time", "09:00"))
+    anchor = now_aware.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if anchor > now_aware:
+        return now_aware
+    return anchor
+
+
+def prefer_offpeak_for(action, checked):
+    """只有执行任务能打开「等到空闲」。提醒到点就弹，不推迟。"""
+    return action == ACT_RUN and bool(checked)
+
+
+def should_defer_offpeak(task, now=None, max_delay_sec=None):
+    """到期了但先别跑，等 DeepSeek 空闲时段。默认关，聊天不走这里。
+
+    已经在空闲、没开选项、不是执行任务、没有折扣，都返回 False。
+    等到下一段空闲会超过配置的最长等待时也返回 False，任务直接跑。
+    """
+    if not isinstance(task, dict) or not task.get("prefer_offpeak"):
+        return False
+    if task.get("action") != ACT_RUN:
+        return False
+    try:
+        if not (_price_ratio() < 1.0):
+            return False
+    except Exception:
+        return False
+    now_aware = _as_aware(now)
+    if not is_deepseek_peak(now_aware):
+        return False
+    if max_delay_sec is None:
+        try:
+            max_delay_sec = _max_delay_default()
+        except Exception:
+            return False
+    try:
+        max_delay_sec = float(max_delay_sec)
+    except Exception:
+        return False
+    anchor = _due_anchor(task, now_aware)
+    waited = (now_aware - anchor).total_seconds()
+    if waited < 0:
+        waited = 0.0
+    bj_now = _as_beijing(now_aware)
+    remain = (_next_offpeak_start(bj_now) - bj_now).total_seconds()
+    if remain < 0:
+        remain = 0.0
+    if _offpeak_wait_exceeded(waited, remain, max_delay_sec):
+        return False
+    return True
+
+
+def ready_to_fire(task, now=None):
+    """调度器每秒问一次：到期，并且不用再等空闲时段。"""
+    if not is_due(task, now):
+        return False
+    if should_defer_offpeak(task, now):
+        return False
+    return True
+
+
 def is_due(task, now=None):
     """判断任务此刻是否到期。now 为 datetime，缺省用当前时间。"""
     now = now or datetime.now()
@@ -379,14 +530,18 @@ def schedule_summary(task):
     st = task.get("schedule_type", SCHED_DAILY)
     at_time = task.get("at_time", "09:00")
     if st == SCHED_ONCE:
-        return f"一次性 · {task.get('at_date', '')} {at_time}"
-    if st == SCHED_DAILY:
-        return f"每天 {at_time}"
-    if st == SCHED_WEEKLY:
-        return f"每周{WEEKDAY_NAMES[int(task.get('weekday', 0)) % 7]} {at_time}"
-    if st == SCHED_INTERVAL:
-        return f"每 {int(task.get('interval_minutes', 60))} 分钟"
-    return at_time
+        text = f"一次性 · {task.get('at_date', '')} {at_time}"
+    elif st == SCHED_DAILY:
+        text = f"每天 {at_time}"
+    elif st == SCHED_WEEKLY:
+        text = f"每周{WEEKDAY_NAMES[int(task.get('weekday', 0)) % 7]} {at_time}"
+    elif st == SCHED_INTERVAL:
+        text = f"每 {int(task.get('interval_minutes', 60))} 分钟"
+    else:
+        text = at_time
+    if task.get("prefer_offpeak") and task.get("action") == ACT_RUN:
+        text += " · 错峰"
+    return text
 
 
 def next_run_text(task, now=None):

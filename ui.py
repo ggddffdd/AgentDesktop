@@ -2880,7 +2880,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             self._reload_automation_if_changed()
             now = datetime.now()
             for t in self.automation_store.list_enabled():
-                if not automation.is_due(t, now):
+                if not automation.ready_to_fire(t, now):
                     continue
                 action = t.get("action", automation.ACT_REMIND)
                 if action == automation.ACT_REMIND:

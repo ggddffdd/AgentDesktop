@@ -708,6 +708,7 @@ AUTOMATION_TOOL_DEFS = [
                     "at_date": {"type": "string", "description": "一次性任务用，日期 'YYYY-MM-DD'"},
                     "weekday": {"type": "string", "description": "每周任务用，'一'~'日' 或 0(周一)~6(周日)"},
                     "interval_minutes": {"type": "integer", "description": "间隔重复任务的分钟数，如 30 表示每 30 分钟"},
+                    "prefer_offpeak": {"type": "boolean", "description": "是否等到 DeepSeek 空闲时段再执行。true=工作日高峰先等（空闲大约半价，等超过最长时限仍会跑）。默认 false。只对 action=run 有效，提醒不会推迟，聊天也不受影响。"},
                 },
                 "required": ["name", "message"],
             },
