@@ -850,9 +850,8 @@ def build_director_panel(app):
     # v4.265.0：缺视觉 key 时横幅写明「质检未真正运行」，避免把放行看成通过。
     app.director_qc_banner = QLabel("")
     app.director_qc_banner.setWordWrap(True)
-    app.director_qc_banner.setStyleSheet(
-        "color:#9A6700;background:#FFF4D6;border:1px solid #E8C36A;"
-        "border-radius:8px;padding:6px 10px;font-size:12px;font-weight:600;")
+    from theme_qss import qc_skip_banner
+    app.director_qc_banner.setStyleSheet(qc_skip_banner())
     lay.addWidget(app.director_qc_banner)
     _refresh_qc_banner(app)
 

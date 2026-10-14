@@ -119,7 +119,6 @@ if os.path.isfile(FIXTURE):
             # 会话空态（v4.112 那段内联 QSS）→ empty_state / theme_qss.empty_*
             ("", '{"QPushButton": "hover"}'): 1,
             ("QPushButton:hover", '{"background": "#1765CC"}'): 1,
-            ("", '{"background": "transparent"}'): 1,
             ("", '{"color": "#6B7280", "font-size": "12px"}'): 1,
             ("", '{"background": "rgba(26,115,232,0.08)", "border-radius": "22px"}'): 1,
             ("", '{"color": "#5F6368", "font-size": "13px", "font-weight": "600",'
@@ -161,12 +160,14 @@ if os.path.isfile(FIXTURE):
         "ui.py": collections.Counter({
             ("", '{"QComboBox": "focus"}'): 1,
             ("", '{"QLineEdit": "focus"}'): 2,
-            ("", '{"QPushButton": "hover"}'): 6,
+            # v4.264 专注对话把两处 hover 标记留在了 ui.py，净迁出是 4 不是 6。
+            ("", '{"QPushButton": "hover"}'): 4,
             ("", '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "10px"}'): 1,
             ("", '{"color": "#1A73E8", "font-size": "12px"}'): 2,
             ("", '{"color": "#202124", "font-size": "15px", "font-weight": "600"}'): 3,
             ("", '{"color": "#34A853", "font-size": "12px"}'): 1,
-            ("", '{"color": "#5F6368", "font-size": "12px"}'): 3,
+            # v4.264 有一处 12px 次级字留在 ui.py，净迁出是 2。
+            ("", '{"color": "#5F6368", "font-size": "12px"}'): 2,
             ("", '{"color": "#5F6368", "font-size": "13px", "line-height": "1.6"}'): 2,
             ("", '{"color": "#6B7280", "font-size": "12px"}'): 1,
             ("", '{"color": "#EA4335", "font-size": "12px"}'): 2,
@@ -188,7 +189,6 @@ if os.path.isfile(FIXTURE):
             ("QPushButton:hover", '{"background": "#1765CC"}'): 1,
             ("QPushButton:hover", '{"background": "#E4E8F2", "color": "#EA4335"}'): 1,
             ("QPushButton:hover", '{"background": "#FCE8E6", "border-color": "#EA4335"}'): 1,
-            ("QPushButton:hover", '{"color": "#1765CC"}'): 1,
             ("QPushButton:hover", '{"color": "#1A73E8"}'): 1,
             ("QPushButton:hover", '{"color": "#5F6368"}'): 1,
             ("QScrollArea", '{"background": "transparent", "border": "none"}'): 1,
@@ -253,6 +253,21 @@ if os.path.isfile(FIXTURE):
     # 「登记了却没被消耗」。登记制本身保留：以后再有有意新增照此登记。
     # v4.215.0：自动化任务编辑器新增「允许执行类工具」复选框（full_tools_chk，
     # 样式与 enabled_chk 同款 label_body()）——同词条 +1 实例，照此登记。
+    # v4.264.0 专注对话改了侧栏和输入区按钮，旧图标按钮样式从 ui.py 消失。
+    # 不是重拍基线：只登记净减少的那几条。
+    KNOWN_MIGRATIONS_264 = {
+        "ui.py": collections.Counter({
+            ("QPushButton", '{"background": "#FFFFFF", "border": "1px solid #E5E7EB",'
+                            ' "border-radius": "8px", "padding": "0"}'): 4,
+            ("QPushButton:hover", '{"border-color": "#1A73E8"}'): 3,
+            ("QPushButton", '{"background": "#FFFFFF", "border": "none",'
+                            ' "border-radius": "8px", "color": "#202124",'
+                            ' "font-size": "12px", "padding": "8px",'
+                            ' "text-align": "left"}'): 1,
+            ("QPushButton:hover", '{"background": "#D2D5DA"}'): 1,
+        }),
+    }
+
     KNOWN_ADDITIONS = {
         "automation_panel.py": collections.Counter({
             ("QCheckBox", '{"color": "#202124", "font-size": "13px"}'): 1,
@@ -287,6 +302,49 @@ if os.path.isfile(FIXTURE):
                        ' "border-radius": "8px", "color": "#5F6368",'
                        ' "font-size": "12px"}'): 1,
         }),
+        # v4.264.0 专注对话：侧栏「更多」、工具进度条、输入区按钮。
+        # 词条是新的，配色仍是既有 THEME 值。条数写死，多一份照样红。
+        "ui.py": collections.Counter({
+            ("QPushButton", '{"background": "#FFFFFF", "border": "1px solid #E5E7EB",'
+                            ' "border-radius": "8px", "color": "#202124",'
+                            ' "font-size": "16px", "font-weight": "600",'
+                            ' "padding": "0"}'): 1,
+            ("QFrame", '{"background": "#FFFFFF", "border": "1px solid #E5E7EB",'
+                       ' "border-radius": "10px"}'): 1,
+            ("", '{"background": "transparent", "color": "#202124",'
+                 ' "font-size": "13px"}'): 1,
+            ("QPushButton", '{"background": "transparent", "border": "none",'
+                            ' "color": "#1A73E8", "font-size": "12px",'
+                            ' "padding": "0 8px"}'): 1,
+            ("QPushButton:hover", '{"color": "#1765CC"}'): 1,
+            ("", '{"background": "transparent", "color": "#5F6368",'
+                 ' "font-size": "12px"}'): 1,
+            ("QPushButton", '{"background": "#FFFFFF", "border": "1px solid #E5E7EB",'
+                            ' "border-radius": "16px", "color": "#5F6368",'
+                            ' "font-size": "12px", "padding": "0 12px"}'): 1,
+            ("QPushButton:hover", '{"border-color": "#EA4335", "color": "#EA4335"}'): 2,
+            ("QPushButton:hover", '{"background": "#E4E8F2", "color": "#202124"}'): 1,
+            ("", '{"color": "#6B7280", "font-size": "12px", "padding-left": "4px"}'): 2,
+            ("QPushButton", '{"background": "transparent", "border": "none",'
+                            ' "color": "#5F6368", "font-size": "12px",'
+                            ' "padding": "0 4px", "text-align": "left"}'): 1,
+            ("QPushButton:hover", '{"color": "#202124"}'): 1,
+            ("", '{"color": "#202124", "font-size": "13px", "font-weight": "600",'
+                 ' "padding-top": "4px"}'): 1,
+            ("QPushButton", '{"background": "#FFFFFF", "border": "1px solid #E5E7EB",'
+                            ' "border-radius": "8px", "color": "#202124",'
+                            ' "font-size": "12px", "padding": "0 12px",'
+                            ' "text-align": "left"}'): 1,
+            ("", '{"color": "#6B7280", "font-size": "12px", "padding-left": "20px"}'): 1,
+            ("QPushButton", '{"background": "transparent", "border": "none",'
+                            ' "color": "#1A73E8", "font-size": "12px",'
+                            ' "padding": "0 4px", "text-align": "left"}'): 1,
+            ("QPushButton", '{"background": "transparent", "border": "none",'
+                            ' "border-radius": "24px", "color": "#5F6368"}'): 1,
+        }),
+        "ui_widgets.py": collections.Counter({
+            ("", '{"color": "#202124", "font-size": "13px", "line-height": "1.55"}'): 1,
+        }),
     }
 
     files = sorted(set(before) | set(after))
@@ -296,7 +354,8 @@ if os.path.isfile(FIXTURE):
         # 三批迁移登记合并：v4.206 的 8 条 + v4.207 的 1 条 + v4.216 的 47 条（搬出侧）
         known = (KNOWN_MIGRATIONS_206.get(fn, collections.Counter())
                  + KNOWN_MIGRATIONS_207.get(fn, collections.Counter())
-                 + KNOWN_MIGRATIONS_216.get(fn, collections.Counter()))
+                 + KNOWN_MIGRATIONS_216.get(fn, collections.Counter())
+                 + KNOWN_MIGRATIONS_264.get(fn, collections.Counter()))
         # known_add 通道：既吸收「同词条 +1 实例」，也吸收 v4.216 搬入侧（新文件词条）
         known_add = (KNOWN_ADDITIONS.get(fn, collections.Counter())
                      + KNOWN_MIGRATION_TARGETS_216.get(fn, collections.Counter()))

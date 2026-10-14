@@ -364,7 +364,7 @@ class ConfirmDialog(ThemedDialog):
         self._list = QLabel("")
         self._list.setWordWrap(True)
         self._list.setVisible(False)
-        self._list.setStyleSheet(f"color:{THEME['text']};font-size:13px;line-height:1.55;")
+        self._list.setStyleSheet(label_body() + "line-height:1.55;")
         lay.addWidget(self._list)
         row = QHBoxLayout()
         row.addStretch(1)

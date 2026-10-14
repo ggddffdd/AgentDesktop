@@ -74,6 +74,14 @@ def main():
     url_out = "file://" + pathname2url(os.path.abspath(d + "_other") + "/b.txt")
     check("工作区内 file 允许",
           wp.navigation_allowed(url_in, workspace_roots=[d]), url_in)
+    # GitHub Windows runner 的 pathname2url 会多给斜杠：file://///C:/Users/RUNNER~1/...
+    forged = "file://///" + os.path.abspath(inside).replace("\\", "/")
+    check("多余斜杠的工作区 file 仍允许",
+          wp.navigation_allowed(forged, workspace_roots=[d]), forged)
+    got = wp._file_url_to_path(
+        "file://///C:/Users/RUNNER~1/AppData/Local/Temp/xc_we/a.txt")
+    check("多斜杠盘符 file URL 还原成盘符路径",
+          got.replace("\\", "/").lower().startswith("c:/users/runner~1/"), got)
     check("工作区外 file 拒绝",
           not wp.navigation_allowed(url_out, workspace_roots=[d]), url_out)
     check("兄弟目录前缀不算工作区",

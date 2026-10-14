@@ -109,6 +109,8 @@ THEME = {
     "live_green": "#22C55E",         # 在线/成功绿
     "warn_gold": "#B8860B",          # 警告琥珀（技能市场/工具）
     "warn_gold2": "#9A6700",         # 慎装琥珀（legion_ui 推荐）
+    "warn_banner_bg": "#FFF4D6",     # 质检跳过横幅底（跳过 ≠ 通过）
+    "warn_banner_border": "#E8C36A", # 质检跳过横幅描边
     "warn_amber": "#D97706",         # 警告橙（导演台）
     "warn_orange": "#B45309",        # 警告橙（工具管理器）
     "accent_violet": "#6C5CE7",      # 技能市场强调紫

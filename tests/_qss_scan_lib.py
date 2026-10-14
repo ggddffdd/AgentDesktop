@@ -19,7 +19,7 @@ import os
 # 可静态求值的 theme_qss 导出符号（收口后源码会改成调这些）
 QSS_FUNCS = {
     "label_micro", "label_second", "label_body", "label_title",
-    "label_title_xl", "gap", "fs",
+    "label_title_xl", "qc_skip_banner", "gap", "fs",
     "btn_primary", "btn_secondary", "btn_outline", "btn_danger",
     "btn_small", "btn_dialog", "edit_style", "input_style",
     "combo_style", "chk_style", "scroll_transparent",

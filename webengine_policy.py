@@ -106,8 +106,12 @@ def _file_url_to_path(url):
         path = unquote(urlparse(url).path or "")
     except Exception:
         return ""
-    if len(path) >= 3 and path[0] == "/" and path[2] == ":":
-        path = path[1:]
+    # Windows 的 pathname2url 会给出 ///C:/...，再拼上 file:// 就变成
+    # file://///C:/...。urlparse 留下的 path 带多层前导斜杠；只剥一层时
+    # 盘符路径会被 normpath 当成 UNC（\\C:\...），对不上工作区根。
+    drive = path.lstrip("/")
+    if len(drive) >= 2 and drive[0].isalpha() and drive[1] == ":":
+        path = drive
     return os.path.normpath(path)
 
 

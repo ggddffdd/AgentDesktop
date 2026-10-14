@@ -392,9 +392,8 @@ def build_twin_panel(app):
     lay.addWidget(app.twin_status)
     app.twin_qc_banner = QLabel("")
     app.twin_qc_banner.setWordWrap(True)
-    app.twin_qc_banner.setStyleSheet(
-        "color:#9A6700;background:#FFF4D6;border:1px solid #E8C36A;"
-        "border-radius:8px;padding:6px 10px;font-size:12px;font-weight:600;")
+    from theme_qss import qc_skip_banner
+    app.twin_qc_banner.setStyleSheet(qc_skip_banner())
     lay.addWidget(app.twin_qc_banner)
     _refresh_twin_qc_banner(app)
 
