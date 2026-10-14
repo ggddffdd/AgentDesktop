@@ -97,7 +97,8 @@ def main():
     check("含军团权限扰动", "_perturb_legion_perm_265.py" in names)
     check("含权限硬确认扰动", "_perturb_hard_confirm_bypass_221.py" in names)
     check("含路由扰动", "_perturb_system_prompt_routing_221.py" in names)
-    missing = [n for n in names if not os.path.isfile(os.path.join(ROOT, n))]
+    missing = [n for n in names
+               if not os.path.isfile(os.path.join(ROOT, "_perturb", n))]
     check("critical 名单上的脚本都在磁盘上", not missing, str(missing))
     wf = _read(os.path.join(".github", "workflows", "perturb-nightly.yml"))
     check("nightly 有 schedule", "schedule:" in wf and "cron:" in wf)

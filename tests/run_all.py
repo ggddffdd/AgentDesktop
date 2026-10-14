@@ -5,7 +5,7 @@
     python tests/run_all.py                 # 跑全部套件
     python tests/run_all.py --list          # 只列出发现的套件，不执行
     python tests/run_all.py --only bridge   # 只跑文件名含 bridge 的套件
-    python tests/run_all.py --with-perturb  # 追加跑根目录的扰动脚本（元测试，数分钟）
+    python tests/run_all.py --with-perturb  # 追加跑 _perturb/ 下的扰动脚本（元测试，数分钟）
     python tests/run_all.py --perturb-critical  # 只跑权限/路由/军团抽样（见 nightly）
 
 退出码：0=全部通过，1=有失败。
@@ -25,7 +25,7 @@
 
 扰动脚本（**元测试**，与套件是两回事）
 --------------------------------------
-根目录 `_perturb_*.py` 不是判据套件，而是「判据的检验器」：每个脚本都
+`_perturb/_perturb_*.py` 不是判据套件，而是「判据的检验器」：每个脚本都
 改坏一处源码 → 跑判据 → 期望它转红 → 还原。因此：
   · 耗时是判据套件的数倍（实测单个 12~44s），且**必须独占**（它改的是源码）；
   · 默认**不跑**（日常回归不必每轮都做元测试），用 `--with-perturb` 打开；
@@ -126,14 +126,16 @@ def discover():
 
 # ---------------------------------------------------------------- 扰动脚本
 # 2026-10-03 补：这批「元测试」原先**完全在本入口的视野之外** —— 它们在仓库
-# 根目录（discover 只扫 tests/test_*.py），也没有基线比对，因此被误删/改名会
+# `_perturb/`（discover 只扫 tests/test_*.py），也没有基线比对，因此被误删/改名会
 # 静默消失；更糟的是没人复跑，跨版本漂移后 case 会集体变哑弹（实测一次跑出
 # 8 条：锚点写死旧版本号 / 变异落在判据观测范围之外 / 判据代理太弱）。
 # 故：① 清单比对默认就做（成本为零，保住「脚本还在」）；② 真跑用 --with-perturb。
 PERTURB_PREFIX = "_perturb_"
 PERTURB_EXCLUDE = {"_perturb_guard.py"}   # 护栏自身，不是扰动 case
 PERTURB_MANIFEST = HERE / ".perturb_manifest.txt"
-PERTURB_GUARD = ROOT / "_perturb_guard.py"
+# v4.267.0：扰动脚本从仓库根目录分组迁入 _perturb/。
+PERTURB_DIR = ROOT / "_perturb"
+PERTURB_GUARD = PERTURB_DIR / "_perturb_guard.py"
 
 # v4.265.0（审查 P1-7）：CI 不跑全量 --with-perturb（慢且独占源码）。
 # nightly / workflow_dispatch 用 --perturb-critical 只抽这批（权限 / 路由 / 军团）。
@@ -153,8 +155,10 @@ PERTURB_CRITICAL = (
 
 
 def discover_perturb():
-    """收集仓库根目录下的扰动脚本（_perturb_*.py，排除护栏自身）。"""
-    return sorted(p for p in ROOT.glob(PERTURB_PREFIX + "*.py")
+    """收集 _perturb/ 下的扰动脚本（_perturb_*.py，排除护栏自身）。"""
+    if not PERTURB_DIR.is_dir():
+        return []
+    return sorted(p for p in PERTURB_DIR.glob(PERTURB_PREFIX + "*.py")
                   if p.name not in PERTURB_EXCLUDE)
 
 
@@ -313,7 +317,7 @@ def main():
     ap.add_argument("--refresh-manifest", action="store_true",
                     help="重建套件基线清单（故意删除/改名套件后使用）")
     ap.add_argument("--with-perturb", action="store_true",
-                    help="追加跑根目录的扰动脚本（元测试：改坏源码验判据，数分钟）")
+                    help="追加跑 _perturb/ 下的扰动脚本（元测试：改坏源码验判据，数分钟）")
     ap.add_argument("--perturb-only", default="",
                     help="只跑文件名含该子串的扰动脚本（隐含 --with-perturb）。"
                          "分段跑用：沙箱对每轮删除次数有上限，而扰动脚本"

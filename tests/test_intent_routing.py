@@ -190,10 +190,15 @@ def part_b():
     check("判据调用早于 _is_media_gen_request",
           body.index("intent_guard") < body.index("self._is_media_gen_request("),
           "判据必须前置于媒体生成判定，否则评价句仍会被当生成请求")
+    # v4.267.0：实现在 ui_routing；ChatWindow 只转发，源码契约跟着走并钉住接线。
+    rt_lines = _read(os.path.join(ROOT, "ui_routing.py")).splitlines()
     check("_looks_like_praise 已改为共享判据薄包装",
           "is_praise" in "\n".join(
-              ui_lines[_method_span(ui_lines, "_looks_like_praise")[0]:
-                       _method_span(ui_lines, "_looks_like_praise")[1]]))
+              rt_lines[_method_span(rt_lines, "_looks_like_praise")[0]:
+                       _method_span(rt_lines, "_looks_like_praise")[1]]))
+    ps, pe = _method_span(ui_lines, "_looks_like_praise")
+    check("ChatWindow._looks_like_praise 转发 ui_routing",
+          "ui_routing._looks_like_praise(" in "\n".join(ui_lines[ps:pe]))
 
     print("\n-- B2 第 2 层：Agent 意图判断前置于生成意图 --")
     s, e = _method_span(at_lines, "_detect_action_intent")  # v4.216.0：已迁 agent_text

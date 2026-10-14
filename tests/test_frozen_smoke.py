@@ -124,7 +124,7 @@ def mod_consts(name):
 toc = sorted(za.toc)
 want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         "video_pipeline", "vision_qc", "director_panel", "director_web",
-        "legion_worker", "agent_node", "agent", "agent_text", "ui", "tools", "core_agnes",
+        "legion_worker", "agent_node", "agent", "agent_text", "ui", "ui_routing", "tools", "core_agnes",
         "core.agnes", "legion", "permissions", "risk", "route_log", "config",
         # v4.211.4：主对话决策审计的公共件（permissions 顶层 import，必在包里）
         "tool_audit",
@@ -292,6 +292,9 @@ def main():
                "VISION_MODEL_KW", "deepseek-flash",
                # v4.177.0：历史注入的字符预算闸（第二道闸，按体量）
                "_fit_history_to_budget"],
+        # v4.267.0：复杂度 / 工具意图的实现在 ui_routing，ui 上只剩薄包装。
+        "ui_routing": ["route_judge", "is_complex_v2", "route_complex_v1",
+                       "_needs_tool_intent", "is_non_action_message"],
                # v4.212.0：原「节点画布收尾轮」色键 canvas_status_text /
                # canvas_final_bg 随画布模块一并移除；版本钉子由上面的行为字面量
                # 与 ③ APP_VERSION 断言承担，不另设替代键。

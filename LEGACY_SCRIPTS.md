@@ -127,14 +127,16 @@ python _hunt_runtime_dir.py --seconds 120 --launch "…\小臭玩AI.exe"
 
 ---
 
-## 六、产物清理工具（`tools/cleanup_products.py`）
+## 六、产物清理工具（`scripts/cleanup_products.py`）
 
 **用途**：把「小臭玩AI」工作区里闲置超过 30 天的**生成物**移入回收站，回收站再滞留 14 天后真删。
 
+v4.267.0 从 `tools/cleanup_products.py` 挪到 `scripts/`，避免和根目录的 `tools.py` 抢 `tools/` 这个名字。
+
 ```bash
-python tools/cleanup_products.py                # 预演（默认，只打印将做什么）
-python tools/cleanup_products.py --apply        # 真正执行
-python tools/cleanup_products.py --age-days 60 --keep-days 30   # 改阈值
+python scripts/cleanup_products.py                # 预演（默认，只打印将做什么）
+python scripts/cleanup_products.py --apply        # 真正执行
+python scripts/cleanup_products.py --age-days 60 --keep-days 30   # 改阈值
 ```
 
 **五条安全设计**（每一条都是为了「宁可漏不可误」）：
@@ -173,7 +175,7 @@ python tools/cleanup_products.py --age-days 60 --keep-days 30   # 改阈值
 
 | # | 检查点 | 怎么查 | 漏了会怎样 |
 |---|---|---|---|
-| 1 | **清理工具的保护/白名单** | `grep 旧名 tools/cleanup_products.py` | 目录被当垃圾清理 |
+| 1 | **清理工具的保护/白名单** | `grep 旧名 scripts/cleanup_products.py` | 目录被当垃圾清理 |
 | 2 | **自动任务的 prompt** | 看 `automation_update` 里那条任务的说明 | 每周简报提到不存在的目录 |
 | 3 | **项目文档**（本文件、`BUILD_SANDBOX.md` 等） | `grep -rn 旧名 *.md tools/` | 后人照着过期说明操作 |
 | 4 | **会话/配置** | `grep 旧名 ~/Documents/小臭玩AI/{config,sessions}.json` | 会话里的附件标记失效 |

@@ -46,12 +46,12 @@ def check(name, cond, detail=""):
 
 # ---- 契约：这些判据函数必须与 intent_guard 同源 ----
 MUST_SYNC = [
-    ("ui.py", "_needs_tool_intent"),        # 本轮的元凶
+    ("ui_routing.py", "_needs_tool_intent"),  # v4.267.0 外移，仍须接 intent_guard
     ("ui.py", "_needs_web_search"),
     ("ui.py", "_message_needs_agent"),
     ("ui.py", "_last_user_intent_is_action"),
-    ("ui.py", "_looks_like_praise"),        # 薄包装
-    ("ui.py", "_looks_like_learning_question"),
+    ("ui_routing.py", "_looks_like_praise"),
+    ("ui_routing.py", "_looks_like_learning_question"),
     ("agent_text.py", "_detect_action_intent"),  # v4.216.0 随判据族迁至 agent_text.py
 ]
 
@@ -116,12 +116,18 @@ def part_a_contract():
         check(f"A1 {path}:{fn} 存在", bool(body))
         check(f"A2 {path}:{fn} 引用 intent_guard",
               "intent_guard" in body, body[:120])
+    # v4.267.0：实现外移后，ChatWindow 上的同名方法必须仍转发，否则 bind_online 绑到空壳。
+    for name in ("_needs_tool_intent", "_looks_like_praise",
+                 "_looks_like_learning_question"):
+        wrap = _func_src("ui.py", name)
+        check("A3 ui.%s 转发 ui_routing.%s" % (name, name),
+              ("ui_routing." + name + "(") in wrap, (wrap or "<缺失>")[:80])
 
 
 def part_b_auto_patrol():
     print("\n-- B) 自动巡检：新冒出来的判据必须被抓住 --")
     offenders = []
-    for path in ("ui.py", "agent.py", "agent_text.py", "tools.py"):
+    for path in ("ui.py", "ui_routing.py", "agent.py", "agent_text.py", "tools.py"):
         for name, body in _funcs_with_user_scan(path).items():
             if name in WHITELIST:
                 continue
@@ -164,7 +170,7 @@ def part_c_behavior():
 def part_d_patch_details():
     print("\n-- D) 三处补丁的源码契约 --")
     ui_src = open(os.path.join(ROOT, "ui.py"), encoding="utf-8-sig").read()
-    nt = _func_src("ui.py", "_needs_tool_intent")
+    nt = _func_src("ui_routing.py", "_needs_tool_intent")
     check("D1 _needs_tool_intent 有 intent_guard 前置短路",
           "is_non_action_message(last_user)" in nt)
     # 比的是「词表**使用**处」而不是定义处（KEYWORDS = (...) 在函数最前面）
@@ -175,7 +181,7 @@ def part_d_patch_details():
     check("D3 词表补了文件操作动词", '"删掉"' in nt and '"重命名"' in nt)
     check("D4 词表补了口语搜索变体", '"搜一下"' in nt)
     check("D5 词表补了技能安装类", '"装个技能"' in nt)
-    lq = _func_src("ui.py", "_looks_like_learning_question")
+    lq = _func_src("ui_routing.py", "_looks_like_learning_question")
     check("D6 _looks_like_learning_question 改为转发 intent_guard",
           "intent_guard" in lq and "is_learning_question" in lq)
     # guard 命中时给模型一个"合规出口"
@@ -190,10 +196,10 @@ def part_d_patch_details():
 
 def part_e_negative():
     print("\n-- E) 负面验证：拆掉前置短路，误判必须复现 --")
-    nt = _func_src("ui.py", "_needs_tool_intent")
-    old = ("        try:\n"
-           "            import intent_guard as _ig\n"
-           "            if _ig.is_non_action_message(last_user):\n")
+    nt = _func_src("ui_routing.py", "_needs_tool_intent")
+    old = ("    try:\n"
+           "        import intent_guard as _ig\n"
+           "        if _ig.is_non_action_message(last_user):\n")
     check("E1 锚点命中", old in nt, nt[:200])
     import ui
     W = ui.ChatWindow.__new__(ui.ChatWindow)

@@ -223,12 +223,15 @@ def part_c_skill_install():
 
 def part_d_route_complexity():
     print("\n-- D) P1-4 复杂度判定接入 route_judge --")
-    src = _src("ui.py")
+    src = _src("ui_routing.py")
+    ui_src = _src("ui.py")
     check("D1 _is_complex 调 route_judge.is_complex_v2",
           "route_judge.is_complex_v2(messages, hints, threshold)" in src)
     check("D2 保留 v1 实现供回退", "def _is_complex_v1(" in src)
     check("D3 回退开关 route_complex_v1 存在",
-          'self.cfg.get("route_complex_v1")' in src)
+          'cfg.get("route_complex_v1")' in src)
+    check("D3b ChatWindow._is_complex 转发 ui_routing",
+          "ui_routing._is_complex(" in ui_src)
     check("D4 归因与判定同源（都走 route_judge）",
           src.count("route_judge.is_complex_v2(") >= 2,
           f"命中 {src.count('route_judge.is_complex_v2(')} 次")

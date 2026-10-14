@@ -73,6 +73,7 @@ _perturb_shot_prompt_261.py
 _perturb_skill_gate_b4_226.py
 _perturb_skill_install_gate_259.py
 _perturb_skill_meta_226.py
+_perturb_struct_267.py
 _perturb_structure_twin_260.py
 _perturb_structured_return_220.py
 _perturb_structured_return_223.py
