@@ -165,12 +165,23 @@ SCAN_SUFFIX = (".py", ".pyc", ".json", ".jsonl", ".spec", ".md", ".txt", ".bat",
                ".log", ".db", ".sqlite")
 
 
+# Windows 保留设备名。walk 之后再算相对路径会 ValueError。
+_DEVICE_NAMES = {"nul", "con", "prn", "aux"}
+
+
+def _is_device_name(name):
+    raw = str(name or "")
+    base = os.path.splitext(raw)[0].lower()
+    return base in _DEVICE_NAMES or raw.lower() in _DEVICE_NAMES
+
+
 def _iter_files(root):
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames
-                       if d not in SKIP_DIR_PARTS and not d.startswith(SKIP_NAME_PREFIX)]
+                       if d not in SKIP_DIR_PARTS and not d.startswith(SKIP_NAME_PREFIX)
+                       and not _is_device_name(d)]
         for fn in filenames:
-            if fn.startswith(SKIP_NAME_PREFIX):
+            if fn.startswith(SKIP_NAME_PREFIX) or _is_device_name(fn):
                 continue
             if fn.endswith(SCAN_SUFFIX):
                 yield Path(dirpath) / fn

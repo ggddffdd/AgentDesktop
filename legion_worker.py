@@ -1352,6 +1352,42 @@ class LegionWorker(QThread):
         except Exception as e:
             log.warning("开工前能力审计异常(放行不拦): %s", e)
 
+    def _pause_for_capability_gap(self, wave_no, gap, waves, task, gate_reports):
+        """高成本波 Critical 缺口：不派发，停在这里等补位或「仍要开工」。"""
+        gap = (gap or "能力不足").strip()
+        self._log("⛔ 能力审计拦住了第 %s 波（高成本），没有派发。%s" % (wave_no, gap))
+        self._log("补上缺的角色或技能后重新开跑。若确定仍要开工，在任务里写上「仍要开工」。")
+        try:
+            legion.end_run(self.run_id, "capability_block")
+            self._board("run", status="capability_block", run_id=self.run_id)
+        except Exception:
+            pass
+        summary = ("能力审计拦住了第 %s 波，没有派发。%s\n"
+                   "补上缺口后重跑；任务里写「仍要开工」可以跳过这次暂停。"
+                   % (wave_no, gap))
+        self.last_meta = {
+            "status": "capability_block",
+            "n_waves": len(waves or []),
+            "n_done": max(0, int(wave_no or 1) - 1),
+            "gate_reports": list(gate_reports or []),
+            "run_id": self.run_id,
+            "task": task,
+            "summary": summary,
+            "capability_text": self._capability_report_text(),
+            "capability_audit_text": (
+                self._capability_audit.get("report_text", "")
+                if getattr(self, "_capability_audit", None) else ""),
+            "missing_skills_text": self._missing_skills_report_text(),
+            "skill_gaps": list(getattr(self, "_missing_skills", None) or []),
+            "skill_candidates": [],
+            "wave_failed_members": {},
+            "gate_errors": {},
+        }
+        try:
+            self.done.emit(summary)
+        except Exception:
+            pass
+
     def _capability_preflight(self, members, task):
         """v4.146（阶段三）：高成本波前的「能力再审计」程序闸门。
 
@@ -2241,20 +2277,24 @@ class LegionWorker(QThread):
                                 f"## 第 {wave_no} 波经停点预检 · ⚠️ 拦截\n\n缺口：{gap}")
                         else:
                             self._log("  🚧 经停点预检未出结论（不拦，继续）")
-                        # v4.146 / v4.268.0：能力再审计只提示。Critical 返回 False
-                        # 并不跳过 _run_wave（以前日志写成「拦截」，实际照样开工）。
+                        # 高成本波的 Critical 缺口会暂停，不再派发这一波。
                         _cok, _cgap, _crep = self._capability_preflight(members, task)
+                        if _cok is False and legion.capability_gap_blocks_wave(
+                                True, True, task):
+                            self._pause_for_capability_gap(
+                                wave_no, _cgap, waves, task, gate_reports)
+                            return
                         if _cok is False:
-                            self._log("  🧠 能力审计：⚠️ Critical 缺口（只提示，本波不因此暂停）—— %s"
+                            self._log("  🧠 能力审计：Critical 缺口，但任务写了「仍要开工」，本波仍派发 —— %s"
                                       % _cgap)
                             wave_state_in["context"] = (
                                 (wave_state_in.get("context") or "")
-                                + "\n\n【能力审计 · 提示（不暂停）· 项目经理】本波启动前能力审计发现"
+                                + "\n\n【能力审计 · 仍要开工】本波启动前能力审计发现"
                                   "Critical 缺口：%s\n无法获得的能力明说「无法获取+缺什么」，"
-                                  "禁止编造凑数；建议先补位（装/挂技能）。本波仍会继续。"
+                                  "禁止编造凑数。"
                                   % _cgap)
                             gate_reports.append(
-                                "## 第 %s 波能力审计 · ⚠️ Critical 缺口（不暂停）\n\n缺口：%s"
+                                "## 第 %s 波能力审计 · 仍要开工\n\n缺口：%s"
                                 % (wave_no, _cgap))
                         else:
                             self._log("  🧠 能力审计：通过"

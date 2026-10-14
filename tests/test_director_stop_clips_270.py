@@ -370,9 +370,11 @@ def main():
     pipe8.clip_paths = [keep_a, None, None]
     app8.director_pipeline = pipe8
     dp._on_clips_done(app8, 1, 3, "逐镜生成完成")
-    check("真的缺片段时仍记失败",
-          bool(app8._director_agent_error) and "没有可用片段" in app8._director_agent_error,
-          app8._director_agent_error)
+    check("缺一部分镜时可以合成并写明跳过",
+          (not app8._director_agent_error)
+          and "可以合成" in app8.director_status.text()
+          and "缺" in app8.director_status.text(),
+          app8.director_status.text())
 
     print(f"\n汇总：PASS={_p} FAIL={_f}")
     return 0 if _f == 0 else 1

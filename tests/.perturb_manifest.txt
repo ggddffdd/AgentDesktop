@@ -24,6 +24,7 @@ _perturb_continuation_sticky_255.py
 _perturb_critical_proc_deny.py
 _perturb_data_egress_256.py
 _perturb_director_desk_270.py
+_perturb_director_stop_clips_270.py
 _perturb_evidence_mask.py
 _perturb_exec_tool_gate_219.py
 _perturb_fail_log_tts_257.py
@@ -65,6 +66,7 @@ _perturb_resume_missing_artifact_232.py
 _perturb_review_fix_243.py
 _perturb_review_fix_244.py
 _perturb_review_fix_245.py
+_perturb_review_followups_271.py
 _perturb_run_python_schema_227.py
 _perturb_runall_utf8_238.py
 _perturb_runtime_dir_hygiene_236.py

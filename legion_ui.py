@@ -44,6 +44,7 @@ import os
 import copy
 import json
 import logging
+import uuid
 
 from PySide6.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QListWidget,
@@ -142,6 +143,16 @@ def _add_skill_section_header(lst: QListWidget, text: str):
 
 
 # ============ 角色编辑器（7 要素）============
+def _split_role_list(text):
+    """顿号、逗号都拆。空项丢掉，顺序保留。"""
+    parts = []
+    for raw in str(text or "").replace("，", ",").replace("、", ",").split(","):
+        s = raw.strip()
+        if s and s not in parts:
+            parts.append(s)
+    return parts
+
+
 class RoleEditor(QDialog):
     """团队成员编辑器：把角色拆成 7 个要素填，避免 prompt 写成一坨糊话。"""
 
@@ -153,6 +164,7 @@ class RoleEditor(QDialog):
         # 在 exec 前钳进屏幕可用区；表单已包 QScrollArea，内容超出可滚动。
         self._want_size = (640, 820)
         r = role or legion.new_role()
+        self._orig_role = dict(r) if isinstance(r, dict) else {}
 
         self.e_emoji = QLineEdit(r.get("emoji", ""))
         self.e_emoji.setFixedWidth(64)
@@ -216,6 +228,15 @@ class RoleEditor(QDialog):
         self.e_selfcheck.setFixedHeight(52)
         self.e_selfcheck.setPlaceholderText("交付前自检哪几项")
 
+        self.e_tags = QLineEdit("、".join(
+            str(t).strip() for t in (r.get("capability_tags") or [])
+            if str(t).strip()))
+        self.e_tags.setPlaceholderText("职责标签，顿号或逗号分开。保存后还在")
+        self.e_aliases = QLineEdit("、".join(
+            str(t).strip() for t in (r.get("aliases") or [])
+            if str(t).strip()))
+        self.e_aliases.setPlaceholderText("精确别名，顿号或逗号分开。组队按这些名字对上")
+
         # ---- ⑧ 挂载技能（v4.121.3 新增；v4.121.4 拆分两段；v4.121.5 归档元素带快照名）----
         # 运行时扫 skills 目录，不持久化。新建/改 SKILL.md 后重开编辑器立即可见。
         # 已挂载但被卸载的 slug 从成员 archived_skills 读，分两段展示：
@@ -274,6 +295,8 @@ class RoleEditor(QDialog):
         form.addRow("⑤ 输出格式", self.e_output)
         form.addRow("⑥ 质量标准", self.e_quality)
         form.addRow("⑦ 自检", self.e_selfcheck)
+        form.addRow("职责标签", self.e_tags)
+        form.addRow("别名", self.e_aliases)
         # v4.252.0：搜索框 + 列表 包成一个 widget（原来只放列表，现在顶部加搜索）
         skill_box = QWidget()
         sv = QVBoxLayout(skill_box)
@@ -425,21 +448,30 @@ class RoleEditor(QDialog):
             self._rebuilding_skills = False
 
     def get_role(self):
-        role = legion.new_role(
-            name=self.e_name.text().strip(),
-            emoji=self.e_emoji.text().strip(),
-            mission=self.e_mission.toPlainText().strip(),
-            constraints=self.e_constraints.toPlainText().strip(),
-            tools=legion.merge_saved_role_tools(
+        orig = dict(getattr(self, "_orig_role", None) or {})
+        role = dict(orig)
+        role.update({
+            "name": self.e_name.text().strip(),
+            "emoji": self.e_emoji.text().strip(),
+            "mission": self.e_mission.toPlainText().strip(),
+            "constraints": self.e_constraints.toPlainText().strip(),
+            "tools": legion.merge_saved_role_tools(
                 [i.text() for i in self.e_tools.selectedItems()],
                 getattr(self, "_orig_tools", []),
                 getattr(self, "_tool_listed", [])),
-            model=self.e_model.text().strip(),
-            output_format=self.e_output.toPlainText().strip(),
-            quality=self.e_quality.toPlainText().strip(),
-            self_check=self.e_selfcheck.toPlainText().strip(),
-            category=self.c_category.currentText().strip(),
-        )
+            "model": self.e_model.text().strip(),
+            "output_format": self.e_output.toPlainText().strip(),
+            "quality": self.e_quality.toPlainText().strip(),
+            "self_check": self.e_selfcheck.toPlainText().strip(),
+            "category": self.c_category.currentText().strip(),
+            "capability_tags": _split_role_list(self.e_tags.text()),
+            "aliases": _split_role_list(self.e_aliases.text()),
+        })
+        if not str(role.get("id") or "").strip():
+            role["id"] = str(uuid.uuid4())
+        role.setdefault("focus", "")
+        role.setdefault("completion_criteria", "")
+        role.setdefault("card_ver", getattr(legion, "ROLE_CARD_VER", ""))
         # 挂载技能：v4.121.4 起按两段分拣
         # - ('installed', slug) 勾选 → 进 skills（运行时拼入 prompt）
         # - ('archived', entry)  勾选 → 保留在 archived_skills（运行时忽略）

@@ -304,6 +304,16 @@ if os.path.isfile(FIXTURE):
             ('QLabel', '{"background": "#F7F8FC", "border": "1px solid #E5E7EB",'
                        ' "border-radius": "8px", "color": "#5F6368",'
                        ' "font-size": "12px"}'): 1,
+            # v4.271.0：「更多选项」多一枚复选框，样式仍是既有 _chk_style()。
+            # 五条是这一枚展开出来的，再多一枚照样红。
+            ('QCheckBox', '{"color": "#202124", "font-size": "13px", "spacing": "6px"}'): 1,
+            ('', '{"QCheckBox": ":indicator"}'): 1,
+            ('QCheckBox::indicator', '{"background": "#FFFFFF", "border": "1px solid #E5E7EB",'
+                                     ' "border-radius": "6px", "height": "16px",'
+                                     ' "width": "16px"}'): 1,
+            ('', '{"QCheckBox": ":indicator:checked"}'): 1,
+            ('QCheckBox::indicator:checked', '{"background": "#1A73E8",'
+                                             ' "border": "1px solid #1A73E8"}'): 1,
         }),
         # v4.264.0 专注对话：侧栏「更多」、工具进度条、输入区按钮。
         # 词条是新的，配色仍是既有 THEME 值。条数写死，多一份照样红。
@@ -327,7 +337,8 @@ if os.path.isfile(FIXTURE):
                             ' "font-size": "12px", "padding": "0 12px"}'): 1,
             ("QPushButton:hover", '{"border-color": "#EA4335", "color": "#EA4335"}'): 2,
             ("QPushButton:hover", '{"background": "#E4E8F2", "color": "#202124"}'): 1,
-            ("", '{"color": "#6B7280", "font-size": "12px", "padding-left": "4px"}'): 2,
+            # v4.271.0：高级五档里多一句 route_complex_v1 提示，复用 12px 灰字。
+            ("", '{"color": "#6B7280", "font-size": "12px", "padding-left": "4px"}'): 3,
             ("QPushButton", '{"background": "transparent", "border": "none",'
                             ' "color": "#5F6368", "font-size": "12px",'
                             ' "padding": "0 4px", "text-align": "left"}'): 1,

@@ -354,8 +354,8 @@ def test_dead_capability_and_audit_wording():
     check("Critical 文案不再写成程序会拦住开工",
           "不许开工" not in audit_src and "不自动开工" not in audit_src,
           audit_src)
-    check("文案写明只是提示、本波不因此暂停",
-          "不暂停" in audit_src or "不因此暂停" in audit_src, audit_src)
+    check("文案写明高成本波会因此暂停",
+          "高成本波会因此暂停" in audit_src, audit_src)
     check("高成本波日志不再把提示写成拦截",
           "能力审计：⛔ 拦截" not in worker)
 

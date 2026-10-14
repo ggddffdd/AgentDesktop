@@ -55,6 +55,10 @@ REASON_MAX = 300             # 原因截断长度
 MAIN_AUDIT_NAME = "tool_audit.jsonl"            # 主对话链账本
 LEGION_AUDIT_NAME = "legion_tool_audit.jsonl"   # 军团账本（文件名由 UI 面板读取，勿改）
 
+# 两本账共用的字段。军团可以多带 run_id 等，合并时不得改写这些键的含义。
+CORE_FIELDS = ("ts", "time", "origin", "tool", "args_digest", "args_preview",
+               "decision", "rule", "reason", "by")
+
 # 参数里可能是敏感值的键（写审计前抹掉）
 SENSITIVE_KEY_HINTS = ("key", "token", "secret", "password", "cookie",
                        "authorization", "credential")
@@ -174,3 +178,39 @@ def build_record(tool, args, decision, rule, reason="", by="engine",
     if extra:
         rec.update(extra)
     return rec
+
+
+def _read_ledger(path, origin_default):
+    """只读一行一条。坏行跳过。缺 origin 时补上来源，不写回磁盘。"""
+    out = []
+    if not path or not os.path.isfile(path):
+        return out
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception:
+        return out
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        if not rec.get("origin"):
+            rec = dict(rec)
+            rec["origin"] = origin_default
+        out.append(rec)
+    return out
+
+
+def merge_ledgers(main_path, legion_path):
+    """只读合并主对话账本和军团账本，按时间排序。不写盘。"""
+    rows = []
+    rows.extend(_read_ledger(main_path, "main"))
+    rows.extend(_read_ledger(legion_path, "legion"))
+    rows.sort(key=lambda r: (float(r.get("ts") or 0), str(r.get("time") or "")))
+    return rows

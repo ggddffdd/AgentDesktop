@@ -3908,7 +3908,8 @@ class VideoPipeline:
                                      resolution=resolution, first_frame=first_frame,
                                      dialogue=dialogue, images=ref_images,
                                      dest_path=dest, on_submit=_on_submit,
-                                     cancel_token=getattr(self, "_job_token", None))
+                                     cancel_token=getattr(self, "_job_token", None),
+                                     surface="director")
             except Exception as e:
                 # v4.168.0：取消原样抛（让上层标 cancelled），不伪装成"生成失败"
                 if _is_cancel_error(e):

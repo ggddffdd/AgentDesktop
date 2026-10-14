@@ -1249,25 +1249,77 @@ def skill_disclosure_plan(role, task="", skills_dir=None, full_skill_body=None):
     return {"mode": "mixed", "full": full, "summary": summary}
 
 
-def _legion_skill_meta_note(sk):
-    """军团装载不走 skill_loader 的拒用闸，只附加 skill_meta 的未审提示。
+def _legion_loader_body(slug, skills_dir):
+    """按 slug 走 skill_loader 的同一套 skill_meta 与不可信包装。
 
-    老技能大多没有 source/version。这里 strict=False：缺元数据照常注入，
-    但让模型看见「未经审计」。校验器自身出错则不加提示、不拦技能。
+    返回：
+      str  —— 要注入的正文（拒用时是空串，调用方不得再退回裸正文）
+      None —— 加载器没找到这份技能，调用方可以退回军团自己的解析
+    strict 与主对话相同（config 的 skill_meta_strict，默认不拒用）。
     """
+    slug = (slug or "").strip()
+    if not slug or not skills_dir:
+        return None
     try:
         import skill_meta
-        verdict = skill_meta.check_skill(sk or {}, strict=False)
-        return skill_meta.unverified_note(verdict) or ""
+        from skill_loader import scan_skills, wrap_skill_prompt
     except Exception:
+        return None
+    try:
+        strict = bool(skill_meta.strict_from_config())
+    except Exception:
+        strict = False
+    try:
+        skills = scan_skills(skills_dir)
+    except Exception:
+        return None
+    target = os.path.normcase(os.path.abspath(
+        os.path.join(skills_dir, slug, "SKILL.md")))
+    sk = None
+    for item in skills or []:
+        fp = os.path.normcase(os.path.abspath(getattr(item, "file_path", "") or ""))
+        if fp == target:
+            sk = item
+            break
+    if sk is None:
+        return None
+    try:
+        verdict = skill_meta.check_skill(sk, strict=strict)
+    except Exception:
+        verdict = None
+    if verdict is not None and getattr(verdict, "verdict", "") == skill_meta.VERDICT_REJECT:
+        log.info("军团技能拒用 %s：%s", slug, getattr(verdict, "reason", ""))
         return ""
+    text = (getattr(sk, "prompt", "") or "").strip()
+    if not text:
+        return ""
+    try:
+        wrapped = wrap_skill_prompt(text, getattr(sk, "name", "") or slug)
+    except Exception:
+        wrapped = text
+    note = ""
+    try:
+        if verdict is not None:
+            note = skill_meta.unverified_note(verdict) or ""
+    except Exception:
+        note = ""
+    return wrapped + note if note else wrapped
 
 
-def _skill_body_with_meta_note(sk):
+def _skill_body_with_meta_note(sk, slug=None, skills_dir=None):
+    """技能正文。能走 skill_loader 就走；拒用则不注入。"""
+    loaded = _legion_loader_body(slug, skills_dir)
+    if loaded is not None:
+        return loaded
     body = ((sk or {}).get("prompt") or "").strip()
     if not body:
         return ""
-    note = _legion_skill_meta_note(sk)
+    try:
+        import skill_meta
+        verdict = skill_meta.check_skill(sk or {}, strict=False)
+        note = skill_meta.unverified_note(verdict) or ""
+    except Exception:
+        note = ""
     return body + note if note else body
 
 
@@ -1352,8 +1404,7 @@ def build_role_prompt(role: dict, skills_dir: str = None, full_skill_body: bool 
         skills_dir = skills_dir or DEFAULT_SKILLS_DIR
         log.info(
             "技能披露·%s：全文=%s；摘要=%s。"
-            "军团读 SKILL.md 不经 skill_loader 的 skill_meta 拒用闸，"
-            "未审技能只在全文末附加提示。",
+            "军团读 SKILL.md 走 skill_loader 与 skill_meta（strict 与主对话相同）。",
             name,
             "、".join(disc.get("full") or []) or "无",
             "、".join(disc.get("summary") or []) or "无")
@@ -1364,7 +1415,7 @@ def build_role_prompt(role: dict, skills_dir: str = None, full_skill_body: bool 
                 if sk:
                     emoji = sk.get("emoji", "")
                     sname = sk.get("name") or slug
-                    body = _skill_body_with_meta_note(sk)
+                    body = _skill_body_with_meta_note(sk, slug=slug, skills_dir=skills_dir)
                     if body:
                         parts.append("\n### %s %s\n%s" % (emoji, sname, body))
                 else:
@@ -1432,7 +1483,7 @@ def skill_full_body_block(role, slug, skills_dir=None):
     替代概要，避免一次性把所有技能全文塞进 context。
     """
     sk = _load_skill_prompt(slug, skills_dir) or {}
-    body = _skill_body_with_meta_note(sk)
+    body = _skill_body_with_meta_note(sk, slug=slug, skills_dir=skills_dir)
     if not body:
         return ""
     return ("\n【挂载技能全文 · %s】\n%s"
@@ -7018,7 +7069,7 @@ def _capability_audit_report_text(task, cov, crit, imp, opt, threshold, pass_gat
     lines = ["🧠 **能力审计**（开工前）", "任务：%s" % str(task or "")[:80],
              "能力覆盖率：**%d%%**（阈值 %d%%）" % (pct, int(threshold * 100))]
     if crit:
-        lines.append("🔴 **Critical 缺口（建议先补位；程序不因此暂停开工）**：")
+        lines.append("🔴 **Critical 缺口（含生图/生视频的高成本波会因此暂停，不派发）**：")
         for g in crit:
             need = "、".join(g.get("need_tools") or []) or "（补角色/职责）"
             if g.get("need_skills"):
@@ -7032,8 +7083,21 @@ def _capability_audit_report_text(task, cov, crit, imp, opt, threshold, pass_gat
     if pass_gate:
         lines.append("✅ 通过闸门，可以开工。")
     else:
-        lines.append("⛔ 未达覆盖阈值（Critical 只提示、不因此暂停），请大哥决定是否补位后再跑。")
+        lines.append("⛔ 未达覆盖阈值。高成本波会因此暂停；任务里写「仍要开工」可跳过这次暂停。")
     return "\n".join(lines)
+
+
+def capability_gap_blocks_wave(has_critical, high_cost, task):
+    """高成本波上的 Critical 缺口要拦住派发。
+
+    普通文本波不在这里停。任务正文写了「仍要开工」则不拦，
+    避免补不了技能时整队卡死。
+    """
+    if not has_critical or not high_cost:
+        return False
+    if "仍要开工" in str(task or ""):
+        return False
+    return True
 
 
 def capability_audit(task, roles, registry=None, threshold=0.95):

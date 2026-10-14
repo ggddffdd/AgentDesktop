@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QLineEdit,
     QSpinBox, QComboBox, QListWidget, QListWidgetItem, QFileDialog, QSizePolicy,
-    QGroupBox, QFrame, QMenu, QCheckBox,
+    QGroupBox, QFrame, QMenu, QCheckBox, QWidget,
 )
 from PySide6.QtGui import QPixmap, QIcon, QAction
 from PySide6.QtCore import Qt, QSize, QThread, Signal
@@ -343,8 +343,15 @@ def build_twin_panel(app):
     app.twin_stop_btn = stop_btn
     lay.addLayout(opt)
 
-    # ---------------- 增强选项行 ----------------
-    opt2 = QHBoxLayout()
+    # ---------------- 增强选项：默认收起，安全项仍保持勾选 ----------------
+    app.twin_more_opts = QCheckBox("更多选项")
+    app.twin_more_opts.setChecked(False)
+    app.twin_more_opts.setToolTip(
+        "AI 标识、质检、形象锁定和全部重做。收起来不会改掉这些勾选。")
+    app.twin_more_opts.setStyleSheet(_chk_style())
+    lay.addWidget(app.twin_more_opts)
+    app.twin_more_box = QWidget()
+    opt2 = QHBoxLayout(app.twin_more_box)
     opt2.setSpacing(12)
 
     app.twin_ai_mark = QCheckBox("🏷 烧录 AI 标识")
@@ -385,7 +392,9 @@ def build_twin_panel(app):
         c.setStyleSheet(_chk_style())
         opt2.addWidget(c)
     opt2.addStretch(1)
-    lay.addLayout(opt2)
+    lay.addWidget(app.twin_more_box)
+    app.twin_more_box.setVisible(False)
+    app.twin_more_opts.toggled.connect(app.twin_more_box.setVisible)
 
     app.twin_status = QLabel("")
     app.twin_status.setStyleSheet(label_second())

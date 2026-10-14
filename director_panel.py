@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QSpinBox,
     QComboBox, QGroupBox, QFileDialog, QCheckBox, QListWidget, QListWidgetItem,
     QStackedWidget, QScrollArea, QWidget, QGridLayout, QFrame, QSizePolicy,
-    QInputDialog, QDialog, QRadioButton,
+    QInputDialog, QDialog, QRadioButton, QMessageBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QTabWidget, QSlider, QDoubleSpinBox, QSplitter,
 )
@@ -647,7 +647,7 @@ def build_director_panel(app):
     step_lay.setSpacing(8)
     app.director_step_labels = []
     for i, name in enumerate(STEP_LABELS):
-        lb = QLabel(f"{i} {name}")
+        lb = _StepChip(app, i, f"{i} {name}")
         lb.setAlignment(Qt.AlignCenter)
         lb.setFixedHeight(28)
         lb.setStyleSheet(_step_style(i == 0))
@@ -816,11 +816,24 @@ def build_director_panel(app):
     app.director_preview.setToolTip(
         "生成关键帧 / 视频前，先把每一镜的提示词列出来给你改，确认后才调用生成接口。\n"
         "改过的稿子之后重生成这一镜也继续用（不会悄悄用回老提示词）。")
+    app.director_more_opts = QCheckBox("更多拍摄选项")
+    app.director_more_opts.setChecked(False)
+    app.director_more_opts.setToolTip(
+        "尾帧接力、烧录字幕、质检、多参考图。默认仍按推荐项勾好，这里只是先收起来。")
+    app.director_more_opts.setStyleSheet(_chip_style())
+    adv = QWidget()
+    adv_lay = QHBoxLayout(adv)
+    adv_lay.setContentsMargins(0, 0, 0, 0)
+    adv_lay.setSpacing(8)
     for c in (app.director_relay, app.director_subtitle, app.director_vision_review,
               app.director_multiref):
         c.setStyleSheet(_chip_style())
-        row2.addWidget(c)
+        adv_lay.addWidget(c)
         app.director_inputs.append(c)
+    adv.setVisible(False)
+    app.director_more_opts.toggled.connect(adv.setVisible)
+    row2.addWidget(app.director_more_opts)
+    row2.addWidget(adv)
     app.director_preview.setStyleSheet(_chip_style())
     row2.addWidget(app.director_preview)
     row2.addStretch(1)
@@ -1208,10 +1221,117 @@ def build_director_panel(app):
 
 
 # ---------- 步骤切换 ----------
-def _step_style(active, done=False):
+def paid_generation_prompt(kind, n, preview_on, single=False):
+    """花费型生成要不要先问一句。
+
+    预审开着时，整批关键帧/视频走草稿窗，不再加短确认。
+    预审关掉时，进入生视频或整批关键帧仍问「将生成 N 镜」。
+    单镜重生成视频无论预审开关都问：草稿窗盖不到单镜。
+    返回 None 表示不用这句短确认。
+    """
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if kind == "clip" and single:
+        return "将重生成这一镜的视频。要继续吗？"
+    if preview_on:
+        return None
+    if single and kind == "keyframe":
+        return "将重生成这一镜的关键帧。要继续吗？"
+    if kind == "keyframe":
+        return "将生成 %d 镜关键帧。要继续吗？" % max(n, 1)
+    if kind == "clip":
+        return "将生成 %d 镜视频。要继续吗？" % max(n, 1)
+    return None
+
+
+def step_chip_state(index, current, portrait):
+    """步骤条格子：当前 / 已完成 / 跳过 / 还没到。
+
+    口播跳过人物和关键帧。跳过不能涂成已完成。
+    """
+    try:
+        index = int(index)
+        current = int(current)
+    except (TypeError, ValueError):
+        return "todo"
+    if index == current:
+        return "active"
+    if portrait and index in (2, 4) and index < current:
+        return "skipped"
+    if index < current:
+        return "done"
+    return "todo"
+
+
+def step_view_allowed(index, reached):
+    """只允许回看已经走到的页，不往前跳、也不因此重跑。"""
+    try:
+        index = int(index)
+        reached = int(reached)
+    except (TypeError, ValueError):
+        return False
+    return 1 <= index <= reached
+
+
+def clips_done_notice(ok_n, total_n, paths):
+    """缺镜时的统一说法。有片段就能合成，成片会跳过空镜。
+
+    一镜都没有才记失败。返回 None 表示不缺镜，调用方用原来的完成句。
+    """
+    try:
+        total_n = int(total_n or 0)
+        ok_n = int(ok_n or 0)
+    except (TypeError, ValueError):
+        total_n, ok_n = 0, 0
+    paths = list(paths or [])
+    missing = 0
+    if total_n:
+        missing = sum(1 for i in range(total_n) if i >= len(paths) or not paths[i])
+    have = total_n - missing
+    if missing and have:
+        text = "可以合成，但缺 %d 镜，成片会跳过它们。" % missing
+        return {"status": text, "error": None, "log": text, "missing": missing}
+    if missing and not have:
+        err = "逐镜生成有失败：%d/%d 镜没有可用片段，请先单镜重试。" % (missing, total_n)
+        return {"status": err, "error": err, "log": err, "missing": missing}
+    return None
+
+
+def resume_banner_text(data):
+    """续跑横幅。出过片的项目也要能续，不要只在未完成时出现。"""
+    data = data or {}
+    try:
+        step = int(data.get("step") or 0)
+    except (TypeError, ValueError):
+        step = 0
+    label = STEP_LABELS[min(max(step, 0), len(STEP_LABELS) - 1)]
+    if data.get("finished"):
+        return "上次已出片（进行到：%s），可继续改。" % label
+    return ("发现上次未完成的导演台任务（进行到：%s）。"
+            "可继续编辑，不必从头开始。") % label
+
+
+def resume_status_text(data):
+    data = data or {}
+    try:
+        step = int(data.get("step") or 0)
+    except (TypeError, ValueError):
+        step = 0
+    label = STEP_LABELS[min(max(step, 0), len(STEP_LABELS) - 1)]
+    if data.get("finished"):
+        return "已恢复上次出片的项目（%s）。可以继续改。" % label
+    return "已从上次进度恢复（进行到：%s）。可继续编辑或直接操作。" % label
+
+
+def _step_style(active, done=False, skipped=False):
     if active:
         return (f"QLabel{{background:{THEME['accent']};color:white;border-radius:14px;"
                 f"font-size:13px;font-weight:600;padding:0 12px;}}")
+    if skipped:
+        return (f"QLabel{{background:transparent;color:{THEME['dim']};border:1px dashed {THEME['border']};"
+                f"border-radius:14px;font-size:13px;padding:0 12px;}}")
     if done:
         return (f"QLabel{{background:{THEME['card']};color:{THEME['live_green']};border:1px solid {THEME['border']};"
                 f"border-radius:14px;font-size:13px;padding:0 12px;}}")
@@ -1219,11 +1339,67 @@ def _step_style(active, done=False):
             f"border-radius:14px;font-size:13px;padding:0 12px;}}")
 
 
+class _StepChip(QLabel):
+    """步骤条上的一格。点已走过的步只换页，不改流程停在哪一步。"""
+
+    def __init__(self, app, index, text):
+        super().__init__(text)
+        self._app = app
+        self._index = index
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("点这里回看这一步，不会重新生成。")
+
+    def mousePressEvent(self, ev):
+        try:
+            _view_step(self._app, self._index)
+        except Exception:
+            pass
+        super().mousePressEvent(ev)
+
+
+def _paint_steps(app):
+    current = int(getattr(app, "director_step", 0) or 0)
+    viewing = getattr(app, "director_view_step", None)
+    if viewing is None:
+        viewing = current
+    p = getattr(app, "director_pipeline", None)
+    portrait = bool(getattr(p, "portrait_mode", False))
+    labels = getattr(app, "director_step_labels", None) or []
+    for i, lb in enumerate(labels):
+        state = step_chip_state(i, current, portrait)
+        name = STEP_LABELS[i] if i < len(STEP_LABELS) else str(i)
+        if state == "skipped":
+            lb.setText("%s %s·跳过" % (i, name))
+        else:
+            lb.setText("%s %s" % (i, name))
+        lb.setStyleSheet(_step_style(
+            i == viewing,
+            done=(state == "done" and i != viewing),
+            skipped=(state == "skipped" and i != viewing)))
+
+
+def _view_step(app, index):
+    if getattr(app, "director_busy", False):
+        _set_status(app, "这一步还在跑，先等它停。")
+        return False
+    reached = int(getattr(app, "director_step", 0) or 0)
+    if not step_view_allowed(index, reached):
+        return False
+    app.director_view_step = index
+    if index >= 1 and getattr(app, "director_stack", None) is not None:
+        app.director_stack.setCurrentIndex(index - 1)
+    _paint_steps(app)
+    if index != reached and 0 <= index < len(STEP_LABELS) and 0 <= reached < len(STEP_LABELS):
+        _set_status(app, "正在回看「%s」。流程仍停在「%s」。" % (
+            STEP_LABELS[index], STEP_LABELS[reached]))
+    return True
+
+
 def _set_step(app, step):
     app.director_step = step
-    for i, lb in enumerate(app.director_step_labels):
-        lb.setStyleSheet(_step_style(i == step, done=(i < step)))
-    if step >= 1:
+    app.director_view_step = step
+    _paint_steps(app)
+    if step >= 1 and getattr(app, "director_stack", None) is not None:
         app.director_stack.setCurrentIndex(step - 1)
 
 
@@ -1289,6 +1465,8 @@ def _status_dyn(text):
 
 
 # ---------- 导演阶段状态机（v4.153.3 P3-11，轻量，不重写现有 60+ 读取点） ----------
+# 用户看见的进度是步骤条（STEP_LABELS / director_step），不是这四个阶段名。
+# 不再把 DirectorPhase 扩成另一套步骤状态机。
 class DirectorPhase:
     """收敛导演台「阶段」语义，替代散落 director_busy / clips_state / final_path 等属性
     在「生命周期」维度上的隐式表达。
@@ -1296,6 +1474,7 @@ class DirectorPhase:
     仅作集中表述，不替代任何运行态——现有 60+ 处 getattr 读取点全部保留，本类零破坏。
     阶段机是「会话级生命周期」指示：IDLE=无活动项目；RUNNING=已开导演尚未产出成片；
     DONE=成片已产出；ERROR=某任务失败。运行锁 director_busy 仍按原逻辑独立管理。
+    界面步骤条不读它。
     """
     IDLE = "idle"        # 初始 / 已重置：无活动项目
     RUNNING = "running"  # 有活动项目（已开导演，尚未产出成片）
@@ -1567,6 +1746,9 @@ def agent_director_command(app, cmd):
             # 内容审核被拦时需整段替换英文提示词
             p.shots[idx]["en"] = note
             note = None
+        ask = paid_generation_prompt("clip", 1, False, single=True)
+        if not _ask_paid(app, ask):
+            return {"ok": False, "msg": "已取消，这一镜没有重新生成。"}
         _set_status(app, f"[对话框指令] 正在按意见重生成 镜{idx + 1}…")
         _log(app, f"✎ [对话框] 修改 镜{idx + 1}：{note or '（直接重生成）'}")
         _run_thread(app, "clip_one", idx=idx, note=note)
@@ -1582,6 +1764,16 @@ def agent_director_command(app, cmd):
         if not (0 <= idx < len(p.shots or [])):
             return {"ok": False, "msg": f"分镜号超出范围（共 {len(p.shots or [])} 镜）"}
         note = (cmd.get("note") or "").strip() or None
+        box = getattr(app, "director_preview", None)
+        preview_on = True
+        if box is not None and hasattr(box, "isChecked"):
+            try:
+                preview_on = bool(box.isChecked())
+            except Exception:
+                preview_on = True
+        ask = paid_generation_prompt("keyframe", 1, preview_on, single=True)
+        if ask and not _ask_paid(app, ask):
+            return {"ok": False, "msg": "已取消，这一镜关键帧没有重新生成。"}
         _set_status(app, f"[对话框指令] 正在重生成 镜{idx + 1} 关键帧…")
         _log(app, f"✎ [对话框] 重生成 镜{idx + 1} 关键帧：{note or '（无修改意见）'}")
         _run_thread(app, "keyframe_one", idx=idx, feedback=note)
@@ -1702,6 +1894,8 @@ def agent_director_command(app, cmd):
             return {"ok": False, "msg": "口播模式没有关键帧（画面已锁定本人形象）"}
         if not getattr(p, "shots", None):
             return {"ok": False, "msg": "还没有分镜，无法重生成关键帧。"}
+        if not _preview_prompts(app, "keyframe"):
+            return {"ok": False, "msg": "已取消，没有重生成关键帧。"}
         _set_status(app, "[对话框指令] 正在按意见重生成全部关键帧…")
         _log(app, f"✎ [对话框] 重生成全部关键帧（{len(p.shots)} 镜）：{note or '（无修改意见）'}")
         _run_thread(app, "keyframes", feedback=note)
@@ -3257,19 +3451,20 @@ def _on_clips_done(app, ok, total, msg):
     if total_n:
         missing = sum(1 for i in range(total_n) if i >= len(paths) or not paths[i])
     kept_old = max(0, total_n - ok_n - missing)
-    if kept_old and not missing:
+    notice = clips_done_notice(ok_n, total_n, paths)
+    if notice:
+        # 缺镜仍可合成（成片跳过空镜）。一镜都没有才记失败。
+        _set_status(app, notice["status"], err=bool(notice.get("error")))
+        _log(app, notice["log"])
+        if notice.get("error"):
+            app._director_agent_error = notice["error"]
+    elif kept_old and not missing:
         # 这一轮有镜没换成新片段，但上一版还在。可以合成，不要报成「没有片段」。
         _set_status(app, f"逐镜生成结束：{ok_n}/{total_n} 镜已更新，其余仍用上一版。")
         _log(app, f"✅ {msg}：{ok_n}/{total_n} 更新，未替换的镜仍用上一版，可以合成。")
     else:
         _set_status(app, f"逐镜生成完成：{ok_n}/{total_n} 成功。可单镜「✎改/↻」，或「去合成」。")
         _log(app, f"✅ {msg}：{ok_n}/{total_n} 成功。")
-    # v4.125 M-15：真的缺片段才置错误标记。旧口径用 ok<total，全部重生成时
-    # 失败镜若仍留着上一版，会被误报成「不可合成」。
-    if missing:
-        app._director_agent_error = (
-            f"逐镜生成有失败：{missing}/{total_n} 镜没有可用片段，请先单镜重试失败项")
-        _log(app, f"⚠️ 有 {missing} 镜没有可用片段，快照将如实报失败")
     _set_busy(app, False)
     _save_session(app)
 
@@ -3502,10 +3697,14 @@ def _on_merge_ready(app, ok, msg, path):
                 {"rel": rel, "kind": "video", "name": name, "desc": rel})
             app.store.save()
             app._refresh_deliverables()
+        except Exception as e:
+            _log(app, "成片已在工程目录，但没能登记进主界面交付物：%s" % e)
+        # 出片后仍留着续跑记录，下次可以接着改，不必只在没做完时才能续。
+        try:
+            app.director_finished = True
         except Exception:
             pass
-        # 成片已完成，任务结束，清掉续跑存盘（下次打开不会再提示）
-        _clear_session(app)
+        _save_session(app)
     else:
         # v4.153.3 P3-11：合成失败 → ERROR 阶段（解锁后快照如实报 failed）。
         _set_director_phase(app, DirectorPhase.ERROR)
@@ -3656,6 +3855,7 @@ def _save_session(app):
         state = {
             "version": 1,
             "step": step,
+            "finished": bool(getattr(app, "director_finished", False)),
             "final_path": getattr(app, "director_final_path", None),
             # v4.132 项目制作规格（写一次全片带着，续跑必须还在）
             "spec": getattr(p, "spec", {}) or {},
@@ -3753,6 +3953,10 @@ def _session_draft(app):
 
 
 def _clear_session(app):
+    try:
+        app.director_finished = False
+    except Exception:
+        pass
     sp = _session_path()
     try:
         if os.path.isfile(sp):
@@ -3980,8 +4184,12 @@ def _load_session(app):
 
             _kick_kf_queue(app, [(-1, fp)], _kf_final)
 
+    try:
+        app.director_finished = bool(data.get("finished"))
+    except Exception:
+        pass
     _set_step(app, step)
-    _set_status(app, f"已从上次进度恢复（进行到：{STEP_LABELS[min(step, len(STEP_LABELS)-1)]}）。可继续编辑或直接操作。")
+    _set_status(app, resume_status_text(data))
     _log(app, f"💾 已从上次进度恢复，当前步骤：{STEP_LABELS[min(step, len(STEP_LABELS)-1)]}。")
     # v4.151：把存档自愈的结果明确告诉用户（不静默改数据）
     _heal = data.get("_v4151_healed")
@@ -4018,9 +4226,7 @@ def _maybe_offer_resume(app):
     bl = QHBoxLayout(banner)
     bl.setContentsMargins(14, 10, 14, 10)
     bl.setSpacing(12)
-    label = QLabel(
-        f"💾 发现上次未完成的导演台任务（进行到：{STEP_LABELS[min(step, len(STEP_LABELS)-1)]}）。"
-        f"可继续编辑，不必从头开始。")
+    label = QLabel("💾 " + resume_banner_text(data))
     label.setStyleSheet(label_body())
     bl.addWidget(label, 1)
     cont = QPushButton("▶ 继续")
@@ -4507,6 +4713,23 @@ def _prompt_preview_dialog(app, title, tip, drafts):
     return {idx: e.toPlainText() for idx, e in edits.items()}
 
 
+def _ask_paid(app, text):
+    """花费前的一句确认。测试可挂 app._director_spend_ask(text) -> bool。"""
+    if not text:
+        return True
+    cb = getattr(app, "_director_spend_ask", None)
+    if callable(cb):
+        try:
+            return bool(cb(text))
+        except Exception:
+            return False
+    parent = app if isinstance(app, QWidget) else None
+    btn = QMessageBox.question(
+        parent, "确认生成", text,
+        QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+    return btn == QMessageBox.Yes
+
+
 def _polish_prompts_before_submit(app):
     """提交前按分镜方法论自检一次。预审关掉也跑，避免弱句直接烧钱。"""
     p = getattr(app, "director_pipeline", None)
@@ -4540,10 +4763,19 @@ def _preview_prompts(app, kind):
     if p is None:
         return True
     _polish_prompts_before_submit(app)
+    box = getattr(app, "director_preview", None)
+    if box is None or not hasattr(box, "isChecked"):
+        return True
     try:
-        if not getattr(app, "director_preview", None) or not app.director_preview.isChecked():
-            return True
+        preview_on = bool(box.isChecked())
     except Exception:
+        return True
+    n = len(getattr(p, "shots", None) or [])
+    ask = paid_generation_prompt(kind, n, preview_on, single=False)
+    if ask is not None:
+        if not _ask_paid(app, ask):
+            _set_status(app, "已取消，没有开始生成。")
+            return False
         return True
     try:
         if kind == "keyframe":

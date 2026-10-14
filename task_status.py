@@ -348,6 +348,19 @@ def fail(task_id, reason="", retryable=False):
     return registry.fail(task_id, reason, retryable)
 
 
+def failure_sentence(kind, detail, retryable=False):
+    """任务条上的失败句。账本里的 detail 保持原文，只在展示时套这一句。"""
+    kind = str(kind or "").strip() or "任务"
+    detail = str(detail or "").strip()
+    if detail:
+        sentence = "%s失败：%s" % (kind, detail)
+    else:
+        sentence = "%s失败。" % kind
+    if retryable:
+        sentence += " 可以重试。"
+    return sentence
+
+
 def snapshot():
     return registry.snapshot()
 

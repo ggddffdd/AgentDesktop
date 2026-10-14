@@ -114,7 +114,7 @@ def _h_director_revise_character(cfg, app_dir, args, progress=None):
 def _h_director_revise_story(cfg, app_dir, args, progress=None):
     """按修改意见重写导演台项目的剧本（等价于导演台「✎ 重写剧本」按钮）。
 
-    纯文本产出、不调生成接口，无烧钱风险。note 留空=原样重试。
+    不生图、不生视频，仍会调用文本模型。note 留空=原样重试。
     用户说「重写剧本：xxx」「剧本再紧凑一点」时用。
     """
     note = (args.get("note") or "").strip()
@@ -127,7 +127,7 @@ def _h_director_revise_story(cfg, app_dir, args, progress=None):
 def _h_director_revise_shots(cfg, app_dir, args, progress=None):
     """按修改意见重排/重拆分镜（等价于导演台「✎ 重排分镜」按钮）。
 
-    纯文本产出、不调生成接口，无烧钱风险。note 留空=原样重试。
+    不生图、不生视频，仍会调用文本模型。note 留空=原样重试。
     用户说「重排分镜：xxx」「分镜太碎了合并一下」时用。
     注意：重排分镜会让已生成的关键帧/片段与新分镜对不上，属预期行为。
     """
