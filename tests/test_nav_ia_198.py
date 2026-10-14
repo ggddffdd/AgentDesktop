@@ -113,6 +113,15 @@ check("A10 仍走 idx+1 绑定页面栈",
       "setCurrentIndex(_si)" in src or "setCurrentIndex(index + 1)" in src
       or "self.main_stack.setCurrentIndex(_si)" in src)
 
+# v4.264.0：默认只露出对话。A4 只钉展平顺序，旧的「工作/创作/系统」三组也能过。
+more_groups = _const_list("NAV_MORE_GROUPS")
+more = more_groups[0] if more_groups else None
+check("A11 对话单独成组，协作/创作/系统收进更多",
+      bool(groups) and groups[0][0] == "对话" and tuple(groups[0][1]) == ("对话",)
+      and tuple(more or ()) == ("协作", "创作", "系统"),
+      extra="groups0=%s more=%s" % (
+          (groups[0] if groups else None), more))
+
 print()
 print("=" * 78)
 print("B 组：侧栏折叠（阈值 + 防抖短路）")

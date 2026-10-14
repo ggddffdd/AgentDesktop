@@ -38,6 +38,9 @@ hiddenimports = ['toast', 'empty_state', 'PySide6', 'PySide6.QtPrintSupport', 'P
                # 「源码能跑、打包后 ModuleNotFoundError」这类只在 exe 上出现的坑。
                'theme_tokens', 'ui_widgets', 'ui_workers', 'ui_msg',
                'ui_audit_mixin', 'agent_text',
+               # v4.264.0 专注对话：纯逻辑 + ChatWindow mixin。顶层 import，
+               # 仍显式登记，避免打包后 ModuleNotFoundError。
+               'ui_focus', 'ui_focus_host',
                # v4.225.0 新增两个模块：intent（统一意图对象）+
                # task_state（任务账本）。两者都是 agent.py / ui.py 里的动态 import，
                # 显式登记以杜绝（静态分析扫不到，打包后 exe 报 ModuleNotFoundError）。

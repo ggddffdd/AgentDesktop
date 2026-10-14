@@ -87,7 +87,7 @@ CASES = [
 
     ("ChatWindow 不再继承 ChatAuditMixin（审计族全断）",
      "ui.py",
-     "class ChatWindow(ChatAuditMixin, QMainWindow):",
+     "class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):",
      "class ChatWindow(QMainWindow):  # 扰动",
      ["C1"]),
 
@@ -105,9 +105,9 @@ CASES = [
 
     ("ui.py 塞回 500 行注释块（规模悄悄回弹）",
      "ui.py",
-     "class ChatWindow(ChatAuditMixin, QMainWindow):",
+     "class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):",
      "# 扰动：回弹测试用的死注释块\n" + "# 回弹填充\n" * 500
-     + "class ChatWindow(ChatAuditMixin, QMainWindow):",
+     + "class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):",
      ["D1"]),
 ]
 
