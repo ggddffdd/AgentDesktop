@@ -3675,8 +3675,14 @@ class VideoPipeline:
         sys_prompt = ("你是专业的短视频编剧。你的任务：**严格按用户给的主题**创作一部微故事剧本。"
                       "主题已经限定了体裁 / 人物 / 时代 / 原作，你只能在主题给定的框架里补全情节，"
                       "不得替换成另一个故事，也不要凭空添置与主题无关的设定。")
-        story_len_note = ("请创作一部微故事短视频剧本，用中文写。\n"
-                          + story_length_note(n, self.duration, getattr(self, "smart", True)))
+        # 口播文案走下面的独立提示词，这里不能先读 duration：
+        # 面板在 prepare() 之前就会试写口播（测试也是先设 portrait_mode 再调 _gen_story）。
+        story_len_note = ""
+        if not self.portrait_mode:
+            story_len_note = ("请创作一部微故事短视频剧本，用中文写。\n"
+                              + story_length_note(
+                                  n, getattr(self, "duration", 5),
+                                  getattr(self, "smart", True)))
         user_prompt = (
             f"主题：{topic}\n"
             + story_len_note
