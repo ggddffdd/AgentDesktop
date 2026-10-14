@@ -123,6 +123,8 @@ from ui_msg import (  # noqa: F401
     is_transient_net_error, humanize_net_error,
 )
 from ui_audit_mixin import ChatAuditMixin
+from ui_focus_host import FocusChromeMixin
+import ui_focus
 
 # 交付物类型 → 彩色竖条配色
 DELIVERY_COLORS = {
@@ -149,11 +151,15 @@ DELIVERY_COLORS = {
 #
 # 想新增导航项时：① 按序插进 nav_defs；② 把名字加进下面对应组的成员元组；
 # ③ 探针会自动校验两边一致 —— 只改一处会判红。
+# v4.264.0：对话单独露出；协作 / 创作 / 系统默认收进「更多」。
+# 展平顺序必须仍等于 nav_defs（test_nav_ia_198 A4）。
 NAV_GROUPS = (
-    ("工作", ("对话", "编排", "军团")),
+    ("对话", ("对话",)),
+    ("协作", ("编排", "军团")),
     ("创作", ("生图", "生视频", "数字人", "导演台")),
     ("系统", ("工具", "任务", "设置")),
 )
+NAV_MORE_GROUPS = ("协作", "创作", "系统")
 
 # 侧栏折叠：窄于此宽度自动收成图标栏（DESIGN.md §8 要求窄屏折叠，此前没落地）
 NAV_COLLAPSE_WIDTH = 1100   # 触发阈值（宽 < 该值则折叠）
@@ -276,7 +282,7 @@ DELIVERY_ICON_FALLBACK = "附件"
 
 
 
-class ChatWindow(ChatAuditMixin, QMainWindow):
+class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
@@ -887,65 +893,30 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         self.mic_refresh_btn.clicked.connect(self._fill_mics)
         # hb.addWidget(self.mic_refresh_btn)
 
-        # 语音开关（v4.115：SVG 喇叭图标，开/关态切换，控制回复朗读）
-        self.speech_chk = QPushButton()
+        # 朗读开关仍要有实例（on_toggle_speech 会改它的样式），但不占顶栏。
+        self.speech_chk = QPushButton(self)
         self.speech_chk.setFixedSize(32, 32)
         self.speech_chk.setToolTip("语音朗读开关")
         self.speech_chk.setCheckable(True)
         self.speech_chk.setChecked(self.speech_enabled)
         self.speech_chk.clicked.connect(self.on_toggle_speech)
-        hb.addWidget(self.speech_chk)
+        self.speech_chk.hide()
         self._style_voice_switch(self.speech_chk, self.speech_enabled)
-
-        # 技能管理器按钮：呼出可视化技能面板
-        self.skill_mgr_btn = QPushButton()
-        self.skill_mgr_btn.setFixedSize(32, 32)
-        self.skill_mgr_btn.setToolTip("技能管理器（Ctrl+Alt+S）")
-        self.skill_mgr_btn.setIcon(_nav_icon_qicon("技能", THEME["text"], 15))
-        self.skill_mgr_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['card']};"
-            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;}}"
-            f"QPushButton:hover{{border-color:{THEME['accent']};}}")
-        self.skill_mgr_btn.clicked.connect(self._open_skill_manager)
-        hb.addWidget(self.skill_mgr_btn)
-
-        # 技能市场按钮：呼出技能市场发现 UI
-        self.market_btn = QPushButton()
-        self.market_btn.setFixedSize(32, 32)
-        self.market_btn.setToolTip("技能市场（发现并安装新技能）")
-        self.market_btn.setIcon(_nav_icon_qicon("市场", THEME["text"], 15))
-        self.market_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['card']};"
-            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;}}"
-            f"QPushButton:hover{{border-color:{THEME['accent']};}}")
-        self.market_btn.clicked.connect(self._open_skill_market)
-        hb.addWidget(self.market_btn)
-
-        # 工作流模板按钮：呼出可视化工作流面板
-        self.wf_mgr_btn = QPushButton()
-        self.wf_mgr_btn.setFixedSize(32, 32)
-        self.wf_mgr_btn.setToolTip("工作流模板（Ctrl+Alt+W）")
-        self.wf_mgr_btn.setIcon(_nav_icon_qicon("设置", THEME["text"], 15))
-        self.wf_mgr_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['card']};"
-            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;}}"
-            f"QPushButton:hover{{border-color:{THEME['accent']};}}")
-        self.wf_mgr_btn.clicked.connect(self._open_workflow_manager)
-        hb.addWidget(self.wf_mgr_btn)
 
         hb.addStretch(1)
 
-        # 导出按钮：呼出富格式导出（MD/HTML/PDF/DOCX）
-        self.export_btn = QPushButton()
-        self.export_btn.setFixedSize(32, 32)
-        self.export_btn.setToolTip("导出当前对话（Markdown/HTML/PDF/Word）")
-        self.export_btn.setIcon(_nav_icon_qicon("导出", THEME["text"], 15))
-        self.export_btn.setStyleSheet(
+        # v4.264.0：技能 / 市场 / 工作流 / 导出 / 朗读收进「⋯」，顶栏只留会话。
+        self._chat_overflow_btn = QPushButton("⋯")
+        self._chat_overflow_btn.setFixedSize(32, 32)
+        self._chat_overflow_btn.setToolTip("更多：朗读、技能、市场、工作流、导出")
+        self._chat_overflow_btn.setCursor(Qt.PointingHandCursor)
+        self._chat_overflow_btn.setStyleSheet(
             f"QPushButton{{background:{THEME['card']};"
-            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;}}"
+            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;"
+            f"color:{THEME['text']};font-size:16px;font-weight:600;}}"
             f"QPushButton:hover{{border-color:{THEME['accent']};}}")
-        self.export_btn.clicked.connect(self.export_session)
-        hb.addWidget(self.export_btn)
+        self._chat_overflow_btn.clicked.connect(self._open_chat_overflow)
+        hb.addWidget(self._chat_overflow_btn)
 
         self.dv_expand_btn = QPushButton("⟨ 交付物")
         self.dv_expand_btn.setFixedHeight(32)
@@ -1137,6 +1108,63 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         ia_lay = QVBoxLayout(input_area)
         ia_lay.setContentsMargins(20, 8, 20, 20)
         ia_lay.setSpacing(8)
+
+        # v4.264.0：工具进度单行（默认不往气泡里刷工具卡）+ 人话三档 + 信任徽章
+        self._tool_prog_state = {"total": 0, "done": 0, "running": "", "log": []}
+        self._tool_progress = QFrame()
+        self._tool_progress.setVisible(False)
+        self._tool_progress.setStyleSheet(
+            f"QFrame{{background:{THEME['card']};border:1px solid {THEME['border']};"
+            f"border-radius:10px;}}")
+        tp = QVBoxLayout(self._tool_progress)
+        tp.setContentsMargins(12, 6, 12, 6)
+        tp.setSpacing(4)
+        tp_row = QHBoxLayout()
+        tp_row.setSpacing(8)
+        self._tool_progress_label = QLabel("")
+        self._tool_progress_label.setStyleSheet(
+            f"color:{THEME['text']};font-size:13px;background:transparent;")
+        tp_row.addWidget(self._tool_progress_label, 1)
+        self._tool_detail_btn = QPushButton("细节")
+        self._tool_detail_btn.setFixedHeight(32)
+        self._tool_detail_btn.setCursor(Qt.PointingHandCursor)
+        self._tool_detail_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;border:none;color:{THEME['accent']};"
+            f"font-size:12px;padding:0 8px;}}"
+            f"QPushButton:hover{{color:{THEME['accent_hover']};}}")
+        self._tool_detail_btn.clicked.connect(self._toggle_tool_progress_detail)
+        tp_row.addWidget(self._tool_detail_btn)
+        tp.addLayout(tp_row)
+        self._tool_progress_detail = QLabel("")
+        self._tool_progress_detail.setWordWrap(True)
+        self._tool_progress_detail.setVisible(False)
+        self._tool_progress_detail.setStyleSheet(
+            f"color:{THEME['dim']};font-size:12px;background:transparent;")
+        tp.addWidget(self._tool_progress_detail)
+        ia_lay.addWidget(self._tool_progress)
+
+        persona_row = QHBoxLayout()
+        persona_row.setSpacing(8)
+        self.persona_combo = _NoWheelCombo()
+        self.persona_combo.setFixedHeight(32)
+        self.persona_combo.setMinimumWidth(160)
+        self.persona_combo.setToolTip("只聊天 / 助手做事（推荐）/ 尽量自己做")
+        self._fill_persona_combo(self.persona_combo)
+        self.persona_combo.activated.connect(self._on_persona_picked)
+        persona_row.addWidget(self.persona_combo, 0)
+        self.trust_badge_btn = QPushButton("少确认  ×")
+        self.trust_badge_btn.setFixedHeight(32)
+        self.trust_badge_btn.setVisible(False)
+        self.trust_badge_btn.setCursor(Qt.PointingHandCursor)
+        self.trust_badge_btn.setToolTip("本会话正在少问。点一下收回，之后危险操作会再问你。")
+        self.trust_badge_btn.setStyleSheet(
+            f"QPushButton{{background:{THEME['card']};border:1px solid {THEME['border']};"
+            f"border-radius:16px;color:{THEME['dim']};font-size:12px;padding:0 12px;}}"
+            f"QPushButton:hover{{border-color:{THEME['danger']};color:{THEME['danger']};}}")
+        self.trust_badge_btn.clicked.connect(self._revoke_session_trust)
+        persona_row.addWidget(self.trust_badge_btn, 0)
+        persona_row.addStretch(1)
+        ia_lay.addLayout(persona_row)
 
         # v4.109：状态行 = 左状态文字 + 右模型选择（Auto 智能路由 / 手动锁定档位）
         _top_row = QWidget()
@@ -1389,6 +1417,24 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
             open_workflow_manager(self.cfg, self)
         except Exception as e:
             self.status_label.setText(f"工作流模板打开失败：{e}")
+
+    def _open_chat_overflow(self):
+        """顶栏「⋯」：朗读、技能管理、技能市场、工作流、导出对话。"""
+        menu = QMenu(self)
+        speech = QAction("朗读回复", menu)
+        speech.setCheckable(True)
+        speech.setChecked(bool(self.speech_enabled))
+        speech.triggered.connect(self.on_toggle_speech)
+        menu.addAction(speech)
+        menu.addAction("技能管理", self._open_skill_manager)
+        menu.addAction("技能市场", self._open_skill_market)
+        menu.addAction("工作流", self._open_workflow_manager)
+        menu.addAction("导出对话", self.export_session)
+        btn = getattr(self, "_chat_overflow_btn", None)
+        if btn is not None:
+            menu.exec(btn.mapToGlobal(QPoint(0, btn.height())))
+        else:
+            menu.exec(self.mapToGlobal(QPoint(0, 0)))
 
     def export_diagnostic(self):
         """导出调试诊断包（设置页按钮 / 托盘菜单共用）"""
@@ -3458,7 +3504,22 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
 
             card.clicked.connect(self._on_welcome_card)
             self.welcome_cards.append(card)
-            cards_row.addWidget(card, stretch=1)
+            col = QVBoxLayout()
+            col.setSpacing(6)
+            col.addWidget(card)
+            _page = ui_focus.WELCOME_PAGE_BY_TITLE.get(card_title)
+            if _page:
+                page_btn = QPushButton("打开%s" % _page)
+                page_btn.setFixedHeight(32)
+                page_btn.setCursor(Qt.PointingHandCursor)
+                page_btn.setToolTip("仍可进入%s专用页" % _page)
+                page_btn.setStyleSheet(
+                    f"QPushButton{{background:transparent;border:none;color:{THEME['accent']};"
+                    f"font-size:12px;text-align:left;padding:0 4px;}}"
+                    f"QPushButton:hover{{color:{THEME['accent_hover']};}}")
+                page_btn.clicked.connect(lambda _, lab=_page: self._open_nav_label(lab))
+                col.addWidget(page_btn)
+            cards_row.addLayout(col, stretch=1)
 
         scl.addLayout(cards_row)
         scl.addSpacing(32)
@@ -3691,19 +3752,61 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         for _gname, _members in NAV_GROUPS:
             for _m in _members:
                 _group_of[_m] = _gname
+        self._nav_group_of = dict(_group_of)
+        self._nav_index_by_label = {}
+        self._nav_more_open = False
+        self._nav_more_wrap = None
+        self._nav_more_btn = None
         _cur_group = None
+        _more_lay = None
         for i, (label, icon) in enumerate(nav_defs):
             _g = _group_of.get(label)
+            self._nav_index_by_label[label] = i
+            _in_more = _g in NAV_MORE_GROUPS
+            if _in_more and self._nav_more_wrap is None:
+                more_btn = QPushButton()
+                more_btn.setFixedHeight(44)
+                more_btn.setCursor(Qt.PointingHandCursor)
+                mbox = QWidget(more_btn)
+                mbox.setStyleSheet("background:transparent;")
+                mil = QHBoxLayout(mbox)
+                mil.setContentsMargins(16, 0, 8, 0)
+                mil.setSpacing(8)
+                m_text = QLabel("更多")
+                m_text.setStyleSheet(
+                    f"color:{THEME['dim']};font-size:13px;font-weight:500;background:transparent;")
+                mil.addWidget(m_text, 1)
+                mbl = QVBoxLayout(more_btn)
+                mbl.setContentsMargins(0, 0, 0, 0)
+                mbl.addWidget(mbox)
+                more_btn.setProperty("textLbl", m_text)
+                more_btn.setProperty("iconBox", mbox)
+                more_btn.setStyleSheet(
+                    f"QPushButton{{background:transparent;color:{THEME['dim']};border:none;"
+                    f"border-radius:24px;}}"
+                    f"QPushButton:hover{{background:{THEME['blue_hover']};color:{THEME['text']};}}")
+                more_btn.clicked.connect(self._toggle_nav_more)
+                nav_lay.addWidget(more_btn)
+                self._nav_more_btn = more_btn
+                self._nav_more_wrap = QWidget()
+                _more_lay = QVBoxLayout(self._nav_more_wrap)
+                _more_lay.setContentsMargins(0, 0, 0, 0)
+                _more_lay.setSpacing(4)
+                self._nav_more_wrap.setVisible(False)
+                nav_lay.addWidget(self._nav_more_wrap)
+            target = _more_lay if _in_more else nav_lay
             if _g is not None and _g != _cur_group:
                 _cur_group = _g
-                if self._nav_group_labels:      # 第一组前不留空档
-                    nav_lay.addSpacing(10)
-                _gl = QLabel(_g)
-                _gl.setStyleSheet(
-                    f"color:{THEME['faint']};font-size:{THEME['font_micro']};"
-                    f"padding-left:16px;padding-top:2px;background:transparent;")
-                nav_lay.addWidget(_gl)
-                self._nav_group_labels.append(_gl)
+                # 「对话」本身就是主导航，不再加一条同名组标题
+                if _g != "对话":
+                    if self._nav_group_labels:
+                        target.addSpacing(10)
+                    _gl = QLabel(_g)
+                    _gl.setStyleSheet(
+                        f"color:{THEME['faint']};font-size:{THEME['font_micro']};"
+                        f"padding-left:16px;padding-top:2px;background:transparent;")
+                    target.addWidget(_gl)
+                    self._nav_group_labels.append(_gl)
             # v4.114：SVG 线性图标替代 emoji——矢量描边风格统一，基线天然齐平，
             # 选中态由 _update_nav_styles 重新渲染为白色
             btn = QPushButton()
@@ -3729,10 +3832,11 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
             btn.setProperty("textLbl", text_lbl)
             btn.setProperty("navIcon", icon)
             btn.setProperty("iconBox", box)   # v4.198.0：折叠时改它的内边距让图标居中
+            btn.setProperty("navMore", _in_more)
             btn.setFixedHeight(44)
             btn.setCursor(Qt.PointingHandCursor)
             btn.clicked.connect(lambda _, idx=i: self._switch_nav(idx))
-            nav_lay.addWidget(btn)
+            target.addWidget(btn)
             self.nav_buttons.append(btn)
             # v4.135.0：记住「军团」的导航下标（避免在别处写死数字，插入新项不串页）
             if label == "军团":
@@ -3781,7 +3885,10 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
                 self._sidebar_logo_name.setVisible(not collapsed)
             for _lbl in getattr(self, "_nav_group_labels", []) or []:
                 _lbl.setVisible(not collapsed)
-            for _btn in getattr(self, "nav_buttons", []) or []:
+            _extra = []
+            if getattr(self, "_nav_more_btn", None) is not None:
+                _extra.append(self._nav_more_btn)
+            for _btn in (getattr(self, "nav_buttons", []) or []) + _extra:
                 _tl = _btn.property("textLbl")
                 if _tl is not None:
                     _tl.setVisible(not collapsed)
@@ -3836,8 +3943,36 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
                 if icon_lbl and icon_name:
                     icon_lbl.setPixmap(_nav_icon_pixmap(icon_name, THEME["dim"], 18))
 
+    def _toggle_nav_more(self):
+        self._set_nav_more_open(not getattr(self, "_nav_more_open", False))
+
+    def _set_nav_more_open(self, open_):
+        """展开/收起「更多」。深链进专用页时也会打开，避免高亮藏在折叠里。"""
+        self._nav_more_open = bool(open_)
+        wrap = getattr(self, "_nav_more_wrap", None)
+        if wrap is not None:
+            wrap.setVisible(self._nav_more_open)
+        btn = getattr(self, "_nav_more_btn", None)
+        if btn is not None and not getattr(self, "_nav_collapsed", False):
+            tl = btn.property("textLbl")
+            if tl is not None:
+                tl.setText("收起" if self._nav_more_open else "更多")
+
+    def _open_nav_label(self, label):
+        """欢迎卡 / 深链按导航名进专用页，不要求用户先自己点开「更多」。"""
+        idx = getattr(self, "_nav_index_by_label", {}).get(label)
+        if idx is None:
+            return
+        self._switch_nav(idx)
+
     def _switch_nav(self, index):
         """导航切换：nav 序号 -> 主栈页面(nav+1，首页占0)。"""
+        try:
+            btn = self.nav_buttons[index]
+            if btn.property("navMore"):
+                self._set_nav_more_open(True)
+        except Exception:
+            pass
         _si = index + 1
         self._ensure_lazy_page(_si)      # v4.152：内容延迟构建的兜底（见下）
         self.main_stack.setCurrentIndex(_si)
@@ -4086,6 +4221,10 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         except Exception:
             pass
         self.session_trusted = False
+        try:
+            self._sync_trust_badge()
+        except Exception:
+            pass
 
     def _switch_session(self, sid):
         self._reset_session_trust()   # v4.169.0 P0-6：信任不跨会话
@@ -4326,6 +4465,12 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
             except Exception:
                 pass
             return
+        if s.startswith("openfile:"):
+            self._open_artifact(urllib.parse.unquote(s[len("openfile:"):]), reveal=False)
+            return
+        if s.startswith("reveal:"):
+            self._open_artifact(urllib.parse.unquote(s[len("reveal:"):]), reveal=True)
+            return
         QDesktopServices.openUrl(QUrl(s) if isinstance(s, str) else url)
 
     def _regen_message(self, idx):
@@ -4439,6 +4584,8 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
     def _run_for_trigger(self, trigger, tag=""):
         """v4.75：复用 send() 的自动路由，用触发词触发一次生成（不新增 user 消息）。"""
         use_agent = self.agent_mode or self._message_needs_agent(trigger)
+        if getattr(self, "permission_mode", "") == "discuss":
+            use_agent = False
         advice_only = self._message_is_advice_only(trigger)
         if use_agent and advice_only:
             use_agent = False
@@ -4614,8 +4761,9 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
 
         def _done(res):
             msg = res["data"] if res.get("ok") else f"备份失败：{res.get('error')}"
-            QMessageBox.information(self, "立即备份", msg)
-            self.status_label.setText(msg)
+            _bk_kind = "error" if (not res.get("ok") or "失败" in str(msg)) else "success"
+            toast(str(msg)[:120], kind=_bk_kind, detail=str(msg))
+            self.status_label.setText(str(msg)[:180])
 
         self._async_job(_do, _done, "正在后台备份（大目录可能需较长时间，界面可正常操作）…")
 
@@ -4626,11 +4774,10 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         from config import APP_VERSION, APP_BUILD_DATE, UPDATE_CHECK_URL
         url = self.cfg.get("update_check_url", "") or UPDATE_CHECK_URL
         if not url:
-            QMessageBox.information(
-                self, "检查更新",
-                f"当前版本：{APP_VERSION}（构建 {APP_BUILD_DATE}）\n\n"
-                "本程序为本地构建版本，无在线更新通道。\n"
-                "如需更新，请联系构建者重新打包新版即可。")
+            toast(
+                "当前 %s，本地构建无在线更新通道" % APP_VERSION,
+                kind="info",
+                detail="构建 %s。如需更新，请联系构建者重新打包。" % APP_BUILD_DATE)
             return
 
         def _fetch(_url=url):
@@ -4877,7 +5024,8 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
             # Agent 仍运行（页面自愈/切换回会话的全量重建）时按台账恢复 running/done 卡，
             # 否则 replace_live 找不到目标、工具过程在界面上直接蒸发。
             if (getattr(self, "_agent_active", False)
-                    and getattr(self, "_live_tools", None)):
+                    and getattr(self, "_live_tools", None)
+                    and self._show_tool_details()):
                 for _rec in sorted(self._live_tools.values(),
                                    key=lambda r: r.get("ui_seq", 0)):
                     if _rec.get("status") == "done":
@@ -4972,6 +5120,8 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         if m.get("role") == "tool_log":
             name = m.get("name", "")
             result = m.get("result", "")
+            chips = ui_focus.chip_html(ui_focus.extract_artifact_paths(
+                name, m.get("args", ""), result))
             if name == "image_gen" and re.search(r"\.(png|jpe?g|webp|gif)$", result, re.I):
                 img_abs = os.path.join(APP_DIR, result).replace("/", os.sep)
                 if os.path.isfile(img_abs):
@@ -4980,11 +5130,16 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
                         f'<img src="file:///{img_abs.replace(os.sep, "/")}" '
                         f'style="max-width:320px;border-radius:10px;"/>'
                         f'<div style="font-size:{THEME["font_micro"]};color:{THEME["faint"]};margin-top:4px;">'
-                        f'{html_mod.escape(result)}</div></div>'
+                        f'{html_mod.escape(result)}</div>{chips}</div>'
                     )
                     return self._wrap_msg(bubble, idx)
+            if not self._show_tool_details():
+                if chips:
+                    return self._wrap_msg(
+                        f'<div class="tool-wrap artifact-chips">{chips}</div>', idx)
+                return ""
             card = tools_mod.card_html(name, m.get("args", ""), result)
-            bubble = f'<div class="tool-wrap">{card}</div>'
+            bubble = f'<div class="tool-wrap">{card}{chips}</div>'
             return self._wrap_msg(bubble, idx)
         else:
             raw = m.get("content", "")
@@ -5353,6 +5508,27 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         tag_wrap_lay.addStretch()
         ci_lay.addWidget(tag_wrap)
 
+        chip_row = QHBoxLayout()
+        chip_row.setSpacing(6)
+        open_btn = QPushButton("打开")
+        open_btn.setFixedHeight(32)
+        open_btn.setCursor(Qt.PointingHandCursor)
+        folder_btn = QPushButton("在文件夹显示")
+        folder_btn.setFixedHeight(32)
+        folder_btn.setCursor(Qt.PointingHandCursor)
+        _chip_qss = (
+            f"QPushButton{{background:{THEME['card']};border:1px solid {THEME['border']};"
+            f"border-radius:8px;color:{THEME['accent']};font-size:12px;padding:0 8px;}}"
+            f"QPushButton:hover{{border-color:{THEME['accent']};}}")
+        open_btn.setStyleSheet(_chip_qss)
+        folder_btn.setStyleSheet(_chip_qss)
+        open_btn.clicked.connect(lambda _, r=rel: self._open_artifact(r, reveal=False))
+        folder_btn.clicked.connect(lambda _, r=rel: self._open_artifact(r, reveal=True))
+        chip_row.addWidget(open_btn)
+        chip_row.addWidget(folder_btn)
+        chip_row.addStretch(1)
+        ci_lay.addLayout(chip_row)
+
         card_item.setToolTip(f"{rel}\n{name}")
         card_item.mousePressEvent = lambda e, r=rel: self._on_deliverable_open(r)
         return card_item
@@ -5416,6 +5592,7 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         })
         self.store.save()
         self._refresh_deliverables()
+        self._append_live_artifact_chip(rel)
 
     def _on_deliverable_open(self, rel):
         abs_path = os.path.abspath(os.path.join(APP_DIR, rel))
@@ -5946,40 +6123,91 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
 
         gtl.addWidget(_toggle_row("联网搜索", "搜索失败自动降级为纯模型回答",
                                    "search", self.cfg.get("search_enabled", True)))
-        gtl.addWidget(_toggle_row("Agent 模式", "启用工具调用与多步推理",
-                                   "agent", self.cfg.get("agent_mode", False),
-                                   THEME["ok"]))
+        _agent_row = _toggle_row("Agent 模式", "高级：总是启用工具。日常用上面的三档即可。",
+                                  "agent", self.cfg.get("agent_mode", False),
+                                  THEME["ok"])
 
-        # ---- 执行模式（v4.50，借鉴 openworker 的权限引擎；替换旧「手动级操作免确认」开关）----
+        # v4.264.0：人话三档映射现有 agent_mode + permission_mode，五档收进折叠。
+        _persona_label = QLabel("怎么干活")
+        _persona_label.setStyleSheet(label_body(weight="semibold") + "padding-top:8px;")
+        gtl.addWidget(_persona_label)
+        self.settings_persona_combo = _NoWheelCombo()
+        self.settings_persona_combo.setFixedHeight(32)
+        self._fill_persona_combo(self.settings_persona_combo)
+        self.settings_persona_combo.activated.connect(self._on_persona_picked)
+        gtl.addWidget(self.settings_persona_combo)
+        _persona_hint = QLabel("只聊天：不调用工具。助手做事：需要时才动手并先问。尽量自己做：能做的尽量自己做。")
+        _persona_hint.setWordWrap(True)
+        _persona_hint.setStyleSheet(
+            f"font-size:{THEME['font_micro']};color:{THEME['faint']};padding-left:4px;")
+        gtl.addWidget(_persona_hint)
+
+        self._perm_advanced_btn = QPushButton("高级五档")
+        self._perm_advanced_btn.setCheckable(True)
+        self._perm_advanced_btn.setFixedHeight(32)
+        self._perm_advanced_btn.setCursor(Qt.PointingHandCursor)
+        self._perm_advanced_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;border:none;color:{THEME['dim']};"
+            f"font-size:12px;text-align:left;padding:0 4px;}}"
+            f"QPushButton:hover{{color:{THEME['text']};}}")
+        gtl.addWidget(self._perm_advanced_btn)
+        self._perm_advanced = QWidget()
+        _adv_lay = QVBoxLayout(self._perm_advanced)
+        _adv_lay.setContentsMargins(0, 0, 0, 0)
+        _adv_lay.setSpacing(6)
+        _adv_lay.addWidget(_agent_row)
         _mode_label = QLabel("执行模式")
-        _mode_label.setStyleSheet(label_body(weight="semibold") + "padding-top:8px;")
-        gtl.addWidget(_mode_label)
-        _mode_cb = _NoWheelCombo()
-        _mode_cb.setStyleSheet(f"font-size:12px;color:{THEME['text']};padding:4px;")
+        _mode_label.setStyleSheet(label_body(weight="semibold") + "padding-top:4px;")
+        _adv_lay.addWidget(_mode_label)
+        self.permission_mode_combo = _NoWheelCombo()
+        self.permission_mode_combo.setStyleSheet(
+            f"font-size:12px;color:{THEME['text']};padding:4px;")
         for _m, _t in MODES.items():
-            _mode_cb.addItem(_t, _m)
-        _idx = _mode_cb.findData(self.permission_engine.mode)
+            self.permission_mode_combo.addItem(_t, _m)
+        _idx = self.permission_mode_combo.findData(self.permission_engine.mode)
         if _idx >= 0:
-            _mode_cb.setCurrentIndex(_idx)
-        # v4.149.0：currentIndexChanged → activated。执行模式（manual/auto…）是**安全相关**
-        # 设置 —— `auto` 等价「危险操作免确认」，而 `_on_mode_change` 会把它写进 config.json。
-        # 用 currentIndexChanged 时，键盘上下/程序化改动都能静默把模式改掉、还落盘；
-        # 换成 activated（只在用户真选时发出）后，只有明确的点击/回车才会改。
-        _mode_cb.activated.connect(self._on_mode_change)
-        gtl.addWidget(_mode_cb)
+            self.permission_mode_combo.setCurrentIndex(_idx)
+        # v4.149.0：activated 只在用户真选时发出，避免滚轮静默改安全档。
+        self.permission_mode_combo.activated.connect(self._on_mode_change)
+        _adv_lay.addWidget(self.permission_mode_combo)
         _mode_hint = QLabel("交互：危险操作逐个问 ｜ 规划：只做只读 ｜ 自动：全直接执行 ｜ 仅讨论：不执行 ｜ 自定义：仅白名单免确认")
         _mode_hint.setWordWrap(True)
-        _mode_hint.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};padding-left:4px;padding-bottom:4px;")
-        gtl.addWidget(_mode_hint)
-        _trust_btn = QPushButton("本次会话全部信任（危险操作不再逐个问）")
-        _trust_btn.setFixedHeight(34)
-        _trust_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['elev']};border:none;border-radius:8px;"
-            f"padding:8px;font-size:12px;color:{THEME['text']};text-align:left;}}"
-            f"QPushButton:hover{{background:{THEME['border_highlight']};}}")
-        _trust_btn.clicked.connect(self._on_trust_session)
-        gtl.addWidget(_trust_btn)
+        _mode_hint.setStyleSheet(
+            f"font-size:{THEME['font_micro']};color:{THEME['faint']};padding-left:4px;padding-bottom:4px;")
+        _adv_lay.addWidget(_mode_hint)
+        self._perm_advanced.setVisible(False)
+        self._perm_advanced_btn.toggled.connect(self._perm_advanced.setVisible)
+        gtl.addWidget(self._perm_advanced)
+
+        self._trust_settings_lbl = QLabel("会话信任：会逐项询问。少问之后，对话输入区的徽章可以收回。")
+        self._trust_settings_lbl.setWordWrap(True)
+        self._trust_settings_lbl.setStyleSheet(
+            f"font-size:{THEME['font_micro']};color:{THEME['faint']};padding-left:4px;")
+        gtl.addWidget(self._trust_settings_lbl)
+        self.trust_revoke_btn = QPushButton("收回少问")
+        self.trust_revoke_btn.setFixedHeight(32)
+        self.trust_revoke_btn.setVisible(False)
+        self.trust_revoke_btn.setCursor(Qt.PointingHandCursor)
+        self.trust_revoke_btn.setStyleSheet(
+            f"QPushButton{{background:{THEME['elev']};border:1px solid {THEME['border']};"
+            f"border-radius:8px;padding:0 12px;font-size:12px;color:{THEME['text']};text-align:left;}}"
+            f"QPushButton:hover{{border-color:{THEME['danger']};color:{THEME['danger']};}}")
+        self.trust_revoke_btn.clicked.connect(self._revoke_session_trust)
+        gtl.addWidget(self.trust_revoke_btn)
+
+        _detail_row = QCheckBox("在对话显示工具细节")
+        _detail_row.setChecked(bool(self.cfg.get(ui_focus.SHOW_TOOL_DETAILS_KEY, False)))
+        _detail_row.setStyleSheet(label_second())
+        _detail_row.stateChanged.connect(self._on_show_tool_details_toggle)
+        gtl.addWidget(_detail_row)
+        _detail_hint = QLabel("默认关。关掉时，工具过程只出现在输入框上方的一行进度里。")
+        _detail_hint.setWordWrap(True)
+        _detail_hint.setStyleSheet(
+            f"font-size:{THEME['font_micro']};color:{THEME['faint']};padding-left:20px;")
+        gtl.addWidget(_detail_hint)
         layout.addWidget(group_toggles)
+        self._sync_persona_widgets()
+        self._sync_trust_badge()
 
         # ---- 自动备份（v4.76，OS 级任务计划程序） ----
         group_backup = QFrame()
@@ -7253,6 +7481,9 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         # 「给我列几个方向」被误判为「去搜实时榜单」导致调一堆无意义搜索。
         # v4.102 hotfix：含图片附件/贴图的消息优先走普通对话 + 视觉模型，不进 Agent 空转调工具。
         use_agent = (self.agent_mode or self._message_needs_agent(clean_text)) and not has_images
+        # 只聊天 = permission_mode discuss：关键词也不再自动进 Agent（引擎本来就会拒工具）。
+        if getattr(self, "permission_mode", "") == "discuss":
+            use_agent = False
         # v4.61：纯咨询 / 问意见类（如「给点自媒体平台方面的意见」）——即使开了 Agent 执行模式，
         # 也降级为普通对话直答，不进 Agent。否则 content-gap-analysis 等技能的「Stop and ask」
         # 会让模型反复追问、刷出十几个问问题气泡。
@@ -7539,10 +7770,13 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         ui_seq = self._live_seq
         self._live_tools[agent_index] = {
             "ui_seq": ui_seq, "name": name, "display_name": display_name,
-            "args_preview": args_preview, "status": "running", "result": "",
+            "args_preview": args_preview, "args": args, "status": "running",
+            "result": "",
         }
-        self.chat_view.append(
-            self._tool_card_html(ui_seq, display_name, args_preview))
+        self._tool_progress_note(display_name, running=True)
+        if self._show_tool_details() and getattr(self, "chat_view", None) is not None:
+            self.chat_view.append(
+                self._tool_card_html(ui_seq, display_name, args_preview))
 
     def _on_tool_finished(self, data):
         name = data.get("name", "")
@@ -7563,11 +7797,17 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
                 "ui_seq": ui_seq, "name": name, "display_name": display_name,
                 "args_preview": "", "status": "done", "result": result_preview,
             }
-        # 原位替换 running 卡 → done 卡（同一 id，不追加新 DOM，零重复）
-        self.chat_view.replace_live(
-            f"live-tool-{ui_seq}",
-            self._tool_card_html(ui_seq, display_name, done=True,
-                                 result_preview=result_preview))
+        self._tool_progress_note(display_name, running=False)
+        # 原位替换 running 卡 → done 卡。默认不刷卡，只更新输入框上方的进度条。
+        if self._show_tool_details() and getattr(self, "chat_view", None) is not None:
+            self.chat_view.replace_live(
+                f"live-tool-{ui_seq}",
+                self._tool_card_html(ui_seq, display_name, done=True,
+                                     result_preview=result_preview))
+        _args = (rec or {}).get("args", "")
+        for _p in ui_focus.extract_artifact_paths(
+                name, _args, data.get("result_preview", "")):
+            self._append_live_artifact_chip(_p)
 
         # v4.84：模型刚提交了一个待审核技能，刷新徽标并提示
         if name == "create_skill":
@@ -7592,12 +7832,16 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
             w._confirm_event.set()
             return
         dlg = ConfirmDialog(self)
-        dlg.set_text(title, f"{title}：\n{detail}\n\n允许执行？")
+        _force = bool(getattr(w, "_confirm_force", False))
+        plain_title, plain_detail = ui_focus.confirm_copy(title, detail, force=_force)
+        dlg.set_batch(plain_title, [(plain_title, plain_detail)])
+        dlg.set_force(_force)
         dlg.exec()
         w._confirm_val = dlg.result()
         if dlg.trusted():
             self.permission_engine.set_session_trusted()
             self.session_trusted = True
+            self._sync_trust_badge()
         w._confirm_event.set()
         self._clear_ghost()
 
@@ -7715,6 +7959,7 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         self._audit_claim_evidence()
         # v4.196 批⑬：语气—证据等级匹配——管「没编造但说得太满」那一半。
         self._audit_tone_evidence()
+        self._clear_tool_progress()
         self._do_save()  # v4.58：agent 结束做一次最终落盘
         self._flush_render()  # v4.60o：冲刷待渲染定时器，避免末条消息重复插入
         self.input_box.setFocus()
@@ -9128,6 +9373,7 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         self.agent_mode = bool(state)
         self.cfg["agent_mode"] = self.agent_mode
         self._save_cfg()
+        self._sync_persona_widgets()
         self.status_label.setText("Agent 模式：开" if self.agent_mode else "Agent 模式：关")
 
     # 触发自动路由到 Agent 的执行意图关键词（普通模式下命中即按 Agent 执行）
@@ -9385,13 +9631,21 @@ class ChatWindow(ChatAuditMixin, QMainWindow):
         self.cfg["agent_skip_confirm"] = self.agent_skip_confirm
         self.cfg["permission_mode"] = mode
         self._save_cfg()
-        self.status_label.setText(f"执行模式：{MODES[mode].split('（')[0]}")
+        self._sync_persona_widgets()
+        _tier = ui_focus.persona_from_state(self.agent_mode, mode)
+        if _tier:
+            self.status_label.setText(ui_focus.persona_status(_tier))
+        else:
+            self.status_label.setText(f"执行模式：{MODES[mode].split('（')[0]}")
+            if getattr(self, "_perm_advanced_btn", None) is not None:
+                self._perm_advanced_btn.setChecked(True)
 
     def _on_trust_session(self):
         """本次会话全部信任：危险操作不再逐个问（重启后失效）。"""
         self.permission_engine.set_session_trusted()
         self.session_trusted = True
-        self.status_label.setText("执行模式：本次会话已信任")
+        self._sync_trust_badge()
+        self.status_label.setText("本会话少问已打开，点输入区徽章可以收回")
 
     def _save_cfg(self):
         """v4.58：原子写入 config.json，防崩溃损坏配置。"""

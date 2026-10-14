@@ -358,9 +358,14 @@ class ConfirmDialog(ThemedDialog):
         self._detail.setStyleSheet(f"color:{THEME['dim']};font-size:13px;line-height:1.6;")
         lay.addWidget(self._title)
         lay.addWidget(self._detail)
-        self._trust = QCheckBox("本次会话信任（不再逐个确认）")
+        self._trust = QCheckBox("本会话少问我（输入区会出现徽章，点徽章可以收回）")
         self._trust.setStyleSheet(label_second())
         lay.addWidget(self._trust)
+        self._list = QLabel("")
+        self._list.setWordWrap(True)
+        self._list.setVisible(False)
+        self._list.setStyleSheet(f"color:{THEME['text']};font-size:13px;line-height:1.55;")
+        lay.addWidget(self._list)
         row = QHBoxLayout()
         row.addStretch(1)
         no = QPushButton("取消")
@@ -380,9 +385,38 @@ class ConfirmDialog(ThemedDialog):
         self._title.setText(title)
         self._detail.setText(detail)
 
+    def set_batch(self, title, items):
+        """同一批要确认的步骤。items 为 (名称, 说明) 或字符串。"""
+        lines = []
+        for i, item in enumerate(items or [], 1):
+            if isinstance(item, (list, tuple)):
+                name = str(item[0] if item else "")
+                extra = str(item[1]) if len(item) > 1 and item[1] else ""
+            else:
+                name, extra = str(item), ""
+            line = "%d. %s" % (i, name)
+            if extra:
+                line += "\n" + extra
+            lines.append(line)
+        self._title.setText(title or "请确认这些操作")
+        self._list.setText("\n\n".join(lines) if lines else "")
+        self._list.setVisible(bool(lines))
+        self._detail.setText("允许后才会做。")
+        self.adjustSize()
+
+    def set_force(self, force):
+        """硬确认：少问徽章不能跳过这一步。"""
+        if force:
+            self._trust.setChecked(False)
+            self._trust.setEnabled(False)
+            self._trust.setText("这一步不可跳过（少问徽章也要再问一次）")
+        else:
+            self._trust.setEnabled(True)
+            self._trust.setText("本会话少问我（输入区会出现徽章，点徽章可以收回）")
+
     def _on_yes(self):
         self._result = True
-        self._trusted = self._trust.isChecked()
+        self._trusted = self._trust.isChecked() and self._trust.isEnabled()
         self.accept()
 
     def result(self):
