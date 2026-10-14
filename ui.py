@@ -335,7 +335,10 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         # 台账同时让「全量重建（会话切换/页面自愈）」能按序恢复进行中的工具卡。
         self._live_tools = {}
         self._live_seq = 0
-        self.agent_mode = self.cfg.get("agent_mode", False)
+        # v4.273：v4.264 把「助手做事」落成 agent 关。先升一次再读，否则推荐档仍不能调工具。
+        if ui_focus.reconcile_persona_cfg(self.cfg):
+            self._save_cfg()
+        self.agent_mode = bool(self.cfg.get("agent_mode", False))
         self.agent_skip_confirm = self.cfg.get("agent_skip_confirm", False)
         # ---- 权限引擎（v4.50，借鉴 andrewyng/openworker 的 permissions.py）----
         _home = os.path.expanduser("~")
@@ -1321,6 +1324,8 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         input_hint.setStyleSheet(f"color:{THEME['placeholder']};font-size:{THEME['font_micro']};padding-left:8px;")
         ia_lay.addWidget(input_hint)
 
+        # 下拉默认停在第一项「只聊天」。这里按已经对齐过的 agent / 权限档拨回去。
+        self._sync_persona_widgets()
         return input_area
 
     def eventFilter(self, obj, event):
@@ -3006,7 +3011,8 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         if not cur:
             cur = "未匹配档位 · %s" % (self.cfg.get("model") or "未设置")
         il.addWidget(self._kv("当前模型", cur))
-        il.addWidget(self._kv("Agent 模式", "开" if self.cfg.get("agent_mode") else "关"))
+        il.addWidget(self._kv("Agent 模式", "开" if self.cfg.get("agent_mode") else "关",
+                              hold="_agent_mode_value"))
         il.addWidget(self._kv("联网搜索", "开" if self.cfg.get("search_enabled", True) else "关"))
         key = self.cfg.get("api_key", "")
         il.addWidget(self._kv("API Key",
@@ -3203,7 +3209,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
 
         lay.addStretch(1)
 
-    def _kv(self, k, v):
+    def _kv(self, k, v, hold=None):
         from theme_qss import label_body
         w = QWidget()
         hl = QHBoxLayout(w)
@@ -3215,6 +3221,8 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         hl.addWidget(k_l)
         hl.addStretch(1)
         hl.addWidget(v_l)
+        if hold:
+            setattr(self, hold, v_l)
         return w
 
     # ============ 跨对话长期记忆（我的记忆）============
@@ -9184,6 +9192,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         self.cfg["agent_mode"] = self.agent_mode
         self._save_cfg()
         self._sync_persona_widgets()
+        self._refresh_agent_mode_card()
         self.status_label.setText("Agent 模式：开" if self.agent_mode else "Agent 模式：关")
 
     # 触发自动路由到 Agent 的执行意图关键词（普通模式下命中即按 Agent 执行）

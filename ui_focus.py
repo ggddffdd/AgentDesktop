@@ -59,26 +59,59 @@ def show_tool_details(cfg):
     return bool(cfg.get(SHOW_TOOL_DETAILS_KEY, False))
 
 
+# v4.264 把「助手做事」落成 agent 关 + interactive。升过一次后置位，
+# 用户之后在高级五档里关掉 Agent 不会被下次启动写回去。
+PERSONA_ASSIST_MIGRATED_KEY = "_mig_v4273_persona_assist"
+
+
 def state_from_persona(tier):
-    """人话档 → (agent_mode, permission_mode)。不认识的档回落到推荐档。"""
+    """人话档 → (agent_mode, permission_mode)。不认识的档回落到推荐档。
+
+    只聊天 = 工具关 + 仅讨论。助手做事 = 工具开 + 交互（危险操作逐项问）。
+    尽量自己做 = 工具开 + 自动。
+    """
     if tier == PERSONA_CHAT:
         return False, "discuss"
     if tier == PERSONA_OWN:
         return True, "auto"
-    return False, "interactive"
+    return True, "interactive"
 
 
 def persona_from_state(agent_mode, permission_mode):
-    """现有两个开关 → 人话档。对不上三档时返回空串（界面展示「高级」）。"""
+    """现有两个开关 → 人话档。对不上三档时返回空串（界面展示「高级」）。
+
+    agent 关 + interactive 是 v4.264 的旧推荐档：工具关着，又不是「只聊天」。
+    不再把它显示成助手做事。启动时 reconcile_persona_cfg 会把已经落盘的那一档升一次。
+    """
     agent_on = bool(agent_mode)
     mode = permission_mode or ""
     if mode == "discuss" and not agent_on:
         return PERSONA_CHAT
     if mode == "auto" and agent_on:
         return PERSONA_OWN
-    if mode == "interactive" and not agent_on:
+    if mode == "interactive" and agent_on:
         return PERSONA_ASSIST
     return ""
+
+
+def reconcile_persona_cfg(cfg):
+    """旧推荐档（agent 关 + interactive，或两个键都还没写）升到助手做事。
+
+    只升一次。只聊天、尽量自己做、免确认旧档，以及升过之后再关掉的 Agent，保持原样。
+    返回 True 表示改过 cfg，调用方应落盘。非 dict 返回 False。
+    """
+    if not isinstance(cfg, dict):
+        return False
+    if cfg.get(PERSONA_ASSIST_MIGRATED_KEY):
+        return False
+    agent = bool(cfg.get("agent_mode", False))
+    mode = cfg.get("permission_mode") or ""
+    skip = bool(cfg.get("agent_skip_confirm", False))
+    if not agent and not skip and mode in ("", "interactive"):
+        cfg["agent_mode"] = True
+        cfg["permission_mode"] = "interactive"
+    cfg[PERSONA_ASSIST_MIGRATED_KEY] = True
+    return True
 
 
 def persona_label(tier):
