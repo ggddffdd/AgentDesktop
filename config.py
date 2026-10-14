@@ -77,8 +77,43 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.277.0"
+APP_VERSION = "v4.278.0"
 APP_BUILD_DATE = "2026-10-14"
+
+# ---------- DeepSeek 错峰窗口（唯一配置处）----------
+# 2026-10-14 核对官方价目，两页一致：
+#   https://api-docs.deepseek.com/zh-cn/quick_start/pricing
+#   https://api-docs.deepseek.com/quick_start/pricing
+# 空闲时段价格是高峰的一半。
+# 高峰（北京时间，左闭右开）：周一至周五，且不是中国法定节假日，
+# 09:00–12:00 与 14:00–18:00。12:00 与 18:00 起算空闲。
+# 周末全天、法定节假日全天都是空闲。周末补班仍是周末，全天空闲。
+# 调休多放、但不是法定节日当天的工作日，仍走上面的高峰窗口
+# （官方写的是法定节假日，不是整段放假调休）。
+DEEPSEEK_OFFPEAK_SOURCE = "https://api-docs.deepseek.com/zh-cn/quick_start/pricing"
+DEEPSEEK_OFFPEAK_PRICE_RATIO = 0.5
+DEEPSEEK_PEAK_WINDOWS_BJ = (("09:00", "12:00"), ("14:00", "18:00"))
+# 等到下一段空闲的最长时间。官方最长一段高峰是 14:00–18:00（4 小时）。
+# 6 小时盖住这一段；再长就直接跑，任务不会饿死。
+DEEPSEEK_OFFPEAK_MAX_DELAY_SEC = 6 * 60 * 60
+# 2026 法定节日当天。依据：《全国年节及纪念日放假办法》2025-01-01 起施行的修订
+# （春节 4 天：除夕至初三；劳动节 2 天：5 月 1 日、2 日）以及
+# 国办发明电〔2025〕7号。周末上的节日列在这里只为核对，周末规则已经覆盖。
+DEEPSEEK_STATUTORY_HOLIDAYS = frozenset({
+    "2026-01-01",  # 元旦
+    "2026-02-16",  # 除夕
+    "2026-02-17",  # 正月初一
+    "2026-02-18",  # 正月初二
+    "2026-02-19",  # 正月初三
+    "2026-04-05",  # 清明
+    "2026-05-01",  # 劳动节
+    "2026-05-02",  # 劳动节次日
+    "2026-06-19",  # 端午
+    "2026-09-25",  # 中秋
+    "2026-10-01",  # 国庆
+    "2026-10-02",
+    "2026-10-03",
+})
 # v4.164.0（2026-09-27）**运行数据归口：彻底治「dist 既是运行目录又是分发源」**：
 #   新增 config.WORKSPACE_DIR（默认 ~/Documents/小臭玩AI，与 USER_DATA_DIR 同值，
 #   可用 XC_WORKSPACE_DIR 改道），把所有「用户数据类」落点从 APP_DIR（= exe 目录 =

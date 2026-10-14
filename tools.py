@@ -576,6 +576,17 @@ def _h_schedule(cfg, app_dir, args, progress=None):
     return (r, [], s)
 
 
+def _truthy(v):
+    """工具参数里的是/否。缺省、空串都当否。"""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    if v is None:
+        return False
+    return str(v).strip().lower() in ("1", "true", "yes", "y", "on", "是")
+
+
 def _norm_time(s):
     """归一化时间字符串为 HH:MM，兼容 '9:00'/'09:00'/'9点'/'9时30分'/'9:00:00'。"""
     import re as _re
@@ -644,13 +655,16 @@ def _h_create_automation(cfg, app_dir, args, progress=None):
         interval_minutes = max(1, int(args.get("interval_minutes") or 60))
     except Exception:
         interval_minutes = 60
+    prefer_offpeak = auto.prefer_offpeak_for(action, _truthy(args.get("prefer_offpeak")))
     store = auto.AutomationStore()
     t = auto.new_task(name, action, message, st, at_time=at_time, at_date=at_date,
-                      weekday=weekday, interval_minutes=interval_minutes, enabled=True)
+                      weekday=weekday, interval_minutes=interval_minutes, enabled=True,
+                      prefer_offpeak=prefer_offpeak)
     store.add(t)
     act_label = "定时提醒" if action == auto.ACT_REMIND else "执行任务"
+    extra = "已设为等到空闲时段再跑。" if prefer_offpeak else ""
     return (f"已创建自动化任务「{name}」：{auto.schedule_summary(t)}，动作={act_label}。"
-            f"任务已保存，调度器约 1 秒内感知。", [], None)
+            f"{extra}任务已保存，调度器约 1 秒内感知。", [], None)
 
 
 @register_tool("list_automation")

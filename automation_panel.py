@@ -19,6 +19,7 @@ from PySide6.QtCore import Qt, QDate, QTime
 
 from ui import THEME
 import automation as auto
+from config import DEEPSEEK_OFFPEAK_MAX_DELAY_SEC
 # v4.206.0：空状态占位组件（DESIGN.md §12），与 ui.py 共用同一套
 from empty_state import empty_state
 
@@ -109,6 +110,12 @@ class TaskEditDialog(QDialog):
         self.full_tools_chk.setChecked(False)
         self.full_tools_chk.setStyleSheet(f"QCheckBox{{{label_body()}}}")
         lay.addWidget(self.full_tools_chk)
+        _wait_h = max(1, int(DEEPSEEK_OFFPEAK_MAX_DELAY_SEC) // 3600)
+        self.offpeak_chk = QCheckBox(
+            "等到空闲时段再跑（DeepSeek 空闲大约半价；超过 %d 小时仍会跑，不会一直等）" % _wait_h)
+        self.offpeak_chk.setChecked(False)
+        self.offpeak_chk.setStyleSheet(f"QCheckBox{{{label_body()}}}")
+        lay.addWidget(self.offpeak_chk)
         # 按钮
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
@@ -125,6 +132,7 @@ class TaskEditDialog(QDialog):
         lay.addLayout(btn_row)
 
         self._on_sched_changed()
+        self._on_action_changed()
 
     def _lbl(self, text):
         from theme_qss import label_second
@@ -201,6 +209,7 @@ class TaskEditDialog(QDialog):
             "如：抓取今天全网 AI 热点并总结成 200 字简报" if is_run
             else "如：该发公众号了")
         self.content_edit.setFixedHeight(110 if is_run else 90)
+        self.offpeak_chk.setVisible(is_run)
 
     def _on_sched_changed(self):
         st = self.sched_combo.currentData()
@@ -218,6 +227,8 @@ class TaskEditDialog(QDialog):
         self.sched_combo.setCurrentIndex(max(0, idx))
         self.enabled_chk.setChecked(bool(task.get("enabled", True)))
         self.full_tools_chk.setChecked(bool(task.get("full_tools", False)))
+        self.offpeak_chk.setChecked(
+            bool(task.get("prefer_offpeak", False)) and task.get("action") == auto.ACT_RUN)
 
         at_time = task.get("at_time", "09:00")
         hh, mm = auto._parse_hm(at_time)
@@ -256,6 +267,7 @@ class TaskEditDialog(QDialog):
             "schedule_type": st,
             "enabled": self.enabled_chk.isChecked(),
             "full_tools": self.full_tools_chk.isChecked(),
+            "prefer_offpeak": auto.prefer_offpeak_for(action, self.offpeak_chk.isChecked()),
             "at_time": self.daily_time.time().toString("HH:mm"),
             "at_date": self.once_date.date().toString("yyyy-MM-dd"),
             "weekday": self.weekday_combo.currentData(),
@@ -348,7 +360,8 @@ def _open_edit(app, task):
                 at_time=data["at_time"], at_date=data["at_date"],
                 weekday=data["weekday"], interval_minutes=data["interval_minutes"],
                 enabled=data["enabled"],
-                full_tools=data.get("full_tools", False))
+                full_tools=data.get("full_tools", False),
+                prefer_offpeak=data.get("prefer_offpeak", False))
             st.add(t)
         else:
             merged = dict(task)
@@ -358,6 +371,7 @@ def _open_edit(app, task):
                 "at_time": data["at_time"], "at_date": data["at_date"],
                 "weekday": data["weekday"], "interval_minutes": data["interval_minutes"],
                 "full_tools": data.get("full_tools", False),
+                "prefer_offpeak": data.get("prefer_offpeak", False),
             })
             st.update(merged)
         app._refresh_automation_list()
