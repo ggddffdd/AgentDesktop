@@ -148,6 +148,7 @@ test_toast_wiring_205.py
 test_tokens_200.py
 test_tool_audit_c.py
 test_tool_outcome_single_258.py
+test_tool_schema_budget_277.py
 test_toolresult_wiring_226.py
 test_twin_bg_image_264.py
 test_twin_seg_resilience.py

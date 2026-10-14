@@ -77,7 +77,7 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.276.0"
+APP_VERSION = "v4.277.0"
 APP_BUILD_DATE = "2026-10-14"
 # v4.164.0（2026-09-27）**运行数据归口：彻底治「dist 既是运行目录又是分发源」**：
 #   新增 config.WORKSPACE_DIR（默认 ~/Documents/小臭玩AI，与 USER_DATA_DIR 同值，
@@ -1046,6 +1046,9 @@ DEFAULT_CONFIG = {
     # 免费引擎（搜狗/Bing）仅作无 key 时的兜底。留空则纯免费。
     "search_api_key": "",
     "agent_skip_confirm": False,
+    # v4.277.0：默认只发约 25 个常用工具的 schema，其余按对话再补。
+    # true = 恢复把全部工具 schema 发给模型。
+    "full_tool_schema": False,
     "onboarded": False,       # v4.79：新手引导是否已看过（看过则不再弹）
     "image_gen_provider": "agnes",
     "image_gen_model": "agnes-image-2.5-flash",
