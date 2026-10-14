@@ -10,7 +10,7 @@
   3. 收尾跑一次「原样基线」，期望零红 —— 防「判据过宽、什么都判红」。
 
 六个变异对应六组判据：
-  AF1 旧顺序回归（mark_fired 先于 fire = v4.212.0 的原始 bug 形态）→ A1a/A1b/A2
+  AF1 接手即 mark_fired（v4.272 及以前把「Agent 接了」当成做完）→ A1b
   AF2 删空消息守卫（每秒无限重试回归）                        → C1/C2/C3
   AF3 删成功路径 return True（fire 永远不算成功）              → D1b
   AF4 删异常回滚块（重试时消息重复堆积回归）                  → D2a/D2b
@@ -106,15 +106,16 @@ def case(name, env_src, expects):
 # ---------------------------------------------------------------------------
 _mut = sub(UI_SRC,
            "                    if self._fire_automation_run(t):\n"
-           "                        automation.mark_fired(t, now)\n"
-           "                        self.automation_store.save()\n",
-           "                    automation.mark_fired(t, now)  # 扰动：旧顺序回归\n"
-           "                    self.automation_store.save()\n"
-           "                    self._fire_automation_run(t)\n",
-           "AF1 revert fire-first order")
-case("AF1 恢复旧顺序：先标记后执行（原始 bug 形态）",
+           "                        # 接手不等于做完：完成与否在 _finish_automation_run 里判定。\n"
+           "                        break\n",
+           "                    if self._fire_automation_run(t):\n"
+           "                        automation.mark_fired(t, now)  # 扰动：接手即完成\n"
+           "                        self.automation_store.save()\n"
+           "                        break\n",
+           "AF1 mark on accept")
+case("AF1 接手即 mark_fired（没做完也被记成今天跑过）",
      {"UI_PATH": ("ui_fire_mut_", _mut)},
-     ["A1a 存在", "A1b 成功守卫", "A2  执行分支无守卫外的裸 mark_fired"])
+     ["A1b 接手成功不得 mark_fired"])
 
 # ---------------------------------------------------------------------------
 # AF2：删空消息守卫
@@ -139,9 +140,9 @@ case("AF2 删空消息守卫（空指令任务每秒无限重试回归）",
 # AF3：删成功路径 return True
 # ---------------------------------------------------------------------------
 _mut = sub(UI_SRC,
-           "            self._agent_run()\n"
+           "            self._agent_run(bound_sid=session.sid)\n"
            "            return True\n",
-           "            self._agent_run()\n"
+           "            self._agent_run(bound_sid=session.sid)\n"
            "            pass  # 扰动：成功不返回 True\n",
            "AF3 drop return True")
 case("AF3 删成功路径 return True（fire 永远不算成功 → 永不标记）",

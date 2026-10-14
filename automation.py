@@ -75,6 +75,10 @@ def new_task(name, action, message, schedule_type, at_time="09:00",
         "enabled": bool(enabled),
         "full_tools": bool(full_tools),
         "last_run": 0.0,
+        "last_result": "",
+        "last_error": "",
+        "last_attempt": 0.0,
+        "fail_count": 0,
         "created": time.time(),
     }
 
@@ -138,6 +142,10 @@ class AutomationStore:
             for t in raw:
                 if isinstance(t, dict) and t.get("id"):
                     t.setdefault("last_run", 0.0)
+                    t.setdefault("last_result", "")
+                    t.setdefault("last_error", "")
+                    t.setdefault("last_attempt", 0.0)
+                    t.setdefault("fail_count", 0)
                     t.setdefault("enabled", True)
                     self.tasks.append(t)
         except Exception as e:
@@ -198,9 +206,79 @@ def _parse_hm(s):
         return 0, 0
 
 
+# 失败后允许补跑，但不要每秒重试把会话刷爆。
+RETRY_COOLDOWN_SEC = 10 * 60
+MAX_FAILS_PER_DAY = 3
+
+# 助手只回了这类话，说明这一轮没真正做完。
+REFUSAL_MARKERS = (
+    "请开启 Agent 模式",
+    "请开 Agent 模式",
+    "请开启「助手做事」",
+    "请切到「助手做事」",
+    "请切到『助手做事』",
+    "请切换到「助手做事」",
+    "当前为「普通对话模式」",
+    "无法直接调用任何工具",
+    "我无法执行",
+    "没法执行",
+)
+_MIN_SUBSTANTIVE = 80
+
+
+def _contains_refusal(text):
+    return any(m in (text or "") for m in REFUSAL_MARKERS)
+
+
+def reply_is_real_success(reply, stopped=False, tools_ran=False):
+    """接手了不算完成。停了、空回复、只让用户去开模式，都是失败。
+
+    真正用过工具，或写出一段够长、且不是推脱的回复，才算成功。
+    """
+    if stopped:
+        return False
+    text = reply.strip() if isinstance(reply, str) else ""
+    if not text or _contains_refusal(text):
+        return False
+    if tools_ran:
+        return True
+    return len(text) >= _MIN_SUBSTANTIVE
+
+
+def failure_reason(reply, stopped=False):
+    """给用户看的一句原因，不含内部词。"""
+    if stopped:
+        return "中途停了，这次不算完成"
+    text = reply.strip() if isinstance(reply, str) else ""
+    if not text:
+        return "没有给出结果"
+    if _contains_refusal(text):
+        return "没有真正做完，还在等你切换干活方式"
+    return "没有产出可用结果"
+
+
+def _retry_blocked(task, now):
+    """同一天失败后的冷却与次数上限。新的一天重新允许。"""
+    if str(task.get("last_result") or "") != "failed":
+        return False
+    attempt = float(task.get("last_attempt") or 0)
+    if attempt <= 0:
+        return False
+    try:
+        if datetime.fromtimestamp(attempt).date() != now.date():
+            return False
+    except Exception:
+        return False
+    if int(task.get("fail_count") or 0) >= MAX_FAILS_PER_DAY:
+        return True
+    return now.timestamp() < attempt + RETRY_COOLDOWN_SEC
+
+
 def is_due(task, now=None):
     """判断任务此刻是否到期。now 为 datetime，缺省用当前时间。"""
     now = now or datetime.now()
+    if _retry_blocked(task, now):
+        return False
     st = task.get("schedule_type", SCHED_DAILY)
     last = float(task.get("last_run", 0.0) or 0.0)
     now_ts = now.timestamp()
@@ -239,11 +317,61 @@ def is_due(task, now=None):
 
 
 def mark_fired(task, now=None):
-    """触发后回写 last_run；once 类型同时置 disabled（就地修改，无返回值）。"""
+    """真正做完才回写 last_run；once 类型同时置 disabled（就地修改，无返回值）。"""
     now = now or datetime.now()
     task["last_run"] = now.timestamp()
+    task["last_attempt"] = task["last_run"]
+    task["last_result"] = "ok"
+    task["last_error"] = ""
+    task["fail_count"] = 0
     if task.get("schedule_type") == SCHED_ONCE:
         task["enabled"] = False
+
+
+def mark_failed(task, now=None, reason=""):
+    """记一次失败。不写 last_run，所以当天还能在冷却后补跑。"""
+    now = now or datetime.now()
+    prev = float(task.get("last_attempt") or 0)
+    try:
+        new_day = prev > 0 and datetime.fromtimestamp(prev).date() != now.date()
+    except Exception:
+        new_day = False
+    if new_day:
+        task["fail_count"] = 0
+    task["fail_count"] = int(task.get("fail_count") or 0) + 1
+    task["last_attempt"] = now.timestamp()
+    task["last_result"] = "failed"
+    task["last_error"] = (reason or "没做完")[:200]
+
+
+def last_result_text(task):
+    """自动化面板上的「上次结果」。没跑过返回空串。"""
+    res = str(task.get("last_result") or "")
+    if res == "ok":
+        return "上次结果：成功"
+    if res == "failed":
+        err = (task.get("last_error") or "没做完").strip()
+        return "上次结果：没做完 · " + err
+    return ""
+
+
+def bound_session(store, sid):
+    """按启动时钉住的会话编号取会话。
+
+    后启动的任务会改 store.active()，写入若跟着 active 走，两个任务的内容会串到同一个会话。
+    """
+    if store is None:
+        return None
+    if sid:
+        sessions = getattr(store, "sessions", None)
+        if isinstance(sessions, dict):
+            sess = sessions.get(sid)
+            if sess is not None:
+                return sess
+    try:
+        return store.active()
+    except Exception:
+        return None
 
 
 def schedule_summary(task):

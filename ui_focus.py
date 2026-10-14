@@ -190,6 +190,15 @@ def chip_html(paths):
     return "".join(parts)
 
 
+def chat_load_failure_copy():
+    """聊天页加载失败时的空状态文案：(标题, 说明, 按钮)。"""
+    return (
+        "聊天页没有加载出来",
+        "页面是空白的。点重试再加载一次。",
+        "重试",
+    )
+
+
 def confirm_copy(title, detail, force=False):
     """确认框白话。force 时写明「少问也挡不住这一步」。"""
     title = (title or "请确认这一步").strip()

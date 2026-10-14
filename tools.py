@@ -845,6 +845,27 @@ def _trace_fetch(name, args, result, ok=None):
         log.warning("抓取留痕失败: %s", e)
 
 
+_USER_TOOL_LABELS = {
+    "write_file": "写文件",
+    "delete_file": "删除文件",
+    "run_command": "执行命令",
+    "run_python": "运行代码",
+    "process_kill": "结束进程",
+    "send_email": "发邮件",
+    "app_close": "关闭程序",
+    "db_insert": "写入数据",
+    "db_update": "修改数据",
+}
+
+
+def user_denial(name, kind="confirm", detail=""):
+    """给用户和模型看的拒绝说明。不带闸门、审查编号这类内部说法。"""
+    label = _USER_TOOL_LABELS.get(name) or "这一步"
+    if kind == "denied":
+        return "%s这次没有被允许，已停下来。" % label
+    return "%s需要你先允许，我先停在这里。" % label
+
+
 def _permission_gate(name, args, perm_ctx):
     """exec_tool 最终权限闸门（审查报告 P1 #4）。
 
@@ -858,12 +879,14 @@ def _permission_gate(name, args, perm_ctx):
     # 携带合法决策对象：信任其结论
     if perm_ctx is not None and hasattr(perm_ctx, "allowed"):
         if not perm_ctx.allowed:
-            return (False, f"权限决策拒绝执行 {name}：{getattr(perm_ctx, 'reason', '')}")
+            log.info("权限未允许 %s：%s", name, getattr(perm_ctx, "reason", ""))
+            return (False, user_denial(name, "denied"))
         # v4.245.0（审查报告 T-5）：需要用户确认但未取得确认 → 拒绝（第二道锁）。
         # 调用方完成确认后必须置 confirmed=True，否则这里 fail-closed，
         # 杜绝「某调用方漏检 needs_user 就静默跳过确认」。
         if getattr(perm_ctx, "needs_user", False) and not getattr(perm_ctx, "confirmed", False):
-            return (False, f"该操作需要用户确认但未取得确认（{name}）")
+            log.info("需要确认但未确认 %s", name)
+            return (False, user_denial(name, "confirm"))
         return (True, None)
     # 无上下文：按风险分类 fail-closed
     try:
@@ -872,10 +895,8 @@ def _permission_gate(name, args, perm_ctx):
         _risk = RiskClass.EXTERNAL
     if _risk == RiskClass.READ:
         return (True, None)
-    return (False,
-            f"exec_tool 需要权限上下文：未携带合法授权即拒绝执行 {name} "
-            f"（风险类={_risk.name}，审查报告 P1 #4）。"
-            f"请通过主 Agent / 军团权限适配器调用。")
+    log.info("无授权上下文，拒绝 %s（风险类=%s）", name, getattr(_risk, "name", ""))
+    return (False, user_denial(name, "confirm"))
 
 
 def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
@@ -3678,7 +3699,7 @@ def tool_sys_info(cfg, app_dir, _progress=None):
     lines.append(f"- RAG 目录：{rd}")
     lines.append(f"- 记忆库：{data_dir}/memory.md + memory.db")
     lines.append(f"- 模型：{cfg.get('model', '')}")
-    lines.append(f"- Agent 模式：{'开' if cfg.get('agent_mode') else '关'}")
+    lines.append(f"- 总是启用工具：{'开' if cfg.get('agent_mode') else '关'}")
     lines.append(f"- 互联网搜索：{'开' if cfg.get('search_enabled', True) else '关'}")
     lines.append(f"- MCP 服务器：filesystem（1 个，已连接）")
     lines.append("")

@@ -153,7 +153,8 @@ def group_a_behavior():
     tr_small = tools.exec_tool(None, ROOT, "run_python",
                                {"code": "print('ok227')"}, perm_ctx=allow_ctx)
     check("A0 前置自证：合法 perm_ctx 下 exec_tool 能走到执行",
-          "需要权限上下文" not in (getattr(tr_small, "msg", "") or ""),
+          "需要权限上下文" not in (getattr(tr_small, "msg", "") or "")
+          and "需要你先允许" not in (getattr(tr_small, "msg", "") or ""),
           repr((getattr(tr_small, "msg", "") or "")[:100]))
 
     # ⚠️ exec_tool 首参是 cfg（位置参数），不是 keyword-only。

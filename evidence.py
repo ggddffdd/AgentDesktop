@@ -54,7 +54,8 @@ _DEFAULT_DIR = None
 _LOCK = threading.RLock()
 _MAX_ROWS = 2000          # 保留最近条数
 _MAX_AGE_DAYS = 30        # 保留天数
-_SEQ = 0                  # 本进程内单调递增编号（跨轮唯一，便于模型引用）
+# 编号以库里的 MAX(id) 为准，不在进程内存里从 1 重新数。
+# 否则每次启动都从 1 插入，撞上旧行就静默失败，引用还会拿到上一轮的网页。
 
 
 def set_dir(path):
@@ -196,7 +197,6 @@ def register(tool, args, raw, ok=True, err=None):
     ok    : 工具调用是否成功 —— False 的证据不可作为支撑（工具失败禁止补全）
     err   : 失败原因文本
     """
-    global _SEQ
     try:
         if raw is None:
             raw = ""
@@ -216,29 +216,42 @@ def register(tool, args, raw, ok=True, err=None):
         n_lines = raw.count("\n") + (0 if raw.endswith("\n") or not raw else 1)
         sha = hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:12]
         ts = time.time()
-        with _LOCK:
-            _SEQ += 1
-            eid = _SEQ
         if not _init_db():
             return None
-        conn = _connect()
-        try:
-            conn.execute(
-                "INSERT INTO evidence (id, ts, ts_str, tool, args, raw, "
-                "n_chars, n_lines, ok, err, sha) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (eid, ts, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                 str(tool or ""), args_s, raw, len(raw), n_lines,
-                 1 if ok else 0, (err or None), sha))
-            conn.commit()
-        finally:
-            conn.close()
-        # 顺手裁剪（不在关键路径做太多事：每 20 条裁一次）
+        eid = None
         with _LOCK:
-            if eid % 20 == 0:
-                try:
-                    prune()
-                except Exception:
-                    pass
+            conn = _connect()
+            try:
+                for _attempt in range(4):
+                    row = conn.execute(
+                        "SELECT COALESCE(MAX(id), 0) FROM evidence").fetchone()
+                    cand = int(row[0] or 0) + 1
+                    try:
+                        conn.execute(
+                            "INSERT INTO evidence (id, ts, ts_str, tool, args, raw, "
+                            "n_chars, n_lines, ok, err, sha) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                            (cand, ts, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                             str(tool or ""), args_s, raw, len(raw), n_lines,
+                             1 if ok else 0, (err or None), sha))
+                        conn.commit()
+                        eid = cand
+                        break
+                    except sqlite3.IntegrityError:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+            finally:
+                conn.close()
+        if eid is None:
+            log.warning("证据登记失败（忽略）: 编号与已有记录冲突")
+            return None
+        # 顺手裁剪（不在关键路径做太多事：每 20 条裁一次）
+        if eid % 20 == 0:
+            try:
+                prune()
+            except Exception:
+                pass
         return eid
     except Exception as e:
         log.warning("证据登记失败（忽略）: %s", e)
