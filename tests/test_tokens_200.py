@@ -253,6 +253,8 @@ if os.path.isfile(FIXTURE):
     # 「登记了却没被消耗」。登记制本身保留：以后再有有意新增照此登记。
     # v4.215.0：自动化任务编辑器新增「允许执行类工具」复选框（full_tools_chk，
     # 样式与 enabled_chk 同款 label_body()）——同词条 +1 实例，照此登记。
+    # v4.278.0：再加「等到空闲时段再跑」复选框（offpeak_chk），仍是同一条
+    # label_body()，同词条再 +1。条数写死 2，再多一枚照样红。
     # v4.264.0 专注对话改了侧栏和输入区按钮，旧图标按钮样式从 ui.py 消失。
     # 不是重拍基线：只登记净减少的那几条。
     KNOWN_MIGRATIONS_264 = {
@@ -270,7 +272,7 @@ if os.path.isfile(FIXTURE):
 
     KNOWN_ADDITIONS = {
         "automation_panel.py": collections.Counter({
-            ("QCheckBox", '{"color": "#202124", "font-size": "13px"}'): 1,
+            ("QCheckBox", '{"color": "#202124", "font-size": "13px"}'): 2,
         }),
         # v4.263.0（P2 数字人自定义背景图）：数字人面板新增「自定义背景（可选）」
         # 区 —— 一个 QGroupBox 外壳（带 title 子控件，故展开为 QGroupBox +
