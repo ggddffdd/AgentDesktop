@@ -345,6 +345,16 @@ def label_title(color_key: str = "text", weight: str = "semibold") -> str:
     )
 
 
+def qc_skip_banner() -> str:
+    """缺视觉 key 时的横幅：琥珀底表示「跳过，不是通过」。颜色走 THEME。"""
+    return (
+        f"color:{THEME['warn_gold2']};background:{THEME['warn_banner_bg']};"
+        f"border:1px solid {THEME['warn_banner_border']};"
+        f"border-radius:8px;padding:6px 10px;"
+        f"font-size:{F['second']};font-weight:{W['semibold']};"
+    )
+
+
 def label_title_xl(color_key: str = "text", weight: str = "bold") -> str:
     """页面大标题（20px/700）。收编 9 处 20px 页头（v4.182.0 新增层级）。"""
     return (

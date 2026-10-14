@@ -29,6 +29,10 @@ CASES = [
      '    ap.add_argument("--perturb-critical", action="store_true",\n',
      '    ap.add_argument("--perturb-off", action="store_true",  # 扰动：关掉 critical 抽样\n',
      False),
+    ("V4 多斜杠盘符不还原", POL,
+     "    drive = path.lstrip(\"/\")\n",
+     "    drive = path  # 扰动：不剥盘符前的斜杠\n",
+     False),
 ]
 
 

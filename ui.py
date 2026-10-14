@@ -1103,7 +1103,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
 
     def _build_input_area(self):
         """输入区卡片：状态/技能条 + 附件 + 输入框 + 发送。"""
-        from theme_qss import label_second
+        from theme_qss import label_body, label_second
         input_area = QWidget()
         input_area.setStyleSheet(f"background:{THEME['bg']};")
         ia_lay = QVBoxLayout(input_area)
@@ -1124,7 +1124,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         tp_row.setSpacing(8)
         self._tool_progress_label = QLabel("")
         self._tool_progress_label.setStyleSheet(
-            f"color:{THEME['text']};font-size:13px;background:transparent;")
+            label_body() + "background:transparent;")
         tp_row.addWidget(self._tool_progress_label, 1)
         self._tool_detail_btn = QPushButton("细节")
         self._tool_detail_btn.setFixedHeight(32)
@@ -1140,7 +1140,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         self._tool_progress_detail.setWordWrap(True)
         self._tool_progress_detail.setVisible(False)
         self._tool_progress_detail.setStyleSheet(
-            f"color:{THEME['dim']};font-size:12px;background:transparent;")
+            label_second() + "background:transparent;")
         tp.addWidget(self._tool_progress_detail)
         ia_lay.addWidget(self._tool_progress)
 
@@ -3774,8 +3774,9 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
                 mil.setContentsMargins(16, 0, 8, 0)
                 mil.setSpacing(8)
                 m_text = QLabel("更多")
+                from theme_qss import label_body as _label_body
                 m_text.setStyleSheet(
-                    f"color:{THEME['dim']};font-size:13px;font-weight:500;background:transparent;")
+                    _label_body(color_key="dim", weight="medium") + "background:transparent;")
                 mil.addWidget(m_text, 1)
                 mbl = QVBoxLayout(more_btn)
                 mbl.setContentsMargins(0, 0, 0, 0)

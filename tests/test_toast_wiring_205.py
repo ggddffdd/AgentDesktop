@@ -295,9 +295,14 @@ check("F2 检查更新失败仍是 QMessageBox.warning（要能读完/复制原�
       f"toast 调用 {n_upd_toast}")
 check("F3 已是最新改走 toast（只一句结论，不值得打断）",
       'toast("已是最新版本"' in upd_src)
-# 写死"只许一条"：失败分支若也被换成 toast，这里立刻红
-check("F3b _check_update 里只有 1 处 toast（多的就是把失败也换掉了）",
-      len(n_upd_toast) == 1, f"实际 {len(n_upd_toast)} 处")
+# 两处都是一句结论：没配更新地址、以及已经是最新。失败仍必须是 warning。
+# 再多一条就是把失败也换成了 toast。
+check("F3b _check_update 里只有 2 处结论 toast（无通道 + 已是最新）",
+      len(n_upd_toast) == 2
+      and "无在线更新通道" in upd_src
+      and "已是最新版本" in upd_src
+      and not any("失败" in c["msg"] for c in n_upd_toast),
+      f"实际 {len(n_upd_toast)} 处 {n_upd_toast}")
 
 DX = os.path.join(ROOT, "diagnostic_export.py")
 dx_src = open(DX, encoding="utf-8").read() if os.path.exists(DX) else ""
