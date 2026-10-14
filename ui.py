@@ -1447,7 +1447,78 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         except Exception as e:
             self.status_label.setText(f"诊断包导出失败：{e}")
 
+    def _voice_conv(self):
+        """语音对话会话。端点模型只在第一次按麦克风时加载。"""
+        conv = getattr(self, "_conv", None)
+        if conv is None:
+            from voice_session import VoiceConversation
+            conv = VoiceConversation(
+                self.recorder, self.audio_player, self.cfg, self,
+                hold_thread=self._spawn_thread,
+                on_tts_error=self._on_tts_error,
+                speech_enabled=lambda: bool(self.speech_enabled))
+            conv.sig_utterance.connect(self._on_voice_utterance)
+            conv.sig_status.connect(self._on_voice_status)
+            conv.sig_hint.connect(self._on_vad_hint)
+            self._conv = conv
+            conv.prepare()
+        return conv
+
+    def _on_voice_status(self, text):
+        if text:
+            self.status_label.setText(text)
+
+    def _on_vad_hint(self, text):
+        self._vad_fallback_hint = text or ""
+        if text:
+            self.status_label.setText(text)
+        conv = getattr(self, "_conv", None)
+        if conv is not None and not conv.vad_ready:
+            self.talk_btn.setText("按住说话")
+
+    def _on_voice_utterance(self, wav):
+        if self._busy or getattr(self, "_voice_asr_inflight", False):
+            self.status_label.setText("上一条还在处理，这句先不发送")
+            return
+        if not wav:
+            return
+        conv = getattr(self, "_conv", None)
+        self._voice_asr_inflight = True
+        self._inflight_voice_epoch = conv.issue_token() if conv is not None else None
+        self.status_label.setText("语音识别中…")
+        self._submit_asr(wav)
+
+    def _submit_asr(self, wav):
+        try:
+            self._task_asr = task_status.begin("speech", "语音识别")
+            task_status.progress(self._task_asr, "识别中")
+        except Exception:
+            self._task_asr = ""
+        if self._asr_thread and self._asr_thread.isRunning():
+            self._asr_thread.terminate()
+            self._spawn_thread(self._asr_thread)  # 审计修复 B2：terminate 异步，旧线程须持有到真退出
+        sf = self.cfg.get("siliconflow", {})
+        self._asr_thread = _ASRWorker(wav, sf)
+        self._spawn_thread(self._asr_thread)
+        self._asr_thread.sig_text.connect(self._on_asr_done)
+        self._asr_thread.sig_error.connect(self._on_asr_error)
+        self._asr_thread.start()
+
     def _start_talk(self):
+        conv = self._voice_conv()
+        if conv.vad_ready:
+            if conv.active:
+                conv.shutdown()
+                self.talk_btn.setText("语音对话")
+                self.status_label.setText("语音对话已结束")
+                return
+            mic = self._current_mic()
+            if not mic or mic == "未检测到麦克风":
+                self.status_label.setText("没有可用麦克风，先选麦克风或直接打字")
+                return
+            if conv.start(mic):
+                self.talk_btn.setText("结束对话")
+                return
         if self._busy:
             self.status_label.setText("上一条还在处理，稍等…")
             return
@@ -1466,9 +1537,18 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             self.status_label.setText(f"麦克风启动失败：{e}")
             return
         self.talk_btn.setText("🔴 聆听中…（松开结束）")
-        self.status_label.setText(f"🔴 聆听中… 麦克风：{mic}")
+        hint = getattr(self, "_vad_fallback_hint", "")
+        if hint:
+            self.status_label.setText(hint)
+        else:
+            self.status_label.setText(f"🔴 聆听中… 麦克风：{mic}")
 
     def _stop_talk(self):
+        conv = getattr(self, "_conv", None)
+        if conv is not None and conv.vad_ready and not self._recording:
+            return
+        if conv is not None and conv.active:
+            return
         if self._busy:
             # 上一条还在处理：丢弃本次录音，避免叠加
             self.rec_wav = None
@@ -1488,21 +1568,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         if not wav:
             self.status_label.setText(f"没录到声音：{self.recorder.error or '未知'}")
             return
-        # 可观测性：语音识别任务（识别在后台，此前只有一行 status_label 提示）
-        try:
-            self._task_asr = task_status.begin("speech", "语音识别")
-            task_status.progress(self._task_asr, "识别中")
-        except Exception:
-            self._task_asr = ""
-        if self._asr_thread and self._asr_thread.isRunning():
-            self._asr_thread.terminate()
-            self._spawn_thread(self._asr_thread)  # 审计修复 B2：terminate 异步，旧线程须持有到真退出
-        sf = self.cfg.get("siliconflow", {})
-        self._asr_thread = _ASRWorker(wav, sf)
-        self._spawn_thread(self._asr_thread)
-        self._asr_thread.sig_text.connect(self._on_asr_done)
-        self._asr_thread.sig_error.connect(self._on_asr_error)
-        self._asr_thread.start()
+        self._submit_asr(wav)
 
     def _on_asr_done(self, text):
         # 可观测性：语音识别收口（不把识别出的原话写进状态文本）
@@ -1517,12 +1583,17 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         except Exception:
             pass
         if not text:
+            self._voice_asr_inflight = False
             self.status_label.setText("没听清，再说一次 / 或直接打字")
             return
-        self.input_box.setPlainText(text)
-        self.send()
+        try:
+            self.input_box.setPlainText(text)
+            self.send()
+        finally:
+            self._voice_asr_inflight = False
 
     def _on_asr_error(self, msg):
+        self._voice_asr_inflight = False
         # 可观测性：语音识别失败收口
         try:
             _tid = getattr(self, "_task_asr", "")
@@ -1538,6 +1609,10 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         if not self.speech_enabled:
             return
         if not text or not text.strip():
+            return
+        conv = getattr(self, "_conv", None)
+        if conv is not None and conv.active:
+            conv.speak(text, getattr(self, "_inflight_voice_epoch", None))
             return
         if self._tts_thread and self._tts_thread.isRunning():
             self._tts_thread.terminate()

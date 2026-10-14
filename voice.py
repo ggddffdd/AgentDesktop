@@ -15,6 +15,7 @@ import subprocess
 # v4.125 M-14：windowed 打包下调 ffmpeg 不闪黑窗
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 import tempfile
+import threading
 import urllib.request
 import urllib.error
 
@@ -340,9 +341,27 @@ def detect_mic():
     return KNOWN_MIC
 
 
+def resample_int16(data, src_rate, dst_rate):
+    """一维 int16 重采样。语音端点固定 16000，WASAPI 采集常常是 48000。"""
+    import numpy as np
+    arr = np.asarray(data)
+    if arr.ndim > 1:
+        arr = arr[:, 0]
+    if src_rate == dst_rate or len(arr) == 0 or src_rate <= 0 or dst_rate <= 0:
+        return arr.astype(np.int16, copy=False)
+    new_n = int(round(len(arr) * float(dst_rate) / float(src_rate)))
+    if new_n <= 0:
+        return np.zeros(0, dtype=np.int16)
+    x_old = np.linspace(0.0, 1.0, num=len(arr), endpoint=False)
+    x_new = np.linspace(0.0, 1.0, num=new_n, endpoint=False)
+    out = np.interp(x_new, x_old, arr.astype(np.float32))
+    return np.clip(np.rint(out), -32768, 32767).astype(np.int16)
+
+
 class Recorder:
     """录音器：sounddevice 优先（WASAPI，原生、稳定），ffmpeg dshow 回落。
     start() 返回输出 wav 路径（录音中先写临时文件，stop() 收尾）。
+    pull_new() 把新采样交给端点检测，不打断采集。
     与数字分身 twin.Recorder 同一套实现。"""
 
     def __init__(self, rate=16000, channels=1):
@@ -350,6 +369,7 @@ class Recorder:
         self.channels = channels
         self.error = None
         self._frames = []
+        self._lock = threading.Lock()
         self._stream = None
         self._proc = None
         self._raw_path = None
@@ -408,7 +428,8 @@ class Recorder:
         self._out_wav = out_wav or os.path.join(tempfile.gettempdir(), "xiaochou_rec.wav")
         if _have_sd():
             try:
-                self._frames = []
+                with self._lock:
+                    self._frames = []
                 dev = self._sd_device(mic)
                 # WASAPI 设备常只支持固定采样率（如 48000），强制 16000 会 -9997。
                 # 按设备原生采样率采集，stop() 再重采样到目标 16000。
@@ -432,7 +453,57 @@ class Recorder:
         return self._start_ffmpeg(mic or detect_mic(), self._out_wav)
 
     def _cb(self, indata, frames, time_info, status):
-        self._frames.append(indata.copy())
+        with self._lock:
+            self._frames.append(indata.copy())
+
+    def _take_frames(self):
+        with self._lock:
+            frames = self._frames
+            self._frames = []
+        return frames
+
+    def pull_new(self):
+        """自上次调用以来的新采样，单声道 int16，采样率 self.rate。
+
+        流没开（或走了 ffmpeg 子进程）时返回 None。对话模式靠它边录边判断。
+        """
+        if self._stream is None:
+            return None
+        frames = self._take_frames()
+        if not frames:
+            import numpy as np
+            return np.zeros(0, dtype=np.int16)
+        import numpy as np
+        data = np.concatenate(frames, axis=0)
+        if data.ndim > 1:
+            data = data[:, 0]
+        if self._cap_rate != self.rate:
+            data = resample_int16(data, self._cap_rate, self.rate)
+        return np.asarray(data, dtype=np.int16)
+
+    def close(self):
+        """停掉采集，不写文件。语音对话结束时用。"""
+        stream = self._stream
+        self._stream = None
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
+        with self._lock:
+            self._frames = []
+        proc = self._proc
+        self._proc = None
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
 
     def _start_ffmpeg(self, mic, out_wav):
         self._out_wav = out_wav
@@ -458,9 +529,10 @@ class Recorder:
             except Exception:
                 pass
             self._stream = None
-            if self._frames:
+            frames = self._take_frames()
+            if frames:
                 try:
-                    data = _np.concatenate(self._frames, axis=0)
+                    data = _np.concatenate(frames, axis=0)
                     if self._cap_rate != self.rate:
                         # 采集率与目标率不一致：先落临时 wav，再 ffmpeg 重采样到 16000。
                         tmp = out_wav + ".cap.wav"
