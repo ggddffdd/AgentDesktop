@@ -37,7 +37,7 @@ python tests/run_all.py --perturb-critical  # 只跑权限/路由/军团扰动�
 | `test_director_cancel_retry.py` | **导演台停止后可重试**：`cancel_job` 只终结当前一轮、`begin_job` 换发令牌即复位（核心）、外部置旧标志也能复位、后台任务收口五步齐备、回调带项目令牌校验 | 纯标准库（只读源码） |
 | `regression.py` | 记忆层（钉住召回 / 关键词召回 / 冲突合并 / 中文搜索 / 备份自愈）、上下文隔离、记忆加密 | 纯标准库 |
 
-上表只列早期套件，不是全量清单。磁盘上有 **169** 个 `tests/test_*.py`（另加 `regression.py`），扰动脚本在 `_perturb/_perturb_*.py`，**105** 个（不含护栏 `_perturb/_perturb_guard.py`）。旧文「合计 410 项断言」已过时，不再当门禁数字；全量以 `python tests/run_all.py --list` 为准。
+上表只列早期套件，不是全量清单。磁盘上有 **173** 个 `tests/test_*.py`（另加 `regression.py`），扰动脚本在 `_perturb/_perturb_*.py`，**109** 个（不含护栏 `_perturb/_perturb_guard.py`）。旧文「合计 410 项断言」已过时，不再当门禁数字；全量以 `python tests/run_all.py --list` 为准。
 
 扰动默认不进日常 CI 的 `test` 作业。`.github/workflows/perturb-nightly.yml` 每周日与手动 `workflow_dispatch` 跑 `--perturb-critical`（权限 / 路由 / 军团）；选 `full` 才跑 `--with-perturb`。发现入口扫的是 `_perturb/`，不是仓库根目录。
 

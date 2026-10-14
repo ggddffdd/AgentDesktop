@@ -4,7 +4,7 @@
 
 技术栈：**Python + PySide6 + OpenAI 兼容 API + Chroma 向量库**，配合 pyautogui / pywinauto 做系统与软件自动化。免费可跑、代码可改可练手。
 
-> 当前版本 **v4.271.0**。本项目由个人桌面助手迭代而来，经脱敏后以源码可获得（Source Available，禁止商用）方式公开，供学习参考与二次开发。许可见 [LICENSE](LICENSE)。
+> 当前版本 **v4.272.0**。本项目由个人桌面助手迭代而来，经脱敏后以源码可获得（Source Available，禁止商用）方式公开，供学习参考与二次开发。许可见 [LICENSE](LICENSE)。
 >
 > 版本变更与发布说明见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -159,7 +159,7 @@ python release_check.py     # 语法 / 回归 / 密钥扫描(含二进制) / 版
 - `~/Documents/小臭玩AI/` 下有聊天记录、记忆、技能等本地数据，注意保护。
 - 危险工具（执行命令、系统/软件操控、浏览器点击）默认需要确认；请勿在不受信环境开启「免确认」模式。
 - 工具审计有两本账：`logs/tool_audit.jsonl`（主对话）和 `logs/legion_tool_audit.jsonl`（军团）。字段相同（`ts` / `time` / `origin` / `tool` / `args_digest` / `args_preview` / `decision` / `rule` / `reason` / `by`），用 `origin` 区分通道。只读合并见 `tool_audit.merge_ledgers`。
-- 聊天页 WebEngine **只放行** `localres://`、工作区内的 `file://`，以及 `config.json` 里显式列出的 `webengine_allow_hosts`。其余外链不会留在页面里。
+- 聊天页 WebEngine **只放行** `localres://`、工作区内的 `file://`，以及 `config.json` 里显式列出的 `webengine_allow_hosts`。页面自己的加载（主框架 `data:text/html`，且不是点击）可以过；点开的 `data:` 链接和其余外链不会留在页面里。
 - **只有冻结打包**（`sys.frozen`）才会设置 `QTWEBENGINE_DISABLE_SANDBOX=1`。源码运行默认不关 Chromium 沙箱；你自己设了该环境变量则尊重原值。
 
 ---

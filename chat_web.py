@@ -78,11 +78,17 @@ class _ChatPage(QWebEnginePage):
             # 外链交给系统浏览器，WebEngine 自己不打开
             QDesktopServices.openUrl(url)
             return False
-        # v4.265.0：主框架只留白名单（localres / 工作区 file / 显式域 / about:blank）
+        # v4.265.0：主框架只留白名单（localres / 工作区 file / 显式域 / about:blank）。
+        # v4.272.0：setHtml 在 Qt 里是主框架 data:text/html（不是用户点击）。
+        # 白名单仍拒绝一切 data:；decide_chat_whitelist 只在调用前放行这一条，
+        # 否则聊天页永远加载失败、整页空白。点击的 data: 链接继续拒绝。
+        # LinkClicked 的枚举值是 0，必须用相等判断，不能把 nav_type 当布尔。
         try:
             import webengine_policy as _wep
-            if not _wep.navigation_allowed(
-                    s, workspace_roots=_wep.workspace_roots(),
+            if not _wep.decide_chat_whitelist(
+                    s, isMainFrame,
+                    nav_type == QWebEnginePage.NavigationTypeLinkClicked,
+                    workspace_roots=_wep.workspace_roots(),
                     allow_hosts=_wep.allow_hosts()):
                 _we_diag("导航被白名单拒绝: " + s[:180])
                 return False
