@@ -443,3 +443,24 @@ class LegionPermissionAdapter:
                 "external_allow": sorted(self.external_allow),
                 "granted": {str(k): sorted(v) for k, v in self._grants.items()},
             }
+
+
+def grant_for_wave_dispatch(adapter, wave_no, gate_mode="human"):
+    """human：本波成员派发前授予这一波的 exec / external。
+
+    只记当前波次，不调用 grant_all，也不是全局免确认。
+    advisory / off 在开工时已经 grant_all，这里返回 False，避免再写一套策略。
+    本波已经同时有 exec 与 external 时不重复授予。
+    高危命令与 ALWAYS_CONFIRM 仍由 check() 二次确认，本函数不绕过。
+    """
+    if adapter is None or gate_mode != "human":
+        return False
+    grant = getattr(adapter, "grant_wave", None)
+    is_granted = getattr(adapter, "is_granted", None)
+    if not callable(grant) or not callable(is_granted):
+        return False
+    if is_granted("exec", wave_no) and is_granted("external", wave_no):
+        return False
+    grant(wave_no, classes=("exec", "external"), by="wave_dispatch",
+          reason="第 %s 波派发前授予执行类（高危仍二次确认，不是全局免确认）" % wave_no)
+    return True

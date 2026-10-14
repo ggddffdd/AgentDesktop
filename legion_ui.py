@@ -176,15 +176,21 @@ class RoleEditor(QDialog):
         self.e_constraints.setFixedHeight(52)
         self.e_constraints.setPlaceholderText("不能做什么 / 必须遵守什么")
 
+        self._orig_tools = [t for t in (r.get("tools") or [])
+                            if isinstance(t, str) and t.strip()]
+        self._tool_listed = legion.role_editor_tool_names()
         self.e_tools = QListWidget()
         self.e_tools.setSelectionMode(QAbstractItemView.MultiSelection)
-        for t in legion.TOOL_CANDIDATES:
+        for t in self._tool_listed:
             it = QListWidgetItem(t)
             self.e_tools.addItem(it)
-            if t in (r.get("tools") or []):
+            if t in self._orig_tools:
                 it.setSelected(True)
-        self.e_tools.setFixedHeight(108)
-        self.e_tools.setToolTip("可多选。留空 = 该角色不使用工具，直接输出文本。")
+        self.e_tools.setFixedHeight(160)
+        self.e_tools.setToolTip(
+            "可多选，名单与当前工具池一致。"
+            "留空 = 不使用列表里的工具。"
+            "角色卡上已有、但这份列表里没有的工具（例如军团调度工具）保存时会保留。")
 
         self.e_model = QLineEdit(r.get("model", ""))
         # v4.148.2（模型分档）：取证/批量岗用便宜快模型省 token，终稿/决策岗用强模型。
@@ -278,7 +284,9 @@ class RoleEditor(QDialog):
         host.setLayout(form)
         scroll.setWidget(host)
         lay.addWidget(scroll, 1)
-        lay.addWidget(QLabel("说明：只有勾选的工具会注入该角色；勾选的技能会在执行时拼进 system prompt 末尾。"))
+        lay.addWidget(QLabel(
+            "说明：勾选的工具写入白名单；列表里没有、卡上原有的工具会保留。"
+            "勾选的技能会在执行时拼进 system prompt 末尾。"))
         lay.addWidget(btns)
 
     def _on_ok(self):
@@ -394,7 +402,10 @@ class RoleEditor(QDialog):
             emoji=self.e_emoji.text().strip(),
             mission=self.e_mission.toPlainText().strip(),
             constraints=self.e_constraints.toPlainText().strip(),
-            tools=[i.text() for i in self.e_tools.selectedItems()],
+            tools=legion.merge_saved_role_tools(
+                [i.text() for i in self.e_tools.selectedItems()],
+                getattr(self, "_orig_tools", []),
+                getattr(self, "_tool_listed", [])),
             model=self.e_model.text().strip(),
             output_format=self.e_output.toPlainText().strip(),
             quality=self.e_quality.toPlainText().strip(),
@@ -2279,12 +2290,27 @@ class LegionWindow(QWidget):
         self._tb_worker.failed.connect(self._on_chat_team_fail)
         self._tb_worker.start()
 
+    def _discard_chat_team_draft(self):
+        """组队解析失败或 PM 没出方案时，清掉这次新建的空项目。"""
+        projects, removed = legion.drop_empty_team_draft(
+            self.data.get("projects") or [],
+            getattr(self, "_team_created_proj", None))
+        if removed:
+            self.data["projects"] = projects
+            self._team_created_proj = None
+            self._team_target_proj = None
+            self._team_plan = None
+        return removed
+
     def _on_chat_team_plan(self, text):
         """PM 方案回传：缓存 plan，交给聊天页渲染 + 进入待审批态。"""
         self._team_plan = legion.parse_team_plan(text)
+        if not self._team_plan:
+            self._discard_chat_team_draft()
         self.chat_panel.on_team_plan(text, self.data.get("role_library") or [])
 
     def _on_chat_team_fail(self, msg):
+        self._discard_chat_team_draft()
         self.chat_panel.on_team_plan_fail(msg)
 
     def _chat_team_approve(self, intent, text):
@@ -2323,7 +2349,9 @@ class LegionWindow(QWidget):
             p = legion.new_project(name="新军团", emoji="🧙")
             self.data.setdefault("projects", []).append(p)
         need = getattr(self, "_team_need", "") or ""
-        p, rep = legion.apply_team_plan(p, plan, self.data.get("role_library") or [])
+        p, rep = legion.approve_team_plan(
+            self.data, p, plan, self.data.get("role_library") or [],
+            adopt_missing=True)
         try:
             rec, _ = legion.save_team_recipe(self.data, need, plan)
             if rec:

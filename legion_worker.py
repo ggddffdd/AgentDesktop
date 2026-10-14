@@ -241,6 +241,21 @@ class LegionWorker(QThread):
             pass
         return p
 
+    def _grant_wave_before_dispatch(self, wave_no):
+        """human：本波 _run_wave 派发成员之前授予 exec/external。
+
+        放行发生在本波跑完之后，那时再授，技能里的 run_command 已经错过。
+        高危仍走适配器的二次确认，这里不改成 grant_all。
+        """
+        from legion_permissions import grant_for_wave_dispatch
+        p = self._ensure_perm()
+        mode = getattr(self, "_gate_mode", None) or getattr(p, "gate_mode", "human")
+        ok = grant_for_wave_dispatch(p, wave_no, mode)
+        if ok:
+            self._log("  🔑 第 %s 波派发前授予 exec/external"
+                      "（高危命令与硬确认工具仍要二次确认）" % wave_no)
+        return ok
+
     def _perm_reconfirm(self, tool, args, dec):
         """本波已授权后，高危 / 硬确认 / critical 仍要人手再点一次。
 
@@ -627,6 +642,10 @@ class LegionWorker(QThread):
             # 线程池的成员仍会被逐个取出执行（"点了停止还继续扣费"）。
             self._cancel_run("用户已终止本次军团运行", stage="wave_dispatch")
             return dict(state)
+        try:
+            self._grant_wave_before_dispatch(wi + 1)
+        except Exception as _ge:
+            self._log("  ⚠️ 本波派发前授权失败：%s（执行类仍按未授予处理）" % _ge)
         tg = TaskGraph()
         wave_no = wi + 1
         # v4.124.12 改动①：及格线下放 —— 交付纪律直接注进成员 prompt，
@@ -686,7 +705,15 @@ class LegionWorker(QThread):
             # 小节 —— 提交时机器按它校验）和官方站打不开时的替代源清单钉进 prompt。
             # 此前任务级形态只活在 PM 的 briefing 里，PM 没写就彻底丢失。
             _task0 = getattr(self, "task", "")
-            prompt = (_form_head + legion.build_role_prompt(role) + discipline
+            try:
+                _disc = legion.skill_disclosure_plan(role, task=_task0)
+                self._log("  📖 %s 技能披露：全文 %s；摘要 %s"
+                          % (self._role_name(role),
+                             "、".join(_disc.get("full") or []) or "无",
+                             "、".join(_disc.get("summary") or []) or "无"))
+            except Exception:
+                pass
+            prompt = (_form_head + legion.build_role_prompt(role, task=_task0) + discipline
                       + legion.deliverable_contract_block(
                           legion.extract_deliverable_contract(_task0, role_name))
                       + legion.fallback_source_block(_task0, role_name)
@@ -1328,7 +1355,9 @@ class LegionWorker(QThread):
     def _capability_preflight(self, members, task):
         """v4.146（阶段三）：高成本波前的「能力再审计」程序闸门。
 
-        按当前波成员跑 capability_audit：有 Critical 缺口 -> 拦截（不白烧 token）；
+        按当前波成员跑 capability_audit：有 Critical 缺口时返回 False，
+        调用方只把缺口写进上下文和日志，**不跳过本波**（文案里的「拦截」名不副实，
+        v4.268.0 起改成「只提示，不因此暂停」）。
         Important -> 通过但报告需人工审核；无缺口 -> 通过。返回 (ok, gap, report_text)。
         """
         try:
@@ -1734,10 +1763,13 @@ class LegionWorker(QThread):
         # ---- 军团权限闸门（v4.167.0，审查 #1 P0）----
         # 为什么在这里建：run_id / 项目名 / gate_mode 到这一步才全部确定。
         # 授权策略：
-        #   · human    —— 不预授：每波放行时逐波授予（人手把关仍在最前）
+        #   · human    —— 不在开工时 grant_all。每一波 _run_wave 派发前
+        #     授予这一波的 exec/external，技能里的 run_command / run_python
+        #     才能走到适配器。高危命令与 ALWAYS_CONFIRM 仍二次确认。
         #   · advisory / off —— 用户已放弃逐波把关，预授执行类，
         #     否则军团角色的 run_command / run_python 会全被拒、功能直接废掉
         #     （仍受工作区作用域 + 危险命令底线 + 逐笔审计约束，且外发永远要白名单）
+        self._gate_mode = gate_mode
         self._perm = None
         try:
             from legion_permissions import LegionPermissionAdapter
@@ -1749,11 +1781,12 @@ class LegionWorker(QThread):
             )
             if gate_mode != "human":
                 self._perm.grant_all(classes=("exec", "external"),
-                                     by=f"gate_mode:{gate_mode}",
+                                     by="gate_mode:%s" % gate_mode,
                                      reason="非人手把关模式，执行类能力预授（仍受作用域/白名单/审计约束）")
-                self._log(f"  🔑 权限闸门：{gate_mode} 模式 → 预授执行类能力（仍记审计，可抽查）")
+                self._log("  🔑 权限闸门：%s 模式 → 预授执行类能力（仍记审计，可抽查）" % gate_mode)
             else:
-                self._log("  🔑 权限闸门：人手把关模式 → 成员默认只读，每波放行时才授予危险能力")
+                self._log("  🔑 权限闸门：人手把关模式 → 每波派发前授予该波 exec/external；"
+                          "高危命令与硬确认工具仍要二次确认，不是全局免确认")
         except Exception as _pe:
             self._log(f"  ⚠️ 权限闸门初始化失败：{_pe}（成员工具调用将按保守策略拒绝）")
             self._perm = None
@@ -1964,13 +1997,9 @@ class LegionWorker(QThread):
                 plan_instr = (plan_instr
                               + "\n\n## 本班子建议能力（程序按职责自动推导，参考用）\n"
                               + _reco_blk)
-            # 上次同类班子怎么配的能力（组织记忆）——别每次重新发明
-            try:
-                _cap_mem = legion.team_capability_for(self.legion_data, task)
-            except Exception:
-                _cap_mem = ""
-            if _cap_mem:
-                plan_instr = plan_instr + "\n\n" + _cap_mem
+            # v4.268.0：不再把历史班子的能力配置写进开工提示。
+            # v4.148 起执行路径不消费【能力配置】（self._capability 恒为空），
+            # 继续喂那段记忆会让 PM 抄一份落不了地的配法。
             # v4.125 ④：注入资产库清单——PM 要知道货在哪叫什么，
             # 同类资产的图/视频/剧本直接复用别重造（防「技能在库里 PM 不知道」翻版）
             try:
@@ -2021,7 +2050,8 @@ class LegionWorker(QThread):
                 # 【差技能】上报，由老板来建新角色 / 装技能 —— 人来把关，不是 PM。
                 self._capability = {}
                 self._log("⚙️ 成员能力由角色库统一配置（v4.148.0：PM 不再配能力，"
-                          "缺角色/缺技能走【差技能】上报，由老板来建）")
+                          "缺角色/缺技能走【差技能】上报，由老板来建；"
+                          "历史班子的能力配置不再写入开工提示）")
                 # v4.134.2：解析【差技能】请示 —— 开工后才发现缺口也得有出口。
                 # 此前 PM 只能把「缺 X 技能」写进打回指令，老板看不到、更没处补；
                 # 能装技能的两个入口（组队弹窗 / 主窗口）里，只有弹窗能挂给角色。
@@ -2211,18 +2241,21 @@ class LegionWorker(QThread):
                                 f"## 第 {wave_no} 波经停点预检 · ⚠️ 拦截\n\n缺口：{gap}")
                         else:
                             self._log("  🚧 经停点预检未出结论（不拦，继续）")
-                        # v4.146：能力再审计（程序闸门）—— Critical 缺口直接拦截高成本波，
-                        # 不白烧 token；Important 通过但提示人工审核。
+                        # v4.146 / v4.268.0：能力再审计只提示。Critical 返回 False
+                        # 并不跳过 _run_wave（以前日志写成「拦截」，实际照样开工）。
                         _cok, _cgap, _crep = self._capability_preflight(members, task)
                         if _cok is False:
-                            self._log(f"  🧠 能力审计：⛔ 拦截 —— {_cgap}")
+                            self._log("  🧠 能力审计：⚠️ Critical 缺口（只提示，本波不因此暂停）—— %s"
+                                      % _cgap)
                             wave_state_in["context"] = (
                                 (wave_state_in.get("context") or "")
-                                + f"\n\n【能力审计 · 拦截 · 项目经理】本波启动前能力审计发现"
-                                  f"Critical 缺口：{_cgap}\n无法获得的能力明说「无法获取+缺什么」，"
-                                  "禁止编造凑数；请先补位（装/挂技能）再开工。")
+                                + "\n\n【能力审计 · 提示（不暂停）· 项目经理】本波启动前能力审计发现"
+                                  "Critical 缺口：%s\n无法获得的能力明说「无法获取+缺什么」，"
+                                  "禁止编造凑数；建议先补位（装/挂技能）。本波仍会继续。"
+                                  % _cgap)
                             gate_reports.append(
-                                f"## 第 {wave_no} 波能力审计 · ⛔ 拦截\n\n缺口：{_cgap}")
+                                "## 第 %s 波能力审计 · ⚠️ Critical 缺口（不暂停）\n\n缺口：%s"
+                                % (wave_no, _cgap))
                         else:
                             self._log("  🧠 能力审计：通过"
                                       + (f"（{_cgap}）" if _cgap else ""))
@@ -2669,10 +2702,9 @@ class LegionWorker(QThread):
                         # 并开 auto_after 时围栏被架空，违背宪法第二章（放行权必须在大哥手里）。
 
                     if decision == "pass":
-                        # v4.167.0（审查 #1，P0）：放行本波 = 同时授予本波成员危险能力。
-                        # 授权不再只挂在"能不能进下一波"上 —— 成员真要调
-                        # run_command / run_python / 外发时还要过 LegionPermissionAdapter
-                        # 那道闸门（见 agent_node.py 与 legion_permissions.py）。
+                        # 派发前已经授过本波 exec/external（见 _grant_wave_before_dispatch）。
+                        # 这里再记一笔放行授权，幂等；高危仍要二次确认。
+                        # 不能只在放行之后才授：那时本波工具调用已经结束。
                         try:
                             _p = self._ensure_perm()
                             if _p is not None:
