@@ -88,8 +88,10 @@ STYLE_LABELS = {
 }
 
 STYLE_PROMPTS = {
-    "realistic": ("photorealistic, hyper-real, cinematic live-action, natural lighting, "
-                  "high detail, 8k, sharp focus, realistic skin texture"),
+    # 「cinematic」在分镜负面清单里是空泛词。写实风格改用 photorealistic，
+    # 避免方法论刚禁止的词在拼接阶段又被加回去。用户若选「电影感」仍走 cinematic 那条。
+    "realistic": ("photorealistic, hyper-real, live-action, natural lighting, "
+                  "high detail, sharp focus, realistic skin texture"),
     "cinematic": ("cinematic film still, anamorphic lens, film grain, dramatic lighting, "
                   "teal and orange color grading, shallow depth of field, moody"),
     "anime": ("anime style, hand-drawn cel shading, vibrant colors, clean lineart, "
@@ -282,14 +284,16 @@ def looks_non_person(name, desc):
 # 「把主题快速扩展成微故事」，于是必然自己编。这里补上动工前的澄清。
 UNDERSTAND_SOURCE_CHOICES = ("不引用原文", "引用原句作字幕", "用原句作旁白念白")
 UNDERSTAND_AUDIO_CHOICES = ("无台词（纯画面 + 字幕）", "人物说中文台词", "旁白解说（后期配音）")
+# 旁白选项目前没有配音工序。卡片和规格里都要把这句话写上，避免人以为会出声。
+NARRATION_LIMITATION = "旁白目前只写进剧本和字幕，不会生成配音。"
 
 
 def understand_topic(cfg, topic, style_key="realistic", n=6, duration=5, spec=None):
     """把主题整理成一份「需求理解」草稿（供导演台需求确认卡）。
 
     只做**理解与复述**，不写剧本、不分镜、不生图 —— 用户确认之后才动工。
-    任何异常或解析失败一律返回 None；调用方据此**降级为原行为（直接开写）**，
-    绝不因为这一步把流程卡死。
+    任何异常或解析失败一律返回 None。调用方应停在主题页，让人选择重试或
+    明确跳过理解后再开写，不要在失败时自动开写。
     """
     t = (topic or "").strip()
     if not t:
@@ -363,6 +367,8 @@ def build_setting_block(genre="", narrative="", source="", audio="", notes="", e
                        ("补充意见", notes), ("额外要求", extra)):
         v = (val or "").strip()
         if v:
+            if label == "声音形式" and "旁白" in v:
+                v = f"{v}（{NARRATION_LIMITATION}）"
             lines.append(f"{label}：{v}")
     return "\n".join(lines)
 
@@ -444,32 +450,281 @@ SHOT_EN_SPEC = (
     "视频模型只能演看得见的动作和画面。\n"
 )
 
+# 提交给生图/生视频时附在提示词末尾。拆分镜时的方法论原来停在 JSON 那一步，
+# 这里用同一套约束，不再把负面清单里的空泛词拼回去。
+SHOT_SUBMIT_RULES = (
+    "[SHOT RULES] identifiable subject, exactly one visible action, "
+    "environment light and camera in the same shot, no cut, no on-screen text"
+)
+
+# 剧本范文：一条 8 镜微故事，教起承转合和道具收口。只学结构。
+STORY_FEWSHOT = (
+    "【8 镜微故事范文（只学结构，不要抄情节）】\n"
+    "人物：阿禾，二十多岁，短发，洗旧的牛仔外套。\n"
+    "1. 清晨，阿禾推开窗，看见院子里的桂花。\n"
+    "2. 她烧水，陶杯在灶边冒热气。\n"
+    "3. 手机响起，她看了一眼又放下。\n"
+    "4. 她端着杯子走到门口，停住。\n"
+    "5. 门外是空荡的小路，她还是迈了出去。\n"
+    "6. 风吹落一朵桂花，她伸手接住。\n"
+    "7. 她把花放进杯子，轻轻笑了一下。\n"
+    "8. 她坐在台阶上喝了一口，窗还开着。\n"
+    "关键道具/陈设：冒热气的陶杯；洗旧的牛仔外套。\n"
+)
+
+# 一组完整分镜：远景建立 → 中景动作 → 特写反应 → 同场承接。
+SHOT_SEQUENCE_FEWSHOT = (
+    "【一组完整分镜范例（同一场：远景建立 → 中景动作 → 特写反应 → 同场承接；"
+    "只学衔接，不要抄内容）】\n"
+    '{"en":"a young woman in a washed denim jacket standing in a small courtyard '
+    'at dawn, warm side light, extreme wide shot, static locked-off shot, eye-level",'
+    '"zh":"清晨她站在院子里","cam":"extreme wide shot, static locked-off shot, eye-level",'
+    '"scene":1,"dur":5}\n'
+    '{"en":"the same woman in the washed denim jacket slowly raising a steaming '
+    'ceramic mug, medium shot, slow push-in, eye-level",'
+    '"zh":"她慢慢举起杯子","cam":"medium shot, slow push-in, eye-level","scene":1,"dur":5}\n'
+    '{"en":"close-up of the same woman in the denim jacket, eyes on the steaming mug, '
+    'soft window light, close-up, static locked-off shot, eye-level",'
+    '"zh":"她看着杯子","cam":"close-up, static locked-off shot, eye-level","scene":1,"dur":4}\n'
+    '{"en":"the same woman in the denim jacket slowly lowering the mug, same courtyard '
+    'light, medium shot, slow pan right, eye-level",'
+    '"zh":"她慢慢放下杯子","cam":"medium shot, slow pan right, eye-level","scene":1,"dur":6}\n'
+)
+
+# 运镜栏里常见、但词表条目带了括号的短写法。剥离旧运镜时要能认出来。
+_CAM_SHORT = (
+    "slow push-in", "slow pull-out", "push-in", "pull-out", "push in", "pull out",
+    "dolly in", "dolly out", "static camera", "locked-off shot", "tracking shot",
+    "whip pan", "crane up", "gentle handheld",
+)
+_CAM_PHRASES = tuple(sorted(
+    set(list(SHOT_SIZES) + list(CAM_MOVEMENTS) + list(CAM_ANGLES) + list(_CAM_SHORT)),
+    key=len, reverse=True))
+
+_ACTION_INGS = {
+    "raising", "walking", "running", "turning", "opening", "closing", "lifting",
+    "pouring", "drinking", "sipping", "waving", "jumping", "reaching", "picking",
+    "placing", "throwing", "dancing", "nodding", "pointing", "kneeling", "climbing",
+    "pushing", "pulling", "writing", "reading", "eating", "cooking", "driving",
+    "lowering", "stepping", "sitting",
+}
+_CUT_RE = re.compile(r"\b(then|cut to|cuts to|scene changes)\b|然后", re.I)
+_ONSCREEN_RE = re.compile(
+    r"\b(subtitle|subtitles|watermark|logo|on-screen text|title card)\b|字幕|水印",
+    re.I)
+_APPEAR_RE = re.compile(
+    r"\b(wearing|dressed|jacket|coat|shirt|dress|denim|hair|glasses|"
+    r"year-old|young|old|woman|man|girl|boy|child)\b|岁|穿着|头发|眼镜|外套",
+    re.I)
+_ING_RE = re.compile(r"\b([a-z]+ing)\b", re.I)
+
+
+def classify_voiceover_topic(topic_raw):
+    """口播主题怎么用。只有「原稿：/直通：」才是逐字念的原稿。字数不再自动切换。"""
+    t = (topic_raw or "").strip()
+    for prefix in ("原稿：", "原稿:", "直通：", "直通:"):
+        if t.startswith(prefix):
+            return "passthrough", t[len(prefix):].strip()
+    if not t:
+        return "empty", ""
+    return "brief", t
+
+
+def voiceover_start_plan(topic_raw, choice=None):
+    """口播开工计划。
+
+    choice 为 None 且带原稿前缀时 needs_confirm=True：先问「按原文念，还是按说明写稿」。
+    长说明（哪怕超过 60 字）一律当选题，不直通。
+    """
+    kind, body = classify_voiceover_topic(topic_raw)
+    if kind == "empty":
+        return {
+            "topic": ("本人形象口播：围绕主题自由发挥，用口语化方式讲述。"
+                      "每段5秒左右，像在跟朋友聊天。"),
+            "passthrough": None,
+            "needs_confirm": False,
+        }
+    if kind == "brief":
+        return {"topic": body, "passthrough": None, "needs_confirm": False}
+    if choice == "verbatim":
+        return {
+            "topic": "本人形象口播（原稿直通）",
+            "passthrough": body,
+            "needs_confirm": False,
+        }
+    if choice == "write":
+        return {
+            "topic": body or "本人形象口播",
+            "passthrough": None,
+            "needs_confirm": False,
+        }
+    return {
+        "topic": body, "passthrough": None, "needs_confirm": True, "body": body,
+    }
+
+
+def shot_count_bounds(n, smart):
+    """智能模式以用户镜数为中心，最多偏 2 镜。关闭时必须正好 n 镜。"""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        n = 1
+    n = max(1, n)
+    if smart:
+        return max(1, n - 2), n + 2
+    return n, n
+
+
+def story_length_note(n, duration, smart):
+    lo, hi = shot_count_bounds(n, smart)
+    try:
+        total = int(n) * int(duration or 5)
+    except (TypeError, ValueError):
+        total = int(n) * 5
+    if smart:
+        return (f"用户指定了 {int(n)} 镜（每镜约 {duration} 秒，总长约 {total} 秒）。"
+                f"以 {int(n)} 镜为中心，镜数只能落在 {lo}~{hi}。"
+                f"只有情节确实装不下时才偏离，偏离不超过 2 镜。\n")
+    return (f"必须写成正好 {int(n)} 个镜头（每镜约 {duration} 秒，总长约 {total} 秒）。"
+            f"禁止增减镜数。\n")
+
+
+def shot_split_note(n, smart):
+    lo, hi = shot_count_bounds(n, smart)
+    if smart:
+        return (f"用户指定了 {int(n)} 镜。请拆成 {lo}~{hi} 镜"
+                f"（以 {int(n)} 为中心，最多偏离 2 镜）。\n")
+    return (f"必须拆成正好 {int(n)} 个连续分镜。"
+            f"禁止因为科普或纪录片再增加镜数。\n")
+
+
+def camera_phrase_from_en(en):
+    """从英文画面里抽出已写过的景别、运镜、机位，供运镜栏回填。抽不到返回空串。"""
+    low = (en or "").lower()
+    if not low:
+        return ""
+    groups = (
+        SHOT_SIZES,
+        tuple(CAM_MOVEMENTS) + tuple(_CAM_SHORT),
+        CAM_ANGLES,
+    )
+    hits = []
+    for group in groups:
+        found = ""
+        for term in sorted(set(group), key=len, reverse=True):
+            if term.lower() in low:
+                found = term
+                break
+        if found:
+            hits.append(found)
+    return ", ".join(hits)
+
+
+def _strip_camera_phrases(en):
+    cleaned = en or ""
+    for term in _CAM_PHRASES:
+        cleaned = re.sub(re.escape(term), " ", cleaned, flags=re.I)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"(,\s*)+", ", ", cleaned)
+    cleaned = re.sub(r"(?:\.\s*)+", ". ", cleaned)
+    return cleaned.strip(" ,.;")
+
+
+def apply_camera_to_en(en, cam):
+    """把运镜栏写进画面英文。栏里有新的运镜时，以栏为准替换旧镜头词。"""
+    en = (en or "").strip()
+    cam = (cam or "").strip().strip(".")
+    if not cam:
+        return en
+    if cam.lower() in en.lower():
+        return en
+    cleaned = _strip_camera_phrases(en)
+    if not cleaned:
+        return cam + "."
+    return cleaned.rstrip(". ").strip() + ". " + cam + "."
+
+
+def audit_visual_prompt(text):
+    """三段式文本自检。返回问题代码列表，空列表表示这一条可以提交。"""
+    t = text or ""
+    issues = []
+    if not t.strip():
+        return ["empty"]
+    if _CUT_RE.search(t):
+        issues.append("cut")
+    if _ONSCREEN_RE.search(t):
+        issues.append("onscreen_text")
+    actions = [m.group(1).lower() for m in _ING_RE.finditer(t)
+               if m.group(1).lower() in _ACTION_INGS]
+    if len(set(actions)) >= 2:
+        issues.append("multi_action")
+    if not _APPEAR_RE.search(t):
+        issues.append("no_appearance")
+    return issues
+
+
+def audit_story(text):
+    """剧本结构自检：太短、没有分段、没收道具行。"""
+    t = (text or "").strip()
+    issues = []
+    if len(t) < 40:
+        issues.append("too_short")
+    lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
+    if len(lines) < 3 and t.count("。") < 3:
+        issues.append("thin_structure")
+    if "道具" not in t:
+        issues.append("no_prop_line")
+    return issues
+
+
+def rewrite_visual_prompt(cfg, text, issues, chat=None):
+    """按同一套分镜方法论改写一次。失败或结果不像英文时退回原文。"""
+    chat = chat or _agnes_chat
+    sysmsg = (SHOT_DIRECTOR_SYSTEM + "\n" + SHOT_EN_SPEC
+              + "\n你在做提交前自检改写。只输出改写后的一条英文画面提示词，不要解释。")
+    user = (f"原提示词：{text}\n"
+            f"自检发现：{', '.join(issues)}\n"
+            "按三段式改成一镜：可辨识外观、一个动作、环境光线和镜头语言。"
+            "去掉 then/cut，去掉画面文字，不要用 cinematic、beautiful 这类空泛词。")
+    out = chat(cfg, [
+        {"role": "system", "content": sysmsg},
+        {"role": "user", "content": user},
+    ], temperature=0.3)
+    out = (out or "").strip().strip('"').strip()
+    if out:
+        out = out.splitlines()[0].strip()
+    letters = len(re.findall(r"[A-Za-z]", out))
+    if out and letters > len(out) * 0.5 and len(out) > 20:
+        return out
+    return text
+
 
 def _enrich_shots_camera(shots, portrait_mode=False):
-    """给非口播分镜补上运镜组合（景别+运镜+机位）。
+    """给非口播分镜补上运镜栏。运镜留在 cam 上，不再写进 en 后删掉。
 
-    - 模型已在 en 里写了镜头语言 → 尊重不动；
-    - 模型给了 cam 字段 → 用它的；
-    - 都没给 → 按镜序轮转一套（保证相邻镜运镜不同、有电影感）。
-    口播模式 / talking head 分镜不处理（画面由程序统一锁定）。
+    - 模型给了 cam → 用它的；
+    - en 里已经有景别/运镜/机位 → 回填到运镜栏，栏不要空着；
+    - 都没有 → 按镜序轮转一套，相邻镜不同。真正送模时再由 apply_camera_to_en 拼上。
+    口播 / talking head 不处理。
     """
     if portrait_mode:
         return shots
     for i, s in enumerate(shots):
-        en = s.get("en", "")
+        if not isinstance(s, dict):
+            continue
+        en = s.get("en", "") or ""
         if not en or "talking head" in en.lower():
             continue
         cam = (s.get("cam") or "").strip()
         if not cam:
+            cam = camera_phrase_from_en(en)
+        if not cam and not any(k in en.lower() for k in _CAM_KEYWORDS):
             size = SHOT_SIZES[(i + 1) % len(SHOT_SIZES)]
             move = CAM_MOVEMENTS[(i * 3 + 1) % len(CAM_MOVEMENTS)]
             angle = CAM_ANGLES[i % len(CAM_ANGLES)]
             cam = f"{size}, {move}, {angle}"
-        low = en.lower()
-        if not any(k in low for k in _CAM_KEYWORDS):
-            en = en.rstrip(". ").strip() + ". " + cam + "."
-            s["en"] = en
-        s.pop("cam", None)
+        if cam:
+            s["cam"] = cam
     return shots
 
 
@@ -1169,6 +1424,10 @@ class VideoPipeline:
         if self._is_cancelled():
             self.log("⏹ 已停止：剧本结果未写入")
             return self.story
+        text = self.polish_story(text)
+        if self._is_cancelled():
+            self.log("⏹ 已停止：剧本结果未写入")
+            return self.story
         self.story = text
         return self.story
 
@@ -1192,21 +1451,139 @@ class VideoPipeline:
         shots = self._gen_shots(self.story, self.n, self.with_dialogue, feedback=feedback)
         shots = _enrich_shots_camera(shots, self.portrait_mode)
         # v4.154：把兜底每镜时长补进每个 shot（智能模式 AI 已给 dur，这里只兜底缺失项）
+        # 关掉智能分镜时，每镜秒数按用户填的数锁死，不让模型改成 4~12 里的另一档。
+        _fixed_dur = max(4, min(12, int(self.duration or 5)))
         for _s in shots:
-            if not isinstance(_s, dict) or not _s.get("dur"):
-                _s["dur"] = max(4, min(12, int(self.duration or 5)))
+            if not isinstance(_s, dict):
+                continue
+            if not getattr(self, "smart", True):
+                _s["dur"] = _fixed_dur
+            elif not _s.get("dur"):
+                _s["dur"] = _fixed_dur
         if self._is_cancelled():
             self.log("⏹ 已停止：分镜结果未写入")
             return self.shots
         if not shots:
             raise RuntimeError("分镜解析为空，请重试")
+        shots = self._align_shot_count(shots, feedback=feedback)
+        if self._is_cancelled():
+            self.log("⏹ 已停止：分镜结果未写入")
+            return self.shots
+        shots = self.polish_shot_prompts(shots)
+        if self._is_cancelled():
+            self.log("⏹ 已停止：分镜结果未写入")
+            return self.shots
         self.shots = shots
         self.clip_paths = [None] * len(self.shots)
         return self.shots
 
+    def _align_shot_count(self, shots, feedback=None):
+        """镜数落到用户指定的范围内。越界时按同一套提示重拆一次，仍越界就说明原因。"""
+        if not shots or (self.portrait_mode and self.passthrough_script):
+            return shots
+        smart = getattr(self, "smart", True)
+        lo, hi = shot_count_bounds(self.n, smart)
+        got = len(shots)
+        if got < lo or got > hi:
+            self.log(f"  🔎 分镜镜数 {got} 不在 {lo}~{hi}，按你填的 {self.n} 镜重拆一次")
+            try:
+                note = (f"镜数必须落在 {lo} 到 {hi} 之间（用户指定 {self.n}）。"
+                        f"上一稿是 {got} 镜，请重拆。")
+                if feedback:
+                    note = f"{feedback}\n{note}"
+                shots2 = self._gen_shots(self.story, self.n, self.with_dialogue, feedback=note)
+                shots2 = _enrich_shots_camera(shots2, self.portrait_mode)
+                fixed = max(4, min(12, int(self.duration or 5)))
+                for _s in shots2 or []:
+                    if not isinstance(_s, dict):
+                        continue
+                    if not getattr(self, "smart", True):
+                        _s["dur"] = fixed
+                    elif not _s.get("dur"):
+                        _s["dur"] = fixed
+                if shots2 and lo <= len(shots2) <= hi:
+                    shots = shots2
+                    got = len(shots)
+            except Exception as e:
+                self.log(f"  ⚠️ 按镜数重拆失败（{e}），沿用上一稿")
+        if got != int(self.n or 0):
+            msg = f"你要 {self.n} 镜，这次写成 {got} 镜（允许 {lo}~{hi}）。"
+            self.log("  ℹ️ " + msg)
+            self.status(msg)
+        return shots
+
+    def polish_story(self, text):
+        """剧本自检。有结构问题时按同一套要求改写一次，改完更差就留原稿。"""
+        if self.portrait_mode:
+            return text
+        issues = audit_story(text)
+        if not issues:
+            return text
+        if getattr(self, "_story_audited", None) == (text or ""):
+            return text
+        self._story_audited = text or ""
+        self.log(f"  🔎 剧本自检：{'/'.join(issues)}，改写一次")
+        try:
+            text2 = self._gen_story(
+                self.topic, self.n, self.with_dialogue,
+                feedback="自检未过：" + "、".join(issues)
+                + "。请补上起承转合，并在结尾单独一行写「关键道具/陈设：」。")
+        except Exception as e:
+            self.log(f"  ⚠️ 剧本改写失败（{e}），沿用原稿")
+            return text
+        self._story_audited = text2 or text or ""
+        if text2 and len(audit_story(text2)) < len(issues):
+            return text2
+        return text
+
+    def polish_shot_prompts(self, shots):
+        """提示词自检。缺外观、多动作、剪辑词、屏上文字时改写一次。同一句不重复改。"""
+        if getattr(self, "portrait_mode", False):
+            return list(shots or [])
+        done = getattr(self, "_prompt_audit_done", None)
+        if not isinstance(done, set):
+            done = set()
+        out = []
+        for i, shot in enumerate(shots or []):
+            if not isinstance(shot, dict):
+                out.append(shot)
+                continue
+            shot = dict(shot)
+            en0 = shot.get("en") or ""
+            en = apply_camera_to_en(en0, shot.get("cam"))
+            if "talking head" in (en or "").lower() and len(en or "") < 80:
+                out.append(shot)
+                continue
+            issues = audit_visual_prompt(en)
+            key = (i, en)
+            if not issues or key in done:
+                if en and en != en0:
+                    shot["en"] = en
+                out.append(shot)
+                continue
+            self.log(f"  🔎 镜{i+1} 提示词自检：{'/'.join(issues)}，改写一次")
+            new = en
+            try:
+                new = rewrite_visual_prompt(self.cfg, en, issues)
+            except Exception as e:
+                self.log(f"  ⚠️ 镜{i+1} 提示词改写失败（{e}），沿用原文")
+                new = en
+            shot["en"] = new or en
+            done.add(key)
+            done.add((i, shot["en"]))
+            out.append(shot)
+        self._prompt_audit_done = done
+        return out
+
     def set_shots(self, shots):
-        self.shots = shots
-        self.clip_paths = [None] * len(shots)
+        normalized = []
+        for s in shots or []:
+            if isinstance(s, dict) and not self.portrait_mode:
+                s = dict(s)
+                s["en"] = apply_camera_to_en(s.get("en") or "", s.get("cam"))
+            normalized.append(s)
+        self.shots = normalized
+        self.clip_paths = [None] * len(normalized)
 
     def _shot_dur(self, shot):
         """v4.154：取某一镜的实际生成时长（秒），强制夹到 Agnes 合法区间 4~12。
@@ -1696,14 +2073,19 @@ class VideoPipeline:
         """构造第 i 镜关键帧 prompt。预审界面与真实生成共用同一段代码，
         避免「看到的草稿」和「实际烧钱的 prompt」不一致。"""
         shot = self.shots[i] if i < len(self.shots) else {}
-        en = shot.get("en") or shot.get("zh") or "a cinematic scene"
+        en = apply_camera_to_en((shot.get("en") or "").strip(), shot.get("cam"))
+        if not en:
+            en = (shot.get("zh") or "").strip() or (
+                "one continuous shot, a concrete subject doing one action")
+        en = en.rstrip(" .")
         lock = self._locks_text()
         fb = f"[修改意见：{feedback}] " if feedback else ""
         return (
             f"Keyframe and environment concept art for ONE video shot: {en}. "
             f"{lock} {fb}{qc_fix} "
-            f"High detail, cinematic composition, consistent lighting and visual "
-            f"style, no text, no watermark, no extra characters.{self._sv()}")
+            f"High detail, consistent lighting and visual "
+            f"style, one subject, one action, no text, no watermark, no extra characters."
+            f"{self._sv()}")
 
     def build_keyframe_drafts(self):
         """返回每镜关键帧 prompt 草稿 [(镜号, prompt), ...]，供预审界面编辑。"""
@@ -1975,11 +2357,21 @@ class VideoPipeline:
         绝不中断生成。
         """
         refs = []
+        # 同一场景的下一镜给上一镜尾帧留一个固定名额。挤掉的是次要侧面或后面的道具，
+        # 不是连贯帧。口播已经在关键帧后提前占位，这里不再重复留座。
+        reserve_tail = (
+            not self.portrait_mode
+            and self._tail_required(i)
+            and bool(prev_tail)
+            and os.path.isfile(prev_tail)
+        )
+        pre_cap = AGNES_MAX_REF_IMAGES - (1 if reserve_tail else 0)
 
-        def _add(path, role):
+        def _add(path, role, limit=None):
+            cap = AGNES_MAX_REF_IMAGES if limit is None else limit
             if not path or not os.path.isfile(path):
                 return False
-            if len(refs) >= AGNES_MAX_REF_IMAGES:
+            if len(refs) >= cap:
                 return False
             if path in [r[0] for r in refs]:   # 去重（同一张图别占两个位置）
                 return False
@@ -1999,28 +2391,28 @@ class VideoPipeline:
 
         chars = [] if self.portrait_mode else self._shot_characters(i)
         # 1) 本镜关键帧：开场画面与构图的最强锚点
-        _add(_kf, "keyframe")
+        _add(_kf, "keyframe", pre_cap)
         # 1.5) 口播模式（本人形象）尾帧接力提前占位：
         #   口播片全片同一背景、同一机位，跨段唯一有效的物理连续锚点就是上一段尾帧。
         #   原来它排在第 6 位，前面被场景图/clue 占满 5 槽就挤不进来（AGNES_MAX_REF_IMAGES=5），
         #   每段各自独立采样 → 背景中途换一小会。这里在关键帧之后立刻占位，保证它进得来。
         #   （下方第 6 步仍会再调一次 _add，去重会让它安全空转。）
         if self.portrait_mode and self.relay:
-            _add(prev_tail, "tail")
+            _add(prev_tail, "tail", pre_cap)
         # 2) 出场角色三视图正面：人物外观锁定
         for c in chars:
             views = [v for v in (c.get("views") or []) if v]
             if views:
-                _add(views[0], f"character:{c.get('name', '')}")
+                _add(views[0], f"character:{c.get('name', '')}", pre_cap)
             elif self.multiref:      # 本管线没生成过 → 资产库补位
                 for p in self._asset_character_refs(c.get("name") or "", top=2):
-                    _add(p, f"character:{c.get('name', '')}")
+                    _add(p, f"character:{c.get('name', '')}", pre_cap)
         # 3) 主角侧面：防转头崩（只给主角，避免挤掉场景/尾帧）
         if chars:
             lead = chars[0]
             views = [v for v in (lead.get("views") or []) if v]
             if len(views) > 1:
-                _add(views[1], f"character:{lead.get('name', '')}")
+                _add(views[1], f"character:{lead.get('name', '')}", pre_cap)
         # 4) 本场景环境图：场景锁定
         # ⚠️ 口播模式（本人形象）整段跳过：与 1584 行「口播模式跳过场景关键帧」对齐。
         #   口播片 scene_images 必然为空，走 else 就会去**资产库**拉一张别的项目的场景图
@@ -2031,22 +2423,23 @@ class VideoPipeline:
             # ⚠️ 只在**压根没有场景图**时才去资产库补位。若 _add 失败是因为与关键帧
             # 撞图（去重），不能再去库里拉一张 —— 那会把无关场景塞进本镜。
             if self.scene_images.get(sc):
-                _add(self.scene_images.get(sc), "scene")
+                _add(self.scene_images.get(sc), "scene", pre_cap)
             else:
-                _add(self._asset_scene_ref(sc), "scene")
+                _add(self._asset_scene_ref(sc), "scene", pre_cap)
         # 5) 本镜出现的关键道具/场景资产（clue，抗崩坏 v3）
+        #    同场留了尾帧座位时，道具只能用座位之外的名额，满了就停。
         if not self.portrait_mode:
             for c in self._shot_clues(i):
-                _add(c.get("image"), f"clue:{c.get('name', '')}")
+                _add(c.get("image"), f"clue:{c.get('name', '')}", pre_cap)
         # 6) 上一镜尾帧：reference 模式下尾帧接力的等价物（有参考图时首帧被置空，
-        #    不补这一张，跨镜动作连贯性就断了）
+        #    不补这一张，跨镜动作连贯性就断了）。同场时这一格是预留的，不受 pre_cap 限制。
         if self.relay:
-            _add(prev_tail, "tail")
+            _add(prev_tail, "tail", AGNES_MAX_REF_IMAGES)
         # 7) 还有余额才给其余角色侧面
         for c in chars[1:]:
             views = [v for v in (c.get("views") or []) if v]
             if len(views) > 1:
-                _add(views[1], f"character:{c.get('name', '')}")
+                _add(views[1], f"character:{c.get('name', '')}", AGNES_MAX_REF_IMAGES)
         # 注：本任务压根没生成过角色（characters 空）时**不去资产库兜底**——
         # 那等于拿别的项目的角色图硬塞进来（记忆铁律：禁止全局扫描自动注入）。
         # 「没有角色字段则取本项目唯一主角」由 _shot_characters 兜底回主角实现。
@@ -2060,14 +2453,48 @@ class VideoPipeline:
             miss.append("关键帧")
         if not self.portrait_mode and not any(r.startswith("character:") for r in roles):
             miss.append("角色图")
-        if not any(r == "scene" for r in roles):
+        if not self.portrait_mode and not any(r == "scene" for r in roles):
             miss.append("场景图")
         if not self.portrait_mode and not any(r.startswith("clue:") for r in roles) \
                 and self._shot_clues(i):
             miss.append("道具图")
-        if self.relay and not any(r == "tail" for r in roles) and i > 0:
+        if self._tail_required(i) and not any(r == "tail" for r in roles):
             miss.append("尾帧")
         return miss
+
+    def _tail_required(self, i):
+        """这一镜要不要上一镜尾帧。口播全程要；剧情片只在同一场景要。"""
+        if not getattr(self, "relay", False) or i <= 0:
+            return False
+        shots = getattr(self, "shots", None) or []
+        if i >= len(shots):
+            return False
+        if getattr(self, "portrait_mode", False):
+            return True
+        try:
+            prev = int((shots[i - 1] or {}).get("scene") or 1)
+            cur = int((shots[i] or {}).get("scene") or 1)
+        except (TypeError, ValueError):
+            return False
+        return prev == cur
+
+    def ref_gap_note(self, i, refs):
+        """本镜参考图缺了什么。没有具体缺口时返回空串。"""
+        miss = self._ref_missing_text(i, refs)
+        if not miss:
+            return ""
+        return (f"镜{i+1} 参考图 {len(refs)}/{AGNES_MAX_REF_IMAGES}，"
+                f"缺：{'/'.join(miss)}")
+
+    def _log_ref_gap(self, i, refs):
+        note = self.ref_gap_note(i, refs)
+        if note:
+            self.log("  🖼️ " + note)
+            self.status(note)
+            return
+        if len(refs) < AGNES_MAX_REF_IMAGES:
+            self.log(f"  🖼️ 镜{i+1} 参考图 {len(refs)}/{AGNES_MAX_REF_IMAGES}"
+                     "（无更多可用）")
 
     @staticmethod
     def _build_ref_caption(refs):
@@ -2149,7 +2576,7 @@ class VideoPipeline:
         return d
 
     # v4.147.3：某镜彻底没有任何画面描述时的中性兜底
-    NEUTRAL_PROMPT = "cinematic scene, continuous visual, no text overlay"
+    NEUTRAL_PROMPT = "continuous shot, one concrete subject doing one action, no text overlay"
 
     def _recover_missing_en(self, zh, idx):
         """v4.147.3：某镜缺英文画面提示词(en)时的补救。
@@ -2256,7 +2683,7 @@ class VideoPipeline:
             # v4.147.3：en 缺失时【绝不退回 zh】。zh 是这一镜的中文字幕/旁白，
             # 拿它当画面提示词会让视频模型把旁白念出来 / 当字幕渲染，
             # 成品凭空多一条旁白（大哥实测现象）。改为据 zh 反推英文画面描述。
-            _en = (shot.get("en") or "").strip()
+            _en = apply_camera_to_en((shot.get("en") or "").strip(), shot.get("cam"))
             prompt = _en if _en else self._recover_missing_en(shot.get("zh"), i)
             if self.portrait_mode and self.ref_image_path:
                 prompt = PORTRAIT_PROMPT
@@ -2273,6 +2700,9 @@ class VideoPipeline:
             # v4.132 项目制作规格（视觉部分）：风格 / 镜头 / 禁用
             if self.spec_visual():
                 prompt = f"{prompt.rstrip('. ')}. {self.spec_visual()}"
+            # 口播有自己的锁定模板，不再追加剧情片的三段式尾巴。
+            if not self.portrait_mode and SHOT_SUBMIT_RULES not in prompt:
+                prompt = f"{prompt.rstrip('. ')}. {SHOT_SUBMIT_RULES}"
         # 多参考图指代：用 <Picture N> 明确每张参考图的用途（抗崩坏 v2）
         # 必须在 _build_clip_prompt 里拼，因为指代文本要与实际装配顺序严格一一对应
         if refs:
@@ -2436,10 +2866,7 @@ class VideoPipeline:
             # v4.127：带上一镜尾帧入槽（reference 模式下首帧被置空，靠它续连贯）
             refs = self._assemble_ref_images(i, prev_tail=prev_tail)
             ref_paths = [r[0] for r in refs]
-            if len(refs) < AGNES_MAX_REF_IMAGES:
-                miss = self._ref_missing_text(i, refs)
-                self.log(f"  🖼️ 镜{i+1} 参考图 {len(refs)}/{AGNES_MAX_REF_IMAGES}"
-                         + (f"，缺：{'/'.join(miss)}" if miss else "（无更多可用）"))
+            self._log_ref_gap(i, refs)
             prompt = self._build_clip_prompt(i, refs=refs,
                                              base=self.clip_prompt_override.get(i))
             # 有参考图 → 走 reference 多图模式（与 keyframe 互斥，故首帧置空）；
@@ -2504,10 +2931,7 @@ class VideoPipeline:
             _pt = self._tail_frame_path(self.clip_paths[i - 1])
         refs = self._assemble_ref_images(i, prev_tail=_pt)
         ref_paths = [r[0] for r in refs]
-        if len(refs) < AGNES_MAX_REF_IMAGES:
-            miss = self._ref_missing_text(i, refs)
-            self.log(f"  🖼️ 镜{i+1} 参考图 {len(refs)}/{AGNES_MAX_REF_IMAGES}"
-                     + (f"，缺：{'/'.join(miss)}" if miss else "（无更多可用）"))
+        self._log_ref_gap(i, refs)
         prompt = self._build_clip_prompt(i, feedback=feedback, refs=refs,
                                          base=self.clip_prompt_override.get(i))
         if ref_paths:
@@ -3251,14 +3675,8 @@ class VideoPipeline:
         sys_prompt = ("你是专业的短视频编剧。你的任务：**严格按用户给的主题**创作一部微故事剧本。"
                       "主题已经限定了体裁 / 人物 / 时代 / 原作，你只能在主题给定的框架里补全情节，"
                       "不得替换成另一个故事，也不要凭空添置与主题无关的设定。")
-        if getattr(self, "smart", True):
-            story_len_note = ("请创作一部微故事短视频剧本，用中文写。"
-                              "镜头数量由你根据情节的起伏、场景转换自行决定"
-                              "（通常 6~18 镜，内容丰富的科普 / 纪录片可到 24，"
-                              "但务必为叙事服务，不要为了凑数硬加水镜）。\n")
-        else:
-            story_len_note = (f"请创作一部约 {n} 个镜头长度（约 {n * self.duration} 秒，"
-                              f"科普 / 纪录片类可酌情更多）的微故事短视频剧本，用中文写。\n")
+        story_len_note = ("请创作一部微故事短视频剧本，用中文写。\n"
+                          + story_length_note(n, self.duration, getattr(self, "smart", True)))
         user_prompt = (
             f"主题：{topic}\n"
             + story_len_note
@@ -3273,7 +3691,8 @@ class VideoPipeline:
             "5) 逐镜用一两句话描述这一镜发生了什么（不要写镜头语言或英文）；\n"
             "6) 剧本最后**另起一行**写「关键道具/陈设：」，列出跨镜反复出现、需要保持一致的"
             "**物件**（只写名称与外观一两句；并记住它们是物件、不是角色）。没有就写「无」。\n"
-            + dialogue_note + rev_note + ref_story_note + self.spec_text() +
+            + dialogue_note + rev_note + ref_story_note + self.spec_text()
+            + ("" if self.portrait_mode else STORY_FEWSHOT) +
             "直接输出剧本正文，不要解释、不要 markdown 代码块。")
         if self.portrait_mode:
             sys_prompt = ("你是口播视频文案撰稿人。只写一个人对着镜头说的话（第一人称「我」），"
@@ -3350,17 +3769,13 @@ class VideoPipeline:
                              "- en：固定写 'talking head' 即可（画面提示词由程序统一锁定）\n"
                              "- 全片所有分镜 scene=1；不要任何情节、场景变化、动作设计、其他角色\n")
         smart = getattr(self, "smart", True)
+        shot_count_note = shot_split_note(n, smart)
         if smart:
-            shot_count_note = ("请根据剧本情节自行决定分镜数量，串成完整短视频："
-                               "通常 6~18 镜，内容丰富的科普 / 纪录片可到 24，"
-                               "但务必为叙事服务，不要硬凑水镜。\n")
             dur_field = ("- dur：这一镜的时长（秒），根据内容在 4~12 之间取值："
                          "动作 / 快节奏偏短（4~6），抒情 / 空镜偏长（8~12），对白适中（5~7）。\n")
         else:
-            shot_count_note = (f"请把上面这部剧本拆成约 {n} 个连续分镜，串成完整短视频。"
-                               f"科普 / 纪录片类内容较丰富时，可酌情增加到 {max(n, 12)} 个，"
-                               f"确保叙事完整、不遗漏要点；不要为了凑数硬加水镜。\n")
-            dur_field = ""
+            dur_field = (f"- dur：这一镜固定 {int(self.duration)} 秒"
+                         f"（与用户指定的每镜秒数一致）。\n")
         user_prompt = (
             f"剧本如下：\n<<<\n{story}\n>>>\n\n"
             + shot_count_note
@@ -3377,6 +3792,7 @@ class VideoPipeline:
             + dialogue_rule + rev_note + ref_note + style_note + portrait_note
             + self.spec_text()
             + CAM_VOCAB_TEXT
+            + ("" if self.portrait_mode else SHOT_SEQUENCE_FEWSHOT)
             + "严格只返回一个 JSON 数组，形如 "
             '[{"en":"...","zh":"...","cam":"medium shot, slow push-in, eye-level","scene":1'
             + (',"line":"..."' if with_dialogue else '')

@@ -26,6 +26,7 @@ test_critical_proc_deny.py
 test_data_egress_256.py
 test_dataloss_fix_186.py
 test_director_cancel_retry.py
+test_director_desk_270.py
 test_director_manifest.py
 test_director_project_isolation.py
 test_director_recover.py

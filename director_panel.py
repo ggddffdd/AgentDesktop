@@ -675,7 +675,7 @@ def build_director_panel(app):
     app.director_topic = QTextEdit()
     app.director_topic.setFixedHeight(64)
     app.director_topic.setPlaceholderText("例：一只柯基早上在院子里追蝴蝶的治愈微故事 / "
-                                          "口播模式可贴原稿（≥60字或前缀「原稿：」走直通）")
+                                          "口播要按原文念时，请用前缀「原稿：」或「直通：」")
     app.director_topic.setStyleSheet(_edit_style())
     pl.addWidget(app.director_topic)
     app.director_inputs.append(app.director_topic)
@@ -720,7 +720,9 @@ def build_director_panel(app):
     app.director_smart = QCheckBox("🤖 AI 智能分镜")
     app.director_smart.setChecked(True)
     app.director_smart.setStyleSheet(label_body())
-    app.director_smart.setToolTip("勾选：AI 按剧本情节自主决定分镜数量与每镜时长（4~12秒），下拉框作为兜底默认；\n取消：完全按下拉框的「分镜数 / 每镜秒数」硬执行。")
+    app.director_smart.setToolTip(
+        "勾选：以你填的镜数为中心，最多偏离 2 镜，偏离会写在状态栏；每镜时长仍可在 4~12 秒。\n"
+        "取消：必须正好是这个镜数，每镜秒数也按这里锁死。")
     row1.addWidget(app.director_smart)
 
     rlab = QLabel("分辨率")
@@ -771,7 +773,8 @@ def build_director_panel(app):
     app.director_mode_film.setToolTip("AI 编故事 + 分镜，走完整导演流水线")
     app.director_portrait.setStyleSheet(_segment_style(checked=False))
     app.director_portrait.setCursor(Qt.PointingHandCursor)
-    app.director_portrait.setToolTip("锁本人照片做口播形象，跳过三视图/关键帧人物生成，台词走原稿直通")
+    app.director_portrait.setToolTip(
+        "锁本人照片做口播形象，跳过三视图和关键帧。只有主题以「原稿：」或「直通：」开头才按原文念。")
     seg_lay.addWidget(app.director_mode_film)
     seg_lay.addWidget(app.director_portrait)
     # 两枚 QRadioButton 同父（mode_seg）默认互斥，无需手动联动；
@@ -825,7 +828,8 @@ def build_director_panel(app):
 
     # --- 2.5 行：模式/内容开关灰字说明 ---
     app.director_mode_hint = QLabel(
-        "剧情短片：AI 编故事分镜，走完整流水线 · 本人形象口播：锁照片说话，台词默认直通（台词芯片仅在短片模式下生效）")
+        "剧情短片：AI 编故事分镜，走完整流水线 · 本人形象口播：锁照片说话。"
+        "按原文念需要前缀「原稿：」（台词芯片仅在短片模式下生效）")
     app.director_mode_hint.setStyleSheet(f"font-size:{THEME['font_micro']};color:{THEME['faint']};padding-left:4px;")
     pl.addWidget(app.director_mode_hint)
 
@@ -1946,18 +1950,59 @@ def _open_understand_dialog(app, topic_raw, on_ok):
     def _fin(res):
         app.director_go.setEnabled(True)
         app._director_understand_thread = None
-        if not isinstance(res, dict):
-            # 降级：理解失败绝不挡路，按原流程直接开写（与旧行为一致）
-            _log(app, "⚠️ 需求理解失败（模型不可用或返回异常），跳过确认卡，直接按原流程开写。")
-            _set_status(app, "需求理解失败，已按原流程直接开写。")
-            _apply_style_from_topic(app, topic_raw)
-            on_ok()
-            return
-        res["style_key"] = detected            # 主题优先于下拉框（卡上仍可改）
-        _show_understand_card(app, topic_raw, res, on_ok)
+        _finish_understand(app, res, topic_raw, on_ok, detected)
 
     th.done.connect(_fin)
     th.start()
+
+
+def _finish_understand(app, res, topic_raw, on_ok, detected):
+    """理解结果落地。失败时停在主题页，不自动开写。"""
+    if not isinstance(res, dict):
+        _offer_understand_fallback(app, topic_raw, on_ok)
+        return False
+    res = dict(res)
+    res["style_key"] = detected            # 主题优先于下拉框（卡上仍可改）
+    _show_understand_card(app, topic_raw, res, on_ok)
+    return True
+
+
+def _offer_understand_fallback(app, topic_raw, on_ok):
+    """理解失败：重试，或由人明确选择直接开写。关窗口就留在主题页。"""
+    _log(app, "⚠️ 需求理解失败（模型不可用或返回异常）。先停在主题页，不自动开写。")
+    _set_status(app, "需求理解失败。可以重试理解，或选择不看理解、直接开写。")
+    dlg = QDialog(app)
+    dlg.setWindowTitle("需求理解没有成功")
+    dlg.setMinimumWidth(460)
+    lay = QVBoxLayout(dlg)
+    lay.setContentsMargins(18, 18, 18, 18)
+    lay.setSpacing(12)
+    msg = QLabel("没能整理出需求卡，所以不会自动开始写剧本。")
+    msg.setWordWrap(True)
+    lay.addWidget(msg)
+    row = QHBoxLayout()
+    row.addStretch(1)
+    b_retry = QPushButton("重试理解")
+    b_write = QPushButton("不看理解、直接开写")
+    b_stay = QPushButton("留在主题页")
+    for b in (b_retry, b_write, b_stay):
+        b.setFixedHeight(36)
+        row.addWidget(b)
+    lay.addLayout(row)
+
+    def _retry():
+        dlg.accept()
+        _open_understand_dialog(app, topic_raw, on_ok)
+
+    def _write():
+        dlg.accept()
+        _apply_style_from_topic(app, topic_raw)
+        on_ok()
+
+    b_retry.clicked.connect(_retry)
+    b_write.clicked.connect(_write)
+    b_stay.clicked.connect(dlg.reject)
+    dlg.exec()
 
 
 def _apply_understand(app, style_key, n, dur, audio, genre, narrative, source,
@@ -2124,6 +2169,14 @@ def _show_understand_card(app, topic_raw, info, on_ok):
     row2.addWidget(cb_audio)
     row2.addStretch(1)
     v.addLayout(row2)
+    try:
+        from video_pipeline import NARRATION_LIMITATION as _NAR
+    except Exception:
+        _NAR = "旁白目前只写进剧本和字幕，不会生成配音。"
+    audio_note = QLabel(_NAR + " 要人物开口，请选「人物说中文台词」。")
+    audio_note.setWordWrap(True)
+    audio_note.setStyleSheet(label_second())
+    v.addWidget(audio_note)
 
     v.addWidget(_lbl("给编剧的补充要求（可留空；模型建议：%s）"
                      % (info.get("notes") or "无")))
@@ -2185,6 +2238,21 @@ def _director_start(app):
     if getattr(app, "director_busy", False):
         _set_status(app, "正在生成中，等这一波跑完再开新片。", err=True)
         return
+    # 口播：长说明不再自动当原稿。只有「原稿：/直通：」才问一句要不要按原文念。
+    app._director_voice_choice = None
+    if portrait and topic_raw:
+        try:
+            from video_pipeline import voiceover_start_plan
+            plan = voiceover_start_plan(topic_raw)
+        except Exception:
+            plan = {"needs_confirm": False}
+        if plan.get("needs_confirm"):
+            choice = _ask_voiceover_verbatim(app, plan.get("body") or "")
+            if not choice:
+                return
+            app._director_voice_choice = choice
+        else:
+            app._director_voice_choice = "brief"
     # 非口播 + 有文字主题 → 先出需求确认卡；确认前**不改任何东西**（连画风下拉也不动，
     # 卡上会直接显示按主题识别出的画风，用户确认后才真正落盘）。
     if topic_raw and not portrait:
@@ -2194,6 +2262,42 @@ def _director_start(app):
     # 无卡路径（口播 / 仅参考图）：仍按主题自动切画风并告知
     _apply_style_from_topic(app, topic_raw)
     _director_start_now(app)
+
+
+def _ask_voiceover_verbatim(app, body):
+    """原稿前缀：问按原文念，还是按说明写稿。取消返回 None。"""
+    dlg = QDialog(app)
+    dlg.setWindowTitle("这段口播怎么用")
+    dlg.setMinimumWidth(480)
+    lay = QVBoxLayout(dlg)
+    lay.setContentsMargins(18, 18, 18, 18)
+    lay.setSpacing(12)
+    msg = QLabel("按原文念，还是按这个说明来写稿？")
+    msg.setWordWrap(True)
+    lay.addWidget(msg)
+    preview = QLabel((body or "")[:180])
+    preview.setWordWrap(True)
+    lay.addWidget(preview)
+    row = QHBoxLayout()
+    row.addStretch(1)
+    b_verb = QPushButton("按原文念")
+    b_write = QPushButton("按说明写稿")
+    b_cancel = QPushButton("取消")
+    chosen = {"v": None}
+
+    def _pick(v):
+        chosen["v"] = v
+        dlg.accept()
+
+    b_verb.clicked.connect(lambda: _pick("verbatim"))
+    b_write.clicked.connect(lambda: _pick("write"))
+    b_cancel.clicked.connect(dlg.reject)
+    for b in (b_verb, b_write, b_cancel):
+        b.setFixedHeight(36)
+        row.addWidget(b)
+    lay.addLayout(row)
+    dlg.exec()
+    return chosen["v"]
 
 
 def _director_start_now(app):
@@ -2219,15 +2323,17 @@ def _director_start_now(app):
     passthrough = None
     topic = topic_raw
     if portrait:
-        if topic_raw.startswith(("原稿：", "原稿:", "直通：", "直通:")):
-            passthrough = topic_raw[3:].strip()
-            topic = "本人形象口播（原稿直通）"
-        elif len(topic_raw) >= 60:
-            passthrough = topic_raw
-            topic = "本人形象口播（原稿直通）"
-        elif not topic_raw:
-            topic = ("本人形象口播：围绕主题自由发挥，用口语化方式讲述。"
-                     "每段5秒左右，像在跟朋友聊天。")
+        try:
+            from video_pipeline import voiceover_start_plan
+            plan = voiceover_start_plan(
+                topic_raw, choice=getattr(app, "_director_voice_choice", None))
+        except Exception:
+            plan = {"topic": topic_raw, "passthrough": None, "needs_confirm": False}
+        if plan.get("needs_confirm"):
+            # 没问成（例如从别的入口进来）就不当原稿，避免静默直通。
+            plan = voiceover_start_plan(topic_raw, choice="write")
+        passthrough = plan.get("passthrough")
+        topic = plan.get("topic") or topic_raw
 
     res = app.director_resolution.currentData() or "768x1152"
     style_key = app.director_style.currentData() or "realistic"
@@ -3566,7 +3672,11 @@ def _save_session(app):
                 "vision_review": app.director_vision_review.isChecked(),
                 "multiref": app.director_multiref.isChecked(),
                 "ref_image": app.director_ref_image,
+                "smart": (bool(app.director_smart.isChecked())
+                          if getattr(app, "director_smart", None) is not None
+                          else bool(getattr(p, "smart", True))),
             },
+            "draft": _session_draft(app),
             "pipeline": {
                 "topic": getattr(p, "topic", ""),
                 "n": getattr(p, "n", 0),
@@ -3607,6 +3717,9 @@ def _save_session(app):
                                              getattr(p, "keyframe_prompt_override", {}).items()},
                 "clip_prompt_override": {str(k): v for k, v in
                                          getattr(p, "clip_prompt_override", {}).items()},
+                "smart": bool(getattr(p, "smart", True)),
+                "qc_status": {str(k): v for k, v in
+                              (getattr(p, "qc_status", {}) or {}).items()},
                 # v4.133 时间线编排（重排/裁切/转场/BGM/字幕）。没开过就是 None。
                 # 内部键（trim/trans）本来就是 str，order 是 int 列表 → JSON 直接吃。
                 "timeline": getattr(p, "timeline", None),
@@ -3622,6 +3735,21 @@ def _save_session(app):
             _log(app, "⚠️ 任务存盘失败：" + str(e))
         except Exception:
             pass
+
+
+def _session_draft(app):
+    """还没点采用的剧本编辑框和分镜表。续跑要看到屏幕上这一版。"""
+    draft = {}
+    ed = getattr(app, "director_story_edit", None)
+    if ed is not None and hasattr(ed, "toPlainText"):
+        draft["story"] = ed.toPlainText()
+    rows = getattr(app, "director_shot_rows", None)
+    if rows:
+        try:
+            draft["shots"] = _read_shot_rows(app)
+        except Exception:
+            pass
+    return draft
 
 
 def _clear_session(app):
@@ -3757,6 +3885,15 @@ def _load_session(app):
     app.director_subtitle.setChecked(bool(pp.get("subtitle", True)))
     app.director_vision_review.setChecked(bool(pp.get("vision_review", True)))
     app.director_multiref.setChecked(bool(pp.get("multiref", True)))
+    if "smart" in pp and getattr(app, "director_smart", None) is not None:
+        app.director_smart.setChecked(bool(pp.get("smart")))
+        p.smart = bool(pp.get("smart"))
+    elif "smart" in pl:
+        p.smart = bool(pl.get("smart"))
+    qc = pl.get("qc_status") or {}
+    if isinstance(qc, dict):
+        p.qc_status = {int(k): v for k, v in qc.items()
+                       if str(k).lstrip("-").isdigit()}
     # 恢复 pipeline 上的质检开关（会话续跑时保持一致）
     p.vision_review = app.director_vision_review.isChecked()
     p.multiref = app.director_multiref.isChecked()
@@ -3788,15 +3925,20 @@ def _load_session(app):
     app.director_go.setEnabled(False)
     app.director_stop.setEnabled(False)
 
-    # 还原各步骤内容
+    # 还原各步骤内容。编辑框优先用还没点采用的草稿。
+    draft = data.get("draft") if isinstance(data.get("draft"), dict) else {}
     if step >= 1:
-        app.director_story_edit.setPlainText(p.story or "")
+        if "story" in draft:
+            app.director_story_edit.setPlainText(draft.get("story") or "")
+        else:
+            app.director_story_edit.setPlainText(p.story or "")
     if step >= 2 and p.characters:
         _build_character_cards(app, p.characters)
     if step >= 2 and getattr(p, "clues", None):
         _build_clue_cards(app, p.clues)
     if step >= 3:
-        _build_shot_rows(app, p.shots or [])
+        draft_shots = draft.get("shots") if isinstance(draft.get("shots"), list) else None
+        _build_shot_rows(app, draft_shots if draft_shots else (p.shots or []))
     if step >= 4 and p.keyframes:
         _build_keyframe_cards(app, p.keyframes)
     if step >= 5:
@@ -4365,11 +4507,39 @@ def _prompt_preview_dialog(app, title, tip, drafts):
     return {idx: e.toPlainText() for idx, e in edits.items()}
 
 
+def _polish_prompts_before_submit(app):
+    """提交前按分镜方法论自检一次。预审关掉也跑，避免弱句直接烧钱。"""
+    p = getattr(app, "director_pipeline", None)
+    if p is None or getattr(p, "portrait_mode", False):
+        return
+    before = []
+    for s in p.shots or []:
+        if isinstance(s, dict):
+            before.append((s.get("en") or "", s.get("cam") or ""))
+    try:
+        p.shots = p.polish_shot_prompts(p.shots)
+    except Exception as e:
+        _log(app, f"⚠️ 提示词自检跳过（{e}）")
+        return
+    after = []
+    for s in p.shots or []:
+        if isinstance(s, dict):
+            after.append((s.get("en") or "", s.get("cam") or ""))
+    if before != after:
+        _log(app, "🔎 提示词自检改写了部分镜头。预审里是改写后的句子。")
+        if getattr(app, "director_shot_rows", None):
+            try:
+                _build_shot_rows(app, p.shots)
+            except Exception:
+                pass
+
+
 def _preview_prompts(app, kind):
     """生成前预审草稿。返回 False=用户取消（调用方 return），True=继续生成。"""
     p = getattr(app, "director_pipeline", None)
     if p is None:
         return True
+    _polish_prompts_before_submit(app)
     try:
         if not getattr(app, "director_preview", None) or not app.director_preview.isChecked():
             return True

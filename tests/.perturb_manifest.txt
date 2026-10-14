@@ -23,6 +23,7 @@ _perturb_clean_recycle_bin_217.py
 _perturb_continuation_sticky_255.py
 _perturb_critical_proc_deny.py
 _perturb_data_egress_256.py
+_perturb_director_desk_270.py
 _perturb_evidence_mask.py
 _perturb_exec_tool_gate_219.py
 _perturb_fail_log_tts_257.py
