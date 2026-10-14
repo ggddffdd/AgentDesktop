@@ -6170,7 +6170,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         # v4.149.0：activated 只在用户真选时发出，避免滚轮静默改安全档。
         self.permission_mode_combo.activated.connect(self._on_mode_change)
         _adv_lay.addWidget(self.permission_mode_combo)
-        _mode_hint = QLabel("交互：危险操作逐个问 ｜ 规划：只做只读 ｜ 自动：全直接执行 ｜ 仅讨论：不执行 ｜ 自定义：仅白名单免确认")
+        _mode_hint = QLabel("交互：危险操作逐个问 ｜ 规划：只做只读 ｜ 自动：只读与半自主直行，手动档仍确认 ｜ 仅讨论：不执行 ｜ 自定义：仅白名单免确认")
         _mode_hint.setWordWrap(True)
         _mode_hint.setStyleSheet(
             f"font-size:{THEME['font_micro']};color:{THEME['faint']};padding-left:4px;padding-bottom:4px;")

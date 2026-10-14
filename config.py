@@ -77,8 +77,8 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.264.0"
-APP_BUILD_DATE = "2026-10-12"
+APP_VERSION = "v4.265.0"
+APP_BUILD_DATE = "2026-10-14"
 # v4.164.0（2026-09-27）**运行数据归口：彻底治「dist 既是运行目录又是分发源」**：
 #   新增 config.WORKSPACE_DIR（默认 ~/Documents/小臭玩AI，与 USER_DATA_DIR 同值，
 #   可用 XC_WORKSPACE_DIR 改道），把所有「用户数据类」落点从 APP_DIR（= exe 目录 =
@@ -1882,27 +1882,48 @@ def init_mcp_clients(cfg):
             log.warning("MCP [%s] 初始化失败，跳过", name)
 
 
+def tool_consistency_gaps():
+    """DEFS / REG / RISK 三表缺口。空列表 = 通过。
+
+    v4.264（审阅 P1-4）：原先 `get_all_tools` 只打 warning/error 日志，
+    漏注册或「未登记且兜底 EXTERNAL」不会让启动或发布门禁失败。
+
+    缺口形态：
+      - ``defs_not_in_reg:<name>``：TOOL_DEFS 有名，TOOL_REGISTRY 没有 handler
+      - ``unmapped_external:<name>``：已注册、RISK_MAP 无显式键、classify 落 EXTERNAL
+
+    只读前缀兜底（历史上的 read_xlsx_json）不会被第二条抓住 —— 那种漏登记
+    靠「显式键必须在 RISK_MAP」的判据钉，不靠 EXTERNAL。
+    """
+    from tools import TOOL_REGISTRY as _REG
+    from risk import RISK_MAP as _RM, classify as _clf, RiskClass as _RC
+    gaps = []
+    def_names = set()
+    for t in TOOL_DEFS:
+        fn = t.get("function") if isinstance(t, dict) else None
+        n = (fn or {}).get("name") if isinstance(fn, dict) else None
+        if n:
+            def_names.add(n)
+    for n in sorted(def_names - set(_REG)):
+        gaps.append("defs_not_in_reg:%s" % n)
+    for n in sorted(_REG):
+        if n not in _RM and _clf(n) == _RC.EXTERNAL:
+            gaps.append("unmapped_external:%s" % n)
+    return gaps
+
+
 def get_all_tools(cfg):
     """返回 TOOL_DEFS + 所有已连接 MCP 服务器的工具定义合并列表。
 
     调用前需确保 init_mcp_clients 已完成。
     """
     tools = list(TOOL_DEFS)
-    # v4.31 一致性校验 + v4.92 风险登记自检（防漏注册 / 防漏登记）
-    try:
-        from tools import TOOL_REGISTRY as _REG
-        from risk import RISK_MAP as _RM, classify as _clf, RiskClass as _RC
-        _def_names = {t.get("function", {}).get("name") for t in TOOL_DEFS}
-        _missing = _def_names - set(_REG.keys())
-        if _missing:
-            log.warning("工具一致性: TOOL_DEFS 有定义但 registry 未注册: %s", _missing)
-        # 风险登记自检：未在 risk.RISK_MAP 显式登记 且 兜底为 EXTERNAL 的工具会被权限引擎拦截。
-        # （正是 create_skill / create_automation 曾踩的坑：新工具忘登记 → classify 兜底 EXTERNAL → 拦截）
-        _unreg = [n for n in _REG if n not in _RM and _clf(n) == _RC.EXTERNAL]
-        if _unreg:
-            log.error("风险登记自检: 以下工具未在 risk.py 登记风险等级(会被当外部危险操作拦截): %s", sorted(_unreg))
-    except Exception:
-        pass
+    # v4.264：一致性从「只打日志」升为硬失败。漏注册 / 未登记且兜底 EXTERNAL
+    # 会在取工具表时直接拒绝，而不是带着残缺清单继续跑。
+    gaps = tool_consistency_gaps()
+    if gaps:
+        log.error("工具一致性硬失败: %s", gaps)
+        raise RuntimeError("工具登记不一致: " + ", ".join(gaps))
     for client in mcp_clients:
         tools.extend(client.tools)
     # v4.111 工具白名单过滤（空=全开，行为零变化）。放在 MCP 合并**之后**，

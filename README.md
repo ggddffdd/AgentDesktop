@@ -1,10 +1,10 @@
 # 小臭玩AI
 
-一个常驻 Windows 桌面的**本地 AI Agent 工作台**：系统托盘常驻 + 全局快捷键一键呼出 + 多步推理 Agent 循环 + 45+ 内置工具 + 多模型智能路由 + MCP 可扩展。
+一个常驻 Windows 桌面的**本地 AI Agent 工作台**：系统托盘常驻 + 全局快捷键一键呼出 + 多步推理 Agent 循环 + 84 个内置工具（以 `tool_defs.TOOL_DEFS` 为准）+ 多模型智能路由 + MCP 可扩展。
 
 技术栈：**Python + PySide6 + OpenAI 兼容 API + Chroma 向量库**，配合 pyautogui / pywinauto 做系统与软件自动化。免费可跑、代码可改可练手。
 
-> 当前版本 **v4.264.0**。本项目由个人桌面助手迭代而来，经脱敏后开源，供学习参考与二次开发。
+> 当前版本 **v4.265.0**。本项目由个人桌面助手迭代而来，经脱敏后开源，供学习参考与二次开发。
 >
 > 版本变更与发布说明见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -14,12 +14,12 @@
 
 ### 🧠 Agent 循环引擎
 - 多步推理：LLM 自主决定调用哪条工具链，最多 8 步，边想边做。
-- 权限引擎（5 档风险模式）：危险操作（写文件 / 执行命令 / 系统操控）逐个确认，安全工具自动放行，支持并发执行。
+- 权限引擎（5 档风险模式）：危险操作（写文件 / 执行命令 / 系统操控）逐个确认，安全工具自动放行，支持并发执行。自动模式下只读与半自主写入可直行；标成手动的本地写（如写文件）和执行类仍要确认。
 - 子代理并行（TaskGraph DAG）：`run_workflow` 可将任务拆成多节点并行跑（如多角度研究），结果归并喂回模型。
 
-### 🔧 45+ 内置工具
+### 🔧 84 个内置工具
 - **联网**：`web_search`（多后端自动降级）、`web_fetch`（含敏感文件拦截）
-- **文件/代码**：`read_file`（支持长文档分段）、`write_file`、`run_command`、`run_python`
+- **文件/代码**：`read_file`（支持长文档分段）、`read_xlsx_json`（表格按行返回 JSON）、`write_file`、`run_command`、`run_python`
 - **知识库**：`rag_index` / `rag_search`（Chroma 本地向量库）、Obsidian 异步冷启动
 - **多模态**：`image_gen` / `video_gen` / `analyze_image`（生图、生视频、识图）
 - **自动化**：`schedule`、`create/list/delete_automation`（一次性/每日/每周/间隔定时任务）
@@ -80,7 +80,8 @@ python main.py
 ### 5. 使用
 | 操作 | 快捷键 |
 |------|--------|
-| 呼出 / 隐藏窗口 | `Ctrl + Alt + X` |
+| 呼出 / 隐藏（系统级，写在 `main.py`） | `Ctrl + Alt + X` |
+| 呼出 / 隐藏（可配置，默认） | `Ctrl + Shift + D`（`config.json` 的 `hotkey`，示例见 `config.example.json`） |
 | 技能管理器 | `Ctrl + Alt + S` |
 | 工作流模板 | `Ctrl + Alt + W` |
 | 发送消息 | `Enter`（`Shift + Enter` 换行） |

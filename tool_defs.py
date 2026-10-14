@@ -55,6 +55,22 @@ TOOL_DEFS = [
     {
         "type": "function",
         "function": {
+            "name": "read_xlsx_json",
+            "description": "结构化读取工作区内的 xlsx，返回 JSON 行数据（文件名、工作表、行号与单元格）。用户附件在 incoming/ 下。避免把表格当成解压文本来读。只读。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "xlsx 路径，如 incoming/表.xlsx"},
+                    "sheet": {"type": "string", "description": "可选。工作表名，默认活动表"},
+                    "limit": {"type": "integer", "description": "可选。最多返回的数据行数，0 表示按实现默认"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "write_file",
             "description": "向工作区内写入文本文件（写入前会请求用户确认）。路径相对于程序所在目录。",
             "parameters": {

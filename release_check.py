@@ -583,6 +583,19 @@ def check_dist_hygiene():
             warn("源码根 config.json", f"解析失败 {type(e).__name__}")
 
 
+def check_tool_consistency():
+    """v4.264：DEFS⊆REG，且已注册工具不得在无显式 RISK 时掉进 EXTERNAL。"""
+    try:
+        from config import tool_consistency_gaps
+        gaps = tool_consistency_gaps()
+    except Exception as e:
+        check("工具登记一致性（DEFS/REG/RISK）", False,
+              "%s: %s" % (type(e).__name__, e))
+        return
+    check("工具登记一致性（DEFS/REG/RISK）", not gaps,
+          "、".join(gaps[:8]) if gaps else "DEFS⊆REG，无未登记 EXTERNAL")
+
+
 def main():
     ap = argparse.ArgumentParser(description="小臭玩AI 发布前检查")
     ap.add_argument("--skip-tests", action="store_true", help="跳过回归测试")
@@ -594,6 +607,7 @@ def main():
     print("-" * 60)
 
     check_syntax()
+    check_tool_consistency()
     if args.skip_tests:
         warn("回归测试", "--skip-tests")
     else:

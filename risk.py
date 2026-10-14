@@ -45,6 +45,7 @@ RISK_MAP = {
     "web_search": RiskClass.READ,
     "web_fetch": RiskClass.READ,
     "read_file": RiskClass.READ,
+    "read_xlsx_json": RiskClass.READ,  # v4.264：显式 READ，不再靠 read_ 前缀兜底
     "rag_index": RiskClass.READ,
     "rag_search": RiskClass.READ,
     "analyze_image": RiskClass.READ,

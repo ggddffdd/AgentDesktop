@@ -60,7 +60,7 @@ def default_audit_dir():
 MODES = {
     "interactive": "交互（危险操作逐个问）",
     "plan": "规划（只做只读，不实际执行）",
-    "auto": "自动（全部直接执行）",
+    "auto": "自动（只读与半自主直行，手动档仍确认）",
     "discuss": "仅讨论（不执行任何操作）",
     "custom": "自定义（仅白名单免确认）",
 }
@@ -222,7 +222,8 @@ class PermissionEngine:
 
         v4.74 边界安全增强：
         - 对外动作白名单（external_allow）：EXTERNAL 工具未授权一律阻止，防 agent 私自对外。
-        - auto 模式不再无脑放行：EXEC/EXTERNAL 仍需用户确认（防越权自动化）。
+        - auto 模式不再无脑放行：EXEC、以及 RISK_MAP 标成 manual 的工具仍需确认
+          （防越权自动化；write_file / db_insert 等手动档不能在 auto 下直行）。
 
         v4.167.0 顺序修正：**硬围栏（外发白名单 / 路径作用域）先于会话信任**。
         原顺序让"本次会话全部信任"绕过这两道边界；信任只该省掉弹窗，不该放开边界。
@@ -344,10 +345,16 @@ class PermissionEngine:
             return Decision(True, False, "在免确认白名单中", "auto_allow")
 
 
-        # 6) auto 模式：执行类（EXEC）仍需确认，防越权自动化；只读/本地写入直行
+        # 6) auto 模式：执行类（EXEC）与 RISK_MAP 的 manual 档仍需确认。
+        #    v4.264（审阅 P0-3）：此前只看 risk==EXEC，write_file / db_insert /
+        #    db_update / schedule 虽标了 manual，自动模式一律直行。
+        #    半自主本地写（image_gen 等，tier=semi）与只读仍直行。
+        #    ALWAYS_CONFIRM 已在步骤 2.5 返回，不会落到这里。
+        #    「本次会话全部信任」仍在步骤 3 粗粒度放行（那是用户显式授权）。
         if self.mode == "auto":
-            if risk == RiskClass.EXEC:
-                return Decision(True, True, "自动模式：执行操作需确认", "auto:gate")
+            if risk == RiskClass.EXEC or tier == "manual":
+                return Decision(True, True,
+                                "自动模式：执行类或手动档操作需确认", "auto:gate")
             return Decision(True, False, "自动模式：允许执行", "auto")
 
         # 7) 交互模式（默认）：沿用 v4.42 三级语义
