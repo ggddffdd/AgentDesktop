@@ -265,8 +265,9 @@ _counts = {
     "legion_ui.py": len(re.findall(r"\bempty_state\(", _leg_code)),
 }
 # v4.210.0：4+1+1=6 → 5+1+2=8；v4.216.0：ui 5 → ui 3 + ui_widgets 2（总数不变）
-check("E1 全项目 empty_state 调用点 = 3+2+1+2 = 8",
-      _counts == {"ui.py": 3, "ui_widgets.py": 2,
+# v4.274.0：ui.py 再加聊天页加载失败空状态，3 → 4，总数 8 → 9。
+check("E1 全项目 empty_state 调用点 = 4+2+1+2 = 9",
+      _counts == {"ui.py": 4, "ui_widgets.py": 2,
                   "automation_panel.py": 1, "legion_ui.py": 2},
       _counts)
 # E2：组件化只碰了这 4 个文件，没扩散（ui_widgets 是 v4.216.0 搬家带入）

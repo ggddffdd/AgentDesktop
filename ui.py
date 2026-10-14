@@ -2931,7 +2931,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         try:
             sid = automation.SESSION_SID_PREFIX + str(tid)
             sess = self.store.sessions.get(sid)
-            prefix = getattr(self, "_AUTO_TASK_PREFIX", "【自动化任务】")
+            prefix = self._AUTO_TASK_PREFIX
             if sess is not None:
                 for m in reversed(sess.messages or []):
                     if not isinstance(m, dict):

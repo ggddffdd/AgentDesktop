@@ -240,7 +240,8 @@ def group_e(chat_mod, focus_mod):
 
 def group_b(mcp, cfg_mod):
     print("== B 启动失败要跳过 ==")
-    ok, hint = mcp.preflight("/bin/true", ["/no/such/audit273/july-dir"])
+    # 用当前解释器当「命令存在」。/bin/true 在 Windows 上不存在，会先被判成程序找不到。
+    ok, hint = mcp.preflight(sys.executable, ["/no/such/audit273/july-dir"])
     check("B1 目录不在就跳过",
           ok is False and "文件夹已经不在了" in hint and "初始化失败" not in hint,
           "ok=%r hint=%r" % (ok, hint))

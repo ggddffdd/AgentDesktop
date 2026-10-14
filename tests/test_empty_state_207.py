@@ -425,9 +425,10 @@ _ui_calls = len(re.findall(r"\bempty_state\(", _ui_code_for_count))
 # v4.210.0：4 → 5（同上，DESIGN §12.8 P2-2）
 # v4.216.0：会话管理器搜索空态×2 随 SessionManagerDialog 迁到 ui_widgets.py，
 # 两文件合计仍写死 5（搬家不是增删）。
+# v4.274.0：合计 6（ui.py 增加聊天页加载失败的空状态）。
 _wg_calls = len(re.findall(r"\bempty_state\(", _strip_comments(_wg_src)))
-check("E10 ui.py+ui_widgets.py 内 empty_state 调用点写死为 5（搜索×2 + 会话 + 技能审核 + 欢迎页）",
-      _ui_calls + _wg_calls == 5, f"ui={_ui_calls} ui_widgets={_wg_calls}")
+check("E10 ui.py+ui_widgets.py 内 empty_state 调用点写死为 6（搜索×2 + 会话 + 技能审核 + 欢迎页 + 聊天页加载失败）",
+      _ui_calls + _wg_calls == 6, f"ui={_ui_calls} ui_widgets={_wg_calls}")
 # E10c：只写死"总数 == 4"的话，**同时删掉一处再加一处**是察觉不到的
 # （净变化为 0）。所以再判一次搜索空态的两个分支各自都在。
 check("E10c 搜索空态两个分支都在（防止一处被删一处被补）",

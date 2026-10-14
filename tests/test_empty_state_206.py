@@ -231,9 +231,10 @@ n_ap = ap_src.count("empty_state(")
 # v4.207.0：会话管理搜索空态接了 2 处（有/无关键词两分支）→ 2+2 = 4。
 # 构成：① 会话空态 ② 技能审核 ③ 搜索·有关键词 ④ 搜索·无关键词
 # v4.210.0：4 → 5（新增欢迎页「这里是最近对话」分支，DESIGN §12.8 P2-2）
-check("D5 ui.py+ui_widgets.py 接入点数 == 5（会话×2 + 技能审核 + 欢迎页×2）",
+# v4.274.0：5 → 6（聊天页连续加载失败的空状态，带「重试」）
+check("D5 ui.py+ui_widgets.py 接入点数 == 6（会话×2 + 技能审核 + 欢迎页×2 + 聊天页加载失败）",
       # v4.216.0：SessionManagerDialog 的 2 处随对话框族迁到 ui_widgets.py
-      n_ui + n_wg == 5, f"实际 ui={n_ui} ui_widgets={n_wg}")
+      n_ui + n_wg == 6, f"实际 ui={n_ui} ui_widgets={n_wg}")
 check("D6 automation_panel 接入点数 == 1", n_ap == 1, f"实际 {n_ap}")
 others = []
 for fn in sorted(os.listdir(ROOT)):
