@@ -92,6 +92,19 @@ def sanitize_tts_text(text):
     return t
 
 
+def tts_failure_is_quota(exc):
+    """微软朗读接口拒绝（403）或连不上语音服务。"""
+    s = str(exc or "")
+    return "403" in s or "speech.platform.bing.com" in s
+
+
+def tts_user_message(exc):
+    """朗读失败时给用户看的一句。不含接口域名。"""
+    if tts_failure_is_quota(exc):
+        return "朗读暂时不可用：语音服务拒绝了这次请求。已先关掉朗读，稍后再开即可。"
+    return "朗读这次没成功，已先关掉。你可以继续打字聊天。"
+
+
 def _split_text(text, limit=800):
     if len(text) <= limit:
         return [text]

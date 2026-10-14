@@ -104,13 +104,13 @@ def group_a_behavior():
     # A2 WRITE_LOCAL 必须被拒
     ok_w, msg_w = _T._permission_gate("write_file", {"path": "x"}, None)
     check("A2 WRITE_LOCAL(write_file) 无授权被最终闸门拒绝",
-          (not ok_w) and ("exec_tool 需要权限上下文" in msg_w),
+          (not ok_w) and ("需要你先允许" in msg_w) and ("审查报告" not in msg_w),
           "ok_w=%s msg=%r" % (ok_w, msg_w))
 
     # A3 EXEC 必须被拒
     ok_e, msg_e = _T._permission_gate("run_python", {"code": "1"}, None)
     check("A3 EXEC(run_python) 无授权被最终闸门拒绝",
-          (not ok_e) and ("exec_tool 需要权限上下文" in msg_e),
+          (not ok_e) and ("需要你先允许" in msg_e) and ("exec_tool" not in msg_e),
           "ok_e=%s msg_e=%r" % (ok_e, msg_e))
 
     # A4 EXTERNAL（未在 external_allow 白名单）必须被拒
@@ -130,7 +130,7 @@ def group_a_behavior():
     if wrote:
         os.remove(probe)
     check("A5 端到端：write_file 无授权调用后哨兵文件**未被创建**",
-          (not wrote) and ("需要权限上下文" in str(_msg)) and deliv == [],
+          (not wrote) and ("需要你先允许" in str(_msg)) and deliv == [],
           "wrote=%s msg=%r" % (wrote, str(_msg)[:80]))
 
     # A6 对照组：携带合法放行决策 → 闸门放行（证明 A2~A5 不是闸门恒拒）

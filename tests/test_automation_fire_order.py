@@ -7,8 +7,8 @@
 
 守的东西（每条都能被 `_perturb_automation_fire.py` 单独翻红）：
 
-  A1  执行分支里，mark_fired 必须包在 `if self._fire_automation_run(t):`
-      的成功守卫内 —— fire 失败不得标记；
+  A1  执行分支里有 `if self._fire_automation_run(t):`，但守卫体内
+      **不得** mark_fired —— 接手不等于做完（v4.273.0）；
   A2  执行分支里不存在守卫之外的裸 mark_fired（旧顺序回归即红）；
   C   空消息（任务本身坏了）要标记 fired 防每秒无限重试，且该守卫
       出现在 fire 之前；
@@ -144,7 +144,17 @@ def group_a_order_and_guards(src, tree):
     guard_marks = []
     if fire_guard:
         guard_marks = [c for c in calls_in(fire_guard.body) if is_mark_fired_call(c)]
-    check("A1b 成功守卫体内有 mark_fired（fire 成功才标记）", bool(guard_marks))
+    check("A1b 接手成功不得 mark_fired（做完才算，见收口）",
+          fire_guard is not None and not guard_marks)
+    check("A1d 同一轮只启动一个任务（成功后 break）",
+          fire_guard is not None and any(isinstance(st, ast.Break) for st in fire_guard.body))
+    finish = find_func(tree, "_finish_automation_run")
+    finish_calls = calls_in(finish.body) if finish is not None else []
+    check("A1c 收口按 reply_is_real_success 才 mark_fired",
+          finish is not None
+          and any(is_mark_fired_call(c) for c in finish_calls)
+          and any(isinstance(c.func, ast.Attribute) and c.func.attr == "reply_is_real_success"
+                  for c in finish_calls))
 
     # A2：执行分支里不存在守卫之外的裸 mark_fired（旧顺序回归即红）
     stray = []

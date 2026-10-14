@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import logging
+import tempfile
 import sqlite3
 import threading
 import functools
@@ -310,14 +311,59 @@ def decrypt_existing():
             pass
 
 
+def _dir_writable(path):
+    """目录能建、能写、能删探测文件才算可写。权限失败返回 False。"""
+    try:
+        os.makedirs(path, exist_ok=True)
+        probe = os.path.join(path, ".write_probe")
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("ok")
+        os.remove(probe)
+        return True
+    except Exception:
+        return False
+
+
 def _backup_dir():
-    return os.path.join(MEMORY_DIR, "backups")
+    """优先用记忆目录下的 backups。不可写时改到系统临时目录，避免每次写入都报拒绝访问。"""
+    primary = os.path.join(MEMORY_DIR, "backups")
+    if _dir_writable(primary):
+        return primary
+    fallback = os.path.join(tempfile.gettempdir(), "xiaochou_memory_backups")
+    if not getattr(_backup_dir, "_warned", False):
+        log.warning("记忆备份目录不可写，改存到临时目录")
+        _backup_dir._warned = True
+    try:
+        os.makedirs(fallback, exist_ok=True)
+    except Exception:
+        return primary
+    return fallback
+
+
+def _prune_backups(bd):
+    """只删自己写的快照文件。目录（例如测试残留）删不掉就跳过，不要让整次快照失败。"""
+    try:
+        names = sorted(os.listdir(bd))
+    except Exception:
+        return
+    snaps = [n for n in names if n.startswith(("memory_", "core_", "db_"))]
+    while len(snaps) > MAX_BACKUPS * 3:
+        victim = snaps.pop(0)
+        path = os.path.join(bd, victim)
+        try:
+            if os.path.isdir(path):
+                continue
+            os.remove(path)
+        except Exception as e:
+            log.warning("旧记忆快照删不掉，已跳过：%s", e)
+            break
 
 
 def _snapshot_memory(tag=""):
     """关键写入前轮转快照 memory.md / memory_core.md / memory.db（保留最近 MAX_BACKUPS 份）。
 
     这是『敢交重要资料』的底线保障：单文件损坏/误写也不至于记忆全失，可一键回滚。
+    单个文件拷贝失败或旧快照删不掉，不影响其余文件，也不打断主流程。
     """
     try:
         bd = _backup_dir()
@@ -326,14 +372,14 @@ def _snapshot_memory(tag=""):
         suf = f"_{tag}" if tag else ""
         for src, nm in ((MEMORY_PATH, "memory"), (PINNED_PATH, "core"),
                         (MEMORY_DB_PATH, "db")):
-            phys = _physical(src)
-            if os.path.exists(phys):
-                ext = os.path.splitext(phys)[1]
-                shutil.copy2(phys, os.path.join(bd, f"{nm}_{ts}{suf}{ext}"))
-        files = sorted(os.listdir(bd))
-        while len(files) > MAX_BACKUPS * 3:
-            os.remove(os.path.join(bd, files[0]))
-            files = files[1:]
+            try:
+                phys = _physical(src)
+                if os.path.isfile(phys):
+                    ext = os.path.splitext(phys)[1]
+                    shutil.copy2(phys, os.path.join(bd, f"{nm}_{ts}{suf}{ext}"))
+            except Exception as e:
+                log.warning("记忆快照跳过 %s：%s", nm, e)
+        _prune_backups(bd)
     except Exception as e:
         log.warning("记忆快照失败（不影响主流程）: %s", e)
 

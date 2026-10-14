@@ -187,9 +187,11 @@ def run_all(ev):
     st = _Store()
     _win = type("_W", (object,), {"store": st, "_save_throttled": lambda s: None,
                                   "_render_throttled": lambda s: None})()
-    # 直接取 ui.ChatWindow._on_tool_log 函数，绑到假 self 上
+    # 直接取 ui.ChatWindow._on_tool_log 函数，绑到假 self 上。
+    # 回写目标走真实的 _agent_write_session：没有钉住的 worker 时仍是 active()。
     try:
         import ui as UI
+        _win._agent_write_session = lambda: UI.ChatWindow._agent_write_session(_win)
         UI.ChatWindow._on_tool_log(
             _win, {"name": "read_file", "args": '{"path":"BIG.md"}',
                    "result": big, "evidence_id": eid, "evidence_ok": True})
@@ -205,6 +207,37 @@ def run_all(ev):
         rec2 = st.messages[-1]
         check("E4 无 evidence_id 时结构不变（老路径兼容）",
               "evidence_id" not in rec2 and rec2["result"] == "ok", str(rec2))
+
+        class _Sess(object):
+            def __init__(self, sid):
+                self.sid = sid
+                self.messages = []
+
+        github = _Sess("auto_github")
+        news = _Sess("auto_news")
+
+        class _St2(object):
+            def __init__(self):
+                self.sessions = {"auto_github": github, "auto_news": news}
+
+            def active(self):
+                return news
+
+        class _Wkr(object):
+            _bound_sid = "auto_github"
+
+        _win2 = type("_W", (object,), {
+            "store": _St2(),
+            "_agent_worker": _Wkr(),
+            "_save_throttled": lambda s: None,
+            "_render_throttled": lambda s: None,
+        })()
+        _win2._agent_write_session = lambda: UI.ChatWindow._agent_write_session(_win2)
+        UI.ChatWindow._on_tool_log(
+            _win2, {"name": "web_search", "args": "q", "result": "fresh"})
+        check("E5 工具记录进钉住的会话而不是当前会话",
+              len(github.messages) == 1 and not news.messages
+              and github.messages[0].get("result") == "fresh")
     except Exception as e:
         check("E 组 UI 接入", False, repr(e)[:160])
 

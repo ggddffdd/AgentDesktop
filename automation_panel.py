@@ -452,6 +452,15 @@ def _make_card(app, task):
         row2.addWidget(off)
     v.addLayout(row2)
 
+    result = auto.last_result_text(task)
+    if result:
+        ok = task.get("last_result") == "ok"
+        color = THEME["ok"] if ok else THEME["danger"]
+        lab = QLabel(result)
+        lab.setWordWrap(True)
+        lab.setStyleSheet(f"font-size:12px;color:{color};")
+        v.addWidget(lab)
+
     return card
 
 

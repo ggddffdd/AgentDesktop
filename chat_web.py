@@ -322,6 +322,8 @@ class ChatWebView(QWebEngineView):
     # 通知上层用权威会话数据全量重渲染。不依赖首帧 runJavaScript(jsRenderAll)
     # 是否落地（首帧偶发被吞），根治「首屏白屏 + 历史不显示」回归。
     ready = Signal()
+    # 首屏连续加载失败、自动重试用尽：通知上层换成带「重试」的空状态，而不是空白。
+    loadGaveUp = Signal()
 
     def __init__(self, theme: dict, parent=None):
         super().__init__(parent)
@@ -461,11 +463,23 @@ class ChatWebView(QWebEngineView):
                 QTimer.singleShot(800, self._retry_load)
             elif not self._ever_ready:
                 _we_diag("load failed 5 times, stop retry; waiting for probe/watchdog")
+                if not getattr(self, "_load_gave_up", False):
+                    self._load_gave_up = True
+                    self.loadGaveUp.emit()
 
     def _retry_load(self):
         if not self._ever_ready:
             # v4.108 M-26：重试用原始主题重建（原传 {} 导致深色主题变量全丢）
             self.setHtml(_build_html(self._theme), QUrl("file:///"))
+
+    def retry_from_user(self):
+        """用户点了「重试」：计数清零，再加载一次。"""
+        self._load_fail_count = 0
+        self._load_gave_up = False
+        self._ready = False
+        self._ever_ready = False
+        self._rebuilding = False
+        self.setHtml(_build_html(self._theme), QUrl("file:///"))
 
     def _first_ready_watchdog(self):
         """v4.120.2：首屏就绪看门狗。4s 内 loadFinished 一直没来（_ever_ready 仍

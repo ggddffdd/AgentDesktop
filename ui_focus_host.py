@@ -32,7 +32,7 @@ class FocusChromeMixin:
         combo.clear()
         for key, label, _hint in ui_focus.PERSONA_CHOICES:
             combo.addItem(label, key)
-        combo.addItem("高级五档…", "")
+        combo.addItem("高级细调（当前）", "")
         combo.blockSignals(False)
 
     def _on_persona_picked(self, index):
@@ -41,7 +41,7 @@ class FocusChromeMixin:
         if not tier:
             if getattr(self, "_perm_advanced_btn", None) is not None:
                 self._perm_advanced_btn.setChecked(True)
-            self.status_label.setText("高级五档仍按下面的执行模式生效")
+            self.status_label.setText("日常请用上面三档。高级细调在设置里展开。")
             return
         self._apply_persona(tier)
 
@@ -71,7 +71,7 @@ class FocusChromeMixin:
         self.status_label.setText(ui_focus.persona_status(tier))
 
     def _refresh_agent_mode_card(self):
-        """设置页顶部「Agent 模式」只在建卡时读过一次 cfg，这里改那枚值标签。"""
+        """设置页顶部「总是启用工具」只在建卡时读过一次 cfg，这里改那枚值标签。"""
         lbl = getattr(self, "_agent_mode_value", None)
         if lbl is None:
             return

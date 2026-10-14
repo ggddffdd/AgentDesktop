@@ -77,7 +77,7 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.273.0"
+APP_VERSION = "v4.274.0"
 APP_BUILD_DATE = "2026-10-14"
 # v4.164.0（2026-09-27）**运行数据归口：彻底治「dist 既是运行目录又是分发源」**：
 #   新增 config.WORKSPACE_DIR（默认 ~/Documents/小臭玩AI，与 USER_DATA_DIR 同值，
@@ -1850,13 +1850,22 @@ def save_config(cfg):
 
 # 模块级默认：保证 get_all_tools / shutdown_mcp 在 init_mcp_clients 之前调用也不 NameError
 mcp_clients = []
+# 同一进程只尝试一次。界面启动会再进来一次，失败的服务器不要连打两遍错误。
+mcp_init_attempted = False
+mcp_skip_hints = []
 
-def init_mcp_clients(cfg):
+def init_mcp_clients(cfg, force=False):
     """遍历 cfg["mcp_servers"]，为每个 enabled: true 的服务器创建 McpClient 并启动。
     收集所有 MCP 工具定义存入每个 client.tools。
+
+    命令不存在或目录已经没了：跳过，并留一句人话。不重复尝试。
     """
-    from mcp_client import McpClient
-    global mcp_clients
+    from mcp_client import McpClient, preflight
+    global mcp_clients, mcp_init_attempted, mcp_skip_hints
+    if mcp_init_attempted and not force:
+        return
+    mcp_init_attempted = True
+    mcp_skip_hints = []
     mcp_clients = []
     servers = cfg.get("mcp_servers", [])
     if not servers:
@@ -1867,21 +1876,31 @@ def init_mcp_clients(cfg):
             continue
         name = srv.get("name", "unknown")
         command = srv.get("command", "")
+        args = srv.get("args", []) or []
         if not command:
-            log.warning("MCP 服务器 [%s] 缺少 command，跳过", name)
+            hint = "有一项外部工具没写启动命令，已跳过。不影响聊天。"
+            mcp_skip_hints.append(hint)
+            log.info("外部工具 [%s] 已跳过：%s", name, hint)
+            continue
+        ok, hint = preflight(command, args)
+        if not ok:
+            mcp_skip_hints.append(hint)
+            log.info("外部工具 [%s] 已跳过：%s", name, hint)
             continue
         client = McpClient(
             name=name,
             command=command,
-            args=srv.get("args", []),
+            args=args,
             env=srv.get("env"),
             cwd=srv.get("cwd"),
         )
         if client.start():
             mcp_clients.append(client)
-            log.info("MCP [%s] 初始化成功，提供 %d 个工具", name, len(client.tools))
+            log.info("外部工具 [%s] 已接上，提供 %d 个能力", name, len(client.tools))
         else:
-            log.warning("MCP [%s] 初始化失败，跳过", name)
+            hint = "外部工具「%s」这次没连上，已跳过。不影响聊天。" % name
+            mcp_skip_hints.append(hint)
+            log.info("外部工具 [%s] 已跳过：%s", name, hint)
 
 
 def tool_consistency_gaps():
@@ -1935,13 +1954,14 @@ def get_all_tools(cfg):
 
 def shutdown_mcp():
     """关闭所有 MCP 客户端进程"""
-    global mcp_clients
+    global mcp_clients, mcp_init_attempted
     for client in mcp_clients:
         try:
             client.stop()
         except Exception as e:
-            log.error("关闭 MCP [%s] 异常: %s", client.name, e)
+            log.error("关闭外部工具 [%s] 异常: %s", client.name, e)
     mcp_clients = []
+    mcp_init_attempted = False
 
 
 # ---------- RAG 知识库 ----------

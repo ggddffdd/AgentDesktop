@@ -382,21 +382,17 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         # v4.36 MCP 服务器异步初始化（不阻塞 UI 启动）
         # v4.59：初始化完成后更新状态栏显示 MCP 工具数
         def _init_mcp():
-            # 审计修复 B6：main.py 启动时已同步 init_mcp_clients，此处曾无条件重建——
-            # init 内部直接 mcp_clients=[] 丢弃旧 client（子进程/reader 线程泄漏），
-            # 且单服务器握手同步等待最长 30s，会冻结 GUI。已初始化则只刷状态栏。
+            # 启动时 main.py 已经试过一次。失败的不要再拉起第二遍。
+            if not getattr(config, "mcp_init_attempted", False):
+                config.init_mcp_clients(self.cfg)
+            hints = list(getattr(config, "mcp_skip_hints", None) or [])
             total_tools = sum(len(c.tools) for c in config.mcp_clients)
             if total_tools:
-                names = ", ".join(c.name for c in config.mcp_clients)
-                self.status_label.setText(f"🔌 MCP: {names} ({total_tools} 工具)")
+                names = "、".join(c.name for c in config.mcp_clients)
+                self.status_label.setText("已接上外部工具：%s（%d 个）" % (names, total_tools))
                 return
-            if config.mcp_clients:
-                return  # 已连上但无工具：不重复初始化
-            config.init_mcp_clients(self.cfg)
-            total_tools = sum(len(c.tools) for c in config.mcp_clients)
-            if total_tools:
-                names = ", ".join(c.name for c in config.mcp_clients)
-                self.status_label.setText(f"🔌 MCP: {names} ({total_tools} 工具)")
+            if hints:
+                self.status_label.setText(hints[0])
         QTimer.singleShot(100, _init_mcp)
 
         # 注：toast 挂载点在 __init__ **末尾**（见 _mount_toast），
@@ -721,6 +717,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         # v4.120.2：首屏就绪（第一次 loadFinished）→ 权威数据全量重渲染，
         # 兜底首帧 runJavaScript 被吞导致的「首屏白屏 + 历史不显示」回归。
         self.chat_view.ready.connect(self._on_chat_page_reloaded)
+        self.chat_view.loadGaveUp.connect(self._on_chat_load_gave_up)
         # 用真实视图替换占位容器（保持原有位置 + stretch=1，避免布局跳动）
         lay = getattr(self, "chat_col_lay", None)
         container = getattr(self, "chat_container", None)
@@ -1546,9 +1543,12 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             self._tts_thread.terminate()
             self._spawn_thread(self._tts_thread)  # 审计修复 B4：旧线程持有到真退出
         tts = self.cfg.get("tts", {})
+        if getattr(self, "_tts_degraded", False):
+            return
         self._tts_thread = _TTSWorker(text, tts)
         self._spawn_thread(self._tts_thread)
         self._tts_thread.sig_mp3.connect(self.play_audio)
+        self._tts_thread.sig_error.connect(self._on_tts_error)
         self._tts_thread.start()
 
     def play_audio(self, mp3):
@@ -1556,6 +1556,34 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             return
         self.audio_player.setSource(QUrl.fromLocalFile(mp3))
         self.audio_player.play()
+
+    def _on_tts_error(self, msg):
+        """朗读失败：说一句人话，并在本轮先关掉朗读，避免每条回复都再失败一次。"""
+        self._tts_fail_streak = getattr(self, "_tts_fail_streak", 0) + 1
+        quota = voice_mod.tts_failure_is_quota(msg)
+        if not (quota or self._tts_fail_streak >= 2):
+            try:
+                self.status_label.setText(voice_mod.tts_user_message(msg))
+            except Exception:
+                pass
+            return
+        if getattr(self, "_tts_degraded", False):
+            return
+        self._tts_degraded = True
+        self.speech_enabled = False
+        chk = getattr(self, "speech_chk", None)
+        if chk is not None:
+            try:
+                chk.blockSignals(True)
+                chk.setChecked(False)
+                chk.blockSignals(False)
+                self._style_voice_switch(chk, False)
+            except Exception:
+                pass
+        try:
+            self.status_label.setText(voice_mod.tts_user_message(msg))
+        except Exception:
+            pass
 
     def _notify_task_done(self, title, message):
         """v4.95 任务完成通知：托盘弹窗 + 语音播报（语音独立于对话语音开关，因是提醒非朗读）。"""
@@ -1565,6 +1593,8 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
                 tray.showMessage(title, message, QSystemTrayIcon.Information, 6000)
         except Exception as e:
             log.error("托盘通知失败: %s", e)
+        if getattr(self, "_tts_degraded", False):
+            return
         try:
             tts = self.cfg.get("tts", {})
             # 审计修复 B4：完成通知语音不得静默覆盖仍在跑的朗读线程（GC 崩溃），
@@ -1575,6 +1605,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             self._tts_thread = _TTSWorker(message, tts)
             self._spawn_thread(self._tts_thread)
             self._tts_thread.sig_mp3.connect(self._play_notify_audio)
+            self._tts_thread.sig_error.connect(self._on_tts_error)
             self._tts_thread.start()
         except Exception as e:
             log.error("语音提醒失败: %s", e)
@@ -2783,11 +2814,12 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
                     # 执行任务：App 忙则跳过，等下一 tick 重试（不标记 fired）
                     if self._busy:
                         continue
-                    # v4.213.0：**先执行后标记**（外部审核 P1）。旧顺序是先 mark_fired
-                    # 再 _fire —— 一旦 _fire 内部失败（会话保存失败 / Agent 启动异常），
-                    # 任务已被记成「跑过」，once 类型更被置 disabled，**一次性任务就此
-                    # 静默丢失**。新语义：确认 Agent 已接手（_fire 返回 True）才 mark_fired；
-                    # 失败不标记，is_due 下一 tick 仍成立 → 自动重试。
+                    # 同一时刻只跑一个。锁在 _fire 里同步置上，本轮其它任务等它收口。
+                    if getattr(self, "_automation_lock", None):
+                        continue
+                    # v4.213.0：**先执行后标记**（外部审核 P1）。提交失败不标记。
+                    # v4.273.0：接手也不算做完。mark_fired 只在 _finish_automation_run
+                    # 判定回复真的做成之后。失败记 last_result，冷却后还能补跑。
                     if not (t.get("message") or "").strip():
                         # 任务本身坏了（指令为空），重试也没用 → 标记 fired 防每秒重试
                         log.error("自动化任务 %r 指令为空，标记已执行防止无限重试",
@@ -2796,8 +2828,8 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
                         self.automation_store.save()
                         continue
                     if self._fire_automation_run(t):
-                        automation.mark_fired(t, now)
-                        self.automation_store.save()
+                        # 接手不等于做完：完成与否在 _finish_automation_run 里判定。
+                        break
         except Exception as e:
             log.error("自动化任务调度异常: %s", e)
 
@@ -2853,11 +2885,13 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             # 切到对话页（nav index 0）让用户看到结果
             self._switch_nav(0)
             self._render_messages(force_bottom=True)
-            # v4.95：标记本次 run 是自动化任务触发，完成时托盘+语音通知
-            self._pending_done_notify = (task.get("name") or "").strip() or "自动化任务"
             # v4.215.0：_agent_run 据此应用受限工具集（full_tools=True 除外）
             self._auto_task_active = task
-            self._agent_run()
+            # 锁必须在 worker 启动前置上，同一次 tick 里的下一个任务才会让路。
+            self._automation_lock = (task.get("id") or "").strip() or "run"
+            self._automation_inflight_id = task.get("id")
+            self._automation_finish_guard = None
+            self._agent_run(bound_sid=session.sid)
             return True
         except Exception as e:
             # 回滚刚追加的消息（找得到才删）：at-least-once 的重复堆积只发生在
@@ -2869,8 +2903,73 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
                         self.store.save()
                 except Exception:
                     pass
+            self._automation_lock = None
+            self._automation_inflight_id = None
             log.error("自动化任务执行失败（已回滚，将自动重试）: %s", e)
             return False
+
+    def _finish_automation_run(self, stopped=False):
+        """自动化收口：只有回复真的做成才 mark_fired，否则记失败并允许补跑。
+
+        通知走托盘和状态栏，不依赖用户正停在任务会话里。
+        """
+        tid = getattr(self, "_automation_inflight_id", None)
+        if not tid:
+            self._automation_lock = None
+            return
+        if getattr(self, "_automation_finish_guard", None) == tid:
+            return
+        self._automation_finish_guard = tid
+        self._automation_inflight_id = None
+        self._automation_lock = None
+        store = getattr(self, "automation_store", None)
+        task = store.get(tid) if store is not None else None
+        if not task:
+            return
+        reply = ""
+        tools_ran = False
+        try:
+            sid = automation.SESSION_SID_PREFIX + str(tid)
+            sess = self.store.sessions.get(sid)
+            prefix = getattr(self, "_AUTO_TASK_PREFIX", "【自动化任务】")
+            if sess is not None:
+                for m in reversed(sess.messages or []):
+                    if not isinstance(m, dict):
+                        continue
+                    if m.get("role") == "user" and str(m.get("content") or "").startswith(prefix):
+                        break
+                    if m.get("role") == "tool_log":
+                        tools_ran = True
+                    if m.get("role") == "assistant" and not reply:
+                        content = m.get("content") or ""
+                        reply = content if isinstance(content, str) else ""
+        except Exception:
+            reply = ""
+            tools_ran = False
+        name = (task.get("name") or "自动化任务").strip() or "自动化任务"
+        ok = automation.reply_is_real_success(reply, stopped=stopped, tools_ran=tools_ran)
+        if ok:
+            automation.mark_fired(task)
+            title, message = "任务做完了", "自动化任务「%s」做完了。" % name
+        else:
+            reason = automation.failure_reason(reply, stopped=stopped)
+            automation.mark_failed(task, reason=reason)
+            title = "任务没做完"
+            message = "自动化任务「%s」没做完：%s。稍后会再试。" % (name, reason)
+        try:
+            store.save()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_refresh_automation_list"):
+                self._refresh_automation_list()
+        except Exception:
+            pass
+        try:
+            self.status_label.setText(message)
+        except Exception:
+            pass
+        self._notify_task_done(title, message)
 
     # ============ 工具箱页 ============
     def _build_tools_page(self):
@@ -3011,7 +3110,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         if not cur:
             cur = "未匹配档位 · %s" % (self.cfg.get("model") or "未设置")
         il.addWidget(self._kv("当前模型", cur))
-        il.addWidget(self._kv("Agent 模式", "开" if self.cfg.get("agent_mode") else "关",
+        il.addWidget(self._kv("总是启用工具", "开" if self.cfg.get("agent_mode") else "关",
                               hold="_agent_mode_value"))
         il.addWidget(self._kv("联网搜索", "开" if self.cfg.get("search_enabled", True) else "关"))
         key = self.cfg.get("api_key", "")
@@ -4925,8 +5024,49 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
 
     def _on_chat_page_reloaded(self):
         """v4.104：聊天页意外重载后 DOM 已清空 → 重置计数全量重渲染。"""
+        panel = getattr(self, "_chat_fail_panel", None)
+        if panel is not None:
+            panel.hide()
+        view = getattr(self, "chat_view", None)
+        if view is not None:
+            view.show()
         self._rendered_msg_count = 0
         self._render_messages()
+
+    def _on_chat_load_gave_up(self):
+        """聊天页反复加载失败：不要留一片空白，给出重试。"""
+        self._ensure_chat_fail_panel()
+        view = getattr(self, "chat_view", None)
+        panel = getattr(self, "_chat_fail_panel", None)
+        if view is not None:
+            view.hide()
+        if panel is not None:
+            panel.show()
+
+    def _ensure_chat_fail_panel(self):
+        if getattr(self, "_chat_fail_panel", None) is not None:
+            return
+        title, hint, action = ui_focus.chat_load_failure_copy()
+        panel = empty_state(
+            title, hint=hint, action=action,
+            on_action=self._retry_chat_load, icon="对话")
+        panel.hide()
+        lay = getattr(self, "chat_col_lay", None)
+        view = getattr(self, "chat_view", None)
+        if lay is not None and view is not None:
+            idx = lay.indexOf(view)
+            lay.insertWidget(idx + 1 if idx >= 0 else lay.count(), panel, 1)
+        self._chat_fail_panel = panel
+
+    def _retry_chat_load(self):
+        panel = getattr(self, "_chat_fail_panel", None)
+        view = getattr(self, "chat_view", None)
+        if panel is not None:
+            panel.hide()
+        if view is None:
+            return
+        view.show()
+        view.retry_from_user()
 
     def _request_scroll_bottom(self):
         """v4.104：滚底走 JS（jsForceBottom：置跟随 + 滚底一次到位），
@@ -6128,9 +6268,11 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
 
         gtl.addWidget(_toggle_row("联网搜索", "搜索失败自动降级为纯模型回答",
                                    "search", self.cfg.get("search_enabled", True)))
-        _agent_row = _toggle_row("Agent 模式", "高级：总是启用工具。日常用上面的三档即可。",
-                                  "agent", self.cfg.get("agent_mode", False),
-                                  THEME["ok"])
+        _agent_row = _toggle_row(
+            "总是启用工具",
+            "高级。打开后每句话都按能动手来处理。平时用上面的三档即可，不必单独开。",
+            "agent", self.cfg.get("agent_mode", False),
+            THEME["ok"])
 
         # v4.264.0：人话三档映射现有 agent_mode + permission_mode，五档收进折叠。
         _persona_label = QLabel("怎么干活")
@@ -6147,7 +6289,12 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             f"font-size:{THEME['font_micro']};color:{THEME['faint']};padding-left:4px;")
         gtl.addWidget(_persona_hint)
 
-        self._perm_advanced_btn = QPushButton("高级五档")
+        _adv_hint = QLabel("日常用上面三档就够。下面是细调，包括五档执行模式和「总是启用工具」。")
+        _adv_hint.setWordWrap(True)
+        _adv_hint.setStyleSheet(
+            f"font-size:{THEME['font_micro']};color:{THEME['faint']};padding-left:4px;")
+        gtl.addWidget(_adv_hint)
+        self._perm_advanced_btn = QPushButton("高级选项：五档执行 / 总是启用工具")
         self._perm_advanced_btn.setCheckable(True)
         self._perm_advanced_btn.setFixedHeight(32)
         self._perm_advanced_btn.setCursor(Qt.PointingHandCursor)
@@ -6625,7 +6772,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
                 "\n\n【模式说明：当前为「普通对话模式」，你无法直接调用任何工具】\n"
                 "· 若下方消息中包含【联网搜索结果】，请直接基于它作答；不要声称自己会去搜索或调用 web_search。\n"
                 "· 若没有提供搜索结果，请基于自身知识简明回答，并说明『未检索到联网资料』。\n"
-                "· 需要写文件/执行代码/生成图片/实际操作等任务时，请明确提示用户：「请开启 Agent 模式让我执行」，不要假装已完成。\n"
+                "· 需要写文件/执行代码/生成图片/实际操作等任务时，请明确提示用户：「请切到『助手做事』让我执行」，不要假装已完成，也不要提「Agent 模式」。\n"
                 "· 禁止输出「我现在去搜索/马上执行/下一步」之类的承诺性文字却不真正行动。\n"
                 "· 覆盖说明：上方系统提示里的「命中路由表关键词必须调工具」「事实问题必须 web_search」两条约束，"
                 "在普通对话模式下不适用，请以本【模式说明】为准。"
@@ -7662,7 +7809,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             self._search_step(text, chain, idx + 1)
 
     # ============ Agent 模式 ============
-    def _agent_run(self, resume=False, resume_task_id=None):
+    def _agent_run(self, resume=False, resume_task_id=None, bound_sid=None):
         # v4.101：开启新任务前，清理本会话残留的「已暂停」Agent 检查点（用户放弃旧任务、开启新任务）
         if not resume:
             self._cleanup_paused_agent_checkpoints()
@@ -7709,9 +7856,15 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             task_status.progress(self._task_agent, "规划中")
         except Exception:
             self._task_agent = ""
+        _bound = bound_sid
+        if not _bound and _auto_t is not None:
+            _tid = str(_auto_t.get("id") or "").strip()
+            if _tid:
+                _bound = automation.SESSION_SID_PREFIX + _tid
         w = AgentWorker(self, messages, all_tools, config.mcp_clients,
                         task_id=resume_task_id, resume=resume,
-                        explicit_intent=self._last_user_intent_is_action())
+                        explicit_intent=self._last_user_intent_is_action(),
+                        bound_sid=_bound)
         self._agent_worker = w
         w.status.connect(self.status_label.setText)
         w.status.connect(self._agent_task_progress)
@@ -7756,9 +7909,19 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         if _eid:
             rec["evidence_id"] = int(_eid)
             rec["evidence_ok"] = bool(entry.get("evidence_ok", True))
-        self.store.active().messages.append(rec)
+        self._agent_write_session().messages.append(rec)
         self._save_throttled()  # v4.58：批量保存，避免每个工具一次磁盘 IO
         self._render_throttled()  # v4.58：节流渲染，避免信号洪水
+
+    def _agent_write_session(self):
+        """本轮 Agent 的写入目标。启动时钉住的会话优先于后来被切走的 active()。"""
+        w = getattr(self, "_agent_worker", None)
+        bound = getattr(w, "_bound_sid", None) if w is not None else None
+        if bound:
+            sess = automation.bound_session(getattr(self, "store", None), bound)
+            if sess is not None:
+                return sess
+        return self.store.active()
 
     _TOOL_NAME_MAP = {
         "web_search": "联网搜索", "read_file": "读取文件", "write_file": "写入文件",
@@ -7909,7 +8072,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
 
     def _on_stream_commit(self, text):
         self._streaming = False
-        msgs = self.store.active().messages
+        msgs = self._agent_write_session().messages
         # v4.60o：末条防重——渲染竞态或循环重提同一句时，避免重复气泡
         if (msgs and msgs[-1].get("role") == "assistant"
                 and msgs[-1].get("content") == text):
@@ -7999,11 +8162,8 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         self._do_save()  # v4.58：agent 结束做一次最终落盘
         self._flush_render()  # v4.60o：冲刷待渲染定时器，避免末条消息重复插入
         self.input_box.setFocus()
-        # v4.95：自动化任务完成 → 托盘+语音通知
-        _pending = getattr(self, "_pending_done_notify", None)
-        if _pending:
-            self._pending_done_notify = None
-            self._notify_task_done("任务完成", f"自动化任务「{_pending}」已完成")
+        # 自动化任务：按这一轮的回复判定成功或失败，并在会话外面通知。
+        self._finish_automation_run(stopped=bool(resumable))
 
 
 
@@ -9193,7 +9353,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         self._save_cfg()
         self._sync_persona_widgets()
         self._refresh_agent_mode_card()
-        self.status_label.setText("Agent 模式：开" if self.agent_mode else "Agent 模式：关")
+        self.status_label.setText("总是启用工具：开" if self.agent_mode else "总是启用工具：关")
 
     # 触发自动路由到 Agent 的执行意图关键词（普通模式下命中即按 Agent 执行）
     _ACTION_HINTS = (

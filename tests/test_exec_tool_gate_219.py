@@ -8,7 +8,7 @@
   G4 携带 Decision(allowed=True) 时信任放行（不重复弹窗）。
   G5 携带 Decision(allowed=False) 时信任拒绝。
   G6 exec_tool 集成：无 ctx 调 EXEC 工具应被闸门拦截、未真正执行（deliverables 空 +
-      返回文案含「exec_tool 需要权限上下文」）。
+      返回文案是人话「需要你先允许」，不含闸门/审查编号）。
 
 G1/G2/G6 是「改坏必红」核心：扰动脚本把闸门的 fail-closed 分支改成恒放行后，
 这几条必须翻红（证明闸门是真实防线，不是摆设）。
@@ -47,12 +47,14 @@ def test_fail_closed_no_ctx():
     print("== G1/G2/G3 无 ctx 按风险分类 fail-closed ==")
     ok_ex, msg_ex = tools._permission_gate("process_kill", {"name": "x"}, None)
     check("无ctx时EXEC工具(process_kill)被最终闸门拒绝",
-          (not ok_ex) and ("exec_tool 需要权限上下文" in msg_ex),
+          (not ok_ex) and ("需要你先允许" in msg_ex)
+          and ("exec_tool" not in msg_ex) and ("审查报告" not in msg_ex),
           "ok_ex=%s msg=%r" % (ok_ex, msg_ex))
 
     ok_ext, msg_ext = tools._permission_gate("send_email", {}, None)
     check("无ctx时未登记工具(send_email)被最终闸门拒绝",
-          (not ok_ext) and ("exec_tool 需要权限上下文" in msg_ext),
+          (not ok_ext) and ("需要你先允许" in msg_ext)
+          and ("审查报告" not in msg_ext),
           "ok_ext=%s msg=%r" % (ok_ext, msg_ext))
 
     # classify 兜底校验：send_email 确实落到 EXTERNAL
@@ -75,7 +77,7 @@ def test_decision_trusted():
 
     ok_d, msg_d = tools._permission_gate("process_kill", {"name": "x"}, deny)
     check("携带Decision(allowed=False)信任拒绝",
-          (not ok_d) and ("权限决策拒绝执行" in msg_d),
+          (not ok_d) and ("没有被允许" in msg_d) and ("审查报告" not in msg_d),
           "ok_d=%s msg=%r" % (ok_d, msg_d))
 
 
@@ -86,7 +88,7 @@ def test_exec_tool_integration():
     msg, deliverables, _ = tools.exec_tool(
         None, APP_DIR, "process_kill", {"name": "nonexistent_xyz_12345"})
     check("exec_tool集成:无ctx拒绝EXEC且未真正执行",
-          ("exec_tool 需要权限上下文" in msg) and (deliverables == []),
+          ("需要你先允许" in msg) and ("exec_tool" not in msg) and (deliverables == []),
           "msg=%r deliverables=%r" % (msg, deliverables))
 
     # 携带拒绝决策：同样应在闸门处拦截，不触达执行。
@@ -95,7 +97,7 @@ def test_exec_tool_integration():
         None, APP_DIR, "process_kill", {"name": "nonexistent_xyz_12345"},
         perm_ctx=deny)
     check("exec_tool集成:携带拒绝Decision在闸门拦截",
-          ("权限决策拒绝执行" in msg2) and (deliv2 == []),
+          ("没有被允许" in msg2) and (deliv2 == []),
           "msg2=%r deliv2=%r" % (msg2, deliv2))
 
 

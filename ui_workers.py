@@ -611,8 +611,12 @@ class _TTSWorker(QThread):
         except Exception as e:
             # v4.257.0（P0-6）：先落日志（模块级 logger，见文件头），再上送错误。
             # 顺序不能反 —— 早期 return 会把失败原因彻底吞掉。
+            # 语音服务 403 只记一行，避免每次回复都打一整段堆栈。
             try:
-                log.error("TTS 失败: %s", e, exc_info=True)
+                if voice_mod.tts_failure_is_quota(e):
+                    log.warning("朗读暂不可用: %s", str(e).splitlines()[0][:180])
+                else:
+                    log.error("TTS 失败: %s", e, exc_info=True)
             except Exception:
                 pass
             try:

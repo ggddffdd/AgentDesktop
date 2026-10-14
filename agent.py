@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from PySide6.QtCore import QThread, Signal
 
 import task_resume  # v4.101：断点续传检查点
+import automation  # 自动化任务把会话编号钉在 worker 上，避免写到后切换的会话
 
 from config import MAX_AGENT_STEPS, TOOL_RESULT_LIMIT, get_all_tools, WORKSPACE_DIR
 import tools
@@ -326,7 +327,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
 
     def __init__(self, mw, messages, tool_defs, mcp_clients=None, task_id=None,
                  resume=False, isolated=False, force_complex=False,
-                 explicit_intent=True):
+                 explicit_intent=True, bound_sid=None):
         super().__init__()
         self.mw = mw
         self.messages = messages
@@ -358,10 +359,15 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         for _m in self.messages:
             if isinstance(_m, dict):
                 _m["_seq"] = 0
+        # 会话在启动这一刻钉死。之后用户或另一个任务切走 active()，回写仍进这个会话。
+        self._bound_sid = None if self._isolated else (bound_sid or None)
         try:
-            if not self._isolated:  # 隔离会话：不读主会话，_seq 从 0 起算
-                _sess = mw.store.active()
+            if not self._isolated:
+                if not self._bound_sid:
+                    self._bound_sid = getattr(mw.store.active(), "sid", None)
+                _sess = automation.bound_session(mw.store, self._bound_sid)
                 if _sess is not None:
+                    self._bound_sid = getattr(_sess, "sid", None) or self._bound_sid
                     for _em in _sess.messages:
                         if isinstance(_em, dict) and isinstance(_em.get("_seq"), int) and _em["_seq"] > 0:
                             self._seq_ctr = max(self._seq_ctr, _em["_seq"])
@@ -370,11 +376,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         self.mcp_clients = mcp_clients or []
         # 审计修复 E1：GUI 线程（__init__ 所在线程）安全读取当前激活会话 sid，
         # run() 与并发工具池线程据此绑定默认上下文管理器，避免误用 _global。
-        try:
-            self._ctx_sid = (None if self._isolated
-                             else getattr(mw.store.active(), "sid", None))
-        except Exception:
-            self._ctx_sid = None
+        self._ctx_sid = None if self._isolated else self._bound_sid
         self._confirm_event = threading.Event()
         self._confirm_val = False
         self._stop_requested = False
@@ -724,7 +726,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         _t0 = time.time()
         # v4.107：隔离会话不落盘轨迹（enabled=False），也不借用主会话 sid。
         _tracer = StepTracer(
-            None if self._isolated else getattr(mw.store.active(), "sid", None),
+            None if self._isolated else getattr(self, "_bound_sid", None),
             enabled=not self._isolated,
         )
         _tracer.start()
@@ -816,10 +818,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         # v4.108 M-13：isolated 隔离会话（导演台对话）跳过 checkpoint——
         # 否则会以主会话 sid 写检查点，主聊天界面冒出导演任务的「继续上次任务」按钮。
         if not getattr(self, "_isolated", False):
-            try:
-                _sid = getattr(mw.store.active(), "sid", None)
-            except Exception:
-                _sid = None
+            _sid = getattr(self, "_bound_sid", None)
             try:
                 task_resume.save_checkpoint(mw.cfg, {
                     "task_id": self.task_id,
@@ -1931,7 +1930,9 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                     goal = c
         # 优先用 session.goal（首条 user 原话），否则用最后一条 user
         try:
-            sess_goal = getattr(self.mw.store.active(), "goal", "") or ""
+            _bound = automation.bound_session(
+                self.mw.store, getattr(self, "_bound_sid", None))
+            sess_goal = getattr(_bound, "goal", "") or ""
             if sess_goal:
                 return sess_goal
         except Exception:
@@ -1970,7 +1971,8 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         if getattr(self, "_isolated", False):
             return
         try:
-            session = mw.store.active()
+            session = automation.bound_session(
+                mw.store, getattr(self, "_bound_sid", None))
         except Exception:
             return
         if session is None:
@@ -2057,10 +2059,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         """
         if getattr(self, "_isolated", False):
             return
-        try:
-            _sid = getattr(mw.store.active(), "sid", None)
-        except Exception:
-            _sid = None
+        _sid = getattr(self, "_bound_sid", None)
         try:
             recent = [dict(m) for m in self.messages[-40:]
                       if isinstance(m, dict) and self._is_sync_writable(m)]

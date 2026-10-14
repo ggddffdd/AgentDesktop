@@ -3,6 +3,7 @@
 
 import subprocess
 import os
+import shutil
 # v4.125 M-14：MCP server 子进程不闪黑窗
 # ⚠️ v4.126.0 热修：import os 必须在 os.name 使用之前（此前 import os 在下方第 10 行，
 #    打包后一进 init_mcp_clients 就 NameError: name 'os' is not defined）
@@ -12,6 +13,42 @@ import threading
 import logging
 
 log = logging.getLogger("dsdesktop")
+
+
+def _looks_like_path(text):
+    """参数像不像一个本机路径（排除 -y 和包名）。"""
+    if not text or text.startswith("-"):
+        return False
+    if text.startswith("~") or text.startswith("/") or text.startswith("\\"):
+        return True
+    if len(text) >= 3 and text[1] == ":" and text[2] in "/\\":
+        return True
+    return False
+
+
+def preflight(command, args=None):
+    """启动前检查。返回 (可以启动, 给用户看的一句说明)。
+
+    命令不在 PATH 上、或文件夹参数已经不存在时，不要再拉起进程。
+    说明里不出现内部模块名。
+    """
+    command = (command or "").strip()
+    if not command:
+        return False, "有一项外部工具没写启动命令，已跳过。不影响聊天。"
+    base = os.path.basename(command)
+    if _looks_like_path(command) or os.path.isabs(command):
+        if not os.path.isfile(os.path.expanduser(command)):
+            return False, "有一项外部工具的程序找不到，已跳过。不影响聊天。"
+    elif shutil.which(command) is None and shutil.which(base) is None:
+        if base.lower() in ("npx", "npm", "node"):
+            return False, "文件工具需要 Node.js，这台电脑没找到，已跳过。装好后重启即可。"
+        return False, "外部工具「%s」找不到，已跳过。不影响聊天。" % base
+    for arg in args or []:
+        if not isinstance(arg, str) or not _looks_like_path(arg):
+            continue
+        if not os.path.exists(os.path.expanduser(arg)):
+            return False, "文件工具指向的文件夹已经不在了，已跳过。可在设置里改成现在的目录。"
+    return True, ""
 
 
 class McpClient:
@@ -50,7 +87,8 @@ class McpClient:
                 creationflags=_NO_WINDOW,
             )
         except Exception as e:
-            log.error("MCP [%s] 启动进程失败: %s", self.name, e)
+            # 缺命令时由 preflight 提前跳过；这里只留一条，不再把系统错误原文抛给界面。
+            log.info("外部工具 [%s] 没能启动，已跳过: %s", self.name, e)
             return False
 
         self._running = True
