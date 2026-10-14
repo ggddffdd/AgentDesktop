@@ -13,7 +13,7 @@
 
 A 接线#7a     —— legion_ui 真跑 _rebuild_waves（桩 legion），看真出组件
 B 视觉与参数  —— 尺寸/文案写死；不给行动按钮（下方已有真按钮）
-C #7b 不接    —— 授权记录仍是 MessageBox 一次性回执，守护判据
+C #7b 不接    —— 授权记录仍是一次性回执（v4.269 起走 toast，不接空态卡）
 D 导演台 2 处 —— 与 #2 同类，只统一文案不接组件
 E 全项目回扫  —— 分类判据：5 类形态各有归属，没有"漏网的真空区域"
 F 版本/文档   —— DESIGN/CHANGELOG 记了本波的决定
@@ -221,10 +221,13 @@ check("B4 理由写进了代码注释（查原始源码，剥了注释就查不�
 # ------------------------------------------------------------ C #7b 不接
 
 print("\n--- C #7b 授权记录不接组件（守护判据）---")
-check("C1 授权记录仍是 QMessageBox 一次性回执",
-      'QMessageBox.information(self, "授权记录"' in _leg_code)
-check("C2 那句文案未被改动",
-      "还没有任何授权记录。跑一次带验收的军团后这里就有。" in _leg_code)
+# v4.269.0：成功/空记录提示不再弹 information，改成 toast。
+# 守的仍是「一次性回执、不接 empty_state」，不是弹窗这个载体。
+check("C1 授权记录空态走 toast，不再弹 information",
+      '_notice("还没有授权记录"' in _leg_code
+      and 'QMessageBox.information(self, "授权记录"' not in _leg_code)
+check("C2 下一步仍在（跑一次带验收）",
+      "跑一次带验收的军团后这里就有。" in _leg_code)
 # C3：反向 —— 授权记录那段里不许出现 empty_state
 _auth_seg = _leg_code.split('def _on_view_auth')[1].split("\n    def ")[0] \
     if "def _on_view_auth" in _leg_code else ""
@@ -351,17 +354,16 @@ check("E4b 传给 empty_state 的主文案全部是已登记的合法空态（�
       _seen <= _known_ok, sorted(_seen - _known_ok))
 check("E4b2 5 处合法空态都真的在用（防止把判据放水成空集）",
       len(_seen & _known_ok) >= 5, sorted(_seen))
-# 真正的硬判据：#7b 授权记录那句回执**仍在 MessageBox 里**（没被删），
-# 且**没有**出现在任何 empty_state 的参数里。
-# 注意第一版写成"文案全项目零残留"是错的 —— 那句回执本来就该存在于
-# _on_view_auth 里（它就是一次性回执的正文），要守的是"别进 empty_state"。
+# 硬判据：授权记录空态仍在 _on_view_auth 里（没被删），v4.269 起走 toast，
+# 且没有出现在任何 empty_state 的参数里。
 _auth_seg2 = _leg_code.split("def _on_view_auth")[1].split("\n    def ")[0] \
     if "def _on_view_auth" in _leg_code else ""
-check("E4b3 授权记录回执仍在 MessageBox 里（没被删掉）",
-      "还没有任何授权记录" in _auth_seg2
-      and "QMessageBox.information" in _auth_seg2)
+check("E4b3 授权记录回执仍在，走 toast 不走弹窗",
+      "还没有授权记录" in _auth_seg2
+      and "_notice(" in _auth_seg2
+      and "QMessageBox.information" not in _auth_seg2)
 check("E4b4 它没有出现在 empty_state 的参数里",
-      "还没有任何授权记录" not in _seen,
+      "还没有授权记录" not in _seen and "还没有任何授权记录" not in _seen,
       sorted(_seen))
 # E4c 导演台那两处「一次性回执式」的状态提示不许接组件
 _dp_funcs = dict(_iter_func_bodies(_dp_code))
