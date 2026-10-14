@@ -2987,7 +2987,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         head = QLabel("设置")
         head.setStyleSheet(f"{label_title_xl()}background:transparent;")
         lay.addWidget(head)
-        sub = QLabel("当前配置摘要；点击按钮打开详细设置弹层。")
+        sub = QLabel("模型和密钥、干活方式、备份都在这一页，不用再开第二层。")
         sub.setStyleSheet(f"{label_second()}background:transparent;")
         lay.addWidget(sub)
 
@@ -3014,12 +3014,6 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         lay.addWidget(info)
 
         btn_row = QHBoxLayout()
-        open_btn = QPushButton("打开设置弹层")
-        open_btn.setFixedHeight(34)
-        open_btn.setStyleSheet(self._primary_btn_style())
-        open_btn.clicked.connect(lambda: self._show_popup(self._settings_popup))
-        btn_row.addWidget(open_btn)
-
         export_btn = QPushButton("导出当前对话")
         export_btn.setFixedHeight(34)
         export_btn.setStyleSheet(self._secondary_btn_style())
@@ -3032,6 +3026,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         btn_row.addWidget(diag_btn)
         btn_row.addStretch(1)
         lay.addLayout(btn_row)
+        self._mount_settings_form(lay)
 
         # ===== v4.128：Agnes 文本模型（军团 / 导演台所有文本环节）=====
         at_card = QWidget()
@@ -6177,6 +6172,13 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         _mode_hint.setStyleSheet(
             f"font-size:{THEME['font_micro']};color:{THEME['faint']};padding-left:4px;padding-bottom:4px;")
         _adv_lay.addWidget(_mode_hint)
+        _route_hint = QLabel(
+            "route_complex_v1 是费钱的调试回退：config.json 里写成 true 时，"
+            "复杂任务改走旧判定。日常不要开。")
+        _route_hint.setWordWrap(True)
+        _route_hint.setStyleSheet(
+            f"font-size:{THEME['font_micro']};color:{THEME['faint']};padding-left:4px;")
+        _adv_lay.addWidget(_route_hint)
         self._perm_advanced.setVisible(False)
         self._perm_advanced_btn.toggled.connect(self._perm_advanced.setVisible)
         gtl.addWidget(self._perm_advanced)
@@ -6355,7 +6357,31 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
 
         return popup
 
+    def _mount_settings_form(self, lay):
+        """把原来弹层里的表单嵌进设置页。控件身份不变，只换父级。"""
+        popup = getattr(self, "_settings_popup", None)
+        scroll = getattr(popup, "_popup_scroll", None) if popup is not None else None
+        inner = None
+        if scroll is not None:
+            try:
+                inner = scroll.takeWidget()
+            except Exception:
+                inner = None
+        if inner is None:
+            return
+        try:
+            popup.hide()
+        except Exception:
+            pass
+        self._settings_form_host = inner
+        lay.addWidget(inner)
+
     def _show_popup(self, popup):
+        if popup is getattr(self, "_settings_popup", None):
+            idx = getattr(self, "_nav_index_by_label", {}).get("设置")
+            if idx is not None:
+                self._switch_nav(idx)
+            return
         if popup.isVisible():
             popup.hide()
             return

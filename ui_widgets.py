@@ -967,9 +967,10 @@ class TaskStatusStrip(QWidget):
             failed = [r for r in recent if r.get("state") == task_status.STATE_FAILED]
             if failed:
                 t = failed[0]
-                msg = f"{t.get('kind_label', '任务')} 失败"
-                if t.get("detail"):
-                    msg += f"：{t['detail']}"
+                msg = task_status.failure_sentence(
+                    t.get("kind_label") or "任务",
+                    t.get("detail") or "",
+                    bool(t.get("retryable")))
                 self.icon.setText("⚠")
                 self.icon.setStyleSheet(f"color:{THEME['danger']};font-size:{THEME['font_micro']};")
                 self.text.setStyleSheet(f"color:{THEME['danger']};font-size:{THEME['font_micro']};")

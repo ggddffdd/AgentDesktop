@@ -3162,10 +3162,26 @@ def _video_gen_record_success():
     _VIDEO_GEN_BREAKER["open"] = False
 
 
+def video_gen_breaker_message(surface=None):
+    """熔断时给调用方看的那一句。
+
+    主对话可以建议改用代码/HTML 动画。导演台用户改不了去写网页，
+    那句话只会让人以为产品在说别的任务。
+    """
+    if surface == "director":
+        return ("视频生成服务熔断中：近两次调用连续失败。"
+                "这一镜没有再提交。可以过一会儿重试这一镜，或先改提示词。"
+                "冷却大约 10 分钟。")
+    return ("视频生成服务熔断中：近两次调用连续失败（队列满/参数错误），"
+            "已停止继续请求，避免空转。建议改用**代码/HTML 动画**方案，"
+            "或稍后重试（冷却约 10 分钟）。")
+
+
 def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=None,
                    image=None, first_frame=None, last_frame=None, dialogue=None,
                    progress=None, images=None, ref_images=None,
-                   dest_path=None, on_submit=None, cancel_token=None):
+                   dest_path=None, on_submit=None, cancel_token=None,
+                   surface=None):
     """生视频（统一内核：委托 video-agent/core 的 AgnesClient）。
 
     与网页版 / director_panel 共用同一套 core/，根除两份 Agnes 视频客户端。
@@ -3197,9 +3213,7 @@ def tool_video_gen(cfg, app_dir, prompt, duration=None, aspect=None, resolution=
     # 护栏 #1（2026-10-11 复盘）：连续失败熔断 —— 开路时直接 fail-closed 回退，
     # 不再打第 3 次网络，避免对话循环里空转（「状态一直闪」）。
     if _video_gen_breaker_open():
-        return ("视频生成服务熔断中：近两次调用连续失败（队列满/参数错误），"
-                "已停止继续请求，避免空转。建议改用**代码/HTML 动画**方案，"
-                "或稍后重试（冷却约 10 分钟）。")
+        return video_gen_breaker_message(surface)
     try:
         from core_agnes import AgnesClient, AgnesError, is_cancel_error
     except Exception as e:

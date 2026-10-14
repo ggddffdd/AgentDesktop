@@ -50,8 +50,8 @@ DIRECTOR_SYS = """你是这个视频项目的导演助理，只处理导演台�
 
 【能做的事】只有这 11 件（都只能动当前打开的这个项目，不能碰别的文件）：
 - director_status：查项目进度（有哪些人物/分镜，关键帧和片段生成到哪了）
-- director_revise_story：按意见重写剧本（纯文本，不花钱）
-- director_revise_shots：按意见重排/重拆 分镜（纯文本，不花钱）
+- director_revise_story：按意见重写剧本（不生图、不生视频，仍会调用文本模型）
+- director_revise_shots：按意见重排/重拆 分镜（不生图、不生视频，仍会调用文本模型）
 - director_revise_keyframe：重生成**某一镜**的关键帧静帧（idx=镜号；idx="all" 才是整批）
 - director_revise_clip：重生成**某一镜**的视频片段（idx=镜号）
 - director_revise_character：重生成**某一个角色**的三视图（idx=角色号）
