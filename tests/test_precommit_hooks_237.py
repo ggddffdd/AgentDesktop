@@ -198,11 +198,14 @@ def main():
     # ---------------- H 组：不误报（假阳性会让整条防线被绕过）----------------
     print("\n-- H) 合法文件不得被误报 --")
     if pc is not None:
-        # 仓库里 68 个 `_perturb_*.py` **本来就带** `# 扰动` 标记 ——
+        # `_perturb/_perturb_*.py` **本来就带** `# 扰动` 标记 ——
         # 那是变异的定义，不是「没还原的残留」。若把它们报成残留，
         # 每次改扰动脚本都会被拦，结果是大家习惯性 --no-verify，防线等于没有。
-        pfiles = [os.path.join(ROOT, n) for n in sorted(os.listdir(ROOT))
-                  if n.startswith("_perturb_") and n.endswith(".py")]
+        # v4.267.0 起这些脚本在 _perturb/，不再堆在仓库根目录。
+        pdir = os.path.join(ROOT, "_perturb")
+        pfiles = [os.path.join(pdir, n) for n in sorted(os.listdir(pdir))
+                  if n.startswith("_perturb_") and n.endswith(".py")
+                  and n != "_perturb_guard.py"]
         with_marker = [p for p in pfiles
                        if "# 扰动" in _read(p)]
         if not with_marker:

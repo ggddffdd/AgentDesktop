@@ -13,10 +13,12 @@
 | 配置 | `config.py` | `APP_VERSION` 是版本**唯一真源**（见 §6） |
 | 核心 | `agent.py` / `ui.py` / `tools.py` | 三大件，均有体积红线 |
 | Agent 侧 | `agent_*.py` `intent*.py` `task_state.py` `task_graph.py` | v4.216 从 `agent.py` 拆出 |
-| UI 侧 | `ui_*.py` `theme_tokens.py` | `theme_tokens.py` 的 `THEME` 是配色唯一真源 |
+| UI 侧 | `ui_*.py` `ui_routing.py` `theme_tokens.py` | `theme_tokens.py` 的 `THEME` 是配色唯一真源；路由纯判定在 `ui_routing.py` |
 | 安全 | `untrusted_boundary.py` `tool_verifiers_227.py` `risk.py` `permissions.py` | |
-| 测试 | `tests/test_*.py`（166 个，另加 `regression.py`） | **自研 runner，不是 pytest** |
-| 元测试 | 根目录 `_perturb_*.py`（102 个，不含护栏） | 「判据的疫苗」，见 §5 |
+| 运维脚本 | `scripts/cleanup_products.py` | 产物清理，避免和根目录 `tools.py` 抢 `tools/` |
+| 过程文档 | `docs/handover/` `docs/release/` | 交接记录与旧版发布说明 |
+| 测试 | `tests/test_*.py`（167 个，另加 `regression.py`） | **自研 runner，不是 pytest** |
+| 元测试 | `_perturb/_perturb_*.py`（103 个，不含 `_perturb_guard.py`） | 「判据的疫苗」，见 §5 |
 | 构建 / 门禁 | `build_safe.py` `release_check.py` `_scan_exe_secrets.py` | |
 | 归档 | `_dev_history/` | 旧版核验脚本（`_verify_pyz_v*.py`） |
 
@@ -86,7 +88,7 @@ CI 的 `test` 作业不开 `--with-perturb`（扰动极慢且独占源码，留�
 2. **行尾**：blob 全 LF、工作区混杂。改 CRLF 文件用 `newline=""`。提交前用
    `git diff --stat` 与 commit files changed 核对，确认无假 diff。
 3. **改动必配判据 + 扰动**，验收标准是**哑弹清零**（不是脚本 PASS）。
-4. **扰动统一走 `_perturb_guard.py`**：变异标记只能用 `# 扰动`；ROOT 一律 `__file__` 推导。
+4. **扰动统一走 `_perturb/_perturb_guard.py`**：变异标记只能用 `# 扰动`；ROOT 一律由 `__file__` 再向上一级推导到仓库根。
 5. **改源码用「行号切片 + 断言邻近行」**，别抄原串做全文字符串替换 —— 已 4 次静默空替换（P10）。
    抄扰动原串必须**从真实字节取**（缩进差一级就 SKIP）；插段后**必须回头核原串**。
 6. **撞红先怀疑判据，别改实现迁就**。判据自身 bug 占比极高：断言名不一致、取段越界、

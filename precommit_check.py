@@ -33,6 +33,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+# v4.267.0：护栏随扰动脚本迁入 _perturb/。残留检查从这里导入。
+_PERTURB = os.path.join(HERE, "_perturb")
+if _PERTURB not in sys.path:
+    sys.path.insert(0, _PERTURB)
+
 # tests/ 不在包路径上（pep701_lint 住在那里）
 _TESTS = os.path.join(HERE, "tests")
 if _TESTS not in sys.path:

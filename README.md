@@ -4,7 +4,7 @@
 
 技术栈：**Python + PySide6 + OpenAI 兼容 API + Chroma 向量库**，配合 pyautogui / pywinauto 做系统与软件自动化。免费可跑、代码可改可练手。
 
-> 当前版本 **v4.266.0**。本项目由个人桌面助手迭代而来，经脱敏后以源码可获得（Source Available，禁止商用）方式公开，供学习参考与二次开发。许可见 [LICENSE](LICENSE)。
+> 当前版本 **v4.267.0**。本项目由个人桌面助手迭代而来，经脱敏后以源码可获得（Source Available，禁止商用）方式公开，供学习参考与二次开发。许可见 [LICENSE](LICENSE)。
 >
 > 版本变更与发布说明见 [CHANGELOG.md](CHANGELOG.md)。
 
