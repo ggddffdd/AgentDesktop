@@ -92,7 +92,13 @@ def main():
           not wp.navigation_allowed(url_in, workspace_roots=[]))
 
     chat = _read("chat_web.py")
-    check("聊天页调用 navigation_allowed", "navigation_allowed" in chat)
+    check("聊天页调用白名单判定", "decide_chat_whitelist" in chat)
+    pol = _read("webengine_policy.py")
+    decide_body = ""
+    if "def decide_chat_whitelist" in pol:
+        decide_body = pol.split("def decide_chat_whitelist", 1)[-1].split("\ndef ", 1)[0]
+    check("白名单判定仍交给 navigation_allowed",
+          "def decide_chat_whitelist" in pol and "navigation_allowed(" in decide_body)
     check("白名单异常按拒绝", "按拒绝处理" in chat)
 
     print("\n=== 3) critical 扰动抽样入口 ===")

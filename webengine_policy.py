@@ -3,14 +3,19 @@
 
 纯标准库，方便单测。Qt 页面只负责把 URL 交进来。
 
-允许留在 WebEngine 里的导航：
-  · 空串 / about:blank / about:srcdoc（setHtml 的初始页）
+允许留在 WebEngine 里的导航（navigation_allowed）：
+  · 空串 / about:blank / about:srcdoc
   · app://（聊天业务链接，页面层会拦截，不真正跳转）
   · localres://（导演台本地图/视频）
   · file:// 且落在工作区根之内
   · http(s) 且主机名在显式允许域里
 
-其余（任意外站、javascript:、data:、工作区外的 file）一律拒绝。
+其余（任意外站、javascript:、data:、blob:、工作区外的 file）一律拒绝。
+
+v4.272.0：Qt 的 setHtml 不是 about:blank，而是主框架 data:text/html
+导航（NavigationType 不是 LinkClicked）。这个特例不进 navigation_allowed
+—— 放进去会把用户点击的 data: 链接一起放行。聊天页用
+decide_chat_whitelist：先认 setHtml，其余仍走白名单。
 关 Chromium 沙箱只在冻结版：开发版不写 QTWEBENGINE_DISABLE_SANDBOX。
 """
 import os
@@ -57,6 +62,31 @@ def navigation_allowed(url, workspace_roots=(), allow_hosts=()):
                 allow.add(name)
         return bool(host) and host in allow
     return False
+
+
+def allow_sethtml_navigation(url, is_main_frame, is_link_click):
+    """Qt setHtml 的内部加载：主框架、非点击的 data:text/html。
+
+    其余 data:（点击链接、子框架、svg/javascript）返回 False，
+    交给 navigation_allowed 拒绝。is_link_click 必须是布尔：
+    NavigationTypeLinkClicked 的值是 0，不能拿导航类型本身当布尔。
+    """
+    if not is_main_frame or is_link_click:
+        return False
+    low = (url or "").strip().lower()
+    return low.startswith("data:text/html")
+
+
+def decide_chat_whitelist(url, is_main_frame, is_link_click,
+                          workspace_roots=(), allow_hosts=()):
+    """聊天页在 app:// / 外链点击之后的主框架判定。
+
+    setHtml 先放行；其余（含点击的 data:）仍走 navigation_allowed。
+    """
+    if allow_sethtml_navigation(url, is_main_frame, is_link_click):
+        return True
+    return navigation_allowed(
+        url, workspace_roots=workspace_roots, allow_hosts=allow_hosts)
 
 
 def workspace_roots():

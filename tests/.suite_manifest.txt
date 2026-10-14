@@ -168,6 +168,7 @@ test_video_gen_breaker_260.py
 test_vision_channel.py
 test_vision_qc.py
 test_webengine_policy_265.py
+test_webengine_sethtml_272.py
 test_welcome_ia_199.py
 test_workflow_fail_visibility_233.py
 test_workspace_routing.py
