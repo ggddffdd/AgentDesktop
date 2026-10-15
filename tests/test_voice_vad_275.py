@@ -274,10 +274,14 @@ def test_fallback_and_wiring():
     check("坏模型同样是这一句", hint2 == FALLBACK_HINT, repr(hint2))
 
     ui = open(os.path.join(ROOT, "ui.py"), encoding="utf-8").read()
-    check("界面在语音对话里按句朗读",
-          "conv.speak(text, getattr(self, \"_inflight_voice_epoch\", None))" in ui)
-    check("端点失败提示送到状态栏",
-          "sig_hint.connect(self._on_vad_hint)" in ui)
+    # 减法（v4.282.0）：自动 VAD 连续对话已从界面移除，按钮恢复纯 push-to-talk；
+    # 回复走直接 TTS（_TTSWorker），不再经轮次机 conv.speak（旧模式把回读声当插嘴致整段丢弃）。
+    check("界面回复合成为语音走直接 TTS（不再经轮次机）",
+          "self._tts_thread = _TTSWorker(text, tts)" in ui
+          and "conv.speak(text" not in ui)
+    check("自动 VAD 状态/提示接线已从界面移除",
+          "sig_hint.connect(self._on_vad_hint)" not in ui
+          and "_on_vad_hint" not in ui)
     session = open(os.path.join(ROOT, "voice_session.py"), encoding="utf-8").read()
     check("会话加载失败会把提示送出去",
           "try_load_vad" in session and "sig_hint.emit" in session)
