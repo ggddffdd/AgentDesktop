@@ -120,26 +120,50 @@ _build_timer.start()
 
 
 def _run_robocopy(src, dst, extra=None):
-    """跑 robocopy（Windows 原生 exe，不经过 Python 的 safe-delete shim）。
+    """复制 src→dst（v4.281.1 起用 Python shutil，不再依赖 robocopy 黑盒）。
 
-    注意：绝不要加 /MIR —— 那会删除目标侧的额外文件（dist 里全是用户数据）。
-    返回码 0~7 都算成功（robocopy 用这几位表示「有复制/有跳过」，不是错误）。
+    根因：Windows 防病毒实时扫描会短暂锁住 _internal 里的 .pyd/.dll，robocopy 默认
+    「百万次重试 + 30 秒间隔」会无限卡死构建（2026-10-15 复盘三次复现）；即便加 /R:1 /W:1
+    也不够——复制过程被防病毒锁住时 robocopy 卡在「等待」而非「重试」，/R: 管不到。
+    shutil 遇锁抛异常，跳过该文件（dist 旧版兜底），构建绝不挂死。
+    注意：绝不删除目标额外文件（对应原 robocopy /MIR 禁忌）。
+    extra 兼容：含非 / 开头的文件名（如 ['小臭玩AI.exe']）则只复制该文件；
+    含 /E 或其他 / 开关则递归目录复制。
     """
-    cmd = ['robocopy', src, dst] + list(extra or [])
+    import shutil
+    extra = list(extra or [])
+    file_only = [e for e in extra if e and not e.startswith('/')]
+    if file_only:
+        ok = True
+        for fn in file_only:
+            s = os.path.join(src, fn)
+            d = os.path.join(dst, fn)
+            try:
+                shutil.copy2(s, d)
+                print('[build_safe] copied %s' % fn)
+            except (PermissionError, OSError) as e:
+                print('[build_safe] 跳过(锁) %s: %s' % (fn, e))
+                ok = False
+        return ok
+    skipped = 0
     try:
-        p = subprocess.run(cmd, capture_output=True)
-    except FileNotFoundError:
-        print('[build_safe] 未找到 robocopy，跳过同步')
+        for root, dirs, files in os.walk(src):
+            rel = os.path.relpath(root, src)
+            dstd = dst if rel == '.' else os.path.join(dst, rel)
+            os.makedirs(dstd, exist_ok=True)
+            for f in files:
+                s = os.path.join(root, f)
+                d = os.path.join(dstd, f)
+                try:
+                    shutil.copy2(s, d)
+                except (PermissionError, OSError):
+                    skipped += 1
+        if skipped:
+            print('[build_safe] 跳过 %d 个被锁文件（dist 旧版兜底）' % skipped)
+        return True
+    except Exception as e:
+        print('[build_safe] 复制异常: %s' % e)
         return False
-    # robocopy 在中文 Windows 上是 GBK 输出，先试 GBK 再退 utf-8（否则日志全是乱码）
-    raw = p.stdout or b''
-    try:
-        txt = raw.decode('gbk')
-    except UnicodeDecodeError:
-        txt = raw.decode('utf-8', 'replace')
-    tail = txt.strip().splitlines()[-3:]
-    print('[build_safe] robocopy rc=%s %s' % (p.returncode, ' | '.join(tail)))
-    return p.returncode < 8
 
 
 # ---------- v4.152：exe 备份轮转 ----------
