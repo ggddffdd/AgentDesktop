@@ -84,7 +84,7 @@ def new_task(name, action, message, schedule_type, at_time="09:00",
     }
 
 
-def filter_tools_safe(tools):
+def filter_tools_safe(tools, task=None):
     """v4.215.0：自动化任务的默认受限工具集。
 
     外部审核 P1「自动任务继承当前会话工具权限」的对策：定时任务多在无人值守时
@@ -98,6 +98,9 @@ def filter_tools_safe(tools):
     - **tier=manual 的本地写**（write_file / db_insert / db_update / schedule）
       也滤除 —— 交互模式下它们要人工确认（permissions.decide 第 7 步），
       无人值守触发只会卡在确认弹窗上。
+    - 传入 task 且正文声明了落盘 / HTTP 时，只把 write_file、web_fetch 从原清单
+      补回（见 _restore_declared_task_tools）。db_insert / schedule / 命令执行不补。
+      范围内的 write_file 由权限引擎在定时任务线程上免确认，避免补回后又卡住。
     - 返回的是入参列表的**新列表**（浅拷贝过滤），不改入参。
     """
     try:
@@ -121,7 +124,56 @@ def filter_tools_safe(tools):
         if _tier_of(name) == "manual":
             continue
         kept.append(t)
-    return kept
+    return _restore_declared_task_tools(kept, tools, task)
+
+
+# 任务正文点名落盘 / HTTP 时才补回。不要放宽到 db_insert、schedule、跑命令。
+_DECLARED_WRITE_KW = (
+    "写文件", "写入", "保存到", "落盘", "存成", "生成文件", "导出", "建个文件",
+    "write_file",
+)
+_DECLARED_HTTP_KW = (
+    "https://", "http://", "requests", "web_fetch", "直连", "抓取",
+    "纯 http", "纯http",
+)
+
+
+def _restore_declared_task_tools(kept, tools, task):
+    """任务自己写了要落盘或要 HTTP 时，把被滤掉的对应工具从原清单补回。"""
+    if not isinstance(task, dict):
+        return kept
+    text = str(task.get("message") or "")
+    if not text:
+        return kept
+    low = text.lower()
+    want = []
+    if any(k.lower() in low for k in _DECLARED_WRITE_KW):
+        want.append("write_file")
+    if any(k.lower() in low for k in _DECLARED_HTTP_KW):
+        want.append("web_fetch")
+    if not want:
+        return kept
+    have = set()
+    for item in kept or []:
+        try:
+            have.add((item or {}).get("function", {}).get("name", ""))
+        except Exception:
+            continue
+    by_name = {}
+    for item in tools or []:
+        try:
+            name = (item or {}).get("function", {}).get("name", "")
+        except Exception:
+            continue
+        if name and name not in by_name:
+            by_name[name] = item
+    out = list(kept or [])
+    for name in want:
+        if name in have or name not in by_name:
+            continue
+        out.append(by_name[name])
+        have.add(name)
+    return out
 
 
 class AutomationStore:

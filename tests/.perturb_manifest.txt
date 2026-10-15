@@ -14,6 +14,8 @@ _perturb_agent_loop_226.py
 _perturb_agent_memory_mixin_236.py
 _perturb_anti_stall_234.py
 _perturb_app_close_218.py
+_perturb_audit_273.py
+_perturb_automation_clarify_279.py
 _perturb_automation_fire.py
 _perturb_automation_isolation.py
 _perturb_browser_control.py

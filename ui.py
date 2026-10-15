@@ -7927,7 +7927,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         # session_trusted 静默放行越权）；任务 full_tools=True 才放开全部。
         _auto_t = getattr(self, "_auto_task_active", None)
         if _auto_t is not None and not _auto_t.get("full_tools"):
-            all_tools = automation.filter_tools_safe(all_tools)
+            all_tools = automation.filter_tools_safe(all_tools, _auto_t)
         # 可观测性：Agent 整轮任务——一次登记覆盖整轮，不按工具调用刷屏
         try:
             self._task_agent = task_status.begin("agent", "Agent 任务")

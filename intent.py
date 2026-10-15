@@ -58,7 +58,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.278.0"
+VERSION = "v4.279.0"
 
 # ============================================================
 # 意图类别
@@ -234,9 +234,26 @@ def _route_hint_text():
     return "\n".join(lines)
 
 
+# 「无需浏览器」是在排除浏览器，不是在点名打开网页。
+# 这些短语已经写在 agent_text._PROG_FETCH_KW 里，用来否决强制浏览器；
+# 候选工具若仍按子串命中「浏览器」，多功能澄清会把「别用浏览器，并写入文件」
+# 当成两个方向来问。
+_BROWSER_NEGATION = (
+    "无需浏览器", "不用浏览器", "别上浏览器", "不要浏览器", "别开浏览器",
+)
+
+
+def _mask_browser_negation(text):
+    """从路由匹配文本里拿掉「不要浏览器」这类短语。"""
+    out = text or ""
+    for phrase in _BROWSER_NEGATION:
+        out = out.replace(phrase, "")
+    return out
+
+
 def _matched_routes(text):
     """按注册表关键词命中，返回 [(name, hit_words), ...]（按注册表顺序，去重）。"""
-    t = (text or "").lower()
+    t = _mask_browser_negation(text or "").lower()
     hits = []
     for r in ROUTE_REGISTRY:
         got = [k for k in r["keywords"] if k.lower() in t]
