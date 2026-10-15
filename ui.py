@@ -1451,8 +1451,9 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
 
     # v4.282.0：移除「连续对话(VAD)」模式。语音交互恢复为纯 push-to-talk——
     # 「按住说话」按钮按下录音、松开识别并发送；助手回复走直接 TTS 朗读。
-    # 端点对话轮次机（voice_session/voice_turn/voice_vad）已不再被界面引用，
-    # 保留模块未被删除以免破坏既有测试，后续可按「做减法」单独清理。
+    # v4.282.2：端点对话轮次机（voice_vad/voice_turn/voice_session）已整模块删除
+    # （连同其专属测试/扰动/spec 登记/release_check 清单，防护判据并入
+    # tests/test_voice_ptt_282.py D1~D5：死模块回流即红）。
 
     def _submit_asr(self, wav):
         try:

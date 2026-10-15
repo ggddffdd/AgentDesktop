@@ -120,7 +120,7 @@ _build_timer.start()
 
 
 def _run_robocopy(src, dst, extra=None):
-    """复制 src→dst（v4.282.1 起用 Python shutil，不再依赖 robocopy 黑盒）。
+    """复制 src→dst（v4.282.2 起用 Python shutil，不再依赖 robocopy 黑盒）。
 
     根因：Windows 防病毒实时扫描会短暂锁住 _internal 里的 .pyd/.dll，robocopy 默认
     「百万次重试 + 30 秒间隔」会无限卡死构建（2026-10-15 复盘三次复现）；即便加 /R:1 /W:1
@@ -148,7 +148,7 @@ def _run_robocopy(src, dst, extra=None):
     skipped = 0
     try:
         for root, dirs, files in os.walk(src):
-            # 构建卫生：不收集 Python 缓存与历史备份（v4.282.1 收敛 Agnes 端点时发现
+            # 构建卫生：不收集 Python 缓存与历史备份（v4.282.2 收敛 Agnes 端点时发现
             # __pycache__/*.pyc 与 *.bak 会被当普通文件 copytree 进 dist，含旧 endpoint/旧 key）
             if '__pycache__' in dirs:
                 dirs.remove('__pycache__')

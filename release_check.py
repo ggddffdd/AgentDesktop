@@ -69,7 +69,8 @@ CORE_MODULES = [
     "main.py", "ui.py", "config.py", "tools.py", "agent.py", "agent_node.py",
     "browser_bridge.py", "webhook_server.py", "task_status.py", "task_resume.py",
     "browser_control_tools.py", "memory_store.py", "context_manager.py", "onboarding.py",
-    "voice.py", "voice_vad.py", "voice_turn.py", "voice_session.py",
+    "voice.py",
+    # v4.282.2：voice_vad/voice_turn/voice_session 随连续对话(VAD)回退已删除。
 ]
 
 

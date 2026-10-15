@@ -43,7 +43,7 @@ AGNES_THINKING_MAX_TOKENS = 65536
 #   apihub.agnes-ai.cn 已于 2026-10-15 弃用（两套独立账号、key 不通用，统一迁国内站）
 # 拿 key 打 GET /models：200=配对、401=配错站。**域名要跟着 key 走**。
 # 本常量只是"配置都没给"时的兜底默认；运行期实际走 model_profiles["Agnes"].base_url
-# 或 cfg["agnes_base_url"]/cfg["base_url"]（见下方 _creds）。自 v4.282.1 起兜底即国内站。
+# 或 cfg["agnes_base_url"]/cfg["base_url"]（见下方 _creds）。自 v4.282.2 起兜底即国内站。
 AGNES_BASE_DEFAULT = "https://api.agnes-ai.cn/v1"
 AGNES_BASE_CN_DOC = "https://api.agnes-ai.cn/v1"
 AGNES_BASE_CANDIDATES = (AGNES_BASE_CN_DOC,)

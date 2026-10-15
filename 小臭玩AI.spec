@@ -79,9 +79,9 @@ hiddenimports = ['toast', 'empty_state', 'PySide6', 'PySide6.QtPrintSupport', 'P
                #                          漏登记的表现最阴：不报错，只是提取提示词变空，
                #                          自动记忆从此永远提炼不出任何条目。
                'agent_memory_mixin',
-               # v4.275.0 语音端点。voice_session 在 ui 里延迟导入，静态分析扫不到。
-               # onnxruntime 的运行库由 PyInstaller hook 收集。
-               'voice_vad', 'voice_turn', 'voice_session', 'onnxruntime',
+               # v4.282.2：v4.275.0 的连续对话(VAD)已在 v4.282.0 回退，
+               # voice_vad/voice_turn/voice_session 三模块随之删除（死代码清理），
+               # onnxruntime 仅被 voice_vad 使用，一并撤下。
                ]
 
 

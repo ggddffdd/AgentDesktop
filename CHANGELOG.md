@@ -7,6 +7,15 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.282.2 — 2026-10-15
+
+连续对话（VAD）死代码清理（做减法）+ config.example.json 末尾换行修复。无功能变化。
+
+- **死代码清理**：v4.282.0 回退纯 push-to-talk 后，端点对话轮次机 `voice_vad.py` / `voice_turn.py` / `voice_session.py` 已无任何生产引用，本版整模块删除；其专属测试（test_voice_vad_275.py）、扰动（_perturb_voice_vad_275.py）、小臭玩AI.spec hiddenimports（含仅被 voice_vad 使用的 onnxruntime）、release_check.py 模块清单同步退役。
+- **防护不丢**：原「spec 登记 voice_vad/voice_session」判据方向反转为「死模块回流即红」，5 条新判据（D1~D5：源码树/spec/release_check/ui import 不得含死模块 + voice.py 未误删）并入 tests/test_voice_ptt_282.py；「UI 不接连续对话」判据原本就在该文件 G1~G5，无丢失。
+- **卫生**：config.example.json 补回 v4.282.1 丢失的末尾换行（不影响 json 解析）。
+- **保留**：`voice.py`（TTS 合成/播放，_TTSWorker → play_audio 仍在使用）不动；build_safe 单文件复制遇锁跳过即判失败的行为不变（防挂死的设计取舍）。
+
 ## v4.282.1 — 2026-10-15
 
 Agnes 端点统一迁国内站（api.agnes-ai.cn/v1），弃用 apihub.agnes-ai.cn；运行配置换上带订阅的新 API key（cpk- 前缀）。
