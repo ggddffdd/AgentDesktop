@@ -29,7 +29,8 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from permissions import PermissionEngine, args_fingerprint, Decision   # noqa: E402
+from permissions import (PermissionEngine, args_fingerprint, Decision,  # noqa: E402
+                        unattended_active)
 from risk import (ALWAYS_CONFIRM, RiskClass, classify, tier_of,  # noqa: E402
                   task_risk_level, TASK_CONFIRM_LEVELS)
 
@@ -291,7 +292,8 @@ def part_g_negative():
               "args_fingerprint": args_fingerprint,
               # v4.196 批⑬：decide 源码里新增的任务风险闸依赖
               "task_risk_level": task_risk_level,
-              "TASK_CONFIRM_LEVELS": TASK_CONFIRM_LEVELS}
+              "TASK_CONFIRM_LEVELS": TASK_CONFIRM_LEVELS,
+              "unattended_active": unattended_active}
         exec(patched, ns)
         return ns["decide"]
 

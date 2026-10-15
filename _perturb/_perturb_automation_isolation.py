@@ -120,7 +120,7 @@ case("PI1 _fire 回退 store.active()（混流回归）",
 _mut = sub(UI_SRC,
            "        _auto_t = getattr(self, \"_auto_task_active\", None)\n"
            "        if _auto_t is not None and not _auto_t.get(\"full_tools\"):\n"
-           "            all_tools = automation.filter_tools_safe(all_tools)\n",
+           "            all_tools = automation.filter_tools_safe(all_tools, _auto_t)\n",
            "",
            "PI2 drop tool filter")
 case("PI2 删 _agent_run 受限工具分支",
@@ -143,7 +143,7 @@ case("PI3 full_tools 守卫反转（默认全放开）",
 # ---------------------------------------------------------------------------
 _mut = sub(AUTO_SRC,
            "        kept.append(t)\n"
-           "    return kept\n",
+           "    return _restore_declared_task_tools(kept, tools, task)\n",
            "        kept.append(t)\n"
            "    return list(tools or [])  # 扰动：identity\n",
            "PI4 identity filter")

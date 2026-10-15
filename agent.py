@@ -717,12 +717,48 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         except Exception as e:
             log.error("Agent 任务轨迹写回失败（已忽略）: %s", e)
 
+    def _is_unattended_automation(self):
+        """本轮是不是定时任务。交互聊天不算，哪怕正文里写了「自动化任务」。"""
+        try:
+            if getattr(self.mw, "_auto_task_active", None):
+                return True
+            sid = getattr(self, "_bound_sid", None) or ""
+            return str(sid).startswith(automation.SESSION_SID_PREFIX)
+        except Exception:
+            return False
+
+    def _waive_automation_clarify(self):
+        """定时任务没有人回答「选哪个功能」，多候选澄清会把整轮停掉。"""
+        it = getattr(self, "_intent", None)
+        if not (it is not None and getattr(it, "needs_clarification", False)
+                and self._is_unattended_automation()):
+            return
+        it.needs_clarification = False
+        it.clarify_reason = ""
+        it.clarify_options = ()
+
+    def _arm_unattended(self):
+        try:
+            import permissions
+            permissions.set_unattended(self._is_unattended_automation())
+        except Exception:
+            pass
+
+    def _disarm_unattended(self):
+        try:
+            import permissions
+            permissions.set_unattended(False)
+        except Exception:
+            pass
+
     def run(self):
         """本线程的模型调用共用同一份当轮背景；结束时清掉，避免串到下一次。"""
         try:
             prompt_cache.set_turn_context(getattr(self, "_cache_context", None))
+            self._arm_unattended()
             self._run_inner()
         finally:
+            self._disarm_unattended()
             try:
                 prompt_cache.clear_turn_context()
             except Exception:
@@ -786,6 +822,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         # 「这个会话刚刚还在调工具」这个事实才能认定要接着干。不传 messages
         # 时 classify 的续接分支整体跳过（行为与改动前逐字一致）。
         self._intent = intent.classify(self._last_user_text(), None, self.messages)
+        self._waive_automation_clarify()
         # v4.241.0 相B：意图层 DAG 分解，跑在 classify 之后、PLAN 之前。
         # decompose_intent 内部已处理「澄清优先」—— needs_clarification 命中即返回 None，
         # 交 v4.239.0 澄清闸门反问，不被 PLAN 分解。fail-open：任何异常 → None 不阻断。
@@ -980,6 +1017,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 # 这里只多走一层壳 + 顺带刷新 self._intent 供状态栏/日志用）。
                 # v4.255.0：同 765 行口径 —— 带上会话，续接判定才有事实可依。
                 self._intent = intent.classify(_cur_user, _prev_user, self.messages)
+                self._waive_automation_clarify()  # 定时任务不因多功能澄清停住
                 # v4.239.0 歧义澄清闸门：多义指令主动反问，不盲目交给模型猜。
                 # fail-open：字段缺失或异常 → getattr 回退 False，照常走原路由。
                 if getattr(self._intent, "needs_clarification", False):

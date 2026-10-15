@@ -23,6 +23,7 @@ import json
 import hashlib
 import inspect
 import logging
+import threading
 from dataclasses import dataclass
 
 import tool_audit
@@ -30,6 +31,19 @@ from risk import (RiskClass, classify, tier_of, ALWAYS_CONFIRM, command_danger_l
                   task_risk_level, TASK_CONFIRM_LEVELS)
 
 log = logging.getLogger(__name__)
+
+# 定时任务跑在自己的线程上。标记只活在该线程，不改 decide() 的参数表，
+# 也不碰到用户聊天线程。放行与否仍只由 decide() 决定。
+_unattended = threading.local()
+
+
+def set_unattended(on):
+    """标记本线程正在跑无人值守的定时任务。"""
+    _unattended.on = bool(on)
+
+
+def unattended_active():
+    return bool(getattr(_unattended, "on", False))
 
 
 def args_fingerprint(args):
@@ -313,6 +327,14 @@ class PermissionEngine:
                                 f"本任务属高风险（{_label or _lvl}），"
                                 f"'{name}' 需你逐次确认，auto 模式与会话信任均不豁免",
                                 "task_risk_critical")
+
+        # 2.59) v4.279：定时任务没有人点确认框。范围内的 write_file 按任务预授权执行。
+        #       越界已在步骤 2 拒绝；硬确认 / 高危命令 / critical 任务已在上面返回。
+        #       不放行 db_insert、schedule、EXEC。讨论 / 规划模式已在步骤 1 拒绝。
+        if unattended_active() and name == "write_file":
+            return Decision(True, False,
+                            "定时任务：范围内写文件按任务预授权执行",
+                            "auto:task_write")
 
         # 2.6) 来源闸（v4.169.0 P0-3）：本轮用户消息没有执行意图（纯提问/讨论/评价）时，
         #      模型自行发起的**非只读**操作一律要确认。
