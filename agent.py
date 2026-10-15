@@ -992,6 +992,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
             if elapsed > MAX_DURATION:
                 self._emit_status(f"⏰ Agent 超时（{int(elapsed)}s），已自动停止。建议切回 DeepSeek 获得更快响应。")
                 self.stream_commit.emit(f"\n\n⏰ 执行超时（{int(elapsed)}秒），已自动停止。Agnes 免费模型速度较慢，建议切回 DeepSeek。")
+                self._stop_toast(f"任务执行超时（{int(elapsed)}秒），已自动停止。可切回 DeepSeek 提速。", "warn")  # v4.281.0：跨视图可见
                 self._resumable_stop = True  # v4.125 M-01：超时可续
                 break
             if self._stop_requested:
@@ -1029,6 +1030,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                             "\n\n\u275c " + _why + "\n（请补充说明后我再执行）")
                     except Exception:
                         pass
+                    self._stop_toast("任务需要你确认方向，已暂停：" + _why, "warn")  # v4.281.0：澄清卡住也可见
                     break
                 _ft = self._intent.force_tool
             else:
@@ -1085,6 +1087,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 self._emit_status(f"⏰ Agent 超时（{int(time.time() - _t0)}s），已自动停止。")
                 self.stream_commit.emit(
                     f"\n\n⏰ 执行超时（{int(time.time() - _t0)}秒），已自动停止。")
+                self._stop_toast(f"任务执行超时（{int(time.time() - _t0)}秒），已自动停止。", "warn")  # v4.281.0：跨视图可见
                 self._resumable_stop = True  # v4.125 M-01：超时可续
                 break
             content = resp.get("content") or ""
@@ -1164,6 +1167,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                     self._emit_status(f"⏰ Agent 超时（{int(time.time() - _t0)}s），已自动停止。")
                     self.stream_commit.emit(
                         f"\n\n⏰ 执行超时（{int(time.time() - _t0)}秒），已自动停止。")
+                    self._stop_toast(f"任务执行超时（{int(time.time() - _t0)}秒），已自动停止。", "warn")  # v4.281.0：跨视图可见
                     break
                 # v4.66：连续工具失败护栏——模型反复调工具但每步都报错（文件找不到、
                 # PowerShell 语法错）却不换思路，会死循环刷屏。连续 3 步全失败则早停。
@@ -2189,6 +2193,23 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         "Traceback (most recent call last)",
     )
 
+    # v4.281.0：早停原因文案 → toast（跨视图可见，不依赖正停在任务会话）。
+    _STOP_TOAST = {
+        "tool_fail": ("工具连续失败，已自动停止。请检查路径/命令。", "error"),
+        "repeat_converged": ("检测到重复输出（模型原地打转），已强制收敛。", "warn"),
+        "question_stopped": ("追问过多，已自动停止。", "warn"),
+        "fake_tool_stopped": ("检测到虚构的工具调用，已停止。", "error"),
+        "api_error": ("模型调用失败，已停止。", "error"),
+    }
+
+    def _stop_toast(self, text, kind="warn"):
+        """v4.281.0：早停/结束原因弹 toast（线程安全：emit→GUI 渲染，任意线程可调用）。"""
+        try:
+            from toast import toast
+            toast(text, kind=kind)
+        except Exception:
+            pass
+
     def _note_exit(self, key, n=1):
         """v4.195 批⑪：记录一条退出原因旗标。任何情况都不抛错。"""
         try:
@@ -2199,6 +2220,13 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 f[key] = True
             else:
                 f[key] = int(f.get(key) or 0) + int(n)
+        except Exception:
+            pass
+        # v4.281.0：早停原因同时弹 toast（跨视图可见）。toast 线程安全。
+        try:
+            m = self._STOP_TOAST.get(key)
+            if m:
+                self._stop_toast(m[0], m[1])
         except Exception:
             pass
 

@@ -3042,11 +3042,13 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
                 self._refresh_automation_list()
         except Exception:
             pass
-        try:
+        self._notify_task_done(title, message)
+        try:  # v4.281.0：状态栏 + 跨视图 toast（任务做完/没做完都看得见）
             self.status_label.setText(message)
+            toast(message, kind="success" if ok else "error",
+                  detail=name + ("（已完成）" if ok else "（稍后自动重试）"))
         except Exception:
             pass
-        self._notify_task_done(title, message)
 
     # ============ 工具箱页 ============
     def _build_tools_page(self):
