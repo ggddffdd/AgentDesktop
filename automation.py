@@ -124,7 +124,8 @@ def filter_tools_safe(tools, task=None):
         if _tier_of(name) == "manual":
             continue
         kept.append(t)
-    return _restore_declared_task_tools(kept, tools, task)
+    return _strip_negated_browser_tools(
+        _restore_declared_task_tools(kept, tools, task), task)
 
 
 # 任务正文点名落盘 / HTTP 时才补回。不要放宽到 db_insert、schedule、跑命令。
@@ -173,6 +174,42 @@ def _restore_declared_task_tools(kept, tools, task):
             continue
         out.append(by_name[name])
         have.add(name)
+    return out
+
+
+# v4.280.0：任务正文显式否定浏览器时，物理摘掉 browser_* 工具。
+# 背景：bd1c4be 已让「无需浏览器」不再被路由成打开网页、且定时任务不因多功能
+# 澄清停住；但模型仍可能在无人值守时无视「无需浏览器」直接调 browser_open。
+# 这里在工具集层面兜底——正文点名「不用浏览器 / 纯 HTTP / requests 直连」就把
+# browser_open / browser_navigate / browser_click / browser_fill / browser_read
+# 全摘掉，自动化根本没有开浏览器的手段。
+# fail-open：task 非 dict / 无正文 / 未命中否定词 → 不动（保留浏览器能力，
+# 不误伤真正要开网页的定时任务）。只认显式否定，不靠猜。
+_NO_BROWSER_KW = (
+    "无需浏览器", "不用浏览器", "别开浏览器", "别上浏览器", "不要浏览器",
+    "不打开浏览器", "不开浏览器",
+    "纯 http", "纯http", "requests 直连", "用 requests", "直连 http",
+)
+
+
+def _strip_negated_browser_tools(kept, task):
+    """任务正文否定浏览器时，从无人值守工具集摘掉所有 browser_* 工具。"""
+    if not isinstance(task, dict):
+        return kept
+    text = str(task.get("message") or "").lower()
+    if not text:
+        return kept
+    if not any(k.lower() in text for k in _NO_BROWSER_KW):
+        return kept
+    out = []
+    for item in kept or []:
+        try:
+            name = (item or {}).get("function", {}).get("name", "")
+        except Exception:
+            name = ""
+        if name.startswith("browser_"):
+            continue
+        out.append(item)
     return out
 
 

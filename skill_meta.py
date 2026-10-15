@@ -52,7 +52,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.279.0"
+VERSION = "v4.280.0"
 
 # ============================================================
 # 字段分级

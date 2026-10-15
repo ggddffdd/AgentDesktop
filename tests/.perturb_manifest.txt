@@ -18,6 +18,7 @@ _perturb_audit_273.py
 _perturb_automation_clarify_279.py
 _perturb_automation_fire.py
 _perturb_automation_isolation.py
+_perturb_automation_no_browser_280.py
 _perturb_browser_control.py
 _perturb_build_date_tz_263.py
 _perturb_clarify_gate_238.py
