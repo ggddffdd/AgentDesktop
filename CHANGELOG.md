@@ -7,6 +7,14 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.282.0 — 2026-10-15
+
+语音交互回退为「纯 push-to-talk + 直接 TTS 朗读」，恢复用户熟悉的「按住说话」按钮实用性，并修好助手语音回复。
+
+- **背景**：v4.275.0 引入的「连续对话（端点检测 VAD）」把「按住说话」按钮在端点模型加载后劫持成连续监听模式，两个体感问题：① 连续监听对噪声敏感、经常误触发/不触发，「整的不能用」；② 助手回读声被当成插嘴，`utterance_epoch` 自增使回复 token 失配，被轮次机 `enqueue` 整段丢弃，「小臭没语音回复」。
+- **改动（只优化/减法，不新增功能）**：`ui.py` 的 `_start_talk`/`_stop_talk` 恢复为「按下录音、松开识别并发送」的纯 push-to-talk，不再被 VAD 劫持；`_speak` 把助手回复合成为语音一律走直接 TTS（`_TTSWorker` → `play_audio`），不再经过端点对话轮次机；移除自动对话接线（`_voice_conv`/`_on_voice_utterance`/`_on_voice_status`/`_on_vad_hint`）。端点模型代码（`voice_session`/`voice_turn`/`voice_vad`）保留未被删，仅不再被界面引用，后续可按「做减法」单独清理。
+- **可验证**：判据 `tests/test_voice_ptt_282.py`（8 项：无连续对话导入/调用、按钮未被劫持、`_speak` 不走轮次机、接线已移除 + push-to-talk 录音/`_submit_asr`/直接 TTS 正向在位）+ 扰动 `_perturb/_perturb_voice_ptt_282.py`（把按钮重新劫持成连续对话 / 把回复重新路由到轮次机 → 判据翻红，零哑弹）。
+
 ## v4.281.1 — 2026-10-15
 构建脚本 build_safe.py 的增量同步 `_run_robocopy` 由 robocopy 改为 Python `shutil` 复制：Windows 防病毒实时扫描锁住 `_internal` 的 `.pyd`/`.dll` 时 robocopy 会无限卡死（即便 `/R:1 /W:1` 也管不到「复制中等待」），shutil 遇锁抛异常即跳过该文件（dist 旧版兜底），构建绝不挂死（2026-10-15 复盘三次复现）。不影响 app 运行时行为。
 

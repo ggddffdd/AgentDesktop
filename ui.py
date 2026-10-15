@@ -1449,46 +1449,10 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         except Exception as e:
             self.status_label.setText(f"诊断包导出失败：{e}")
 
-    def _voice_conv(self):
-        """语音对话会话。端点模型只在第一次按麦克风时加载。"""
-        conv = getattr(self, "_conv", None)
-        if conv is None:
-            from voice_session import VoiceConversation
-            conv = VoiceConversation(
-                self.recorder, self.audio_player, self.cfg, self,
-                hold_thread=self._spawn_thread,
-                on_tts_error=self._on_tts_error,
-                speech_enabled=lambda: bool(self.speech_enabled))
-            conv.sig_utterance.connect(self._on_voice_utterance)
-            conv.sig_status.connect(self._on_voice_status)
-            conv.sig_hint.connect(self._on_vad_hint)
-            self._conv = conv
-            conv.prepare()
-        return conv
-
-    def _on_voice_status(self, text):
-        if text:
-            self.status_label.setText(text)
-
-    def _on_vad_hint(self, text):
-        self._vad_fallback_hint = text or ""
-        if text:
-            self.status_label.setText(text)
-        conv = getattr(self, "_conv", None)
-        if conv is not None and not conv.vad_ready:
-            self.talk_btn.setText("按住说话")
-
-    def _on_voice_utterance(self, wav):
-        if self._busy or getattr(self, "_voice_asr_inflight", False):
-            self.status_label.setText("上一条还在处理，这句先不发送")
-            return
-        if not wav:
-            return
-        conv = getattr(self, "_conv", None)
-        self._voice_asr_inflight = True
-        self._inflight_voice_epoch = conv.issue_token() if conv is not None else None
-        self.status_label.setText("语音识别中…")
-        self._submit_asr(wav)
+    # v4.282.0：移除「连续对话(VAD)」模式。语音交互恢复为纯 push-to-talk——
+    # 「按住说话」按钮按下录音、松开识别并发送；助手回复走直接 TTS 朗读。
+    # 端点对话轮次机（voice_session/voice_turn/voice_vad）已不再被界面引用，
+    # 保留模块未被删除以免破坏既有测试，后续可按「做减法」单独清理。
 
     def _submit_asr(self, wav):
         try:
@@ -1507,20 +1471,12 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         self._asr_thread.start()
 
     def _start_talk(self):
-        conv = self._voice_conv()
-        if conv.vad_ready:
-            if conv.active:
-                conv.shutdown()
-                self.talk_btn.setText("语音对话")
-                self.status_label.setText("语音对话已结束")
-                return
-            mic = self._current_mic()
-            if not mic or mic == "未检测到麦克风":
-                self.status_label.setText("没有可用麦克风，先选麦克风或直接打字")
-                return
-            if conv.start(mic):
-                self.talk_btn.setText("结束对话")
-                return
+        """按住说话：按下即开始录音，松开自动识别并发送（纯 push-to-talk，稳妥实用）。
+
+        v4.282.0 回退：不再让端点检测(VAD)加载后把按钮劫持成「连续对话」模式——
+        连续监听对噪声敏感、经常误触发，且会把助手自己的回读声当成插嘴，
+        导致语音回复被静默丢弃。恢复用户熟悉的「按着讲话、松开发送」。
+        """
         if self._busy:
             self.status_label.setText("上一条还在处理，稍等…")
             return
@@ -1539,28 +1495,20 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             self.status_label.setText(f"麦克风启动失败：{e}")
             return
         self.talk_btn.setText("🔴 聆听中…（松开结束）")
-        hint = getattr(self, "_vad_fallback_hint", "")
-        if hint:
-            self.status_label.setText(hint)
-        else:
-            self.status_label.setText(f"🔴 聆听中… 麦克风：{mic}")
+        self.status_label.setText(f"🔴 聆听中… 麦克风：{mic}")
 
     def _stop_talk(self):
-        conv = getattr(self, "_conv", None)
-        if conv is not None and conv.vad_ready and not self._recording:
-            return
-        if conv is not None and conv.active:
-            return
+        """松开按钮：停止录音并送去识别（纯 push-to-talk）。"""
         if self._busy:
             # 上一条还在处理：丢弃本次录音，避免叠加
             self.rec_wav = None
             self._recording = False
-            self.talk_btn.setText("🎤 按住说话")
+            self.talk_btn.setText("按住说话")
             return
         if not self._recording:
             return
         self._recording = False
-        self.talk_btn.setText("🎤 按住说话")
+        self.talk_btn.setText("按住说话")
         if not self.rec_wav:
             # 按下即松开 / 没真正开始录音：直接恢复，不报错
             return
@@ -1585,17 +1533,12 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         except Exception:
             pass
         if not text:
-            self._voice_asr_inflight = False
             self.status_label.setText("没听清，再说一次 / 或直接打字")
             return
-        try:
-            self.input_box.setPlainText(text)
-            self.send()
-        finally:
-            self._voice_asr_inflight = False
+        self.input_box.setPlainText(text)
+        self.send()
 
     def _on_asr_error(self, msg):
-        self._voice_asr_inflight = False
         # 可观测性：语音识别失败收口
         try:
             _tid = getattr(self, "_task_asr", "")
@@ -1607,14 +1550,15 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         self.status_label.setText(f"语音识别失败：{msg}")
 
     def _speak(self, text):
-        """若语音开关开，把助手回复合成为语音并播放（后台线程合成，主线程播放）。"""
+        """若语音开关开，把助手回复合成为语音并播放（后台线程合成，主线程播放）。
+
+        v4.282.0：回复一律走直接 TTS（`_TTSWorker` → `play_audio`），不再经过
+        端点对话轮次机。旧「连续对话」模式会把助手自己的回读声误判为插嘴，
+        `utterance_epoch` 自增导致回复 token 失配被整段丢弃（静默无语音）。
+        """
         if not self.speech_enabled:
             return
         if not text or not text.strip():
-            return
-        conv = getattr(self, "_conv", None)
-        if conv is not None and conv.active:
-            conv.speak(text, getattr(self, "_inflight_voice_epoch", None))
             return
         if self._tts_thread and self._tts_thread.isRunning():
             self._tts_thread.terminate()
