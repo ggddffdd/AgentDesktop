@@ -148,10 +148,16 @@ def _run_robocopy(src, dst, extra=None):
     skipped = 0
     try:
         for root, dirs, files in os.walk(src):
+            # 构建卫生：不收集 Python 缓存与历史备份（v4.282.1 收敛 Agnes 端点时发现
+            # __pycache__/*.pyc 与 *.bak 会被当普通文件 copytree 进 dist，含旧 endpoint/旧 key）
+            if '__pycache__' in dirs:
+                dirs.remove('__pycache__')
             rel = os.path.relpath(root, src)
             dstd = dst if rel == '.' else os.path.join(dst, rel)
             os.makedirs(dstd, exist_ok=True)
             for f in files:
+                if '.bak' in f:
+                    continue
                 s = os.path.join(root, f)
                 d = os.path.join(dstd, f)
                 try:
