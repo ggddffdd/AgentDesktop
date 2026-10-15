@@ -2893,7 +2893,7 @@ def _build_video_prompt(prompt, dialogue=None):
 def _agnes_creds(cfg):
     """从配置中取 Agnes 通道的 base_url 与 api_key（独立于当前聊天模型，始终走 Agnes 直连）。"""
     prof = (cfg.get("model_profiles") or {}).get("Agnes") or {}
-    base = prof.get("base_url") or cfg.get("base_url") or "https://apihub.agnes-ai.cn/v1"
+    base = prof.get("base_url") or cfg.get("base_url") or "https://api.agnes-ai.cn/v1"
     key = prof.get("api_key") or cfg.get("api_key") or ""
     return base.rstrip("/"), key
 

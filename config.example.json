@@ -23,7 +23,6 @@
   "agnes_thinking_enabled": false,
   "agnes_thinking_max_tokens": 65536,
   "agnes_base_candidates": [
-    "https://apihub.agnes-ai.cn/v1",
     "https://api.agnes-ai.cn/v1"
   ],
   "products_layout": "dated",
@@ -84,7 +83,7 @@
       "api_key": ""
     },
     "Agnes": {
-      "base_url": "https://apihub.agnes-ai.cn/v1",
+      "base_url": "https://api.agnes-ai.cn/v1",
       "model": "agnes-2.5-flash",
       "api_key": ""
     }

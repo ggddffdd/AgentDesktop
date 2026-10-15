@@ -39,14 +39,14 @@ AGNES_THINKING_MAX_TOKENS = 65536
 # ---------------- 域名 ----------------
 # ⚠️ 以本机实测为准，不以官方文档为准：
 # **两个域名 = 两套独立账号体系，key 不通用**（2026-09-28 实测纠正旧结论）——
-#   apihub.agnes-ai.cn ←→ apihub 的 key（旧 key 只在这站有效）
-#   api.agnes-ai.cn    ←→ 国内站的 key（会员账号在此，大哥当前用这个）
+#   api.agnes-ai.cn ←→ 国内站（会员账号 + 带订阅 key 在此，唯一在用站点）
+#   apihub.agnes-ai.cn 已于 2026-10-15 弃用（两套独立账号、key 不通用，统一迁国内站）
 # 拿 key 打 GET /models：200=配对、401=配错站。**域名要跟着 key 走**。
 # 本常量只是"配置都没给"时的兜底默认；运行期实际走 model_profiles["Agnes"].base_url
-# 或 cfg["agnes_base_url"]/cfg["base_url"]（见下方 _creds）。
-AGNES_BASE_DEFAULT = "https://apihub.agnes-ai.cn/v1"
+# 或 cfg["agnes_base_url"]/cfg["base_url"]（见下方 _creds）。自 v4.282.1 起兜底即国内站。
+AGNES_BASE_DEFAULT = "https://api.agnes-ai.cn/v1"
 AGNES_BASE_CN_DOC = "https://api.agnes-ai.cn/v1"
-AGNES_BASE_CANDIDATES = (AGNES_BASE_DEFAULT, AGNES_BASE_CN_DOC)
+AGNES_BASE_CANDIDATES = (AGNES_BASE_CN_DOC,)
 
 # 价格口径：官方刊例价输入 ¥0.35/百万、输出 ¥1.00/百万，当前**限时 ¥0**。
 # 代码不得写死「永久免费」假设，界面统一显示「限免」。

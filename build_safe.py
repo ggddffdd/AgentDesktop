@@ -120,7 +120,7 @@ _build_timer.start()
 
 
 def _run_robocopy(src, dst, extra=None):
-    """复制 src→dst（v4.282.0 起用 Python shutil，不再依赖 robocopy 黑盒）。
+    """复制 src→dst（v4.282.1 起用 Python shutil，不再依赖 robocopy 黑盒）。
 
     根因：Windows 防病毒实时扫描会短暂锁住 _internal 里的 .pyd/.dll，robocopy 默认
     「百万次重试 + 30 秒间隔」会无限卡死构建（2026-10-15 复盘三次复现）；即便加 /R:1 /W:1

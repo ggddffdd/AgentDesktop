@@ -7,6 +7,15 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.282.1 — 2026-10-15
+
+Agnes 端点统一迁国内站（api.agnes-ai.cn/v1），弃用 apihub.agnes-ai.cn；运行配置换上带订阅的新 API key（cpk- 前缀）。
+
+- **端点**：所有 Agnes 通道默认 base_url 由 `apihub.agnes-ai.cn/v1` 改为 `api.agnes-ai.cn/v1`（agnes_text.py 兜底默认与候选、config.py 默认档位与 candidates、tools.py 直连兜底、config.example.json 模板、运行配置 model_profiles["Agnes"] 与顶层 base_url）；`agnes_base_candidates` 移除 apihub 仅留国内站。
+- **凭据**：运行配置 `~/Documents/小臭玩AI/config.json` 的 Agnes 档位与顶层 api_key 换成带订阅的新 key（cpk- 开头，已 GET /models 验证 200 配对国内站）。旧 sk-cet1 会员 key 不再使用。
+- **不改动**：模型名称、路由逻辑、其他档位（DeepSeek/硅基流动/智谱等）不变；apihub 仅作为注释/测试样例提及，运行期不再有任何 hub 端点。
+- **性质**：配置/端点切换（减法收敛），无功能新增；运行配置改动下次启动即生效，无需重打包即可用，源码默认同步去 hub 以使打包产物也彻底无 hub 残留。
+
 ## v4.282.0 — 2026-10-15
 
 语音交互回退为「纯 push-to-talk + 直接 TTS 朗读」，恢复用户熟悉的「按住说话」按钮实用性，并修好助手语音回复。
