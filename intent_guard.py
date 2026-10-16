@@ -34,7 +34,7 @@ BUG（对话误调用工具）的根因**不是模型发疯**，而是本地三�
 """
 import re
 
-VERSION = "v4.282.2"
+VERSION = "v4.283.0"
 
 # --------------------------------------------------------------------------
 # 一、否定 / 喊停（一票否决）
@@ -48,6 +48,22 @@ _NEG_PHRASES = (
     "取消", "停止", "别理", "别动", "别提", "停一下", "暂停",
     "不做", "不弄", "不搞", "不生成", "不剪", "不拍", "不画",
     "不做了", "先不做了", "再想想", "以后再说", "算了", "先不做",
+)
+
+# v4.283.0：**否认授意**（「我没有叫你写口播啊」类）。
+#
+# 事故根因（2026-10-16 大哥抓包）：老会话里模型自行写口播稿被用户取消，
+# 用户说「我没有叫你写口播啊」—— 旧词表没有「否认给过指令」这一族，
+# 该句 kind=action、needs_action=True，反而把模型再次推向 write_file
+# （同一路径第二次发起，用户再次取消）。否认授意 = 喊停，必须一票否决。
+#
+# 走 _neg_hits → is_negation 既有双闸保护：
+#   · 长度闸（>40 字不判否定）—— 长任务说明书里的「没让你用浏览器」不误伤；
+#   · 约束闸（否定词在任务祈使之后 = 加约束）——「抓取新闻，没让你用浏览器」不否决。
+# 取舍同 _NEG_PHRASES 铁律：误拦只退化为澄清，漏拦会让 app 继续自作主张。
+_NEG_DENIAL_OF_AUTH = (
+    "没有叫", "没叫你", "没让你", "谁叫你", "谁让你",
+    "我可没", "我没让", "并未让", "不曾让", "没叫过",
 )
 
 # 裸「别」字：前向复合词闭集豁免 + 后向紧贴一字判据
@@ -284,6 +300,12 @@ def _neg_hits(text):
         i = text.find(k)
         if i >= 0:
             out.append((i, k))
+    # v4.283.0：否认授意（「我没有叫你写口播啊」）—— 与 _NEG_PHRASES 同入口，
+    # 复用 is_negation 的长度/约束双闸。
+    for k in _NEG_DENIAL_OF_AUTH:
+        i = text.find(k)
+        if i >= 0:
+            out.append((i, k))
     # v4.254.0（A1）：否定词 + 工具动词 —— 「别搜了」「不查了」「别删那个文件」
     # 复合词豁免沿用裸别判据同一套：否定前缀是「别」时，前一字若属可左缀成词的闭集
     # （分别/特别/差别/辨别/识别…），那个「别」是复合词的一部分，不是喊停。
@@ -496,6 +518,50 @@ def is_pure_statement(text):
     return not any(h in t for h in _ACTION_HINT_KW)
 
 
+# --------------------------------------------------------------------------
+# 七、寒暄 / 存在性呼叫（v4.283.0 新增）
+# --------------------------------------------------------------------------
+# 事故根因（2026-10-16 大哥抓包，sid 20260904230501729）：
+#   老会话（150 条历史）里输入「H吗.」—— kind=unknown、guard 六族全不拦
+#   → agent 带全量工具 + 整段历史放模型自由发挥 → 模型翻出历史旧话题
+#   （口播稿），自行宣布「现在就写，落盘给你」并调 write_file（用户取消），
+#   下一轮又调一次。「在吗」类输入不可能是指令，却拿到了完整行动能力。
+#
+# 判据（全等/形态匹配，绝不做宽松子串——「在吗」二字出现在长句里不算）：
+#   ① 规范化去首尾标点后整体 ∈ 寒暄闭集（在吗/在么/在不在/睡了吗/hi/…）；
+#   ② 或 ≤4 字的「X吗」呼叫形态（H吗/在吗/好吗）。
+#   双保险：句中出现任何任务动词或祈使词 → 一律放行
+#   （「在吗，帮我写个稿」是真指令，不能被本族误拦）。
+_PRESENCE_EXACT = frozenset({
+    "在吗", "在么", "在嗎", "在不在", "在否", "在的呢", "在耶", "在呀",
+    "在吗?", "在吗？", "在么?", "在么？", "在不在?", "在不在？",
+    "睡了吗", "醒了吗", "起来了", "忙着", "忙吗",
+})
+_PRESENCE_GREETING = frozenset({"hi", "hello", "hey", "嗨", "咿", "在?", "在？"})
+_PRESENCE_MA_RE = re.compile(r"^.{1,2}吗$")
+
+
+def is_presence_check(text):
+    """是否纯寒暄 / 存在性呼叫（v4.283.0）。True → 本轮禁止调工具，纯文字待命。"""
+    if not text:
+        return False
+    raw = _norm(text).strip()
+    if not raw:
+        return False
+    # 先按原文匹配（「在？」的问号是本体一部分，不能先剥）
+    if raw.lower() in _PRESENCE_GREETING or raw in _PRESENCE_EXACT:
+        return True
+    t = raw.strip("。.!！?？~，,、… ")
+    if not t:
+        return False
+    if t.lower() in _PRESENCE_GREETING or t in _PRESENCE_EXACT:
+        return True
+    if len(t) <= 4 and _PRESENCE_MA_RE.match(t):
+        # 双保险：带任务动词/祈使的长句不在此形态内，这里只放行短呼叫
+        return not (_TASK_VERB_RE.search(text) or has_imperative(text))
+    return False
+
+
 # 与 ui._ACTION_HINTS 同源的「执行意图词」最小集（用于纯陈述判定）。
 _ACTION_HINT_KW = (
     "搜索", "搜", "查", "写", "生成", "做", "执行", "分析", "整理", "导出",
@@ -541,6 +607,8 @@ def _reasons(text):
         out.append("ref")
     if is_discuss_tool_use(t):
         out.append("discuss_tool")
+    if is_presence_check(t):
+        out.append("presence")
     return out
 
 
@@ -548,7 +616,7 @@ def is_non_action_message(text):
     """这条消息是否**明显不是**动作指令（层 1 / 层 2 用）。
 
     True → UI 不自动进 Agent；Agent 不置 `_needs_action`。
-    范围＝否定 / 引用 / 评价 / 咨询 / 方法疑问。
+    范围＝否定 / 引用 / 评价 / 咨询 / 方法疑问 / 寒暄呼叫。
 
     刻意**不含**「状态追问」：Agent 模式下问「任务进度如何」是合法操作
     （要调 task_status），把它当非指令会把真功能关掉。
