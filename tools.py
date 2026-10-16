@@ -70,6 +70,18 @@ def _trunc_args(args, limit=500):
     return s
 
 
+def _log_brief(text, limit=120):
+    """v4.284.0（P1/A4）：把工具入参/结果压成**单行短摘要**供 agent_logs 使用。
+
+    背景：工具日志此前只有「执行工具: X」一行——9852 条日志不记参数、不记
+    结果、不记得败，「模型传错参数」「同一调用是否重复执行」永远无法定论
+    （app_kill 22:16/22:24 连发 2 条即因此查不出真相）。入口/出口两行都经
+    此处压缩：换行折空格（日志表按行读，多行结果会撑爆可读性）+ 截断。
+    """
+    s = str(text or "").replace("\r", " ").replace("\n", " ").strip()
+    return s[:limit]
+
+
 _chart_gen = None
 
 
@@ -963,7 +975,11 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
     _entry = TOOL_REGISTRY.get(name)
     if _entry:
         try:
-            get_logger().info(f"执行工具: {name}", module="tools", extra={"tool": name})
+            # v4.284.0（P1/A4）：入口记 args 摘要（脱敏后截断单行）——
+            # 旧口径只有工具名，「传错参数」类事故无据可查。
+            _args_log = sanitize_for_model(_log_brief(_trunc_args(args, 300)))
+            get_logger().info(f"执行工具: {name} | args={_args_log}", module="tools",
+                              extra={"tool": name, "args": _args_log})
             # ②-A.3：仅向声明了 stop_event/should_stop 的 handler 透传（run_command/run_python），
             # 其余 handler 签名不含这两个参数，避免 TypeError。
             _hk = {"progress": progress}
@@ -989,6 +1005,12 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
             except Exception as _ve:
                 # v4.245.0（审查报告 T-6）：验证器坏掉不留痕 = 无法区分「没验证」和「验证器崩了」
                 log.warning("后验验证异常 %s: %s", name, _ve)
+            # v4.284.0（P1/A4）：出口记成败 + 结果摘要——与入口 args 行配对，
+            # 「是否真执行成功/结果长什么样」从此可定论（排障材料补齐）。
+            get_logger().info(
+                f"工具完成: {name} | ok={bool(_tr.ok)} | {_log_brief(_tr.msg)}",
+                module="tools",
+                extra={"tool": name, "ok": bool(_tr.ok)})
             return _tr
         except Exception as e:
             log.warning("工具 %s 执行异常: %s", name, e)
@@ -1003,7 +1025,10 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
             return _reject(f"工具执行异常：{e}")
 
     try:
-        get_logger().info(f"执行工具: {name}", module="tools", extra={"tool": name})
+        # v4.284.0（P1/A4）：MCP 分支同口径补 args 摘要（见 registry 分支注释）
+        _args_log = sanitize_for_model(_log_brief(_trunc_args(args, 300)))
+        get_logger().info(f"执行工具: {name} | args={_args_log}", module="tools",
+                          extra={"tool": name, "args": _args_log})
         result_str = _try_mcp_tool(name, args)
     except Exception as e:
         try:
@@ -1020,6 +1045,11 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
     _trace_fetch(name, args, _tr.msg, ok=_tr.ok)
     # v4.256.0（P1-1）：同上，MCP/兜底分支出口同样走「路径 + 凭据」双脱敏
     _tr.msg = sanitize_for_model(_tr.msg)
+    # v4.284.0（P1/A4）：MCP 分支出口同口径记成败 + 结果摘要
+    get_logger().info(
+        f"工具完成: {name} | ok={bool(_tr.ok)} | {_log_brief(_tr.msg)}",
+        module="tools",
+        extra={"tool": name, "ok": bool(_tr.ok)})
     # v4.224：执行后验证（查副作用是否真生效；只降级不升级）
     try:
         apply_post_verification(_tr, name, args)

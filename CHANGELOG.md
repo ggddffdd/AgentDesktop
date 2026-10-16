@@ -7,6 +7,16 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.284.0 — 2026-10-16
+
+彻查「判断不准」+「工具调用准确性」双问题的第一批修复：治共同根因（工具调用历史落盘丢失）、补转述族护栏、给工具日志补参数/成败。无新功能。
+
+- **P0 共同根因：工具调用历史落盘丢失**（agent.py `_sync_to_session`）。旧指纹 `(role, content, tool_call_id)` 不含 tool_calls 维度——ui 侧 stream_commit 写入的 assistant 纯文本与 agent 侧「同 content + tool_calls」完整版撞指纹，带调用版本被判重跳过；续跑时孤儿 tool 结果被 `_repair_tool_pairs` 按「无主即扔」整批丢弃，模型看不到自己调过什么（失忆重干/重复调工具/编造进度）。实证：sessions.json 盘上 123 条 tool 结果 vs 仅 5 条 assistant.tool_calls。修复：指纹升级四维（含 tool_calls 规范化序列化）+ **同文缺调用时合并而非跳过**（把 tool_calls 补进 stream_commit 写的那条，不重复正文）+ 兜底路径补边界合并（反向扫描边界落在带调用消息之后时循环遍历不到它）。
+- **P1a 第三方转述族禁工具**（intent_guard.is_third_party_report）。「我朋友说你能写稿」类转述曾被判 kind=action、needs_action=True 自动进 Agent——与 v4.283.0「H吗.」同款事故条件（指令不是用户下的）。判据：闭集转述标记（X说/听说你/据说你…）+ has_imperative 一票反否决（「我朋友说你能写稿，帮我写一个」是真指令，放行）。接入 `_reasons` → 层 1/2 不自动进 Agent、层 3 强制 tool_choice="none"，模型只能纯文字回应。
+- **P1b 工具日志补参数/成败**（tools.py exec_tool 两分支同口径）。旧日志只有「执行工具: X」一行——9852 条不记参数、不记结果、不记得败，「模型传错参数」「是否重复执行」永远无法定论。现入口行补 args 摘要（截断 + 凭据脱敏，sk-/Bearer 类不进日志）、出口行补 ok + 单行结果摘要，与 ERROR 级失败日志形成完整三段。
+- **判据与扰动**（全部改坏必红）：test_sync_tool_calls_284.py 21/0（行为级：假 session 真调 `_sync_to_session`，接 `_repair_tool_pairs` 断言孤儿复活；主路径/兜底路径/幂等/纯文本四场景）+ 扰动 3/3；test_third_party_284.py 56/0（13 转述句拦、7 转述+真指令放行、路由层 kind/needs_action 联动、两层判据同口）+ 扰动 3/3；test_tool_log_284.py 17/0（捕获落库调用验 args/脱敏/ok/单行/截断/两分支同口）+ 扰动 3/3。
+- **踩坑记录**：① 判据场景设计必须区分 `_sync_to_session` 主路径（session 已有 _seq>0）与兜底路径（无 _seq）——user 消息带 `_seq=0` 是 baseline 哨兵会被 `>0` 条件排除，场景会静默落到兜底路径，主路径等于没测（P1 扰动因此 first round 哑弹）；② 扰动脚本 IO 必须纯 text mode（CRLF 文件 round-trip 原样）。
+
 ## v4.283.2 — 2026-10-16
 
 按小臭自检报告做第一批减法：删截图死代码、给易混工具补分工说明（不砍工具）。

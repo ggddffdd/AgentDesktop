@@ -12,10 +12,15 @@ ChatWindow / 判据族一点点搬出主类的成果又堆回来）。
 agent.py，主类只留调用点**。判据 `D2` 的阈值**不动**（那是红线，不是
 可以商量的参数）—— 抬阈值等于把红线挪到自己脚下，测不出真回弹。
 
-本Mixin 承接三件事（都在 agent.py 里只有一行调用点）：
+本Mixin 承接四件事（都在 agent.py 里只有一行调用点）：
   1. `_tstate_init(...)`     —— run() 开头建账本
   2. `_tstate_record(...)`   —— _handle_tool_result 里记一次工具调用
   3. `_tstate_step(...)`     —— 每步同步步号（含续跑轮不归零）
+  4. `_sync_to_session(...)` —— v4.284.0（P0）外移：agent 回写会话历史
+     （assistant.tool_calls + tool 结果）。当时 P0 修复给 agent.py 净增
+     ~105 行撞拆分红线（2418 > 2400），按 v4.216/v4.225 既定模式搬出。
+     它依赖宿主类的 `self.messages` / `self._seq_ctr` /
+     `self._is_sync_writable` / `self._bound_sid` / `self._isolated`。
 
 `task_state.should_nudge` / `nudge_instruction` 的**判定逻辑仍在
 task_state.py**（那里才是账本本体，且已被判据 126 项覆盖）。本文件
@@ -27,11 +32,12 @@ task_state.py**（那里才是账本本体，且已被判据 126 项覆盖）。
 """
 import json
 import logging
+import automation  # v4.284.0：_sync_to_session 回写主会话
 import tool_contract  # v4.258.0（P1-6）：成败判定归一到单一真源（整模块导入）
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.283.2"
+VERSION = "v4.284.0"
 
 
 class AgentTaskMixin(object):
@@ -41,6 +47,8 @@ class AgentTaskMixin(object):
       self._last_user_text()   —— 取最近一条 user 原话
       self._tstate             —— 账本（由本 mixin 建立）
       self._tstate_nudged      —— 本轮是否已注入过补做提示
+      self.messages / self._seq_ctr / self._is_sync_writable /
+      self._bound_sid / self._isolated   —— _sync_to_session 回写会话用
     """
 
     # --------------------------------------------------------
@@ -318,6 +326,169 @@ class AgentTaskMixin(object):
             if _v not in (None, False):
                 out[_f] = _v
         return out
+
+
+    @staticmethod
+    def _sync_sig(m):
+        """v4.284.0（P0）：`_sync_to_session` 的内容指纹 —— **四维**。
+
+    比 v4.102 fix8 的三元组 `(role, content, tool_call_id)` 多一维
+    `tool_calls`（id/name/arguments 规范化序列化）。为什么必须补：
+
+    ui 侧 `stream_commit` 先把 assistant **纯文本**写进 session.messages，
+    agent 侧随后才有「同 content + tool_calls」的完整版。三元组指纹把两者
+    判成同一条 → 带调用版本被跳过 → session 里 tool 结果全部成孤儿 →
+    续跑时 `_repair_tool_pairs` 按「无主即扔」整批丢弃 → 模型看不到自己
+    调过什么（失忆重干 / 重复调工具 / 编造进度，「判断不准」与「工具调用
+    不准」的共同温床）。实证：sessions.json 盘上 123 条 tool 结果 vs
+    仅 5 条 assistant.tool_calls。
+    """
+        tcs = m.get("tool_calls") or []
+        try:
+            _tc_sig = json.dumps(
+                [(tc.get("id"),
+                  (tc.get("function") or {}).get("name"),
+                  str((tc.get("function") or {}).get("arguments", "")))
+                 for tc in tcs],
+                ensure_ascii=False)
+        except Exception:
+            _tc_sig = ""
+        return (m.get("role"), str(m.get("content") or ""),
+                str(m.get("tool_call_id", "")), _tc_sig)
+
+
+    def _sync_to_session(self, mw):
+        """把 agent 本轮产生的 assistant(tool_calls) + tool 结果回写到 session.messages，
+        使『继续』时模型能看到真实断点（已搜了什么、结果是什么），而不是从零开始。
+
+        对齐策略（④ 防御性优化）：
+        - 主路径按 `_seq` 单调序号对齐：self.messages 中 `_seq` 大于 session 已记录最大
+          `_seq` 的消息即为本次新增，直接写回；baseline 历史被打 `_seq=0` 哨兵，永不回写。
+        - 兜底：若 session 尚无任何 `_seq`（首批运行），用内容指纹反向扫描定位历史边界
+          （反向扫描避免重复消息命中错误首次出现），再写回其后的增量。
+
+        v4.284.0（P0）：去重指纹升级为 `_sync_sig` 四维（含 tool_calls），且
+        **同文缺调用时合并而非跳过**——session 侧已有 stream_commit 写入的纯文本
+        assistant（base 三维相同、缺 tool_calls）时，把 agent 侧的 tool_calls
+        补进那条既有消息：既不重复正文，又让紧随其后的 tool 结果在下轮有主可配
+        （`_repair_tool_pairs` 不再把它们当孤儿丢弃）。
+        """
+        # v4.107：隔离会话（导演台独立对话条）一律不回写主会话历史。
+        if getattr(self, "_isolated", False):
+            return
+        try:
+            session = automation.bound_session(
+                mw.store, getattr(self, "_bound_sid", None))
+        except Exception:
+            return
+        if session is None:
+            return
+        existing = session.messages
+        if not existing:
+            return
+
+        # 给 self.messages 中尚未编号的消息补单调序号（运行内递增，种子已在 __init__ 取
+        # session 已有最大 _seq 之上，故跨运行不会撞号；baseline 已是 _seq=0 哨兵，跳过）。
+        for m in self.messages:
+            if isinstance(m, dict) and not isinstance(m.get("_seq"), int):
+                self._seq_ctr += 1
+                m["_seq"] = self._seq_ctr
+
+        # 主路径：session 已记录过 _seq → 直接按序号对齐写回新增部分
+        seqs = [m.get("_seq") for m in existing
+                if isinstance(m, dict) and isinstance(m.get("_seq"), int) and m["_seq"] > 0]
+        if seqs:
+            max_seq = max(seqs)
+            # v4.102 fix8：按内容指纹去重——stream_commit 已在 ui 侧把同一 assistant
+            # 文本追加进 session（无 _seq），此处若再原样追加会导致每条回复/工具结果
+            # 渲染两遍（用户实证：结论重复两次、工具卡片重复）。
+            # v4.284.0（P0）：指纹升级为 `_sync_sig` 四维（含 tool_calls），且
+            # **同文缺调用时合并而非跳过**（详见 _sync_sig 文档）——
+            # stream_commit 写的纯文本 assistant 与 agent 侧「同 content + tool_calls」
+            # 版本 base 三维相同，旧三元组判重跳过 → tool 结果全成孤儿被
+            # _repair_tool_pairs 丢弃 → 续跑失忆。现在把 tool_calls 补进既有消息。
+            _exist_sigs = set()
+            _exist_by_base = {}
+            for _em in existing:
+                if isinstance(_em, dict):
+                    _exist_sigs.add(self._sync_sig(_em))
+                    if not _em.get("tool_calls"):
+                        # 合并定位表：只收尚未带调用的（stream_commit 写的正是这种），
+                        # 后写覆盖先写 → 指向最近一条同文消息（正是本轮刚提交的那条）。
+                        _exist_by_base[self._sync_sig(_em)[:3]] = _em
+            for m in self.messages:
+                if not (isinstance(m, dict) and isinstance(m.get("_seq"), int)
+                        and m["_seq"] > max_seq):
+                    continue
+                if not self._is_sync_writable(m):  # v4.108 M-14：内部消息不回写
+                    continue
+                _sig = self._sync_sig(m)
+                if _sig in _exist_sigs:
+                    continue
+                _tgt = _exist_by_base.get(_sig[:3])
+                if _tgt is not None and m.get("tool_calls") \
+                        and not _tgt.get("tool_calls"):
+                    # 同文、session 侧缺 tool_calls → 合并进既有消息（不重复正文）
+                    _tgt["tool_calls"] = [dict(tc) for tc in m["tool_calls"]]
+                    _exist_sigs.add(_sig)
+                    continue
+                _exist_sigs.add(_sig)
+                existing.append(dict(m))
+            return
+
+        # 兜底：session 尚无 _seq（首批/旧会话），内容指纹反向扫描定位历史边界
+        last_exist = existing[-1]
+        start_idx = None
+        # 反向扫描：取最后一条消息在 self.messages 中的「最后一次出现」，规避重复内容命中错误位置
+        for i in range(len(self.messages) - 1, -1, -1):
+            m = self.messages[i]
+            if (m.get("role") == last_exist.get("role")
+                    and m.get("content") == last_exist.get("content")
+                    and m.get("role") != "system"):
+                start_idx = i + 1
+                break
+        # v4.102 fix8：兜底追加也按指纹去重——stream_commit 已写入的同 content
+        # assistant 不再重复追加（否则每条回复渲染两遍）
+        # v4.284.0（P0）：同主路径，四维指纹 + 同文缺调用合并（见 _sync_sig 文档）
+        _exist_sigs = set()
+        _exist_by_base = {}
+        for _em in existing:
+            if isinstance(_em, dict):
+                _exist_sigs.add(self._sync_sig(_em))
+                if not _em.get("tool_calls"):
+                    _exist_by_base[self._sync_sig(_em)[:3]] = _em
+
+        def _write_back(m):
+            _sig = self._sync_sig(m)
+            if _sig in _exist_sigs:
+                return
+            _tgt = _exist_by_base.get(_sig[:3])
+            if _tgt is not None and m.get("tool_calls") \
+                    and not _tgt.get("tool_calls"):
+                _tgt["tool_calls"] = [dict(tc) for tc in m["tool_calls"]]
+                _exist_sigs.add(_sig)
+                return
+            _exist_sigs.add(_sig)
+            existing.append(dict(m))
+
+        if start_idx is None:
+            # 无法对齐（例如结构变化），保守追加尾部增量
+            for m in self.messages[-1:]:
+                if self._is_sync_writable(m):  # v4.108 M-14
+                    _write_back(m)
+            return
+        # v4.284.0（P0）：边界消息本身若带 tool_calls 而 session 侧同文消息没有
+        # （stream_commit 只把文本写进了 session），先合并——否则反向扫描的边界
+        # 落在带调用消息**之后**，下面的循环根本遍历不到它，紧随的 tool 结果
+        # 回写后全成孤儿（主路径无此洞：那里按 _seq 全量遍历新消息）。
+        _bm = self.messages[start_idx - 1]
+        _le = existing[-1]
+        if (isinstance(_bm, dict) and _bm.get("tool_calls")
+                and isinstance(_le, dict) and not _le.get("tool_calls")):
+            _le["tool_calls"] = [dict(tc) for tc in _bm["tool_calls"]]
+        for m in self.messages[start_idx:]:
+            if self._is_sync_writable(m):  # v4.108 M-14（原白名单 role in assistant/tool）
+                _write_back(m)
 
 
 __all__ = ["VERSION", "AgentTaskMixin"]

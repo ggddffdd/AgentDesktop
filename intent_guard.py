@@ -34,7 +34,7 @@ BUG（对话误调用工具）的根因**不是模型发疯**，而是本地三�
 """
 import re
 
-VERSION = "v4.283.2"
+VERSION = "v4.284.0"
 
 # --------------------------------------------------------------------------
 # 一、否定 / 喊停（一票否决）
@@ -562,6 +562,50 @@ def is_presence_check(text):
     return False
 
 
+# --------------------------------------------------------------------------
+# 八、第三方转述（v4.284.0 新增）
+# --------------------------------------------------------------------------
+# 事故根因（2026-10-16 彻查实测 25 例）：「我朋友说你能写稿」被判 kind=action、
+# needs_action=True —— 用户在**转述别人怎么说**，不是在给自己下指令。放到
+# Agent 里带全量工具放模型自由发挥，就是 v4.283.0「H吗.」的同款事故条件
+# （模型自行宣布「现在就写」并调 write_file）。与否认授意族（v4.283.0）同属
+# 「指令不是用户下的」危险模式，只是那句是否认、这句是转述。
+#
+# 判据（两条件，缺一不可）：
+#   ① 闭集转述标记：「X说」人称/来源闭集 + 「听说你/据说你」听说族；
+#   ② has_imperative 一票反否决——「我朋友说你能写稿，帮我写一个」里
+#      「帮我」是用户自己的真指令，必须放行（与 praise/learning/howto/ref
+#      同一纪律：那几族也全指望这一个放行口）。
+# 取舍：误拦只退化为纯文字回复（模型仍可文字作答），漏拦会让 app 继续
+# 自作主张落盘——故标记一律闭集、放行口一律 has_imperative，不开
+# 「转述后用户祈使」的复杂切分（开集坑，本项目已栽过五次）。
+_THIRD_PARTY_SAY_RE = re.compile(
+    r"(我朋友|我同事|我同学|我哥们|我兄弟|我闺蜜|我老铁|我领导|我老板|"
+    r"群里|群友|网友|粉丝|学生|有人|别人|大家|老婆|老公|葱头|小臭|"
+    r"我妈|我爸|我姐|我妹|我哥|我弟)说")
+_THIRD_PARTY_HEARD = ("听说你", "据说你", "传闻你", "有人说你", "别人说你",
+                      "大家说你能", "他们都说")
+
+
+def is_third_party_report(text):
+    """是否「第三方转述」——用户在转述别人怎么说，不是在下指令（v4.284.0）。
+
+    True → 经 `_reasons` 同时作用于两层：
+      · 层 1/2（is_non_action_message）：UI 不自动进 Agent、Agent 不置
+        `_needs_action`（治「我朋友说你能写稿 → kind=action」误路由）；
+      · 层 3（blocks_tool_call）：强制 `tool_choice="none"`，模型只能纯文字
+        回应（「是的，我能写稿，你需要吗」），拿不到行动能力。
+    """
+    if not text:
+        return False
+    if has_imperative(text):
+        return False           # 主句里有用户自己的真指令 → 放行
+    t = _norm(text)
+    if _THIRD_PARTY_SAY_RE.search(t):
+        return True
+    return any(k in t for k in _THIRD_PARTY_HEARD)
+
+
 # 与 ui._ACTION_HINTS 同源的「执行意图词」最小集（用于纯陈述判定）。
 _ACTION_HINT_KW = (
     "搜索", "搜", "查", "写", "生成", "做", "执行", "分析", "整理", "导出",
@@ -587,6 +631,8 @@ def explain(text):
         "discuss_tool": is_discuss_tool_use(t),
         "statement": is_pure_statement(t),
         "imperative": has_imperative(t),
+        "presence": is_presence_check(t),
+        "third_party": is_third_party_report(t),
     }
 
 
@@ -609,6 +655,8 @@ def _reasons(text):
         out.append("discuss_tool")
     if is_presence_check(t):
         out.append("presence")
+    if is_third_party_report(t):
+        out.append("third_party")
     return out
 
 
@@ -616,7 +664,7 @@ def is_non_action_message(text):
     """这条消息是否**明显不是**动作指令（层 1 / 层 2 用）。
 
     True → UI 不自动进 Agent；Agent 不置 `_needs_action`。
-    范围＝否定 / 引用 / 评价 / 咨询 / 方法疑问 / 寒暄呼叫。
+    范围＝否定 / 引用 / 评价 / 咨询 / 方法疑问 / 寒暄呼叫 / 第三方转述。
 
     刻意**不含**「状态追问」：Agent 模式下问「任务进度如何」是合法操作
     （要调 task_status），把它当非指令会把真功能关掉。
