@@ -71,7 +71,7 @@ SOFTWARE_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "app_launch",
-            "description": "启动一个应用程序，支持可执行文件路径和 UWP 应用。",
+            "description": "启动一个应用程序。app 参数支持应用名（如「记事本」「计算器」）、exe 完整路径、或 UWP 应用的 AUMID，会自动匹配已安装应用。\n打开网页 URL 或任意文件用 process_start；只是把已运行的应用切到前台用 app_focus。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -114,7 +114,7 @@ SOFTWARE_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "app_focus",
-            "description": "将指定应用的窗口切换到前台并获得焦点。",
+            "description": "按应用名把该应用的窗口切换到前台并获得焦点。app 传应用名（如「Chrome」「记事本」）。\n已知窗口标题（来自 window_list）且要精确指定某个窗口时用 window_focus；应用未启动时先用 app_launch 启动。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -218,7 +218,7 @@ SOFTWARE_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "app_type",
-            "description": "在指定窗口的输入框中输入文本。先清空再输入（除非 append=True）。",
+            "description": "在指定应用的窗口内输入文本，默认先清空输入框再输入；append=True 时不清空、追加到末尾。\n向指定窗口输入优先用本工具；只操作当前已聚焦窗口时用 keyboard_type；仅入剪贴板用 clipboard_write。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -244,7 +244,7 @@ SOFTWARE_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "app_get_text",
-            "description": "读取指定窗口中某个控件或整个窗口的可见文本。",
+            "description": "读取指定窗口中某个控件（传 control 参数，如按钮/文本框名称）或整个窗口的可见文本。\n需要「拿到界面上的文字内容」时用本工具（比 app_screenshot 截图更省 token、文字可直接用）；要看画面布局才用截图。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -287,7 +287,7 @@ SOFTWARE_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "app_screenshot",
-            "description": "对指定应用窗口截图。",
+            "description": "对指定应用窗口截图（只含该窗口内容，不含桌面其他部分），返回截图保存路径。\n只要某个应用窗口的画面用本工具；要整个屏幕、任意矩形区域或多窗口同框用 screenshot（region/window_title 参数）。",
             "parameters": {
                 "type": "object",
                 "properties": {

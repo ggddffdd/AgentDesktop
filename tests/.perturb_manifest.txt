@@ -90,6 +90,7 @@ _perturb_structure_twin_260.py
 _perturb_structured_return_220.py
 _perturb_structured_return_223.py
 _perturb_sync_toolcalls_284.py
+_perturb_sys_read_first_285.py
 _perturb_system_control_a.py
 _perturb_system_control_b.py
 _perturb_system_prompt_routing_221.py
@@ -100,6 +101,8 @@ _perturb_task_state_failed.py
 _perturb_third_party_284.py
 _perturb_toast_204.py
 _perturb_tool_audit_c.py
+_perturb_tool_dedup_285.py
+_perturb_tool_desc_285.py
 _perturb_tool_log_284.py
 _perturb_tool_outcome_single_258.py
 _perturb_tool_schema_budget_277.py

@@ -467,7 +467,7 @@ DATABASE_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "db_update",
-            "description": "更新现有记录。",
+            "description": "按 record_id 更新 SQLite 中一条已存在记录的字段（局部改，不动其他字段）。\n用于「改内容/改状态/改优先级」；要新增一条用 db_insert，要整条去掉用 db_delete。\nrecord_id 必须来自 db_query 的查询结果，不得凭空猜。字段名约束同 db_insert（如 todos 用 description 不用 content）。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -482,7 +482,7 @@ DATABASE_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "db_delete",
-            "description": "删除记录。",
+            "description": "按 record_id 从 SQLite 永久删除一条记录（不可恢复，执行前会请求用户确认）。\n仅当用户明确说「删除/去掉/清掉某条」时使用；只是改字段值用 db_update，别删了重建。\nrecord_id 必须来自 db_query 的查询结果；批量删逐条调并告知进度。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -719,7 +719,7 @@ AUTOMATION_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "list_automation",
-            "description": "列出所有自动化任务及其状态（启用/停用、调度方式）。",
+            "description": "列出所有自动化任务及其状态（启用/停用、调度方式、下次运行时间），返回每个任务的 id。\n查看/管理已有任务用本工具；创建新任务用 create_automation；拿到 id 后可 update_automation 改调度或 delete_automation 删除。",
             "parameters": {
                 "type": "object",
                 "properties": {},

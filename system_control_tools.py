@@ -25,7 +25,7 @@ SYSTEM_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "screenshot",
-            "description": "截取屏幕、指定区域或指定窗口的图像。返回截图保存路径。",
+            "description": "截取屏幕、指定区域或指定窗口的图像，返回截图保存路径。\nregion=[x,y,w,h] 只截该矩形区域（屏幕像素坐标，左上为原点）；不传 region 且不传 window_title 时截全屏。只要某个应用窗口的内容用 app_screenshot（只截该窗口、不含桌面）；要整个屏幕或任意区域才用本工具。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -56,7 +56,7 @@ SYSTEM_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "mouse_move",
-            "description": "移动鼠标到指定坐标。",
+            "description": "把鼠标指针移动到指定坐标（x/y 为屏幕像素坐标，左上角为原点），只移动不点击。\n需要「移动并点击」一步完成时直接用 mouse_click 传坐标，不要先 move 再 click 浪费一轮。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -75,7 +75,7 @@ SYSTEM_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "mouse_click",
-            "description": "在当前位置或指定坐标点击鼠标。支持点击、双击、右键。",
+            "description": "在当前位置或指定坐标点击鼠标。x/y 可选（不传=当前位置）；button 支持 left/right/middle；clicks=2 表示双击。\n只需把指针移到某处而不点击时用 mouse_move。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -104,7 +104,7 @@ SYSTEM_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "mouse_scroll",
-            "description": "滚动鼠标滚轮。",
+            "description": "在当前位置滚动鼠标滚轮。dy 为滚动量（正数=向下/下一页，负数=向上）；dx 可传横向滚动量（触控板式左右滚）。\n翻页/滚动画面前先用 mouse_move 把指针移到目标区域上。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -126,7 +126,7 @@ SYSTEM_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "keyboard_type",
-            "description": "模拟键盘输入一段文本。支持中英文，自动处理输入法切换。",
+            "description": "模拟键盘在当前焦点窗口输入一段文本（支持中英文，自动处理输入法切换）。\n输入普通文字/句子用本工具；按组合键或单键（回车、ctrl+c 等）用 keyboard_press；只把文字放进剪贴板而不输入用 clipboard_write。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -144,7 +144,7 @@ SYSTEM_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "keyboard_press",
-            "description": "按下组合键或单个键。键名参考 pynput 规范。",
+            "description": "按下组合键或单个键。keys 为数组：单键如 [\"enter\"]、[\"f5\"]；组合键如 [\"ctrl\",\"c\"]、[\"alt\",\"f4\"]（键名参考 pynput 规范）。\n输入文字内容不用本工具，用 keyboard_type。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -162,7 +162,7 @@ SYSTEM_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "clipboard_read",
-            "description": "读取系统剪贴板内容。",
+            "description": "读取系统剪贴板的当前文本内容。\n用于「看看剪贴板里有什么/确认复制到了什么/把剪贴板内容用于后续步骤」；配合 clipboard_write 可验证写入是否成功。",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -170,7 +170,7 @@ SYSTEM_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "clipboard_write",
-            "description": "向系统剪贴板写入文本。",
+            "description": "把文本写入系统剪贴板（不影响任何窗口，之后用户或脚本可 ctrl+v 粘贴）。\n只需「让文字可被粘贴」时用本工具；要直接输入到某个窗口用 keyboard_type（当前焦点）或 app_type（指定窗口）。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -185,7 +185,7 @@ SYSTEM_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "window_list",
-            "description": "列出当前桌面上所有可见窗口的标题和位置。用于定位目标窗口。",
+            "description": "列出当前桌面上所有可见窗口的标题和位置（句柄/标题/矩形区域），用于定位目标窗口。\n操作窗口（切换焦点 window_focus、查详情 window_get_info）前先用本工具拿到准确标题；需要进程级信息（pid）时用 process_list。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -201,7 +201,7 @@ SYSTEM_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "window_focus",
-            "description": "将指定窗口切换到前台并获得焦点。",
+            "description": "按窗口标题把指定窗口切换到前台并获得焦点。title 传完整或部分标题（内容来自 window_list）。\n知道应用名但不确定窗口标题时用 app_focus（按应用名匹配更稳）；标题级精确匹配才用本工具。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -233,7 +233,7 @@ SYSTEM_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "process_list",
-            "description": "列出当前正在运行的进程。",
+            "description": "列出当前正在运行的进程（名称、pid、内存），用于定位进程 id。\n找到目标 pid 后可配 process_kill 结束进程；只关心界面窗口（而非进程）时用 window_list。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -270,7 +270,7 @@ SYSTEM_CONTROL_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "process_start",
-            "description": "启动一个程序或打开文件/URL。",
+            "description": "启动任意程序、打开文件或用默认应用打开 URL。path 传可执行文件/文件路径，url 传 http(s) 链接（二选一）。\n已知应用名或 UWP 应用用 app_launch（匹配更智能）；任意路径/URL/文件才用本工具。",
             "parameters": {
                 "type": "object",
                 "properties": {

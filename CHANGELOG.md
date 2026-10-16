@@ -7,6 +7,16 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.285.0 — 2026-10-17
+
+彻查双问题的第二批（P2 收尾）：系统提示补「先读后说」、20 个易混工具描述补齐分工边界、批内去重既有防线补判据固化。修正彻查结论一处不准：批内去重 v4.120 早已存在，缺的是测试覆盖。无新功能。
+
+- **P2a「先读后说」纪律**（config.py AGENT_SYS_APPEND）。v4.283.0 修了「没执行却说没执行」；本轮补另一半——「执行了却凭印象转述结果」：汇报工具返回内容必须照原文逐个字核对，概括可简化措辞但不得改变事实与数量，记不准回去重读该条工具结果，禁止脑补工具结果里没有的状态/进度/数字。
+- **P2b 工具描述补分工边界**（tool_defs.py + system_control_tools.py + software_control_tools.py 共 20 个）。彻查盘出 27 个一句话描述（db_delete 仅 5 字符「删除记录。」），按「模型最易选错的重叠族」优先补 20 个：db_update/db_delete（改 vs 删 vs 查）、mouse_move/click/scroll（移动 vs 点击 vs 滚动）、keyboard_press/type（组合键 vs 文本输入）、screenshot/app_screenshot（全屏/区域 vs 单窗口）、app_focus/window_focus（应用名 vs 窗口标题）、app_launch/process_start（已装应用 vs 任意路径/URL）、clipboard_read/write、app_get_text/app_type、list_automation。每个描述写清用途 + 参数语义 + 「什么时候用我、什么时候用邻居」。
+- **P2c 修正：批内去重早已存在**。实证 v4.120 `_run_serial`/`_run_concurrent` 两路均有 `_seen_sigs` 同名同参去重（命中补占位回执防下轮 API 400）、v4.222 resume 场景另有 `_resume_done_hashes` 跨轮去重（非幂等工具）。彻查结论「批内无去重」表述不准——真实缺口是 **tests/ 零覆盖**。本轮只补判据固化（test_tool_dedup_285.py 7/0 + 扰动 2/2），不加新去重逻辑（符合「不加新功能、只优化做减法」）。
+- **判据与扰动**（全部改坏必红）：test_sys_read_first_285.py 7/0 + 扰动 2/2；test_tool_desc_285.py 23/0（长度下限 60 + 20 个工具逐一机检「描述点名分工邻居」）+ 扰动 3/3；test_tool_dedup_285.py 7/0（行为级：双发同名同参 handler 只跑 1 次、三条回执齐全、不同参不误伤）+ 扰动 2/2。
+- **踩坑记录**：扰动锚串缩进必须从真实文件取——`_run_serial` 的 `_seen_sigs = set()` 在 try 块内是 5 空格缩进，照 12 空格写锚 first round 静默 SKIP（SKIP 算哑弹）。
+
 ## v4.284.0 — 2026-10-16
 
 彻查「判断不准」+「工具调用准确性」双问题的第一批修复：治共同根因（工具调用历史落盘丢失）、补转述族护栏、给工具日志补参数/成败。无新功能。
