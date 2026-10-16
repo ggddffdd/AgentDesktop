@@ -28,7 +28,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "web_fetch",
-            "description": "抓取指定网页的纯文本内容，用于阅读长文或具体页面。",
+            "description": "抓取指定网页的纯文本内容，用于阅读长文或具体页面。免浏览器快路径，优先使用；若目标是 JS 渲染/反爬域名导致抓取失败，按错误提示改用 browser_open + browser_read，不要反复重试 web_fetch。",
             "parameters": {
                 "type": "object",
                 "properties": {"url": {"type": "string", "description": "完整 URL"}},
@@ -132,7 +132,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "schedule",
-            "description": "设置定时提醒，到点后弹窗提醒用户。可传 delay_seconds（多少秒后）或 at_time（'HH:MM' 或 'YYYY-MM-DD HH:MM'）。",
+            "description": "设置定时提醒，到点后弹窗提醒用户。可传 delay_seconds（多少秒后）或 at_time（'HH:MM' 或 'YYYY-MM-DD HH:MM'）。轻量一次性/延时提醒，不落盘、程序重启即失效；需要每天/每周重复的日程用 create_automation(action='remind')。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -162,7 +162,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "rag_search",
-            "description": "在本地知识库中搜索相关内容。传入查询关键词，返回最相关的文档片段及其来源文件。",
+            "description": "在本地知识库中搜索相关内容。传入查询关键词，返回最相关的文档片段及其来源文件。分工：这里搜「本地文档知识库里的文档内容」；查用户偏好/约定/记忆用 search_memory。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -577,6 +577,7 @@ SEARCH_MEMORY_TOOL_DEFS = [
                 "全文搜索长期记忆库，查找已记录的用户偏好、约定、历史信息。"
                 "当需要确认用户之前说过什么、有什么偏好或禁忌时使用。"
                 "示例：搜索用户笔名、平台策略、技术栈偏好等。"
+                "分工：这里搜「用户偏好/约定/记忆」；查本地文档知识库（rag_data）里的文档内容用 rag_search。"
             ),
             "parameters": {
                 "type": "object",
@@ -696,7 +697,7 @@ AUTOMATION_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "create_automation",
-            "description": "创建自动化任务（定时提醒或定时执行任务）。用户说「每天X点做Y」「每周X提醒我」「X分钟后做Y」等需求时用这个，而不是注册系统计划任务。",
+            "description": "创建自动化任务（定时提醒或定时执行任务）。用户说「每天X点做Y」「每周X提醒我」「X分钟后做Y」等需求时用这个，而不是注册系统计划任务。任务落盘持久化（支持一次性/每天/每周等重复规则）；只是本次到点弹一下的轻量提醒用 schedule。",
             "parameters": {
                 "type": "object",
                 "properties": {

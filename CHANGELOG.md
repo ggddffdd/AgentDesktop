@@ -7,6 +7,15 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.283.2 — 2026-10-16
+
+按小臭自检报告做第一批减法：删截图死代码、给易混工具补分工说明（不砍工具）。
+
+- **删死代码**：`tools.py` 里 28 行的 `tool_screenshot` 转发 wrapper——v4.260.0（P1-7）为「不断潜在引用」保留函数名改成委托，但 registration 从未指向它、零调用；现删除。判据 `test_screenshot_delegate_260.py` 同步反转（原委托行为判据 → 回流守护：tools.py 不得再定义 tool_screenshot；注册表必须仍剥出 `system_control_tools.tool_screenshot` 生效版），双向扰动验证改坏必红。备份在 `_dev_history/screenshot_wrapper_pre284/`。
+- **连带判据修正**：`test_structure_twin_260.py` T2 守卫探针原以 tool_screenshot 的「1 实现 + 1 委托桩」验证扫描器能力，wrapper 删除后观测对象消失——改为内存构造样本（探针意图完整保留，不再依赖源码树存在真实桩）+ 新增 T2b「tool_screenshot 不得回流第二份」，扰动验证改坏必红。
+- **易混工具补分工说明**（tool_defs.py description，零行为变更）：小臭自检报告把三对工具判为「重复，二选一砍」——源码实证全部是分层/分流关系，砍任一个都丢真实场景。改为把分工写进工具描述让模型自己会选：schedule=轻量一次性不落盘 ↔ create_automation=落盘持久重复日程；web_fetch=免浏览器快路径优先 ↔ browser_read=JS-heavy/交互场景；search_memory=用户偏好/记忆 ↔ rag_search=本地文档知识库。新判据 `test_tool_desc_division_284.py` 14/0 守护分工字样 + 三对工具成对在册（防未来误砍）。
+- 自检报告数字复核：工具 84 个、技能 46 个均属实（用户目录实数）；报告中「14 工具栏」口径有误，以 46 为准。
+
 ## v4.283.1 — 2026-10-16
 
 修复「点了语音没声音」：edge-tts 被微软 403 拒绝，升级库 + 补依赖清单锁版本。

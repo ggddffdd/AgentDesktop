@@ -234,10 +234,29 @@ def main():
     ck(not hits, "T1 ★ 无同名 tool_* 双份独立实现（委托桩不算）",
        "命中 %d 个" % len(hits))
 
+    # v4.284.0：tool_screenshot 委托桩已删（死 wrapper 清理，见
+    # tests/test_screenshot_delegate_260.py 反转判据）。守卫探针目标改为
+    # 内存构造样本——不依赖源码树存在真实桩，探针意图（验证扫描器
+    # 真能识别「1 实现 + 1 委托桩」，保证 T1 不是空转）完整保留。
+    import ast as _ast
+    _probe_stub = _ast.parse(
+        "def tool_probe(cfg, args):\n"
+        "    from mod import impl\n"
+        "    return impl(cfg, args)\n").body[0]
+    _probe_impl = _ast.parse(
+        "def tool_probe(cfg, args):\n"
+        "    x = do(cfg)\n"
+        "    if x:\n"
+        "        return y\n"
+        "    return z\n").body[0]
+    _stub_flag, _impl_flag = is_delegate_stub(_probe_stub), is_delegate_stub(_probe_impl)
+    ck(_stub_flag and not _impl_flag,
+       "T2 ★ 守卫探针：扫描器应能识别「1 份实现 + 1 份委托桩」样本",
+       "实测 stub=%s impl=%s" % (_stub_flag, _impl_flag))
+    # 顺带守真实树：tool_screenshot 不得回流第二份（T1 视角）
     ts = top_funcs.get("tool_screenshot", [])
-    ck(len(ts) == 2 and any(stub for _r, _l, stub in ts)
-       and any(not stub for _r, _l, stub in ts),
-       "T2 ★ 守卫探针：tool_screenshot 应被识别为「1 份实现 + 1 份委托桩」",
+    ck(len(ts) == 1 and not ts[0][2],
+       "T2b tool_screenshot 应只剩 1 份实现（v4.284.0 死 wrapper 已删）",
        "实测 %r" % (ts,))
 
     print("\n" + "=" * 70)

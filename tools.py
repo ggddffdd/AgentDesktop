@@ -2562,34 +2562,6 @@ def tool_rag_search(cfg, app_dir, args, progress=None):
     return "检索结果:\n" + "\n\n".join(lines), [], []
 
 
-def tool_screenshot(cfg, app_dir, args, progress=None,
-                    stop_event=None, should_stop=None):
-    """截图工具 —— v4.260.0（P1-7）起**显式委托**到 `system_control_tools` 那份。
-
-    为什么这里不能再有一份实现
-    --------------------------
-    v4.259.0 同族扫描 + 运行时实证抓到：本函数**从来没被调用过**——
-    注册表 `screenshot` 指向的是 `system_control_tools.tool_screenshot`
-    （`SYSTEM_CONTROL_TOOL_TABLE` 整体注册进来），本函数是**死代码**。
-
-    更糟的是它和生效那份**契约已经漂移**：
-
-        |        | 本函数（死代码）          | system_control_tools（生效）       |
-        |--------|-------------------------|-----------------------------------|
-        | 入参   | `mode` / `save_path`    | `region` / `window_title` / `save_path` |
-        | 停止   | 无                       | `stop_event` / `should_stop`       |
-        | 取图   | `PIL.ImageGrab.grab()`  | Qt `QApplication` grabWindow       |
-        | 返回   | `(msg, [path], [])`     | `(msg, [], None)`                  |
-
-    谁照着本函数的签名传 `mode="fullscreen"`，生效版**根本不认这个参数**、静默
-    忽略，截出来不是预期的东西 —— 死代码在这里是个**误导源**，不是无害的冗余。
-
-    为什么保留函数名而不删：任何按名字取用的潜在调用方都不会断，风险最低。
-    委托在**调用时**解析属性（函数体内 import），所以判据可以打补丁验证真委托。
-    """
-    from system_control_tools import tool_screenshot as _impl
-    return _impl(cfg, app_dir, args, progress=progress,
-                 stop_event=stop_event, should_stop=should_stop)
 
 
 def tool_image_gen(cfg, app_dir, prompt, size=None, progress=None, image=None):
