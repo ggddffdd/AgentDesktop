@@ -24,10 +24,19 @@ qt-material==2.17
 # chart_generator.py 直接 import matplotlib/numpy，PyInstaller 靠静态分析收集
 matplotlib==3.10.9
 numpy==2.4.4
-# v4.275.0：语音端点（Silero VAD）。只引入 onnxruntime，不引入 torch。
-onnxruntime==1.22.1
+# v4.275.0 引入的 Silero VAD 已在 v4.282.2 随连续对话(VAD)回退整模块删除，
+# onnxruntime 源码零 import（仅剩日志噪音过滤名单提名），v4.283.1 退役。
 # rag.py 索引 Word、ui.py 导出 Word；spec 的 hiddenimports 已登记 'docx'
 python-docx==1.2.0
+
+# ---------- 语音合成主链（voice.py 直接 import，2026-10-16 补列）----------
+# 此前漏列：本机能跑只因装过，干净环境 pip install -r 装不到它。
+# v4.283.1 踩坑实证：edge-tts 7.2.7 的 Sec-MS-GEC-Version（Edge 143）被微软
+# 反爬策略拒绝，wss 握手 403 → 应用内点「语音」无声、且 403 走
+# tts_failure_is_quota 只记 WARNING，查 ERROR 日志查不到（排障极难）。
+# 7.3.1 起微软上调 GEC 版本要求后已跟进修复（实测合成恢复）。
+# ⚠️ 此库版本必须锁死：微软策略再变时同样症状复发，升级=改这一行。
+edge-tts==7.3.1
 
 # ---------- 记忆加密后端（v4.239.1 补列）----------
 # memory_store.py 的 Fernet 加密直接 import cryptography，此前漏列：
