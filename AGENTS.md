@@ -1,7 +1,7 @@
 # AGENTS.md
 
 > 面向 AI agent 与贡献者的工程约定。首次在本仓库动手前请先读完。
-> 深度文档：`DESIGN.md`（架构）· `CHANGELOG.md`（版本史）· `tests/README.md`（测试）· `LEGACY_SCRIPTS.md`（历史脚本）。
+> 深度文档：`DESIGN.md`（架构）· `CHANGELOG.md`（版本史）· `tests/README.md`（测试）· `LEGACY_SCRIPTS.md`（历史脚本）· `TOOL_HARNESS.md`（新工具接入七阶段检查单，含四层测试与真后端探针纪律）。
 >
 > ⚠️ 本仓库**公开**。禁止提交：真实密钥、`config.json`、本机绝对路径（如 `C:/Users/<用户名>/…`）、用户目录结构。
 

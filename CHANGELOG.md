@@ -7,6 +7,15 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.286.0 — 2026-10-17
+
+彻查双问题的第三批（「第四层测试」补层）：真后端探针 + nightly workflow + TOOL_HARNESS.md 立档。借鉴 HKUDS/CLI-Anything 的 7-phase 方法论（不借其 harness 库存——场景错配），按小臭自己的事故史把「真后端 E2E」这一层补上。edge-tts 403、Agnes 端点迁移两次「mock 全绿、真调全崩」事故从此有自动拦截层。
+
+- **真后端探针**（probe_real_backend.py，仓库根）。对三个外部依赖 tool 各做低频真调，只验「HTTP 通 + 返回结构」，不验内容质量：edge-tts（文本→mp3，验文件非空）、web_search（固定 query，验返回文本非空无错误前缀）、image_gen（固定 prompt，验落盘文件非空）。三态语义：PASS（真调成功）/ FAIL（前提齐但真调失败，fail-closed 撞红）/ SKIP（环境前提缺——无 key/库没装，醒目横幅，**SKIP 不冒充通过**）。探针层任何异常都是 FAIL，不做额度豁免（v4.283.1 edge-tts 403 被降级成 WARNING 导致「日志干净但没声」的教训）。配置双轨：本地 config.json 优先，PROBE_*_API_KEY 环境变量兜底（供 CI secrets 注入，只进探针 cfg 不回写用户配置）。
+- **nightly workflow**（.github/workflows/real-backend-nightly.yml）。每日 00:00 UTC（北京时间早 8 点）+ 手动触发，跑真调探针；secrets 配 PROBE_BRAVE_API_KEY / PROBE_SERPER_API_KEY / PROBE_API_KEY / PROBE_AGNES_API_KEY，未配的探针自动 SKIP 不假绿。与 ci.yml 分工：ci.yml 每次 push 快跑零外部依赖，本 workflow 低频真调。**注意：secrets 需大哥在 GitHub 仓库 Settings → Secrets 配好后 nightly 才真调用**。
+- **TOOL_HARNESS.md 立档**（+ AGENTS.md 文档清单登记）。新工具接入七阶段检查单：Analyze（注册+风险分级+外部依赖定性）→ Design（描述三要素）→ Implement → **四层测试**（unit / 判据 / 扰动 / 真后端探针）→ Document → Publish → Verify。立档缘起：事故从来不是「某个 bug」而是「接入流程缺层」——edge-tts 403 和 Agnes 401 缺真后端层、工具重复缺描述分工判据、9852 条日志只记工具名缺参数/成败。附易混工具互点分工规矩与机检判据（test_tool_desc_285）联动。
+- 判据与扰动：tests/test_probe_real_backend_286.py 24/0（结构断言 + monkeypatch 行为分支，零真实 API）；_perturb/_perturb_probe_real_backend_286.py 3/3 改坏必红（fail-closed 总闸、SKIP 永远化、横幅文案）。
+
 ## v4.285.0 — 2026-10-17
 
 彻查双问题的第二批（P2 收尾）：系统提示补「先读后说」、20 个易混工具描述补齐分工边界、批内去重既有防线补判据固化。修正彻查结论一处不准：批内去重 v4.120 早已存在，缺的是测试覆盖。无新功能。

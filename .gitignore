@@ -94,6 +94,10 @@ probe_*.py
 #    坑，只是这次缺的是「被测物」而不是生产源码）。
 #    探针的一次性产出（日志 / 指标 JSON / 跨档比对数据）不入库。
 !probe_graphics.py
+# v4.286.0 例外（同类坑第二次）：probe_real_backend.py 是真后端探针，同时是
+# tests/test_probe_real_backend_286.py 的被测对象 + real-backend-nightly.yml
+# 的 nightly 被测物——被 ignore 吞掉则 clone 仓库判据全崩、nightly 无探针可跑。
+!probe_real_backend.py
 _probe_graphics_result.json
 _pg_out/
 # ⚠️ 2026-09-27 修正：`vision_qc.py` 曾被误写进这一组忽略规则（它夹在 probe 脚本

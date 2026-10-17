@@ -98,6 +98,7 @@ test_post_exec_verify_227.py
 test_postref_fix_186.py
 test_precommit_hooks_237.py
 test_probe_graphics.py
+test_probe_real_backend_286.py
 test_prompt_cache_276.py
 test_python_cwd_xxx.py
 test_radius_norm.py

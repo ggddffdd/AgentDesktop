@@ -37,7 +37,7 @@ import tool_contract  # v4.258.0（P1-6）：成败判定归一到单一真源�
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.285.0"
+VERSION = "v4.286.0"
 
 
 class AgentTaskMixin(object):
