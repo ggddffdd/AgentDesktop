@@ -36,13 +36,17 @@ function sendCapture(note, mode, autosend) {
         return;
       }
       if (resp && resp.ok) {
+        // v1.4：正文过短的附加提示（已投递但内容是壳——引导选中模式）
+        var shortHint = resp.short ?
+          "（正文极少，疑似动态页——先选中文字再点「抓取选中文字」更稳）" : "";
         if (resp.delivered) {
           setStatus("✅ 已投递 " + resp.chars + " 字到小臭" +
-            (resp.autosend ? "（已自动处理）" : "（已填入，按发送键让 AI 处理）"), "ok");
+            (resp.autosend ? "（已自动处理）" : "（已填入，按发送键让 AI 处理）") +
+            shortHint, "ok");
         } else {
           // #756：已接收但主程序未确认 / 自动发送失败 —— 诚实提示，不再假装成功
           var why = resp.detail ? "（" + resp.detail + "）" : "（小臭未确认）";
-          setStatus("⚠️ 已接收但未确认 " + resp.chars + " 字" + why, "warn");
+          setStatus("⚠️ 已接收但未确认 " + resp.chars + " 字" + why + shortHint, "warn");
         }
       } else {
         setStatus("⚠️ " + (resp && resp.error || "失败"), "err");

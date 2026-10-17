@@ -6,6 +6,15 @@
 //   D4 6 万字静默截断 → 上限提到 20 万，并回传 truncated / warnings
 //   D5 cleanText 吃掉空行 → 只归一化空格与行尾空白，保留空行
 //   D7 removeJunk 误删长文本 header/footer/aside → 加「长文本+标点」白名单保护
+// v1.5（2026-10-17）智能抓取四招：
+//   S1 抓取前唤醒：滚到底再回顶 + 点「继续阅读/展开全文」类按钮 + 沉降等待
+//      （治懒加载/点击展开型壳页；仅在用户点抓取时触发，不后台自动跑）
+//   S2 短正文延迟重抽：<100 字等 1.5s 再抽（v1.4 已有，保留）
+//   S3 结构化兜底擂台：JSON-LD articleBody（权威）> og:description（摘要）>
+//      同源 iframe 正文（跨域摸不到，跳过）；启发式结果 <100 字时启用
+//   S4 shadow DOM 穿透：querySelectorAll 不过 shadow 边界，深搜补齐候选池
+//      （注意 cloneNode 不含 shadowRoot，shadow 候选只能从 live DOM 取、
+//       且不得对 live 节点做 removeJunk 式Mutation——只读）
 (function () {
   "use strict";
 
@@ -162,6 +171,134 @@
     };
   }
 
+  // ============================================================
+  // v1.5 S4：shadow DOM 深搜 —— querySelectorAll 不过 shadow 边界
+  // ============================================================
+  function deepQuerySelectorAll(root, sel) {
+    var res = [];
+    if (!root || !root.querySelectorAll) return res;
+    var list = root.querySelectorAll(sel);
+    for (var i = 0; i < list.length; i++) res.push(list[i]);
+    var all = root.querySelectorAll("*");
+    for (var j = 0; j < all.length; j++) {
+      var sr = all[j].shadowRoot;
+      if (sr) {
+        var sub = deepQuerySelectorAll(sr, sel);
+        for (var k = 0; k < sub.length; k++) res.push(sub[k]);
+      }
+    }
+    return res;
+  }
+
+  // ============================================================
+  // v1.5 S1：抓取前唤醒页面 —— 滚动 + 点展开 + 沉降
+  // 只在用户点抓取时跑（extract 消息触发），不后台自动执行。
+  // 副作用说明：视口位置会还原；点「展开」类按钮会改变页面展开状态
+  // （本就是用户要读的内容，视为可接受）。
+  // ============================================================
+  function sleep(ms) {
+    return new Promise(function (res) { setTimeout(res, ms); });
+  }
+
+  // 白名单精确匹配（短文案才点，避免误点导航/广告；不点「加载更多」类列表按钮）
+  var EXPAND_TEXTS = ["继续阅读", "阅读全文", "展开全文", "查看全文", "展开全文"];
+  var EXPAND_MAX = 3;
+
+  function clickExpanders() {
+    var clicked = 0;
+    var els = deepQuerySelectorAll(document, "a,button,[role='button']");
+    for (var i = 0; i < els.length && clicked < EXPAND_MAX; i++) {
+      var el = els[i];
+      var t = (el.textContent || "").trim();
+      if (!t || t.length > 10) continue;
+      var hit = false;
+      for (var j = 0; j < EXPAND_TEXTS.length; j++) {
+        if (t === EXPAND_TEXTS[j]) { hit = true; break; }
+      }
+      if (!hit) continue;
+      try {
+        var r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) continue;   // 不可见不点
+        el.click();
+        clicked++;
+      } catch (e) { /* 忽略单个点击失败 */ }
+    }
+    return clicked;
+  }
+
+  async function wakePage() {
+    try {
+      var startY = window.scrollY || 0;
+      var h = document.documentElement;
+      window.scrollTo(0, h.scrollHeight);      // 滚到底触发懒加载
+      await sleep(600);
+      clickExpanders();                        // 点「继续阅读」类
+      await sleep(400);
+      window.scrollTo(0, startY);              // 还原视口
+      await sleep(200);
+    } catch (e) { /* 唤醒失败不阻断抓取，照常抽 */ }
+  }
+
+  // ============================================================
+  // v1.5 S3：结构化兜底 —— 站点自报正文/摘要，权威度高于启发式
+  // ============================================================
+  function fromJsonLd() {
+    var scripts = document.querySelectorAll('script[type="application/ld+json"]');
+    for (var i = 0; i < scripts.length; i++) {
+      try {
+        var data = JSON.parse(scripts[i].textContent);
+        var items = Array.isArray(data) ? data.slice() : [data];
+        for (var g = 0; g < items.length; g++) {
+          if (items[g] && items[g]["@graph"] && Array.isArray(items[g]["@graph"])) {
+            items = items.concat(items[g]["@graph"]);
+          }
+        }
+        for (var k = 0; k < items.length; k++) {
+          var o = items[k];
+          if (!o) continue;
+          var body = o.articleBody || o.text || o.description;
+          if (body && String(body).replace(/\s/g, "").length >= 100) {
+            return String(body);
+          }
+        }
+      } catch (e) { /* 坏 JSON 跳过 */ }
+    }
+    return "";
+  }
+
+  function fromOgDescription() {
+    var m = document.querySelector('meta[property="og:description"],meta[name="description"]');
+    if (m) {
+      var c = (m.getAttribute("content") || "").trim();
+      if (c.replace(/\s/g, "").length >= 100) return c;
+    }
+    return "";
+  }
+
+  function fromSameOriginIframes() {
+    var out = [];
+    var iframes = document.querySelectorAll("iframe");
+    for (var i = 0; i < iframes.length; i++) {
+      var doc;
+      try { doc = iframes[i].contentDocument; } catch (e) { continue; }  // 跨域 → 跳过
+      if (!doc || !doc.body) continue;
+      var t = (doc.body.textContent || "").trim();
+      if (t.replace(/\s/g, "").length >= 200) out.push(t);
+    }
+    return out.join("\n\n");
+  }
+
+  // 分级：JSON-LD 权威 > og 摘要 > 同源 iframe
+  function fallbackBody() {
+    var jl = fromJsonLd();
+    if (jl) return { text: jl, src: "JSON-LD articleBody" };
+    var og = fromOgDescription();
+    if (og) return { text: og, src: "og:description" };
+    var ifr = fromSameOriginIframes();
+    if (ifr) return { text: ifr, src: "同源 iframe" };
+    return null;
+  }
+
   // ---- D2/D3 修正：先向下收敛包裹层，再受限向上扩张合并兄弟 ----
   // v4.161 D8：站点级正文选择器 —— 命中即锁定，禁止上爬
   // 实测：知乎 .RichText=3781字(纯正文)，而 article=3987字，
@@ -172,7 +309,7 @@
 
   function pickPriority() {
     for (var i = 0; i < PRIORITY_SEL.length; i++) {
-      var els = document.querySelectorAll(PRIORITY_SEL[i]);
+      var els = deepQuerySelectorAll(document, PRIORITY_SEL[i]);  // v1.5 S4：穿透 shadow
       for (var j = 0; j < els.length; j++) {
         var el = els[j], t = textLen(el);
         if (t < 250) continue;                       // 太短不像正文
@@ -222,10 +359,20 @@
   function extractArticle() {
     var clone = document.cloneNode(true);
     removeJunk(clone);
-    var candidates = clone.querySelectorAll("p,div,article,section,li,td,pre,blockquote");
-    var best = null, bestScore = 0;
-    for (var c = 0; c < candidates.length; c++) {
-      var node = candidates[c];
+    // v1.5 S4：候选池 = clone  light DOM（已清垃圾）+ live DOM shadow 深搜
+    // （cloneNode 不含 shadowRoot，shadow 候选只能从 live 取；live 节点只读，
+    //  下面的容器二清不得 Mutation 它们）
+    var pool = [];
+    var light = clone.querySelectorAll("p,div,article,section,li,td,pre,blockquote");
+    for (var li = 0; li < light.length; li++) pool.push({ el: light[li], live: false });
+    var shadow = deepQuerySelectorAll(document, "p,div,article,section,li,td,pre,blockquote");
+    for (var si = 0; si < shadow.length; si++) {
+      if (clone.contains(shadow[si])) continue;   // 已在 light 池
+      pool.push({ el: shadow[si], live: true });
+    }
+    var best = null, bestLive = false, bestScore = 0;
+    for (var c = 0; c < pool.length; c++) {
+      var node = pool[c].el;
       var txt = (node.textContent || "").trim();   // 统一用 textContent，游离节点 innerText 不可靠
       if (txt.length < 25) continue;
       var score = txt.length;
@@ -237,30 +384,48 @@
       else if (ratio > 0.3) score *= 0.7;
       var punct = (txt.match(/[。.，,！!？?；;：:、]/g) || []).length;
       score += punct * 10;
-      if (score > bestScore) { bestScore = score; best = node; }
+      if (score > bestScore) { bestScore = score; best = node; bestLive = pool[c].live; }
     }
 
-    var root;
+    var root, rootLive = false;
     if (best) {
       root = findContentRoot(best);
+      rootLive = bestLive;   // findContentRoot 上爬可能换容器，保守仍按 live 处理
     } else {
       root = clone.body || clone;
     }
 
-    // 容器内再清一遍导航/广告类（同样走白名单保护）
-    var sub = root.querySelectorAll(
-      "nav,aside,header,footer,form,.ad,.ads,[role='navigation'],[role='complementary']");
-    for (var s = 0; s < sub.length; s++) {
-      var e = sub[s];
-      if (e === root) continue;
-      if (looksLikeContent(e)) continue;
-      if (e.parentNode) e.parentNode.removeChild(e);
+    // 容器内再清一遍导航/广告类（同样走白名单保护）—— live 节点只读，跳过
+    if (!rootLive) {
+      var sub = root.querySelectorAll(
+        "nav,aside,header,footer,form,.ad,.ads,[role='navigation'],[role='complementary']");
+      for (var s = 0; s < sub.length; s++) {
+        var e = sub[s];
+        if (e === root) continue;
+        if (looksLikeContent(e)) continue;
+        if (e.parentNode) e.parentNode.removeChild(e);
+      }
     }
 
     var md = postProcessMarkdown(toMarkdown(root));
     var plain = cleanText(toPlainText(root));
 
+    // v1.5 S3：启发式结果过短（<100 字）→ 结构化兜底擂台
+    var fallbackUsed = "";
+    if (plain.replace(/\s/g, "").length < 100) {
+      var fb = fallbackBody();
+      if (fb) {
+        var fbClean = cleanText(fb.text);
+        if (fbClean.replace(/\s/g, "").length > plain.replace(/\s/g, "").length) {
+          plain = fbClean;
+          md = postProcessMarkdown(fb.text);
+          fallbackUsed = fb.src;
+        }
+      }
+    }
+
     var warnings = [];
+    if (fallbackUsed) warnings.push("启发式抽取过短，已启用结构化兜底（" + fallbackUsed + "）");
     var truncated = false;
     if (md.length > MAXLEN) { md = md.slice(0, MAXLEN); truncated = true; }
     if (plain.length > MAXLEN) { plain = plain.slice(0, MAXLEN); truncated = true; }
@@ -325,10 +490,22 @@
     return r;
   }
 
+  // v1.4：短正文延迟重抽 —— 动态渲染页（客户端 JS 拉正文）首抽可能只拿到壳。
+  // 实测 MSN 壳页首抽仅 25 字（只剩"为你精选更多内容"推荐流）：等 1.5s 让
+  // 异步正文渲染完再抽一次，取更长结果。治不了「需点击展开 / 跨域 iframe」
+  // 的页（那类只能靠选中模式），但对懒渲染新闻站有效。
+  // selection 模式不重抽——选中即所读，没有"壳"的概念。
+  var RETRY_MIN_LEN = 100;   // 正文低于此长度视为可疑壳页
+  var RETRY_WAIT_MS = 1500;
+
+  function bodyLen(r) {
+    return r && r.text ? r.text.replace(/\s/g, "").length : 0;
+  }
+
   chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     if (msg && msg.type === "extract") {
-      try {
-        var r = extractReadable(msg.mode || "article");
+      var mode = msg.mode || "article";
+      function reply(r) {
         sendResponse({
           ok: true,
           title: document.title || "",
@@ -340,9 +517,35 @@
           warnings: r.warnings || [],
           meta: r.meta || {}
         });
-      } catch (e) {
-        sendResponse({ ok: false, error: String(e) });
       }
+      // v1.5 S1：article 模式先唤醒页面（滚动+点展开+沉降）再首抽；
+      // selection 模式不唤醒（选中即所读，无需等渲染）
+      (async function () {
+        var first;
+        try {
+          if (mode !== "selection") await wakePage();
+          first = extractReadable(mode);
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e) });
+          return;
+        }
+        if (mode !== "selection" && bodyLen(first) < RETRY_MIN_LEN) {
+          setTimeout(function () {
+            try {
+              var second = extractReadable("article");
+              if (bodyLen(second) > bodyLen(first)) {
+                (second.warnings = second.warnings || []).push(
+                  "首抽正文过短（" + bodyLen(first) + " 字），已延迟重抽取更长结果");
+                reply(second);
+                return;
+              }
+            } catch (e2) { /* 重抽失败 → 落回首抽结果，不升级错误 */ }
+            reply(first);
+          }, RETRY_WAIT_MS);
+        } else {
+          reply(first);
+        }
+      })();
     }
     return true;
   });

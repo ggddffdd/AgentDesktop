@@ -35,6 +35,9 @@ async function captureActiveTab(note, opts) {
   if (!resp.text) {
     return { ok: false, error: "页面没有可提取的正文，试试先选中一段文字" };
   }
+  // v1.4：正文过短标记 —— 弹窗据此提示「疑似动态页，选中模式更稳」
+  // （实测 MSN 壳页首抽 25 字：正文靠 JS 异步/点击加载，壳上只剩推荐流）
+  var shortBody = resp.text.replace(/\s/g, "").length < 100;
 
   var payload = {
     title: resp.title,
@@ -78,7 +81,8 @@ async function captureActiveTab(note, opts) {
       autosend: autosend,
       delivered: delivered,
       status: rstatus,
-      detail: detail
+      detail: detail,
+      short: shortBody
     };
   } catch (e) {
     return {
