@@ -39,7 +39,7 @@ import os
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.286.0"
+VERSION = "v4.287.0"
 
 # ============================================================
 # 会产出实物的工具（按工具名 → 产物是否应当落盘到磁盘）
@@ -455,4 +455,4 @@ class TaskState(object):
 
 __all__ = ["VERSION", "TaskState", "required_from_text",
            "_FILE_PRODUCING", "_NO_FILE_TOOLS",
-           "_ST_OK", "_ST_PENDING", "_ST_FAILED", "_ST_SKIPPED"]
+           "_ST_OK", "_ST_PENDING", "_ST_FAILED", "_ST_SKIPPED"]

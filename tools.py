@@ -2893,10 +2893,18 @@ def _build_video_prompt(prompt, dialogue=None):
 
 
 def _agnes_creds(cfg):
-    """从配置中取 Agnes 通道的 base_url 与 api_key（独立于当前聊天模型，始终走 Agnes 直连）。"""
+    """从配置中取 Agnes 通道的 base_url 与 api_key（独立于当前聊天模型，始终走 Agnes 直连）。
+
+    v4.287.0 修复：key 取法补中间档 `agnes_api_key`（顶层独立字段）。
+    背景——nightly 探针首跑 401 撞红：CI 空壳 config 下 model_profiles["Agnes"].api_key
+    为空，兜底拿到顶层 api_key（探针注入的 DeepSeek key），拿 DeepSeek key 打 Agnes
+    端点必 401；而 PROBE_AGNES_API_KEY secret 注入的顶层 agnes_api_key 字段原本
+    没有任何消费者，配了也白配。顺序 = profile → 顶层 agnes_api_key → 顶层 api_key
+    （本地用户把 Agnes key 填在 api_key 槽的场景不受影响，继续走最后一档兜底）。
+    """
     prof = (cfg.get("model_profiles") or {}).get("Agnes") or {}
     base = prof.get("base_url") or cfg.get("base_url") or "https://api.agnes-ai.cn/v1"
-    key = prof.get("api_key") or cfg.get("api_key") or ""
+    key = prof.get("api_key") or cfg.get("agnes_api_key") or cfg.get("api_key") or ""
     return base.rstrip("/"), key
 
 

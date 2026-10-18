@@ -64,7 +64,7 @@ from token_compressor import compress
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.286.0"
+VERSION = "v4.287.0"
 
 
 def _wrap_tool_content_local(name, content, evidence_id=None):
@@ -270,4 +270,4 @@ class AgentResultMixin(object):
             # v4.60：先 Token 压缩（去HTML/去重/智能截断），再取上限
             # v4.195 批⑨：压缩后套证据编号首尾钉
             "content": _wrap_tool_content_local(name, _content, _eid),
-        })
+        })

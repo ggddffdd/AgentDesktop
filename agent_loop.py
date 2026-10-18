@@ -49,7 +49,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.286.0"
+VERSION = "v4.287.0"
 
 # ============================================================
 # 阶段常量
@@ -407,4 +407,4 @@ __all__ = [
     "LoopState", "next_phase", "should_plan", "build_plan", "plan_instruction",
     "verify_report", "should_verify", "is_verified",
     "should_summarize", "build_summary",
-]
+]

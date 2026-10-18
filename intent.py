@@ -58,7 +58,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.286.0"
+VERSION = "v4.287.0"
 
 # ============================================================
 # 意图类别
@@ -747,4 +747,4 @@ __all__ = [
     "ROUTE_REGISTRY", "KIND_ACTION", "KIND_CONTENT", "KIND_QUESTION",
     "KIND_DISCUSS", "KIND_STATUS", "KIND_NEGATED", "KIND_REFERENCE",
     "KIND_UNKNOWN", "KIND_ALL",
-]
+]

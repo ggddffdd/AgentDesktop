@@ -29,7 +29,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.286.0"
+VERSION = "v4.287.0"
 
 
 class AgentLoopMixin(object):
@@ -151,4 +151,4 @@ class AgentLoopMixin(object):
             return {}
 
 
-__all__ = ["VERSION", "AgentLoopMixin"]
+__all__ = ["VERSION", "AgentLoopMixin"]

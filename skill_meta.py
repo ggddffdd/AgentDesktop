@@ -52,7 +52,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.286.0"
+VERSION = "v4.287.0"
 
 # ============================================================
 # 字段分级
@@ -285,4 +285,4 @@ __all__ = [
     "TRUSTED_SOURCES", "MetaVerdict",
     "check_skill", "is_trusted_builtin", "strict_from_config",
     "unverified_note", "rejection_text",
-]
+]

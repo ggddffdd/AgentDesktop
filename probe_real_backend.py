@@ -1,6 +1,14 @@
 # -*- coding: utf-8 -*-
 """真后端探针（probe_real_backend.py）—— v4.286.0「真后端 E2E 层」第一弹。
 
+v4.287.0 修复记录：nightly 首跑（run 39092681499）image_gen 探针 401 撞红——
+CI 空壳 config 下 provider=agnes（默认），`_agnes_creds` 的 key 兜底链
+（model_profiles["Agnes"].api_key → 顶层 api_key）在 CI 里落到 PROBE_API_KEY
+注入的 DeepSeek key，拿 DeepSeek key 打 Agnes 必 401；而 PROBE_AGNES_API_KEY
+secret 注入的顶层 agnes_api_key 字段原本无消费者，配了也白配。修复 =
+`_agnes_creds` key 链补中间档 `cfg.get("agnes_api_key")`（tools.py），
+本探针 env_map 的 PROBE_AGNES_API_KEY → agnes_api_key 映射由此真正生效。
+
 背景（彻查「判断不准/工具调用不准」时挖出的测试盲区）
 --------------------------------------------------
 小臭的测试层长期只有三层：unit（monkeypatch 假 handler）/ 判据（行为断言）/
@@ -166,7 +174,7 @@ PROBES = (
 
 def main():
     print("=" * 64)
-    print("真后端探针 v4.286.0 —— 只验「通 + 结构」，不验内容质量")
+    print("真后端探针 v4.287.0 —— 只验「通 + 结构」，不验内容质量")
     print("=" * 64)
     results = []
     for name, fn in PROBES:

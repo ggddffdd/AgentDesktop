@@ -7,6 +7,14 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.287.0 — 2026-10-18
+
+nightly 探针首跑 401 撞红修复：image_gen 探针在 CI 空壳 config 下拿 DeepSeek key 打 Agnes 端点。根因是 `_agnes_creds` 的 key 兜底链缺一档——PROBE_AGNES_API_KEY secret 注入的顶层 `agnes_api_key` 字段原本没有任何消费者，配了也白配。同轮把 nightly cron 从整点挪到 00:13 UTC（首跑实测整点被 GitHub 排队延迟 3 小时 10 分）。
+
+- **`_agnes_creds` key 链补中间档**（tools.py）。取 key 顺序改为 `model_profiles["Agnes"].api_key → 顶层 agnes_api_key → 顶层 api_key`。CI 场景（空壳 config + PROBE_AGNES_API_KEY 注入）命中正确订阅 key；本地场景（Agnes key 填在顶层 api_key 槽）走最后一档兜底，行为不变。双场景本地实测均 PASS。
+- **nightly cron 避开整点**（real-backend-nightly.yml）。`0 0 * * *` → `13 0 * * *`（UTC 00:13 = 北京 08:13）。首run 39092681499 实测：00:00 UTC 的 cron 被排队 3 小时 10 分，北京时间 11:10 才跑——GitHub 官方建议 scheduled cron 避开 :00。
+- 探针 docstring / TOOL_HARNESS.md L4 铁律补录本次事故形状：「**secret 配了但代码里无消费者**」与「mock 全绿、真调全崩」同款——配 secret 后必须验证注入字段有真实消费者，不能只验「env 注入了」。
+
 ## v4.286.0 — 2026-10-17
 
 彻查双问题的第三批（「第四层测试」补层）：真后端探针 + nightly workflow + TOOL_HARNESS.md 立档。借鉴 HKUDS/CLI-Anything 的 7-phase 方法论（不借其 harness 库存——场景错配），按小臭自己的事故史把「真后端 E2E」这一层补上。edge-tts 403、Agnes 端点迁移两次「mock 全绿、真调全崩」事故从此有自动拦截层。

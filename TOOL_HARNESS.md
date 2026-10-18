@@ -34,7 +34,7 @@
 | L3 扰动 | `_perturb/_perturb_*.py` | **改坏源码 → 判据必须红** | 正向功能（那是 L2 的事） |
 | L4 真后端 | `probe_real_backend.py` + nightly | 真调外部 API，验「通 + 结构」 | 内容质量（另一层的事） |
 
-**L4 铁律**（v4.286.0 立，源自 edge-tts 403 / Agnes 401 两次事故）：
+**L4 铁律**（v4.286.0 立，源自 edge-tts 403 / Agnes 401 两次事故；v4.287.0 补第三起——**secret 配了但无消费者**）：
 
 1. **真外部依赖（HTTP 出网的 tool）必须进探针清单**——没配 key 时 SKIP，
    **SKIP 不冒充通过**（横幅 + rc=0，永不静默变绿）；
