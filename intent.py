@@ -58,7 +58,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.288.1"
+VERSION = "v4.288.2"
 
 # ============================================================
 # 意图类别
