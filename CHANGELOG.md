@@ -7,6 +7,16 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.288.1 — 2026-10-20
+
+nightly 探针三连红根因修复 + 扰动层两个哑弹修复。v4.288.0 图标重做的收尾版，无新功能。
+
+- **探针三连红根因（P0，CI 日志实锤）**：`load_config()` 创建默认配置的分支直接 `open(CONFIG_PATH,"w")` 没有 makedirs——CI runner 是全新 Windows，`~/Documents/小臭玩AI/` 不存在 → 探针在 `_probe_cfg()` 裸崩 FileNotFoundError，三个探针一个没跑，nightly 三次全红。**v4.287.0 的「401」叙事是本地复现幻影**：日志实锤 4 个 PROBE_* secret 全都配了，key 从未被摸到。修复两层：config.py 补 makedirs（根因）+ probe_real_backend.py 把 `_probe_cfg()` 挪进 main() 的 try（配置级崩溃从此是带明细的 FAIL 而非裸 traceback 杀死整轮）。CI 复刻验证（USERPROFILE 重定向全新临时目录 + 4 个 PROBE_* env）：PASS=3 FAIL=0。
+- **扰动哑弹 1：锚点漂移**（`_perturb_unified_intent_225.py`，nightly 8/2 两条之一）。旧锚写死「三 mixin 整行类声明」，AgentMemoryMixin 作为第四个 mixin 加入后整串漂移 → 静默 SKIP。改为最小锚：只锚第一基类 `class AgentWorker(AgentTaskMixin, `——TS7-1c 判据自己钉着「AgentTaskMixin 是第一个基类」，基类若重排会先撞红，锚点不可能再静默漂移。
+- **扰动哑弹 2：判据太弱**（TS7-8，test_task_state_machine_225.py）。`self._tstate_nudged = True` 有两个注入点（各与一处 `_ts.mark_nudged()` 配对），旧断言只问「字符串在不在」——扰动把第一处的置标记换成 pass、第二处仍在 → 判据照绿。升级为**配对不变式**：置标记次数 == mark_nudged 次数且至少一处，删任一注入点都翻红（源码级即可判）。修复后独占复跑 10/10（修复前 8/2 原样复现）。
+- **踩坑（同一铁律第二次被撞，记性）**：两个 `run_all --perturb-only` **并发**跑 = 两遍全量套件 + 两个扰动互踩 → 基线假报失败套件（test_perturb_harness / test_v4102_image_compress，单独跑全过 26/0、4/0）。「扰动必须独占」再次实锤。另记：`--perturb-only` **不跳过套件阶段**（只有 `--perturb-critical` 才清空 suites），分段跑扰动应直接跑 `_perturb/_perturb_xxx.py`。
+- **发布门禁两项存量红清零**（`release_check.py` 15/15，本轮重打包后全绿）。① 字号 token 守卫：`legion_chat.py:158` / `legion_ui.py:647` 裸 `font-size:14px`（v4.271.0 遗留、前三轮日报均记录「等大哥定夺」）→ `THEME['font_input']`（theme_tokens.py:169 实测值恰为 14px，**零视觉变化**，字面值收口到 DESIGN.md §3.2 token 体系；修代码不放水，判据未动）。② 密钥扫描：`_dev_history/` 下 4 个 10-15 配置修复前的运行配置备份（`config_20261015*.json`）含**真实 API key**——虽被 .gitignore `_*` 规则忽略（不会进 commit/包），但明文 key 不应留在项目扫描树内 → 迁出至 `../_dev_config_backups_20261015/`（与仓库平级，原样保留可随时迁回）。
+
 ## v4.288.0 — 2026-10-20
 
 应用图标重做为鲜明 2D 图标：靛蓝圆角方底 + 白色几何 XC 单色图案，桌面图标与程序内部（窗口/任务栏）同步生效。旧渐变霞光标已备份，7 帧全尺寸（16~256px）重生成，小尺寸做笔画加粗的光学优化。

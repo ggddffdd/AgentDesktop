@@ -283,10 +283,21 @@ for _tag, _needle in [
          "task_state.required_from_text("),
         ("TS7-4 _tstate_nudged 初始化", "self._tstate_nudged = False"),
         ("TS7-6 工具回传产物也登记", "_ts.note_artifact("),
-        ("TS7-8 注入后置 nudged 标记", "self._tstate_nudged = True"),
         ("TS7-12 记账复用 _tool_result_looks_failed",
          "not failed_checker(name, result_str)")]:
     check(_tag, _needle in _mx_code)
+# v4.288.1：TS7-8 从「存在性」升级为「配对不变式」——`_tstate_nudged = True`
+# 有两个注入点（_tstate_nudge_now / _dag_precond_miss_now，各与一处
+# `_ts.mark_nudged()` 配对）。旧断言只问「字符串在不在」：扰动把第一处的
+# 置标记换成 pass、第二处仍在 → 判据照绿（实测 MISS，nightly 扰动 8/2）。
+# 真不变式是「每次注入都必须置本轮闸标记」——两数相等且至少一处，
+# 删任一注入点的置标记都翻红（源码级即可判，无需行为级）。
+check("TS7-8 注入后置 nudged 标记（与 mark_nudged 逐处配对）",
+      _mx_code.count("self._tstate_nudged = True")
+      == _mx_code.count("_ts.mark_nudged()") >= 1,
+      "置标记 %d 处 vs 注入 %d 处"
+      % (_mx_code.count("self._tstate_nudged = True"),
+         _mx_code.count("_ts.mark_nudged()")))
 check("TS7-7b mixin 收尾闸门真调 should_nudge",
       "_ts.should_nudge(" in _mx_code)
 check("TS7-6b agent.py 把失败判据注入给 mixin",

@@ -77,7 +77,7 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.288.0"
+APP_VERSION = "v4.288.1"
 APP_BUILD_DATE = "2026-10-20"
 
 # ---------- DeepSeek 错峰窗口（唯一配置处）----------
@@ -1840,6 +1840,11 @@ def load_config():
                         return cfg_data
                     except Exception as e:
                         log.warning("Failed to copy config.json: %s", e)
+        # v4.288.1：先建目录再写盘。此前直接 open(CONFIG_PATH,"w")，在
+        # ~/Documents/小臭玩AI/ 不存在的新环境（CI runner 实锤）直接
+        # FileNotFoundError 崩死——nightly 探针三次全红根因即此，
+        # 探针连一个都没跑上（401 叙事是本地复现的幻影）。
+        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(DEFAULT_CONFIG, f, ensure_ascii=False, indent=2)
         log.info("Created default config.json")

@@ -644,7 +644,7 @@ class TeamBuildDialog(QDialog):
         self.lineup = QLabel("方案出来后，这里会用一句话写清阵容。")
         self.lineup.setWordWrap(True)
         self.lineup.setStyleSheet(
-            "color:%s;font-size:14px;font-weight:600;" % THEME["text"])
+            "color:%s;font-size:%s;font-weight:600;" % (THEME["text"], THEME["font_input"]))
         self.gaps_lbl = QLabel("")
         self.gaps_lbl.setWordWrap(True)
         lay.addWidget(self.lineup)

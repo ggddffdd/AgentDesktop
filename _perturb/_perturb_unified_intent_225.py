@@ -135,19 +135,17 @@ CASES = [
       "TS7-31 行为级：步数耗尽时不注入",
       "TS7-33 行为级：续跑补完后再调被拦住"]),
 
-    # ⚠️ 原串必须**逐字等于**当前类声明（扰动框架是纯字符串替换，不支持正则）。
-    # v4.226 给 AgentWorker 加了第二个 mixin（AgentLoopMixin）→ 原串同步更新。
-    # v4.226 下半轮又加第三个（AgentResultMixin，方法外移以稳 2400 红线），
-    # 且类声明因行宽**折成两行** → 原串再次同步（实测踩中：静默 SKIP）。
-    # ⚠️ 本脚本第160 行会把 \r\n 归一化成 \n 再匹配，故原串**必须写 LF**，
-    #    写 \r\n 会永远匹配不上（又是一次静默 SKIP）。
-    # 框架若日后支持正则，这里应改成 r"class AgentWorker\([^)]*AgentTaskMixin[^)]*\):"
-    # ——否则再加 mixin 时这条变异会静默 SKIP（哑弹），是本脚本唯一的失效方式。
-    ("整段删：AgentWorker 不再 mixin（接线全成死引用）",
+    # ⚠️ 原串必须**逐字等于**当前源码（扰动框架是纯字符串替换，不支持正则）；
+    #    本脚本第 160 行会把 \r\n 归一化成 \n 再匹配，故原串必须写 LF。
+    # v4.288.1 修（实测哑弹，nightly 8/2 两条之一）：旧锚写死「三 mixin 整行
+    # 声明」，后来 AgentMemoryMixin 作为第四个 mixin 加入 → 整串漂移 →
+    # 静默 SKIP。改为**最小锚**：只锚第一基类 `class AgentWorker(AgentTaskMixin, `。
+    # TS7-1c 自己就钉着「AgentTaskMixin 是第一个基类」——基类若重排，判据先红，
+    # 锚点不可能再静默漂移；删掉它即精确复现「不再 mixin AgentTaskMixin」。
+    ("删首个 mixin：AgentWorker 不再 mixin AgentTaskMixin（TS7-1c 翻红）",
      "agent.py",
-     "class AgentWorker(AgentTaskMixin, AgentLoopMixin,\n"
-     "                   AgentResultMixin, QThread):",
-     "class AgentWorker(QThread):",
+     "class AgentWorker(AgentTaskMixin, ",
+     "class AgentWorker(",
      ["TS7-1c AgentWorker 真的 mixin 了 AgentTaskMixin"]),
 ]
 

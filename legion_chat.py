@@ -155,7 +155,7 @@ class LegionChatPanel(QWidget):
         self.team_lineup = QLabel("")
         self.team_lineup.setWordWrap(True)
         self.team_lineup.setStyleSheet(
-            f"color:{THEME['text']};font-size:14px;font-weight:600;")
+            f"color:{THEME['text']};font-size:{THEME['font_input']};font-weight:600;")
         self.team_gap = QLabel("")
         self.team_gap.setWordWrap(True)
         tb.addWidget(self.team_lineup)

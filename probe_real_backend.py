@@ -174,12 +174,16 @@ PROBES = (
 
 def main():
     print("=" * 64)
-    print("真后端探针 v4.288.0 —— 只验「通 + 结构」，不验内容质量")
+    print("真后端探针 v4.288.1 —— 只验「通 + 结构」，不验内容质量")
     print("=" * 64)
     results = []
     for name, fn in PROBES:
-        cfg = _probe_cfg()
         try:
+            # v4.288.1：_probe_cfg() 纳入 try——load_config 崩过（CI runner
+            # 无 ~/Documents/小臭玩AI/ 目录，FileNotFoundError），当时它在
+            # try 外，一个配置崩溃直接裸 traceback 杀死整轮，三个探针一个
+            # 都没跑。配置级问题 = 带明细的 FAIL，不是整轮消失。
+            cfg = _probe_cfg()
             status, detail = fn(cfg)
         except Exception as e:
             # 探针自身崩了也算 FAIL（不许裸异常穿透成「看似没跑」）。
