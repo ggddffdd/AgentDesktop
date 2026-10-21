@@ -165,7 +165,9 @@ def _full_state(title, hint, action, on_action, icon, icon_color):
         try:
             import ui
             color = ui.THEME[icon_color or "accent"]
-            pm = ui._nav_icon_pixmap(icon, color, ICON_SIZE)
+            # v4.288.4：DPR 修复后逻辑=size；徽章历史视觉是「逻辑=ICON_SIZE*2
+            # 居中于 44 底座」→ 显式加倍 + ratio=1.0 保形
+            pm = ui._nav_icon_pixmap(icon, color, ICON_SIZE * 2, device_ratio=1.0)
             # 图标名拼错时 _nav_icon_pixmap 返回**空 QPixmap 而不抛异常** ——
             # 直接 setPixmap 会留下一个 44×44 的浅色空圆点，看起来像"图标加载失败"。
             # 所以必须显式判空：空就退化成纯文字。

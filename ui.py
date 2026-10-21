@@ -3608,7 +3608,9 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             chip = QLabel()
             chip.setFixedSize(36, 36)
             chip.setAlignment(Qt.AlignCenter)
-            chip.setPixmap(_nav_icon_pixmap(icon_str, card_icon_color, 18))
+            # v4.288.4：_nav_icon_pixmap 已修 DPR（物理2x→逻辑=size），此处沿用
+            # 历史视觉（36 逻辑铺满 36 底座）→ 显式 size=36 + ratio=1.0 保形
+            chip.setPixmap(_nav_icon_pixmap(icon_str, card_icon_color, 36, device_ratio=1.0))
             chip.setStyleSheet(
                 f"background:{chip_bg};border-radius:8px;border:none;")
             card_lay.addWidget(chip)

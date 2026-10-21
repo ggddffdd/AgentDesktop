@@ -108,7 +108,11 @@ sys.argv = ['pyinstaller', '--noconfirm',
 # 历史：用户要求 400000+(ms)；实测完整打包 494s→900s 不够→放宽到 1800s。
 # v4.134.1：workpath 换到全新 %TEMP% 目录＝缓存为空，实测冷缓存要 20~30 分钟，
 # 1800s 正好卡在临界点会把正常打包误杀（dist 半新半旧），故再放宽到 3000s。
-BUILD_TIMEOUT_SEC = 3000
+# v4.288.4：本次实测冷缓存打包在 ~3000s 边界完成 PyInstaller，但「同步回 dist」
+# 阶段（仅文件复制，无卡死风险）被看门狗 os._exit 强杀，导致 dist 仍是旧包。
+# 两道防线：① 放宽到 4200s（70min）给冷缓存留足余量；② 更关键——pyi_main.run()
+# 一返回就 cancel 看门狗（见下方），让同步阶段绝不被杀。两道并存，互不冲突。
+BUILD_TIMEOUT_SEC = 4200
 
 def _build_timeout_kill():
     sys.stderr.write(f"\n[build_safe] 打包超过 {BUILD_TIMEOUT_SEC}s 仍未结束，疑似卡死，强制退出。\n")
@@ -389,6 +393,15 @@ try:
     if not _ui_hex_guard_fn(here):
         sys.exit(1)
     pyi_main.run()
+    # v4.288.4：PyInstaller 已成功收尾，立刻撤掉看门狗。
+    # 否则 3000s 边界构建会在「同步回 dist」阶段（纯文件复制，卡死风险极低）
+    # 被 os._exit 强杀，导致 dist 仍是旧包（本次 v4.288.4 实锤：Build complete!
+    # 已打印，但同步未完成、BUILD_EXIT 未打印，dist exe 仍是 v4.288.3）。
+    # 看门狗的使命是拦「PyInstaller 卡死」，run() 已返回即使命结束。
+    try:
+        _build_timer.cancel()
+    except Exception:
+        pass
     try:
         _sweep_empty_runtime_dirs(live_dist)
     except Exception as e:

@@ -123,6 +123,11 @@ def _nav_icon_pixmap(icon_name, color, size=18, device_ratio=2.0):
     p.setRenderHint(QPainter.Antialiasing)
     renderer.render(p, QRect(0, 0, px.width(), px.height()))
     p.end()
+    # v4.288.4：渲染完成后再标记 DPR（物理 2x → 逻辑 size）。此前漏了这行，
+    # QLabel 拿到 36 逻辑尺寸按 18 裁切，导航图标只剩中心 1/4。
+    # 注意必须在 p.end() 之后：先设 DPR 会改 QPainter 逻辑坐标系，
+    # render 矩形按逻辑坐标解释，图标被放大 2 倍只画进左上 1/4。
+    px.setDevicePixelRatio(float(device_ratio))
     return px
 def _make_avatar_label(size=34):
     """v4.114：头像徽标——深蓝渐变底 + 白色人形线性图标，替代文字圆。"""
@@ -132,7 +137,9 @@ def _make_avatar_label(size=34):
     avatar.setStyleSheet(
         f"QLabel{{background:qlineargradient(x1:0,y1:0,x2:1,y2:1,"
         f"stop:0:{THEME['tpl_avatar_grad1']},stop:1:{THEME['tpl_avatar_grad2']});border-radius:{size // 2}px;}}")
-    fg = _nav_icon_pixmap("数字人", THEME["white"], int(size * 0.52))
+    # v4.288.4：DPR 修复后 _nav_icon_pixmap 返回逻辑=size 的 pixmap；
+    # 头像历史视觉是「逻辑=int(size*0.52)*2 铺满底座」→ 显式加倍 + ratio=1.0 保形
+    fg = _nav_icon_pixmap("数字人", THEME["white"], int(size * 0.52) * 2, device_ratio=1.0)
     avatar.setPixmap(fg)
     return avatar
 def _nav_icon_qicon(icon_name, color, size=16):
