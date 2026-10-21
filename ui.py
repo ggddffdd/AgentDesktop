@@ -3914,7 +3914,9 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
                     f"border-radius:24px;}}"
                     f"QPushButton:hover{{background:{THEME['blue_hover']};color:{THEME['text']};}}")
                 more_btn.clicked.connect(self._toggle_nav_more)
-                nav_lay.addWidget(more_btn)
+                # v4.288.3：不再在此处 addWidget——「收起/更多」开关挪到导航列表
+                # 底部（nav_container 挂入后补挂），原先插在「对话」pill 正下方，
+                # 开合控件卡在导航流最顶上截断了「对话→协作」的视觉顺序。
                 self._nav_more_btn = more_btn
                 self._nav_more_wrap = QWidget()
                 _more_lay = QVBoxLayout(self._nav_more_wrap)
@@ -3928,7 +3930,9 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
                 # 「对话」本身就是主导航，不再加一条同名组标题
                 if _g != "对话":
                     if self._nav_group_labels:
-                        target.addSpacing(10)
+                        # v4.288.3：10→16——组与组之间原来只隔 10px，
+                        # 「协作/创作/系统」标题和项目挤在一起没有呼吸感。
+                        target.addSpacing(16)
                     _gl = QLabel(_g)
                     _gl.setStyleSheet(
                         f"color:{THEME['faint']};font-size:{THEME['font_micro']};"
@@ -3970,6 +3974,12 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             if label == "军团":
                 self._legion_nav_idx = i
         sb.addWidget(nav_container)
+
+        # v4.288.3：「收起/更多」开关补挂到导航列表底部——wrap（折叠组容器）
+        # 仍在「对话」之后原位，只挪开关本身；开关贴着列表末尾、User 区之前，
+        # 符合「先看完所有入口，最后才是开合」的阅读顺序。
+        if self._nav_more_btn is not None:
+            nav_lay.addWidget(self._nav_more_btn)
 
         sb.addStretch(1)
 
@@ -4498,11 +4508,17 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
                          r'<a href="\1" target="_blank">\1</a>', esc)
             if not esc.strip():
                 esc = "…"
+            # v4.288.3：user 气泡也带「复制」——此前操作行只有 assistant 有，
+            # 用户自己发的长指令想重用只能手动划选。col 是 flex-end，
+            # actions 自动右对齐；复制走 copy: 分支取 store 里的原文。
+            actions = ""
+            if idx is not None:
+                actions = '<div class="actions"><a href="app://copy/%d">复制</a></div>' % idx
             return (
                 '<div class="msg-row user">'
-                '<div class="col"><div class="bubble">{esc}</div></div>'
+                '<div class="col"><div class="bubble">{esc}</div>{actions}</div>'
                 '</div>'
-            ).format(esc=esc)
+            ).format(esc=esc, actions=actions)
         # assistant：Markdown 交给页面内 marked.js 渲染（HTML 属性转义即可，
         # 浏览器 getAttribute 解码回原文；属性内合法保留换行）
         raw = text if (text and str(text).strip()) else "…"
@@ -4511,6 +4527,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         if idx is not None:
             actions = (
                 '<div class="actions">'
+                f'<a href="app://copy/{idx}">复制</a>'
                 f'<a href="app://regen/{idx}">重新生成</a>'
                 f'<a href="app://edit/{idx}">改写问题</a>'
                 f'<span class="sep">|</span>'
@@ -4569,6 +4586,21 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         v4.108 H-06 修复：QWebEngineView 的链接信号传 str（QTextBrowser 时代是 QUrl），
         统一按 str 处理，恢复「重新生成/改写/👍/👎」四个气泡按钮。"""
         s = url if isinstance(url, str) else url.toString()
+        if s.startswith("copy:"):
+            # v4.288.3：气泡「复制」——取 store 里的消息原文（Markdown 源）进剪贴板，
+            # 不走渲染后 HTML；content 非 str（历史脏数据）兜底 _extract_text。
+            try:
+                i = int(s[len("copy:"):])
+                msgs = self.store.active().messages
+                if 0 <= i < len(msgs):
+                    raw = msgs[i].get("content")
+                    if not isinstance(raw, str):
+                        raw = self._extract_text(msgs[i])
+                    QGuiApplication.clipboard().setText(raw or "")
+                    toast("已复制到剪贴板", kind="success")
+            except Exception:
+                pass
+            return
         if s.startswith("regen:"):
             try:
                 self._regen_message(int(s[len("regen:"):]))
