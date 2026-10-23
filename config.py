@@ -77,7 +77,7 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.288.5"
+APP_VERSION = "v4.289.0"
 APP_BUILD_DATE = "2026-10-23"
 
 # ---------- DeepSeek 错峰窗口（唯一配置处）----------
@@ -1080,6 +1080,12 @@ DEFAULT_CONFIG = {
     # 付费搜索兜底：填入 SerpAPI key 后，内容平台类查询自动走 SerpAPI（稳定、抗反爬），
     # 免费引擎（搜狗/Bing）仅作无 key 时的兜底。留空则纯免费。
     "search_api_key": "",
+    # v4.289.0：浏览器搜索兜底通道的引擎优先级清单（「引擎清单」抽配置）。
+    # 原先写死在 browser_control_tools.browser_search 与 tools._browser_search_fallback 两处，
+    # 现统一从此读，config.json 可覆盖（如换顺序 / 去掉某引擎）。仅控制「用哪些 + 顺序」，
+    # 各引擎的 URL 模板与结果容器选择器(_SEARCH_PAGE)仍在代码内（实现耦合，非清单）。
+    # 列表里出现 _SEARCH_PAGE 未登记的引擎会被安全跳过（不会崩）。
+    "browser_search_engines": ["duckduckgo", "google", "bing"],
     "agent_skip_confirm": False,
     # v4.277.0：默认只发约 25 个常用工具的 schema，其余按对话再补。
     # true = 恢复把全部工具 schema 发给模型。

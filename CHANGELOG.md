@@ -7,6 +7,14 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.289.0 — 2026-10-23
+
+现有功能完善（去掉冗余、增量摘要替代无界碎片；大哥「去掉用不到的功能，把现有功能尽量完善」策略落地，无新功能）。
+
+- **#4 浏览器引擎清单抽配置**：原搜索引擎优先级 `["duckduckgo","google","bing"]` 写死在两处（browser_control_tools.browser_search 默认 + tools._browser_search_fallback 显式传参），既重复又不可配。现统一抽到 config.DEFAULT_CONFIG 的 `browser_search_engines`，config.json 可覆盖顺序/增减引擎；两处改读该键（缺失/异常回退写死默认），消除重复、做成可配置。各引擎的 URL 模板与结果容器选择器（`_SEARCH_PAGE`）仍是代码内实现常量（非「清单」，不外部化，避免破坏解析）；清单里出现未登记引擎会被安全跳过（不崩）。新增 `test_browser_engine_config_290.py`（7 项：默认清单 / 自定义顺序 / 未知引擎跳过 / 显式覆盖 / 缺失回退 / 坏类型回退 / load_config 透传）。
+- **#1 上下文增量摘要（有界合并）**：context_manager 自动压缩原每次淘汰都 append 一条独立 fragment，长会话会无界累积成数百条碎片（context_summary 工具回读拖累上下文、`context_summary_{sid}.json` 磁盘单调膨胀）——正是「一刀切 / 无界」的真问题。现改为「并入运行中的合并摘要」：同一段增量只追加去重后的 key_points、刷新周期尾与计数，summaries 保持有界（每段 LLM 显式快照另起一段、保留其 method 标记，不被降级合并）。属「增量摘要 + 做减法」，不动 LLM 手动压缩路径（context_compress 工具）。新增 `test_context_incremental_290.py`（5 项：有界单条合并 / key_points 去重 / 周期刷新 / 回读契约 / LLM 快照独立保留）。
+- **验收**：两套新测试全绿（12/0）；既有版本判据（test_version_single_source_235 5/0）、exec_tool 相关回归（test_exec_retry_289 / test_structured_return_223 / test_toolresult_wiring_226 / test_tool_outcome_single_258 / test_net_retry_228 全过）；release gate 全量回归 0 红。
+
 ## v4.288.5 — 2026-10-23
 
 exec_tool 执行端瞬断自动重试（护栏加固，非新功能；大哥「不放心交任务」诉求）。

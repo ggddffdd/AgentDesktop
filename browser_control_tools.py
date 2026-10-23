@@ -643,10 +643,19 @@ def browser_search(cfg, query, app_dir=None, top_k=5, engines=None, cdp=None):
     except Exception:
         hl = "zh-CN"
     if not engines:
+        # v4.289.0：引擎优先级清单抽配置（config.browser_search_engines），
+        # config.json 可覆盖顺序 / 增减引擎；未配置或配置异常时回退写死的默认值。
         # DDG html 版第一：结果 href 是可解码的 `uddg=`，能还原真实 URL；
         # Google/Bing 的结果链接已加密成 goto?url= / ck/a?p=，解不出且 browser_read 打开会 400，
         # 只作标题线索 —— 故排在后面（见 _is_engine_redirect 的实测修正）。
-        engines = ["duckduckgo", "google", "bing"]
+        try:
+            _cfg_engines = (cfg or {}).get("browser_search_engines")
+            if isinstance(_cfg_engines, list) and _cfg_engines:
+                engines = list(_cfg_engines)
+            else:
+                engines = ["duckduckgo", "google", "bing"]
+        except Exception:
+            engines = ["duckduckgo", "google", "bing"]
 
     notes = []
     _enc_fallback, _enc_engine = [], ""     # 全是加密链时的兜底候选（最后才用，且必须显式标注）

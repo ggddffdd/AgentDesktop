@@ -1498,7 +1498,13 @@ def _browser_search_fallback(cfg, query, app_dir, top_k, offshore=False):
     # 引擎顺序（2026-09-14 真机实测）：DDG html 版最可靠（结果 href 是 `uddg=` 跳转链、
     # 可解码还原真实 URL）→ Google（多为真实 URL）→ Bing（结果链接已加密成 `p=`，
     # 客户端解不出，只作最后手段）。
-    engines = ["duckduckgo", "google", "bing"]
+    # v4.289.0：引擎优先级清单抽配置（config.browser_search_engines），单来源，
+    # 不再此处写死；配置缺失/异常时回退写死默认值。
+    try:
+        _cfg_engines = (cfg or {}).get("browser_search_engines")
+        engines = list(_cfg_engines) if (isinstance(_cfg_engines, list) and _cfg_engines) else ["duckduckgo", "google", "bing"]
+    except Exception:
+        engines = ["duckduckgo", "google", "bing"]
     try:
         res, note = _bct.browser_search(cfg, query, app_dir=app_dir,
                                         top_k=top_k, engines=engines)

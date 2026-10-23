@@ -129,12 +129,39 @@ class ContextManager:
                 self._compress()
 
     def _compress(self):
-        """自动压缩：保留最近 max_window 条，更早的历史做启发式摘要归档"""
+        """自动压缩：保留最近 max_window 条，更早的历史做增量启发式摘要并并入运行摘要。
+
+        v4.289.0（增量摘要 + 做减法）：原实现每次压缩都 append 一条独立 fragment，
+        长会话会无界累积成数百条碎片（context_summary 工具回读时拖累上下文，且磁盘
+        context_summary_{sid}.json 单调膨胀）。现改为「并入运行中的合并摘要」——
+        同一段增量只追加去重后的 key_points、刷新周期尾与计数，summaries 保持有界
+        （每段 LLM 显式快照另起一段、保留其 method 标记，不被降级合并）。"""
         recent = self.messages[-self.max_window:]
         history = self.messages[:-self.max_window]
         if history:
-            summary = self._heuristic_summary(history)
-            self.summaries.append(summary)
+            inc = self._heuristic_summary(history)
+            last = self.summaries[-1] if self.summaries else None
+            if last:
+                # 并入运行摘要（有界）：扩展去重后的 key_points，刷新周期尾与计数
+                _seen = {(p.get("type"), p.get("content"))
+                         for p in last.get("key_points", [])}
+                for p in inc.get("key_points", []):
+                    k = (p.get("type"), p.get("content"))
+                    if k not in _seen:
+                        last.setdefault("key_points", []).append(p)
+                        _seen.add(k)
+                last["message_count"] = (
+                    last.get("message_count", 0) + inc.get("message_count", 0))
+                _end = inc.get("period", "")
+                if _end and " ~ " in _end:
+                    _tail = _end.split(" ~ ")[-1]
+                    _head = (last.get("period") or "").split(" ~ ")[0]
+                    last["period"] = (f"{_head} ~ {_tail}" if _head else _end)
+                if last.get("method") in ("heuristic", "heuristic-merged", "heuristic-fallback"):
+                    last["method"] = "heuristic-merged"
+                # 非 heuristic 段（如 llm 快照）保留原 method 标记，不降级
+            else:
+                self.summaries.append(inc)
             self._save_summaries()
         self.messages = recent
 

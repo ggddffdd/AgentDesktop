@@ -15,6 +15,7 @@ test_automation_isolation.py
 test_automation_no_browser_280.py
 test_bridge_security.py
 test_browser_control.py
+test_browser_engine_config_290.py
 test_bugfix_2092.py
 test_cancel_token.py
 test_cdp_profile_path.py
@@ -22,6 +23,7 @@ test_claim_evidence_195.py
 test_clarify_gate_238.py
 test_clean_recycle_bin_217.py
 test_cmd_robustness_2a.py
+test_context_incremental_290.py
 test_continuation_sticky_255.py
 test_core_fix_188.py
 test_count_audit_194.py
