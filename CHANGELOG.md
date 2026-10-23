@@ -7,6 +7,17 @@
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
 
+## v4.288.5 — 2026-10-23
+
+exec_tool 执行端瞬断自动重试（护栏加固，非新功能；大哥「不放心交任务」诉求）。
+
+- **背景**：exec_tool 总兜底此前对一切工具异常只丢「工具执行异常：{e}」给 LLM，由模型临场猜下一步。其中一大类是**边界瞬断**（网络超时 / 连接重置 / 429 限流 / 5xx）——这类错误重试必赢、不重试就白白烧一轮对话。ToolResult 契约（v4.223）虽已有 `error_code` / `retryable` 字段，但总兜底从未置位，更无自动重试循环。
+- **修复**：新增 `_is_transient_error`（异常分类）+ `_exec_handler_with_retry`（有界重试，默认 3 次、退避 1s/2s、尊重 stop 信号、每次重试打 warning 进轨迹）。registry 主链路（网络/IO 类核心工具都走这）的 handler 调用改走重试 helper，失败分支行为与原异常分支**完全一致**（确定性错误不重试）。按异常类型门控天然排除本地变更类工具（run_command/run_python/process_kill 等抛 CalledProcessError / OSError 具体码等非瞬断类），无需维护工具名白黑名单，避免名单漂移。
+- **复用既有契约**：重试耗尽后给 LLM 追加「已自动重试 N 次仍失败，无需手动重试」提示，避免模型重复重试白烧轮；`retryable` 信号仅在真实瞬断时置位，确定性失败仍按原样上抛。
+- **范围说明**：MCP 分支（`_try_mcp_tool` 内部已吞异常）本轮未接重试；模型调用层瞬断处理（v4.228 `is_transient_net_error`）是另一层，互补不重叠。
+- **测试**：新增 `test_exec_retry_289.py`（6 项：分类 + 重试成功/用尽/确定性不重试/首次成功/stop 中止）；既有 `test_structured_return_223` SR6 exec_tool 端到端、`test_toolresult_wiring_226`、`test_tool_outcome_single_258`、`test_net_retry_228` 全过（回归 0 红）。
+- **release gate 收口（实现内回归，发布前已修，未改版本号）**：① 失败日志分支移出 except 块后 `exc_info=True` 抓不到真实异常 → 改为把真实异常实例 `exc_info=_exec_err` 透传，恢复 F1-7「失败原因进日志」；② 重试 helper 首轮调用前就因 `should_stop` 提前 `break` 绕过 handler 自身判定 + 误加 `_r is None` reject 分支 → 破坏 `test_software_control_2b` 的「should_stop 透传到 app_kill」契约，已改为「首轮必调用、仅在瞬断重试前用 stop 信号中止重试」并删除多余 reject。两处修复后 `test_fail_log_tts_257`(18/0)、`test_software_control_2b`(14/0)、`test_exec_retry_289`(6/0) 全绿。
+
 ## v4.288.4 — 2026-10-21
 
 导航图标「显示不全」修复（大哥 10-21 截图反馈：侧边栏图标只剩碎片）。

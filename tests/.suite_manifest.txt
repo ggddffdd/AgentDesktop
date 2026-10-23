@@ -40,6 +40,7 @@ test_empty_state_207.py
 test_empty_state_208.py
 test_evidence_mask.py
 test_evidence_registry_195.py
+test_exec_retry_289.py
 test_exec_tool_gate_219.py
 test_fail_log_tts_257.py
 test_focus_chrome_264.py

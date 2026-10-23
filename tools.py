@@ -16,6 +16,7 @@ import inspect
 import urllib.request
 import urllib.error
 import urllib.parse
+import socket
 from pathlib import Path
 from datetime import datetime
 
@@ -925,6 +926,90 @@ def _permission_gate(name, args, perm_ctx):
     return (False, user_denial(name, "confirm"))
 
 
+# ============ v4.288.5：执行端瞬时可重试（护栏加固，非新功能）============
+# 背景：exec_tool 的总兜底此前对一切工具异常只丢「工具执行异常：{e}」给 LLM，
+# 由模型临场猜下一步。其中一大类是**边界瞬断**（网络超时 / 连接重置 / 429 限流 /
+# 5xx）——这类错误重试必赢、不重试就白白烧一轮对话。本加固只对这类异常做
+# 有界自动重试（不进 LLM、不耗对话轮）；确定性错误（参数/鉴权/值/本地副作用失败）
+# 一律不重试。
+#
+# 安全性：重试只发生在 handler 调用这一行；异常意味着远端/IO 未提交、本地副作用
+# 未产生，**重放安全**。按异常类型（而非工具名）门控——瞬断类异常天然不会来自
+# run_command/run_python/process_kill 等本地变更工具（它们抛 CalledProcessError /
+# OSError 具体码等非瞬断类），故无需维护工具名白/黑名单，也避免名单漂移。
+_TRANSIENT_ERRS = (
+    TimeoutError,
+    ConnectionError,
+    ConnectionResetError,
+    BrokenPipeError,
+    socket.timeout,
+    urllib.error.URLError,
+    urllib.error.HTTPError,
+)
+_TRANSIENT_NAMES = frozenset({
+    "RequestException", "Timeout", "ConnectTimeout", "ReadTimeout",
+    "ConnectionError", "HTTPError", "ClientOSError", "RemoteDisconnected",
+})
+
+
+def _is_transient_error(e):
+    """判断异常是否属「边界瞬断」——可安全自动重试。"""
+    if isinstance(e, _TRANSIENT_ERRS):
+        # HTTPError：仅 429（限流）与 5xx（服务端临时故障）视为瞬断；
+        # 其余 4xx（含 404/403/401）是确定性错误，重试无意义。
+        if isinstance(e, urllib.error.HTTPError):
+            try:
+                return e.code == 429 or 500 <= e.code < 600
+            except Exception:
+                return False
+        return True
+    # 第三方 HTTP 库（requests/httpx/aiohttp）可能未直接依赖，按类名兜底
+    return type(e).__name__ in _TRANSIENT_NAMES
+
+
+def _exec_handler_with_retry(fn, name, args, stop_event=None, should_stop=None,
+                             max_attempts=3, base_backoff=1.0):
+    """对 handler 调用做有界瞬断重试，返回 (result, err, attempts)。
+
+    · 成功                    → (result, None, 1)
+    · 瞬断重试用尽            → (None, last_exc, max_attempts)
+    · 确定性错误（不重试）    → (None, exc, 1)
+    · 收到 stop 信号中止      → (None, last_exc_or_None, attempts)
+    退避 = base_backoff * 2**(attempt-1)，封顶避免久等（默认 1s / 2s）。
+    每次瞬断重试都打 warning 进轨迹，保证「重试」可观测、不掩盖真 bug。
+    """
+    _last = None
+    for _attempt in range(1, max_attempts + 1):
+        try:
+            return fn(), None, _attempt
+        except Exception as _e:
+            _last = _e
+            if not _is_transient_error(_e) or _attempt >= max_attempts:
+                return None, _e, _attempt
+            # 瞬断，准备重试 —— 但重试前先尊重 stop 信号（不取消已发起的调用，
+            # 只中止后续重试）。注意：首轮调用**绝不**因 stop 跳过，否则会绕过
+            # handler 自身对 should_stop 的判定（如 app_kill 返回「已停止」），
+            # 与原「should_stop 透传给 handler」语义冲突。
+            if stop_event is not None:
+                try:
+                    if stop_event.is_set():
+                        return None, _e, _attempt
+                except Exception:
+                    pass
+            if callable(should_stop) and should_stop():
+                return None, _e, _attempt
+            _wait = base_backoff * (2 ** (_attempt - 1))
+            get_logger().warning(
+                f"工具瞬断自动重试: {name} | 第{_attempt}次失败({type(_e).__name__}) "
+                f"| {_wait:.0f}s 后退避",
+                module="tools", extra={"tool": name, "attempt": _attempt})
+            try:
+                time.sleep(_wait)
+            except Exception:
+                break
+    return None, _last, _attempt
+
+
 def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
               stop_event=None, should_stop=None, perm_ctx=None):
     """统一工具路由，返回 (result_str, deliverables, schedule)。
@@ -988,7 +1073,32 @@ def exec_tool(cfg, app_dir, name, args, progress=None, allowed_tools=None,
                 _hk["stop_event"] = stop_event
             if "should_stop" in _sig.parameters:
                 _hk["should_stop"] = should_stop
-            _r = _entry["handler"](cfg, app_dir, args, **_hk)
+            _r, _exec_err, _attempts = _exec_handler_with_retry(
+                lambda: _entry["handler"](cfg, app_dir, args, **_hk),
+                name, args, stop_event=stop_event, should_stop=should_stop)
+            if _exec_err is not None:
+                # 瞬断重试用尽或确定性错误：走与原异常分支完全一致的失败处理
+                log.warning("工具 %s 执行异常: %s", name, _exec_err)
+                try:
+                    # 注意：此处已不在 except 块内（异常由 _exec_handler_with_retry
+                    # 捕获后以 _exec_err 返回），sys.exc_info() 已清空，不能用
+                    # exc_info=True（那样会丢失失败原因，撞 F1-7）。直接把真实
+                    # 异常实例传给 exc_info，StructuredLogger 会转 tuple 抓 message+栈。
+                    get_logger().error(
+                        f"工具执行失败: {name} | args={_trunc_args(args)}",
+                        module="tools", exc_info=_exec_err)
+                except Exception:
+                    pass
+                _retry_note = ""
+                if _attempts > 1:
+                    # 已自动重试仍失败 → 明确告知模型「无需手动重试」，避免白烧一轮
+                    _retry_note = f"\n[已自动重试 {_attempts - 1} 次仍失败，无需手动重试]"
+                _trace_fetch(name, args, f"工具执行异常：{_exec_err}", ok=False)
+                return _reject(f"工具执行异常：{_exec_err}{_retry_note}")
+            # 注意：此处**不**对 _r is None 单独 reject。handler（含 app_kill 等）
+            # 在 should_stop 时会自行返回带「已停止」语义的结果（非 None 或经
+            # from_legacy 兜底），原口径直接走 ToolResult.from_legacy(_r) 即可，
+            # 自加 reject 会破坏「should_stop 透传给 handler」的契约（撞 ②-B.2）。
             # v4.223：传 name/args，让已登记结局契约的工具按真实信号判定成败
             _tr = ToolResult.from_legacy(_r, name=name, args=args)
             _trace_fetch(name, args, _tr.msg, ok=_tr.ok)
