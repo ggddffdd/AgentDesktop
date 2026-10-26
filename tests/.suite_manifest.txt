@@ -111,6 +111,7 @@ test_receipt_copy_209.py
 test_resume_api_error_221.py
 test_resume_idempotent_222.py
 test_resume_missing_artifact_232.py
+test_resume_workflow_292.py
 test_review_fix_243.py
 test_review_fix_244.py
 test_review_fix_245.py
@@ -134,6 +135,7 @@ test_skill_install_gate_259.py
 test_skill_meta_226.py
 test_software_control_2b.py
 test_split_216.py
+test_state_consistency_292.py
 test_status_len_2091.py
 test_stop_toast_281.py
 test_struct_layout_267.py
@@ -192,5 +194,6 @@ test_voice_ptt_282.py
 test_webengine_policy_265.py
 test_webengine_sethtml_272.py
 test_welcome_ia_199.py
+test_worker_isolation_292.py
 test_workflow_fail_visibility_233.py
 test_workspace_routing.py

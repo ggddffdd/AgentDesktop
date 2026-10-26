@@ -99,7 +99,9 @@ log = logging.getLogger("dsdesktop")
 
 # ===== v4.216.0 大文件拆分：THEME 与通用构件迁出，此处 re-export 保兼容 =====
 # THEME 唯一真源在 theme_tokens.py；`from ui import THEME` 等外部引用不变。
-from theme_tokens import THEME  # noqa: F401
+from theme_tokens import THEME
+from ui_agent_events_mixin import (ChatAgentEventsMixin,
+                                   worker_event_is_current as _worker_event_is_current)  # noqa: F401
 from ui_widgets import (  # noqa: F401
     RES_PRESETS, TaskStatusStrip, ThemedDialog, ConfirmDialog, RenameDialog,
     InfoDialog, MultiLineInput, SessionManagerDialog, _EdgeResizeFilter,
@@ -285,7 +287,7 @@ DELIVERY_ICON_FALLBACK = "附件"
 
 
 
-class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
+class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin, QMainWindow):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
@@ -5782,8 +5784,10 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             return "昨天"
         return date_s
 
-    def _on_deliverable_added(self, rel, kind, name):
-        sess = self.store.active()
+    def _on_deliverable_added(self, rel, kind, name, worker=None):
+        if not _worker_event_is_current(self, worker):
+            return
+        sess = self._agent_write_session(worker)
         if any(d.get("rel") == rel for d in sess.deliverables):
             return
         _d, _p = self._dv_meta_from_rel(rel, kind)
@@ -7873,6 +7877,15 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         # v4.101：开启新任务前，清理本会话残留的「已暂停」Agent 检查点（用户放弃旧任务、开启新任务）
         if not resume:
             self._cleanup_paused_agent_checkpoints()
+        # v4.289.2：新任务启动前先请求旧 worker 收手；即使旧线程尚未退出，
+        # 后续信号也会因身份不匹配被丢弃，不会串写本节新会话。
+        _prev = getattr(self, "_agent_worker", None)
+        if _prev is not None:
+            try:
+                if _prev.isRunning():
+                    _prev.request_stop()
+            except Exception:
+                pass
         self._agent_active = True  # 本次实际走 Agent 管线，提示词按 Agent 模式构建
         session = self.store.active()
         self._streaming = False
@@ -7924,25 +7937,44 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
                         task_id=resume_task_id, resume=resume,
                         explicit_intent=self._last_user_intent_is_action(),
                         bound_sid=_bound, cache_context=dynamic)
+        # v4.289.2：所有信号都捕获本次 worker 身份，不再由槽函数反查
+        # 可变的 self._agent_worker。超时后新任务覆盖引用时，旧 worker 的迟到
+        # 信号（日志/流式/完成）会被识别为非当前任务并丢弃，不再串写新会话。
         self._agent_worker = w
-        w.status.connect(self.status_label.setText)
-        w.status.connect(self._agent_task_progress)
-        w.render.connect(self._render_throttled)
-        w.tool_log.connect(self._on_tool_log)
-        w.tool_started.connect(self._on_tool_started)
-        w.tool_finished.connect(self._on_tool_finished)
-        w.deliverable_added.connect(self._on_deliverable_added)
-        w.confirm_action.connect(self._on_confirm_action)
-        w.schedule_reminder.connect(self._on_schedule_reminder)
-        w.stream_begin.connect(self._on_stream_begin)
-        w.stream_chunk.connect(self._on_stream_chunk)
-        w.stream_commit.connect(self._on_stream_commit)
-        w.done.connect(self._on_agent_done)
-        w.started.connect(lambda: self.stop_btn.setVisible(True))
-        w.finished.connect(lambda: self.stop_btn.setVisible(False))
+        w.status.connect(lambda s, _w=w: (
+            self.status_label.setText(s) if _worker_event_is_current(self, _w) else None))
+        w.status.connect(lambda s, _w=w: (
+            self._agent_task_progress(s) if _worker_event_is_current(self, _w) else None))
+        w.render.connect(lambda _w=w: (
+            self._render_throttled() if _worker_event_is_current(self, _w) else None))
+        w.tool_log.connect(lambda entry, _w=w: self._on_tool_log(entry, _w))
+        w.tool_started.connect(lambda data, _w=w: self._on_tool_started(data, _w))
+        w.tool_finished.connect(lambda data, _w=w: self._on_tool_finished(data, _w))
+        w.deliverable_added.connect(
+            lambda rel, kind, name, _w=w: self._on_deliverable_added(rel, kind, name, _w))
+        w.confirm_action.connect(
+            lambda title, detail, _w=w: self._on_confirm_action(title, detail, _w))
+        w.schedule_reminder.connect(
+            lambda d, m, r, _w=w: (
+                self._on_schedule_reminder(d, m, r)
+                if _worker_event_is_current(self, _w) else None))
+        w.stream_begin.connect(lambda _w=w: self._on_stream_begin(_w))
+        w.stream_chunk.connect(lambda text, _w=w: self._on_stream_chunk(text, _w))
+        w.stream_commit.connect(lambda text, _w=w: self._on_stream_commit(text, _w))
+        w.done.connect(lambda _w=w: self._on_agent_done(_w))
+        w.started.connect(lambda _w=w: (
+            self.stop_btn.setVisible(True) if _worker_event_is_current(self, _w) else None))
+        w.finished.connect(lambda _w=w: (
+            self.stop_btn.setVisible(False) if _worker_event_is_current(self, _w) else None))
         w.start()
 
-    def _on_tool_log(self, entry):
+    def _is_current_agent_worker(self, worker=None):
+        """事件所属 worker 是否仍是当前任务；None 保持老测试/老调用口径。"""
+        return _worker_event_is_current(self, worker)
+
+    def _on_tool_log(self, entry, worker=None):
+        if not _worker_event_is_current(self, worker):
+            return
         # v4.108 M-22：tool_log 的 args/result 截断存储——web_search/read_file 等
         # 全文可达数 KB，全量入库导致 sessions.json 无限膨胀（实测 1.3MB+），
         # 每次落盘/加载都拖慢。保留前段 + 省略号即可回溯工具干了什么。
@@ -7968,13 +8000,13 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         if _eid:
             rec["evidence_id"] = int(_eid)
             rec["evidence_ok"] = bool(entry.get("evidence_ok", True))
-        self._agent_write_session().messages.append(rec)
+        self._agent_write_session(worker).messages.append(rec)
         self._save_throttled()  # v4.58：批量保存，避免每个工具一次磁盘 IO
         self._render_throttled()  # v4.58：节流渲染，避免信号洪水
 
-    def _agent_write_session(self):
+    def _agent_write_session(self, worker=None):
         """本轮 Agent 的写入目标。启动时钉住的会话优先于后来被切走的 active()。"""
-        w = getattr(self, "_agent_worker", None)
+        w = worker or getattr(self, "_agent_worker", None)
         bound = getattr(w, "_bound_sid", None) if w is not None else None
         if bound:
             sess = automation.bound_session(getattr(self, "store", None), bound)
@@ -8012,7 +8044,9 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             f'</div>'
         )
 
-    def _on_tool_started(self, data):
+    def _on_tool_started(self, data, worker=None):
+        if not _worker_event_is_current(self, worker):
+            return
         name = data.get("name", "")
         args = data.get("args", {})
         agent_index = data.get("index", 0)
@@ -8036,52 +8070,16 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             self.chat_view.append(
                 self._tool_card_html(ui_seq, display_name, args_preview))
 
-    def _on_tool_finished(self, data):
-        name = data.get("name", "")
-        display_name = self._TOOL_NAME_MAP.get(name, name)
-        result_preview = html_mod.escape(str(data.get("result_preview", ""))[:100])
-        agent_index = data.get("index", 0)
-
-        rec = self._live_tools.get(agent_index)
-        if rec is not None and rec.get("name") == name:
-            ui_seq = rec["ui_seq"]
-            rec["status"] = "done"
-            rec["result"] = result_preview
-        else:
-            # 找不到 started（历史/直发 finished）：兜底追加一张 done 卡，不丢信息
-            self._live_seq += 1
-            ui_seq = self._live_seq
-            self._live_tools[agent_index] = {
-                "ui_seq": ui_seq, "name": name, "display_name": display_name,
-                "args_preview": "", "status": "done", "result": result_preview,
-            }
-        self._tool_progress_note(display_name, running=False)
-        # 原位替换 running 卡 → done 卡。默认不刷卡，只更新输入框上方的进度条。
-        if self._show_tool_details() and getattr(self, "chat_view", None) is not None:
-            self.chat_view.replace_live(
-                f"live-tool-{ui_seq}",
-                self._tool_card_html(ui_seq, display_name, done=True,
-                                     result_preview=result_preview))
-        _args = (rec or {}).get("args", "")
-        for _p in ui_focus.extract_artifact_paths(
-                name, _args, data.get("result_preview", "")):
-            self._append_live_artifact_chip(_p)
-
-        # v4.84：模型刚提交了一个待审核技能，刷新徽标并提示
-        if name == "create_skill":
-            self._refresh_skill_review_label()
+    def _on_confirm_action(self, title, detail, worker=None):
+        w = worker or self._agent_worker
+        if not _worker_event_is_current(self, w):
+            # 旧任务不能弹新任务的确认框；直接拒绝并唤醒它退出。
             try:
-                import skill_review
-                n = skill_review.count_pending(self.cfg)
-                if n > 0 and getattr(self, "tray_app", None):
-                    self.tray_app.tray.showMessage(
-                        "技能审核", f"新技能已提交到审核队列，共 {n} 个待你通过。",
-                        QSystemTrayIcon.Information, 6000)
+                w._confirm_val = False
+                w._confirm_event.set()
             except Exception:
                 pass
-
-    def _on_confirm_action(self, title, detail):
-        w = self._agent_worker
+            return
         # v4.169.0：硬确认档（装/建技能、删数据）会带 _confirm_force，
         # 此时**即使本会话已全部信任也必须弹窗** —— 否则那道 always_confirm 白设。
         if (self.permission_engine.session_trusted
@@ -8103,16 +8101,20 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         w._confirm_event.set()
         self._clear_ghost()
 
-    def _on_stream_begin(self):
+    def _on_stream_begin(self, worker=None):
+        if not _worker_event_is_current(self, worker):
+            return
         self._streaming = True
         self._streaming_text = ""
         self._render_throttled()
 
-    def _on_stream_chunk(self, text):
+    def _on_stream_chunk(self, text, worker=None):
+        if not _worker_event_is_current(self, worker):
+            return
         self._streaming_text = text
         self._render_throttled()  # v4.58：节流渲染，~200 chunk → ~20 次 setHtml
 
-    def _track_context(self, role, content):
+    def _track_context(self, role, content, sid=None):
         """轻量同步消息到上下文管理器（模块4），不侵入 Session 本身。"""
         try:
             if not self.cfg.get("context_enabled", True):
@@ -8124,14 +8126,17 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             if not isinstance(content, str):
                 return
             from context_manager import get_context_manager
-            sid = self.store.active_sid if self.store else None
+            sid = sid or (self.store.active_sid if self.store else None)
             get_context_manager(sid).add_message(role, content)
         except Exception:
             pass
 
-    def _on_stream_commit(self, text):
+    def _on_stream_commit(self, text, worker=None):
+        if not _worker_event_is_current(self, worker):
+            return
         self._streaming = False
-        msgs = self._agent_write_session().messages
+        _target = self._agent_write_session(worker)
+        msgs = _target.messages
         # v4.60o：末条防重——渲染竞态或循环重提同一句时，避免重复气泡
         if (msgs and msgs[-1].get("role") == "assistant"
                 and msgs[-1].get("content") == text):
@@ -8140,7 +8145,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
             self._speak(text)
             return
         msgs.append({"role": "assistant", "content": text})
-        self._track_context("assistant", text)
+        self._track_context("assistant", text, sid=getattr(_target, "sid", None))
         self._save_throttled()  # v4.58：批量保存
         # v4.108 M-25：不再强制全量重建（旧 v4.96 方案）——jsRenderAll 会清空 DOM，
         # 把只活在 DOM 里的 live 工具卡（running/done）一并抹掉，随后 replace_live
@@ -8163,14 +8168,16 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, QMainWindow):
         except Exception:
             pass
 
-    def _on_agent_done(self):
+    def _on_agent_done(self, worker=None):
+        if not _worker_event_is_current(self, worker):
+            return
         self._agent_active = False
         self._reset_busy()
         self._auto_task_active = None   # v4.215.0：自动化受限工具标记随轮次收口
         self.stop_btn.setVisible(False)
         self.stop_btn.setEnabled(True)
         self.resume_agent_btn.setVisible(False)
-        w = self._agent_worker
+        w = worker or self._agent_worker
         stopped = getattr(w, "stopped_by_user", False)
         # 可观测性：Agent 整轮收口。用户暂停与可续的自动停止（超时/熔断/步数耗尽）
         # 都记「失败 + 可重试」，因为确实没跑完；其余视为完成。

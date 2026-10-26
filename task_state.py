@@ -39,7 +39,7 @@ import os
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.289.1"
+VERSION = "v4.289.2"
 
 # ============================================================
 # 会产出实物的工具（按工具名 → 产物是否应当落盘到磁盘）
@@ -230,7 +230,7 @@ class TaskState(object):
         except Exception:
             return False
 
-    def note_workflow_incomplete(self, failed, skipped):
+    def note_workflow_incomplete(self, failed, skipped, incomplete=None, cancelled=None):
         """v4.233 断点 E：任务图内部有 failed/skipped 节点时，由 _run_workflow 回写。
 
         仅记录未完整达成的节点集合（fail-open：异常也不影响主流程），作为
@@ -242,6 +242,8 @@ class TaskState(object):
             self.workflow_incomplete = {
                 "failed": list(failed or []),
                 "skipped": list(skipped or []),
+                "incomplete": list(incomplete or []),
+                "cancelled": list(cancelled or []),
             }
         except Exception:
             pass

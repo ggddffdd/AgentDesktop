@@ -191,7 +191,7 @@ def run_all(ev):
     # 回写目标走真实的 _agent_write_session：没有钉住的 worker 时仍是 active()。
     try:
         import ui as UI
-        _win._agent_write_session = lambda: UI.ChatWindow._agent_write_session(_win)
+        _win._agent_write_session = lambda worker=None: UI.ChatWindow._agent_write_session(_win, worker)
         UI.ChatWindow._on_tool_log(
             _win, {"name": "read_file", "args": '{"path":"BIG.md"}',
                    "result": big, "evidence_id": eid, "evidence_ok": True})
@@ -232,7 +232,7 @@ def run_all(ev):
             "_save_throttled": lambda s: None,
             "_render_throttled": lambda s: None,
         })()
-        _win2._agent_write_session = lambda: UI.ChatWindow._agent_write_session(_win2)
+        _win2._agent_write_session = lambda worker=None: UI.ChatWindow._agent_write_session(_win2, worker)
         UI.ChatWindow._on_tool_log(
             _win2, {"name": "web_search", "args": "q", "result": "fresh"})
         check("E5 工具记录进钉住的会话而不是当前会话",

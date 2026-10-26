@@ -54,6 +54,9 @@ class ContextManager:
         # 审计修复 F5：key_info 落盘节流——脏标记 + 最小间隔，进程退出时统一 flush。
         self._ki_dirty = False
         self._ki_last_save = 0.0
+        # v4.289.2：消息版本。LLM 网络调用期间若有新增/压缩/清空，版本变化
+        # 则丢弃陈旧摘要，绝不按当前尾部裁剪（会裁掉等待期间的新消息）。
+        self._revision = 0
         self._load()
 
     # ---------- 持久化 ----------
@@ -124,6 +127,7 @@ class ContextManager:
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "metadata": metadata or {},
             })
+            self._revision += 1
             self.extract_key_info(content)
             if len(self.messages) > self.compress_threshold:
                 self._compress()
@@ -164,6 +168,7 @@ class ContextManager:
                 self.summaries.append(inc)
             self._save_summaries()
         self.messages = recent
+        self._revision += 1
 
     def _heuristic_summary(self, history):
         summary = {
@@ -189,9 +194,11 @@ class ContextManager:
         放在锁外——否则压缩期间会阻塞 GUI 线程的 add_message 数十秒。
         """
         with self._lock:
+            revision = self._revision
             history = (list(self.messages[:-self.max_window])
                        if len(self.messages) > self.max_window
                        else list(self.messages))
+            drop_len = max(0, len(self.messages) - self.max_window)
         if not history:
             return "（没有可压缩的历史）"
         text = "\n".join(f"{m['role']}: {m['content']}" for m in history)
@@ -202,10 +209,15 @@ class ContextManager:
         )
         llm_text = _call_summary_llm(prompt, cfg)  # 锁外网络调用
         with self._lock:
+            if self._revision != revision:
+                # 等待期间有新消息/自动压缩/清空：摘要对应的是旧前缀，
+                # 此时按当前尾部裁剪会丢掉新消息，故整份丢弃。
+                return "（对话在压缩期间已更新，本次陈旧摘要已丢弃；请重新压缩）"
             if llm_text is None:
                 s = self._heuristic_summary(history)
                 self.summaries.append({**s, "method": "heuristic-fallback"})
                 self._save_summaries()
+                self._revision += 1
                 return "（LLM 不可用，已用启发式摘要）\n" + json.dumps(s, ensure_ascii=False)[:600]
             entry = {
                 "period": f"{history[0]['timestamp']} ~ {history[-1]['timestamp']}",
@@ -215,8 +227,9 @@ class ContextManager:
             }
             self.summaries.append(entry)
             self._save_summaries()
-            # 真实摘要后，把超窗部分裁剪，仅留最近窗口
-            self.messages = self.messages[-self.max_window:]
+            # 只删除本次快照覆盖的前缀，不碰等待期间新增的尾部消息。
+            del self.messages[:drop_len]
+            self._revision += 1
             return llm_text
 
     def get_compressed_context(self):
@@ -254,6 +267,7 @@ class ContextManager:
         with self._lock:
             self.messages = []
             self.summaries = []
+            self._revision += 1
             self._save_summaries()
             self._save_key_info(force=True)  # F5：关键事件强制落盘
 

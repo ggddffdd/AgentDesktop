@@ -49,8 +49,8 @@ def main():
         r'log\.error\("Agent 续跑调用失败: %s", e\)\n'
         r'(\s*)self\.tool_log\.emit\([^\n]*\)\n'
         r'(\s*)self\._note_exit\("api_error"\)[^\n]*\n'
-        r'(\s*)self\._resumable_stop = True', src)
-    check("S1 续跑 except 块含 _note_exit('api_error') 与 _resumable_stop", bool(m))
+        r'(\s*)self\._mark_resumable\("model_error"\)', src)
+    check("S1 续跑 except 块含 _note_exit('api_error') 与可续标记", bool(m))
 
     # B1 行为：api_error 标志被 _infer_outcome 消费为 model_error
     w = AgentWorker.__new__(AgentWorker)

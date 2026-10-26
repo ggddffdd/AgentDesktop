@@ -1000,6 +1000,11 @@ def auth_digest(limit=50):
 
 
 
+# v4.289.2：信任账本是 read-modify-write JSON。并发 grant/revoke 无锁会丢更新
+# （实测 12 线程×20 次只保留 3 次），额度检查与消费之间也存在超额窗口。
+_TRUST_LOCK = threading.RLock()
+
+
 def _trust_load():
     try:
         with open(TRUST_PATH, "r", encoding="utf-8") as f:
@@ -1023,15 +1028,16 @@ def trust_key(project_id, fp):
 
 def grant_trust(project_id, fp, wave_no=0):
     """用户亲手批准一次 → 该指纹的信任计数 +1（用于"同类放行"的累积）。"""
-    d = _trust_load()
-    k = trust_key(project_id, fp)
-    item = d.get(k) or {"count": 0, "auto_used": 0}
-    item["count"] = int(item.get("count", 0)) + 1
-    item["wave"] = wave_no
-    item["last_ts"] = time.time()
-    d[k] = item
-    _trust_save(d)
-    return item["count"]
+    with _TRUST_LOCK:
+        d = _trust_load()
+        k = trust_key(project_id, fp)
+        item = d.get(k) or {"count": 0, "auto_used": 0}
+        item["count"] = int(item.get("count", 0)) + 1
+        item["wave"] = wave_no
+        item["last_ts"] = time.time()
+        d[k] = item
+        _trust_save(d)
+        return item["count"]
 
 
 def auto_pass_allowed(project_id, fp, threshold=0, max_auto=0):
@@ -1044,26 +1050,41 @@ def auto_pass_allowed(project_id, fp, threshold=0, max_auto=0):
     """
     if threshold <= 0:
         return False, "未开启自动放行（每波都需你亲手授权）"
-    item = _trust_load().get(trust_key(project_id, fp)) or {}
-    n_human = int(item.get("count", 0))
-    n_auto = int(item.get("auto_used", 0))
-    if n_human < threshold:
-        return False, f"同类人工批准 {n_human}/{threshold} 次，累积不够"
-    if max_auto > 0 and n_auto >= max_auto:
-        return False, f"自动放行已达上限 {n_auto}/{max_auto} 次，收回人手"
-    return True, (f"依据：同类已人工批准 {n_human} 次（指纹 {fp}），"
-                  f"自动放行 {n_auto}/{max_auto or '∞'} 次")
+    with _TRUST_LOCK:
+        item = _trust_load().get(trust_key(project_id, fp)) or {}
+        n_human = int(item.get("count", 0))
+        n_auto = int(item.get("auto_used", 0))
+        if n_human < threshold:
+            return False, f"同类人工批准 {n_human}/{threshold} 次，累积不够"
+        if max_auto > 0 and n_auto >= max_auto:
+            return False, f"自动放行已达上限 {n_auto}/{max_auto} 次，收回人手"
+        return True, (f"依据：同类已人工批准 {n_human} 次（指纹 {fp}），"
+                      f"自动放行 {n_auto}/{max_auto or '∞'} 次")
 
 
 def mark_auto_used(project_id, fp):
     """记一次自动放行（次数围栏计数）。"""
-    d = _trust_load()
-    k = trust_key(project_id, fp)
-    item = d.get(k) or {"count": 0, "auto_used": 0}
-    item["auto_used"] = int(item.get("auto_used", 0)) + 1
-    d[k] = item
-    _trust_save(d)
-    return item["auto_used"]
+    with _TRUST_LOCK:
+        d = _trust_load()
+        k = trust_key(project_id, fp)
+        item = d.get(k) or {"count": 0, "auto_used": 0}
+        item["auto_used"] = int(item.get("auto_used", 0)) + 1
+        d[k] = item
+        _trust_save(d)
+        return item["auto_used"]
+
+
+def consume_auto_pass(project_id, fp, threshold=0, max_auto=0):
+    """原子消费一次自动放行额度：检查与 +1 在同一把锁内完成。
+
+    返回 (allowed, reason)。并发调用时超过 max_auto 的请求全部被拒，
+    不会出现“都查到未超限、然后一起 +1”的超额窗口。
+    """
+    with _TRUST_LOCK:
+        allowed, reason = auto_pass_allowed(project_id, fp, threshold, max_auto)
+        if allowed:
+            mark_auto_used(project_id, fp)
+        return allowed, reason
 
 
 def revoke_trust(project_id=None, wave_no=None):
@@ -1071,16 +1092,17 @@ def revoke_trust(project_id=None, wave_no=None):
 
     每笔收回都进审计日志 —— 信任是累积的，也必须可撤销、可追溯。
     """
-    d = _trust_load()
-    if project_id is None:
-        n = len(d)
-        d = {}
-    else:
-        keys = [k for k in d if k.startswith(f"{project_id}::")]
-        n = len(keys)
-        for k in keys:
-            d.pop(k, None)
-    _trust_save(d)
+    with _TRUST_LOCK:
+        d = _trust_load()
+        if project_id is None:
+            n = len(d)
+            d = {}
+        else:
+            keys = [k for k in d if k.startswith(f"{project_id}::")]
+            n = len(keys)
+            for k in keys:
+                d.pop(k, None)
+        _trust_save(d)
     record_auth(project_id or "*", "（信任收回）", wave_no or 0, "*", "",
                 "revoke", by="user", reason=f"收回 {n} 条自动放行信任")
     return n

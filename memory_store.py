@@ -613,17 +613,61 @@ def _trim_oldest(max_entries):
 
 @_sync  # v4.108 M-21：跨线程写加锁
 def clear_memory():
-    """清空全部长期记忆，返回是否成功。清空前先快照（可回滚）。"""
+    """清空全部长期记忆（主库/画像/待确认/SQLite/快照），返回是否成功。
+
+    v4.289.2：原实现只删 memory.md 且先做快照，画像、待确认区、索引仍在，
+    repair_memory 还会从备份把主库恢复回来 —— 与「清空全部」的隐私预期相反。
+    现在不保留可被自愈消费的快照；UI 已明确告知此操作不可恢复。
+    """
     ensure_dir()
-    _snapshot_memory("clear")
-    try:
-        phys = _physical(MEMORY_PATH)
-        if os.path.exists(phys):
-            os.remove(phys)
-        return True
-    except Exception as e:
-        log.warning("清空记忆失败: %s", e)
+    removed, failed = 0, []
+    _logical = (MEMORY_PATH, PINNED_PATH, PENDING_PATH)
+    for path in _logical:
+        for actual in (path, path + ".enc", path + ".tmp", path + ".enc.tmp"):
+            try:
+                if os.path.exists(actual):
+                    os.remove(actual)
+                    removed += 1
+            except Exception as e:
+                failed.append("%s: %s" % (actual, e))
+    for suffix in ("", ".enc", ".tmp", ".enc.tmp", "-wal", "-shm"):
+        actual = MEMORY_DB_PATH + suffix
+        try:
+            if os.path.exists(actual):
+                os.remove(actual)
+                removed += 1
+        except Exception as e:
+            failed.append("%s: %s" % (actual, e))
+    # 快照属于「记忆」的一部分：一并清掉，否则下次自愈会把旧内容复活。
+    # 主备份目录与降级到 %TEMP% 的备份目录都清（_backup_dir 只返回当前可用的那个）。
+    backup_dirs = {
+        _backup_dir(),
+        os.path.join(MEMORY_DIR, "backups"),
+        os.path.join(tempfile.gettempdir(), "xiaochou_memory_backups"),
+    }
+    for bd in backup_dirs:
+        try:
+            if not os.path.isdir(bd):
+                continue
+            for name in os.listdir(bd):
+                if not name.startswith(("memory_", "core_", "db_")):
+                    continue
+                p = os.path.join(bd, name)
+                if os.path.isfile(p):
+                    try:
+                        os.remove(p)
+                        removed += 1
+                    except Exception as e:
+                        failed.append("%s: %s" % (p, e))
+        except Exception as e:
+            failed.append("backups %s: %s" % (bd, e))
+    global _DB_READY
+    _DB_READY = False
+    if failed:
+        log.warning("清空记忆未完全成功（已删 %d 项）：%s", removed, failed)
         return False
+    log.info("长期记忆已全部清空（%d 项，含快照）", removed)
+    return True
 
 
 def memory_stats():

@@ -129,13 +129,20 @@ def test_status_strip():
     # 闸门已批（含色变由 guard 间接覆盖：文本即可）
     s.on_board("pid", "gate_w1", "验收", 1, "done")
     check("strip 闸门 已批", "闸门 已批" in s._lbl_gate.text())
+    # v4.289.2：超时 = 未授权，绝不能显示"已批"
+    s.on_board("pid", "gate_w1", "验收", 1, "timeout")
+    check("strip 闸门 超时不冒充已批",
+          "超时" in s._lbl_gate.text() and "已批" not in s._lbl_gate.text())
+    # v4.289.2：incomplete 是无产出，不是完成
+    s.on_board("pid", "w1_m4", "写手", 1, "incomplete")
+    check("strip 无产出单独计数", "未产出1" in s._lbl_members.text())
     # 多波：当前波取最大成员波
     s.on_board("pid", "w2_m1", "研究员", 2, "running")
     check("strip 当前波=2", s._lbl_wave.text() == "波 2/3")
     # reset
     s.reset()
     check("strip reset 波 —/—", "—/—" in s._lbl_wave.text())
-    check("strip reset 计数清零", "运行中0 完成0 异常0"
+    check("strip reset 计数清零", "运行中0 完成0 未产出0 异常0"
           in s._lbl_members.text())
     s.deleteLater()
 

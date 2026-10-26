@@ -50,7 +50,8 @@ def read(fn):
 
 
 NEW_MODULES = ["theme_tokens.py", "ui_widgets.py", "ui_workers.py",
-               "ui_msg.py", "ui_audit_mixin.py", "agent_text.py"]
+               "ui_msg.py", "ui_audit_mixin.py", "agent_text.py",
+               "ui_agent_events_mixin.py"]
 
 MOVED_WIDGETS = [
     "RES_PRESETS", "TaskStatusStrip", "ThemedDialog", "ConfirmDialog",
@@ -140,7 +141,7 @@ for fn in NEW_MODULES:
             check(f"A1[{fn}] 存在且可解析", False, str(e))
             continue
     check(f"A1[{fn}] 存在且可解析", ok)
-check("A1 六个新模块全在", len(trees) == 6, f"缺 {[f for f in NEW_MODULES if f not in trees]}")
+check("A1 七个新模块全在", len(trees) == 7, f"缺 {[f for f in NEW_MODULES if f not in trees]}")
 
 # A2 theme_tokens 叶子性：不许 import 项目内模块（防循环依赖 —— theme_qss 曾依赖 ui，
 #    若叶子反向引用就成环）

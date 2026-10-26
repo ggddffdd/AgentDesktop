@@ -108,7 +108,8 @@ def main():
 
     # --- Agent：阶段文本要持续转发，否则状态条停在「规划中」---
     check("Agent 阶段文本已转发到状态条",
-          "w.status.connect(self._agent_task_progress)" in ui_src)
+          "self._agent_task_progress(s)" in ui_src
+          and "w.status.connect(lambda s, _w=w:" in ui_src)
     check("Agent 状态转发实现存在",
           "def _agent_task_progress(self" in ui_src)
 

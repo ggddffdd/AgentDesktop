@@ -120,9 +120,10 @@ def group_a2(auto, ui_src):
           and store.active().sid == "auto_news",
           "got=%r" % getattr(got, "sid", None))
     check("A2b 流式回写走钉住的会话",
-          "msgs = self._agent_write_session().messages" in ui_src)
+          "msgs = _target.messages" in ui_src
+          and "_target = self._agent_write_session(worker)" in ui_src)
     check("A2c 工具记录走钉住的会话",
-          "self._agent_write_session().messages.append(rec)" in ui_src)
+          "self._agent_write_session(worker).messages.append(rec)" in ui_src)
 
 
 def group_a2_runtime(ui_mod):
@@ -152,7 +153,7 @@ def group_a2_runtime(ui_mod):
         "_save_throttled": lambda s: None,
         "_render_throttled": lambda s: None,
     })()
-    win._agent_write_session = lambda: ui_mod.ChatWindow._agent_write_session(win)
+    win._agent_write_session = lambda worker=None: ui_mod.ChatWindow._agent_write_session(win, worker)
     try:
         ui_mod.ChatWindow._on_tool_log(
             win, {"name": "web_search", "args": "q", "result": "fresh"})

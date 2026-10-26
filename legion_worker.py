@@ -2689,11 +2689,10 @@ class LegionWorker(QThread):
                             })
                     elif gate_mode == "human":
                         # 先过围栏：指纹对得上 + 人工批准够数 + 自动次数没超
-                        allowed, reason = legion.auto_pass_allowed(
+                        allowed, reason = legion.consume_auto_pass(
                             self.pid, fp, auto_after, auto_max)
                         if allowed:
                             decision = "pass" if v["pass"] else "reject"
-                            legion.mark_auto_used(self.pid, fp)
                             legion.record_auth(
                                 self.pid, pname, wave_no, fp, suggest,
                                 "放行" if decision == "pass" else "打回",

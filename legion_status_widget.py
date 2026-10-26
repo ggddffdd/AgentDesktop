@@ -275,19 +275,21 @@ class LegionStatusStrip(QWidget):
             self._lbl_wave.setText(f"波 {self._cur_wave}/{self._total_waves}")
         else:
             self._lbl_wave.setText("波 —/—")
-        running = done = err = 0
+        running = done = err = incomplete = 0
         for k, n in self._nodes.items():
             if k.startswith("gate_w") or k in ("run", "pm_plan"):
                 continue
             s = n.get("status")
             if s in ("running",):
                 running += 1
-            elif s in ("done", "approved", "incomplete"):
+            elif s in ("done", "approved"):
                 done += 1
+            elif s == "incomplete":
+                incomplete += 1
             elif s in ("error",):
                 err += 1
         self._lbl_members.setText(
-            f"成员 运行中{running} 完成{done} 异常{err}")
+            f"成员 运行中{running} 完成{done} 未产出{incomplete} 异常{err}")
         gate = "—"
         gcolor = t["dim"]
         # P3 修：原版后遍历的 gate 节点覆盖先遍历的（字典序最后一个说了算）——
@@ -295,16 +297,23 @@ class LegionStatusStrip(QWidget):
         # 任一 gate 待批 → 待批；否则任一已批 → 已批。
         _gate_pending = False
         _gate_done = False
+        _gate_timeout = False
         for k, n in self._nodes.items():
             if k.startswith("gate_w"):
                 s = n.get("status")
                 if s == "running":
                     _gate_pending = True
-                elif s in ("done", "approved", "timeout"):
+                elif s == "timeout":
+                    _gate_timeout = True
+                elif s in ("done", "approved"):
                     _gate_done = True
         if _gate_pending:
             gate = "待批"
             gcolor = t["warn"]
+        elif _gate_timeout:
+            # 等待超时按不授权处理，不能显示成“已批”
+            gate = "超时"
+            gcolor = t["danger"]
         elif _gate_done:
             gate = "已批"
             gcolor = t["ok"]
@@ -323,7 +332,7 @@ class LegionStatusStrip(QWidget):
                 w.deleteLater()
         cmap = {
             "running": t["tool_running"],
-            "done": t["ok"], "approved": t["ok"], "incomplete": t["ok"],
+            "done": t["ok"], "approved": t["ok"], "incomplete": t["warn"],
             "error": t["danger"], "pending": t["warn"],
         }
         for k, n in sorted(self._nodes.items()):

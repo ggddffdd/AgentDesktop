@@ -27,6 +27,8 @@ import json
 import logging
 from typing import Set, Optional
 
+from task_graph import INCOMPLETE_FLAG
+
 log = logging.getLogger("dsdesktop")
 
 
@@ -273,8 +275,11 @@ class AgentNode:
         state = dict(state)
         state[self.name + "_output"] = output
         if incomplete:
-            # v4.166.0：显式标记，供 PM / 报告区分「真产出」与「只跑了工具」
+            # v4.166.0：显式标记，供 PM / 报告区分「真产出」与「只跑了工具」。
+            # v4.289.2：同时写框架保留键，否则主工作流直接注册 AgentNode.run
+            # 时 TaskGraph 看不到 incomplete，会把无产出节点误标 completed。
             state[self.name + "_incomplete"] = True
+            state[INCOMPLETE_FLAG] = True
         # 把本 agent 的消息追加到 context 供后续用
         history = json.dumps(
             [{"role": m["role"], "content": m.get("content", "")[:500]}

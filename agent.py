@@ -34,6 +34,7 @@ import context_manager  # 审计修复 E1：context 工具按当前会话取管�
 from step_tracer import StepTracer  # v4.59 步级追踪
 from task_graph import TaskGraph      # v4.60 任务图引擎
 from agent_node import AgentNode      # v4.60 多Agent节点
+from cancel_token import CancellationToken  # v4.289.2：主工作流也支持停止
 from token_compressor import compress # v4.60 Token 压缩
 from risk import command_danger_level  # ①-B 高危命令护栏：确认文案标记
 from tool_contract import compute_impact_scope  # v4.220：确认弹窗影响范围（P1#5）
@@ -214,6 +215,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
 
         tg = TaskGraph()
         angles = None  # multi_search 用的角度表，归并阶段复用
+        wf_nodes = []
 
         if workflow_type == "research_write":
             researcher = AgentNode("researcher",
@@ -225,6 +227,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
             writer = AgentNode("writer",
                 "你是写手。将分析结果写成完整报告/文章。必要时调 write_file 保存。",
                 tools={"write_file"}, mw=self.mw)
+            wf_nodes = [researcher, analyst, writer]
 
             tg.create("search", "🔍 搜索资料", researcher.run, "使用 web_search 获取信息")
             tg.create("analyze", "📊 分析提炼", analyst.run, "基于搜索结果提炼洞察")
@@ -243,6 +246,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
             for key, label, role in angles:
                 n = AgentNode(f"searcher_{key}", role.format(task=task),
                               tools={"web_search", "web_fetch"}, mw=self.mw)
+                wf_nodes.append(n)
                 tg.create(f"search_{key}", f"搜索·{label}", n.run)
             out_key = out_field = None
 
@@ -255,11 +259,23 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         for t in tg.task_list():
             self._emit_status(f"  └ {t['subject']} [{t['status']}]")
 
+        # v4.289.2：主工作流与军团共用同一个取消协议。用户点停止时
+        # request_stop 会取消本令牌，TaskGraph 不再派发后续节点，AgentNode
+        # 也在模型/工具阶段之间停手（此前主链工作流完全感知不到停止）。
+        _wf_token = CancellationToken(
+            name=f"workflow/{getattr(self, 'task_id', '') or '-'}")
+        self._workflow_token = _wf_token
+        if self._stop_requested:
+            _wf_token.cancel("用户已停止", stage="workflow_start")
+        for _node in wf_nodes:
+            _node.token = _wf_token
         try:
-            state = tg.run({"task": task, "query": task})
+            state = tg.run({"task": task, "query": task}, token=_wf_token)
         except Exception as e:
             self._emit_status(f"任务图执行失败: {e}")
             return f"任务图执行失败：{e}"
+        finally:
+            self._workflow_token = None
 
         # 归并结果
         if workflow_type == "multi_search":
@@ -287,21 +303,28 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         _tasks = tg.task_list()
         _failed = [t["id"] for t in _tasks if t.get("status") == "failed"]
         _skipped = [t["id"] for t in _tasks if t.get("status") == "skipped"]
+        _incomplete = [t["id"] for t in _tasks if t.get("status") == "incomplete"]
+        _cancelled = [t["id"] for t in _tasks if t.get("status") == "cancelled"]
         # v4.235.0（P25 修复）：本判定体曾随 v4.234.0 的提交被整段删掉——
         # 扰动脚本被打断后源码留在变异态、随后被 commit 收进仓库，
         # 使 v4.233 断点 E 退化成「算了 _failed/_skipped 却从不看」的装饰性 gate。
         # 恢复判定体，并保留 _perturb_workflow_fail_visibility_233 的变异靶点。
-        if _failed or _skipped:
-            _n = len(_failed) + len(_skipped)
+        if _failed or _skipped or _incomplete or _cancelled:
+            _n = len(_failed) + len(_skipped) + len(_incomplete) + len(_cancelled)
             self._emit_status(
-                "⚠ 任务图未完整达成：%d 个节点未成功（失败 %d / 跳过 %d）"
-                % (_n, len(_failed), len(_skipped)))
-            self._workflow_incomplete = {"failed": _failed, "skipped": _skipped}
+                "⚠ 任务图未完整达成：%d 个节点未成功"
+                "（失败 %d / 跳过 %d / 无产出 %d / 取消 %d）"
+                % (_n, len(_failed), len(_skipped), len(_incomplete), len(_cancelled)))
+            self._workflow_incomplete = {
+                "failed": _failed, "skipped": _skipped,
+                "incomplete": _incomplete, "cancelled": _cancelled,
+            }
             # 回写主账本（若有）—— fail-open：异常不影响主流程
             try:
                 _ts = getattr(self, "_tstate", None)
                 if _ts is not None and hasattr(_ts, "note_workflow_incomplete"):
-                    _ts.note_workflow_incomplete(_failed, _skipped)
+                    _ts.note_workflow_incomplete(
+                        _failed, _skipped, _incomplete, _cancelled)
             except Exception:
                 pass
             return output
@@ -387,6 +410,8 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         # 检查点必须 mark_paused 保留（此前 mark_done 删档 + UI 只认
         # stopped_by_user → 提示"可点继续"却既无按钮也无存档）。
         self._resumable_stop = False
+        self._resumable_reason = ""   # v4.289.2：可续原因（model_error/timeout/...）
+        self._workflow_token = None    # v4.289.2：主工作流取消令牌
         self._last_status_ts = 0  # v4.102 fix7：最近具体状态时间戳，供心跳判断是否抢话
         self._last_status_text = ""  # v4.102 fix7：最近一条具体状态文字，心跳兜底时带上
         # v4.102 fix9：_guard_blocked 必须 __init__ 初始化——纯文本分支（模型首步就输出
@@ -400,11 +425,27 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         # 技能清单由 ui.py 的 _build_system_prompt() 统一通过 config.load_dynamic_skills() 注入，
         # 此处不再重复加载，避免双份/不一致。
 
+    def _mark_resumable(self, reason):
+        """统一登记“未完成但可继续”的结局及其原因。"""
+        self._resumable_stop = True
+        self._resumable_reason = str(reason or "interrupted")
+
+    def _checkpoint_should_pause(self):
+        """收尾是否保留检查点：用户停止或任何可续自动停止都保留。"""
+        return bool(self._stop_requested or getattr(self, "_resumable_stop", False))
+
     def request_stop(self):
         """主线程调用，请求停止 Agent 循环（下一轮/下一工具前生效）。
         v4.108 M-20：同时唤醒阻塞中的危险操作确认等待（否则关窗/停止时
         子线程永久卡在 _confirm_event.wait()，QThread 销毁报 crash）。"""
         self._stop_requested = True
+        # v4.289.2：工作流里的子 Agent 只看取消令牌；不广播就会继续跑完。
+        _tk = getattr(self, "_workflow_token", None)
+        if _tk is not None:
+            try:
+                _tk.cancel("用户已停止", stage="agent_stop")
+            except Exception:
+                pass
         try:
             self._confirm_event.set()
         except Exception:
@@ -1008,7 +1049,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 self._emit_status(f"⏰ Agent 超时（{int(elapsed)}s），已自动停止。建议切回 DeepSeek 获得更快响应。")
                 self.stream_commit.emit(f"\n\n⏰ 执行超时（{int(elapsed)}秒），已自动停止。Agnes 免费模型速度较慢，建议切回 DeepSeek。")
                 self._stop_toast(f"任务执行超时（{int(elapsed)}秒），已自动停止。可切回 DeepSeek 提速。", "warn")  # v4.281.0：跨视图可见
-                self._resumable_stop = True  # v4.125 M-01：超时可续
+                self._mark_resumable("timeout")  # 超时均可续
                 break
             if self._stop_requested:
                 self._emit_status("⏹ 已停止（用户请求）")
@@ -1073,6 +1114,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 except Exception:
                     pass
                 self._note_exit("api_error")  # v4.195 批⑪：勿再兜底成 success
+                self._mark_resumable("model_error")  # v4.289.2：失败可续，勿删断点
                 self.tool_log.emit({"name": "错误", "args": "", "result": str(e)})
                 # v4.108 H-04：失败要让用户在气泡里看得见，不再静默结束装"完成"。
                 # v4.175.0：把 API 真实报文一并显示到气泡（与结构化日志同源）。
@@ -1094,7 +1136,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
             # v4.102 fix12：累计工具名 + token 预算熔断（超预算即停，保留阶段性结果）
             self._collect_step_tools(resp)
             if not self._tick_token_budget(resp):
-                self._resumable_stop = True  # v4.125 M-01：熔断可续
+                self._mark_resumable("token_budget")  # 熔断可续
                 break
 
             # v4.62：步内超时检查（单次模型调用最长 90s，避免下一轮开头才拦导致大幅超额）
@@ -1103,7 +1145,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 self.stream_commit.emit(
                     f"\n\n⏰ 执行超时（{int(time.time() - _t0)}秒），已自动停止。")
                 self._stop_toast(f"任务执行超时（{int(time.time() - _t0)}秒），已自动停止。", "warn")  # v4.281.0：跨视图可见
-                self._resumable_stop = True  # v4.125 M-01：超时可续
+                self._mark_resumable("timeout")  # 超时均可续
                 break
             content = resp.get("content") or ""
             # v4.102 fix8：复读/原地打转护栏——模型连续 N 步输出完全相同的内容（或调用
@@ -1183,6 +1225,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                     self.stream_commit.emit(
                         f"\n\n⏰ 执行超时（{int(time.time() - _t0)}秒），已自动停止。")
                     self._stop_toast(f"任务执行超时（{int(time.time() - _t0)}秒），已自动停止。", "warn")  # v4.281.0：跨视图可见
+                    self._mark_resumable("tool_timeout")  # v4.289.2：工具后超时也可续
                     break
                 # v4.66：连续工具失败护栏——模型反复调工具但每步都报错（文件找不到、
                 # PowerShell 语法错）却不换思路，会死循环刷屏。连续 3 步全失败则早停。
@@ -1357,7 +1400,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                         log.error("Agent 续跑调用失败: %s", e)
                         self.tool_log.emit({"name": "错误", "args": "", "result": str(e)})
                         self._note_exit("api_error")          # v4.221：续跑失败也要记失败，否则断点被误删
-                        self._resumable_stop = True           # 保留断点，可继续/可诊断
+                        self._mark_resumable("model_error")    # 保留断点，可继续/可诊断
                         break
                     # v4.102 fix12：续跑是烧 token 重灾区，同样累加工具名并做预算熔断
                     self._collect_step_tools(resp)
@@ -1413,6 +1456,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 else:
                     # 续跑轮也耗尽：递归再续一轮（受 _resume_budget 限制）
                     log.warning("Agent 续跑截断：续跑轮也达到最大步数 %d，已暂停", self._max_resume_steps)
+                    self._mark_resumable("resume_exhausted")
                     self.tool_log.emit({
                         "name": "提示",
                         "args": "",
@@ -1420,7 +1464,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                     })
             else:
                 log.warning("Agent 步数截断：已达最大步数 %d，已停止（可点继续）", self._max_steps)
-                self._resumable_stop = True  # v4.125 M-01：步数耗尽可续
+                self._mark_resumable("max_steps")  # 步数耗尽可续
                 self.tool_log.emit({
                     "name": "提示",
                     "args": "",
@@ -1442,7 +1486,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 # v4.125 M-01：用户停止 **或** 可续的自动停止（超时/熔断/步数耗尽）
                 # 都保留检查点——此前自动停止走 mark_done 删档，提示"可点继续"
                 # 却既无按钮也无存档，任务卡死无法续。正常完成才删档。
-                if self._stop_requested or getattr(self, "_resumable_stop", False):
+                if self._checkpoint_should_pause():
                     task_resume.mark_paused(mw.cfg, self.task_id)
                 else:
                     task_resume.mark_done(mw.cfg, self.task_id)

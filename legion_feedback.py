@@ -7,7 +7,7 @@
 import logging
 import re
 
-VERSION = "v4.289.1"
+VERSION = "v4.289.2"
 
 _log = logging.getLogger("legion")
 
@@ -127,7 +127,7 @@ def progress_sentence(nodes, cur_wave, total_waves):
     errors = [m for m in members if m.get("status") == "error"]
     incomplete = [m for m in members if m.get("status") == "incomplete"]
     done = [m for m in members if m.get("status") in ("done", "approved")]
-    pending = warned = approved = False
+    pending = warned = approved = timed_out = False
     for k, n in nodes.items():
         if not str(k).startswith("gate_") or not isinstance(n, dict):
             continue
@@ -143,7 +143,10 @@ def progress_sentence(nodes, cur_wave, total_waves):
             pending = True
         elif s == "accepted_with_warning":
             warned = True
-        elif s in ("approved", "done", "timeout"):
+        elif s == "timeout":
+            # 超时 = 未授权 / 停止推进，绝不是“已通过”
+            timed_out = True
+        elif s in ("approved", "done"):
             approved = True
     if running:
         body = "%s 进行中" % _names(running)
@@ -153,6 +156,8 @@ def progress_sentence(nodes, cur_wave, total_waves):
         body = "%s 没交上稿" % _names(incomplete)
     elif pending:
         body = "等你验收"
+    elif timed_out:
+        body = "验收超时（未授权）"
     elif warned:
         body = "带风险通过"
     elif done or approved:
