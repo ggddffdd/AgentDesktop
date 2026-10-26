@@ -14,9 +14,8 @@ v4.224 落地了 `register_verifier` / `verify_after` / `apply_post_verification
   · `db_insert`  —— 回查该 id 确实在库里（insert 返回 lastrowid，有廉价真信号）
   · `db_update`  —— 回查该 id 的字段真的变了（update 返回 affected + data，可比对）
   · `db_delete`  —— 回查该 id 真的不在了
-  · `write_file` —— 复查文件真落地且非空（与结局契约 `_outcome_write_file`
-                    同一条判据，但作用不同：那个判「这次调用算不算成功」，
-                    这个判「执行完之后副作用是不是真的落地」—— 两者都要）
+  · `write_file` —— 复查文件真实落地（允许合法的 0 字节文件；
+                    本次写入成败由 handler 的真实执行结果给出，后验只证伪）
 
 **二、全量分档登记（把「没人想过」变成一件可枚举的事）**
 
@@ -151,11 +150,10 @@ def _verify_db_delete(args, result=None):
 
 
 def _verify_write_file(args, result=None):
-    """写完复查文件真在磁盘上且非空。
+    """写完复查文件真在磁盘上；0 字节也是合法写入结果。
 
-    与结局契约 `_outcome_write_file` 同一判据但**不重复造**：
-    结局契约判「这次调用算不算成功」（exec_tool 内），验证器判「执行完之后
-    副作用是不是真的落地」（exec_tool 之后）。两道都留着 —— 一道被绕过另一道还在。
+    本次写入成败由 _h_write_file 的真实执行结果给出，后验只负责证伪
+    「文件不存在」，不能再拿非空要求覆盖真实写入结论。
     """
     p = (args or {}).get("path")
     if not p or not isinstance(p, str):
@@ -171,8 +169,7 @@ def _verify_write_file(args, result=None):
         if not os.path.isfile(ap):
             return (False, "复查：文件并不存在 %s" % p)
         size = os.path.getsize(ap)
-        return (size > 0, ("复查：文件存在但为空（0 字节）" if size <= 0
-                           else "复查：文件已落地（%d 字节）" % size))
+        return (True, "复查：文件已落地（%d 字节）" % size)
     except Exception:
         return None
 

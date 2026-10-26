@@ -6,8 +6,8 @@ v4.218 报告点名根因：`tool_contract._infer_ok` 靠中文前缀猜成败
 "话术"伪装成功。v4.220 建了 ToolResult 框架，但仍留着这条 string-match 兜底。
 
 本轮根治：
-  SR1 登记了显式结局契约的工具，成败由**真实信号**判定，不看文案
-      （write_file：文件是否真的落地且非空）。改文案翻不动结论。
+  SR1 登记了显式结局契约的工具，后验基于真实信号且只降级不升级
+      （write_file：handler 报告真实写入结果，文件不存在可证伪；旧文件不能证明本次成功）。
   SR2 无契约的老工具仍需 _infer_ok 兜底，但结论被显式标注
       verified=False + error_code="INFERRED"，不再冒充已验证。
   SR3 ToolResult 补全机器可读字段 error_code / retryable / verified。
@@ -53,8 +53,8 @@ def test_contract_overrides_wording():
         r_fail_words = tc.ToolResult.from_legacy(
             ("失败：磁盘已满，未写入任何内容", [], None),
             name="write_file", args={"path": probe})
-        check("SR1 文件真落地：即使文案说失败，ok 仍为 True",
-              r_fail_words.ok is True and r_fail_words.verified is True,
+        check("SR1 legacy 写入失败：旧文件存在也不能升级为成功",
+              r_fail_words.ok is False and r_fail_words.verified is False,
               "ok=%s verified=%s" % (r_fail_words.ok, r_fail_words.verified))
     finally:
         try:

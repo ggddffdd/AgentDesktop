@@ -511,15 +511,20 @@ def _h_legion_board(cfg, app_dir, args, progress=None):
 def _h_write_file(cfg, app_dir, args, progress=None):
     p = args.get("path", "")
     r = tool_write_file(app_dir, p, args.get("content", ""))
+    # v4.289.1：真实写入结果是唯一成功事实。后验只能证伪，不能拿旧文件
+    # 存在把本次失败升级；0 字节也由这里的真实结果判成功。
+    _write_ok = r.startswith("已写入")
     # 审计修复 E3：仅写入成功才登记交付物。原实现只要 path 非空就挂号，
     # "写入失败：…"/"拒绝：…"/"未提供路径" 也会生成假文件卡片；
     # 顺带把交付物路径解析为真实落盘的绝对路径（tool_write_file 内部同规则），可点击打开。
-    if p and r.startswith("已写入"):
+    if p and _write_ok:
         # v4.164.0：解析基准必须与 tool_write_file 一致（相对路径落 WORKSPACE_DIR），
         # 否则登记出来的交付物路径会指向不存在的位置、点不开。
-        return (r, [(os.path.abspath(os.path.join(WORKSPACE_DIR, p)), "file",
-                     os.path.basename(p))], None)
-    return (r, [], None)
+        return ToolResult(
+            ok=True, msg=r, verified=True,
+            deliverables=[(os.path.abspath(os.path.join(WORKSPACE_DIR, p)), "file",
+                           os.path.basename(p))])
+    return ToolResult(ok=False, msg=r, verified=True, error_code="WRITE_FAILED")
 
 @register_tool("run_command", dangerous=True)
 def _h_run_command(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
@@ -730,7 +735,7 @@ def _h_use_skill(cfg, app_dir, args, progress=None):
 
 @register_tool("analyze_image")
 def _h_analyze_image(cfg, app_dir, args, progress=None):
-    return (tool_analyze_image(cfg, args), [], None)
+    return (tool_analyze_image(cfg, args, app_dir=app_dir), [], None)
 
 @register_tool("remember", dangerous=True)
 def _h_remember(cfg, app_dir, args, progress=None):
@@ -1764,7 +1769,7 @@ def _tool_roots(app_dir):
     for r in (WORKSPACE_DIR, app_dir):
         try:
             if r:
-                a = os.path.abspath(r)
+                a = os.path.realpath(r)
                 if a not in out:
                     out.append(a)
         except Exception:
@@ -1775,11 +1780,12 @@ def _tool_roots(app_dir):
 def _within_roots(p, roots):
     """p 是否落在 roots 之一内。是则返回该根，否则 None。"""
     try:
-        ap = os.path.abspath(p)
+        ap = os.path.normcase(os.path.realpath(p))
     except Exception:
         return None
     for r in roots:
-        if ap == r or ap.startswith(r + os.sep):
+        rr = os.path.normcase(os.path.realpath(r))
+        if ap == rr or ap.startswith(rr.rstrip(os.sep) + os.sep):
             return r
     return None
 
@@ -3667,11 +3673,19 @@ def tool_use_skill(cfg, app_dir, skill_name):
     )
 
 
-def tool_analyze_image(cfg, args):
-    """调用本地免费网关的 vision 接口识图。
+_MAX_ANALYZE_IMAGE_BYTES = 20 * 1024 * 1024
 
-    网关会路由到 Agnes 2.0 Flash 的 image_url 能力。
-    """
+
+def _image_magic_ok(head):
+    """识别真实图片容器；扩展名不是安全凭据。"""
+    return (head.startswith(b"\x89PNG\r\n\x1a\n")
+            or head.startswith(b"\xff\xd8\xff")
+            or head.startswith((b"GIF87a", b"GIF89a", b"BM"))
+            or (len(head) >= 12 and head.startswith(b"RIFF") and head[8:12] == b"WEBP"))
+
+
+def tool_analyze_image(cfg, args, app_dir=None):
+    """识图：只允许授权根目录内的真实图片，再发送到视觉网关。"""
     import base64
     import urllib.request as ureq
 
@@ -3679,39 +3693,39 @@ def tool_analyze_image(cfg, args):
     prompt = args.get("prompt", "请描述这张图片")
     if not image_path:
         return "错误：未提供图片路径（path）"
+    app_dir = app_dir or os.path.dirname(os.path.abspath(__file__))
+    roots = _tool_roots(app_dir)
 
-    # 相对路径 → 绝对路径解析
+    # v4.289.1：不再搜索 Downloads/Desktop 等个人目录。相对路径与 read_file
+    # 同口径，仅在工作区、程序目录及其 incoming/ 内解析。
     if not os.path.isabs(image_path):
-        resolved = os.path.abspath(image_path)
-        if os.path.isfile(resolved):
-            image_path = resolved
-        else:
-            # 兜底：在常用目录中搜索同名文件
-            basename = os.path.basename(image_path)
-            search_dirs = [
-                os.path.expanduser("~/Downloads"),
-                os.path.expanduser("~/Desktop"),
-                os.path.expanduser("~/Pictures"),
-                os.path.expanduser("~/Documents"),
-                os.getcwd(),
-            ]
-            candidates = []
-            for sd in search_dirs:
-                if os.path.isdir(sd):
-                    candidates.extend(glob.glob(os.path.join(sd, basename)))
-                    # 也搜一层子目录
-                    candidates.extend(glob.glob(os.path.join(sd, "*", basename)))
-            if candidates:
-                image_path = candidates[0]
-            else:
-                return f"错误：图片不存在 — {image_path}（已尝试 cwd、Downloads、Desktop、Pictures、Documents）"
-
+        resolved = os.path.abspath(os.path.join(WORKSPACE_DIR, image_path))
+        if not os.path.isfile(resolved):
+            alt = os.path.abspath(os.path.join(app_dir, image_path))
+            if os.path.isfile(alt):
+                resolved = alt
+        if not os.path.isfile(resolved) and "/" not in image_path and "\\" not in image_path:
+            for root in roots:
+                candidate = os.path.abspath(os.path.join(root, "incoming", image_path))
+                if os.path.isfile(candidate):
+                    resolved = candidate
+                    break
+        image_path = resolved
+    image_path = os.path.realpath(image_path)
+    if _within_roots(image_path, roots) is None:
+        return f"错误：拒绝读取工作区外的图片（仅允许 {WORKSPACE_DIR} 及程序目录）"
     if not os.path.isfile(image_path):
         return f"错误：图片不存在 — {image_path}"
 
     try:
+        size = os.path.getsize(image_path)
+        if size <= 0 or size > _MAX_ANALYZE_IMAGE_BYTES:
+            return f"错误：图片大小必须在 1 字节到 {_MAX_ANALYZE_IMAGE_BYTES // (1024 * 1024)}MB 之间"
         with open(image_path, "rb") as f:
-            image_data = base64.b64encode(f.read()).decode("utf-8")
+            raw = f.read(_MAX_ANALYZE_IMAGE_BYTES + 1)
+        if not _image_magic_ok(raw[:32]):
+            return "错误：文件不是受支持的真实图片格式（PNG/JPEG/GIF/BMP/WEBP）"
+        image_data = base64.b64encode(raw).decode("utf-8")
     except Exception as e:
         return f"错误：读取图片失败 — {e}"
 

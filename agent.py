@@ -751,6 +751,26 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         except Exception:
             pass
 
+    def _restore_resume_ledger(self, mw):
+        """恢复启动第一步：读旧账本，供 running 检查点保留执行事实。"""
+        self._exec_ledger = []
+        self._resume_done_hashes = set()
+        if not self.resume:
+            return None
+        try:
+            cp = task_resume.load_checkpoint(mw.cfg, self.task_id)
+        except Exception:
+            cp = None
+        if not isinstance(cp, dict):
+            return None
+        self._exec_ledger = list(cp.get("exec_ledger", []))
+        self._resume_done_hashes = {
+            e.get("args_hash") for e in self._exec_ledger
+            if e.get("side_effect_status") == "done"
+            and e.get("name") in _NON_IDEMPOTENT_TOOLS
+        }
+        return cp
+
     def run(self):
         """本线程的模型调用共用同一份当轮背景；结束时清掉，避免串到下一次。"""
         try:
@@ -864,6 +884,9 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
          self._resume_budget) = config.get_agent_step_budget(getattr(mw, "cfg", None))
         self._start_heartbeat()  # v4.58：防长时间工具调用期间 UI 假死
 
+        # v4.289.1：恢复模式必须先读旧执行账本，再写 running；否则空壳
+        # running 检查点会先覆盖 exec_ledger，不可幂等工具失去查重依据。
+        _resume_cp = self._restore_resume_ledger(mw)
         # v4.101：断点续传——任务开始即写「运行中」检查点（崩溃/强杀遗留可据此恢复）；
         # 用户主动停止时改写为 paused 保留，正常完成/自动停止则删除。
         # v4.108 M-13：isolated 隔离会话（导演台对话）跳过 checkpoint——
@@ -871,31 +894,23 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         if not getattr(self, "_isolated", False):
             _sid = getattr(self, "_bound_sid", None)
             try:
-                task_resume.save_checkpoint(mw.cfg, {
+                _checkpoint = dict(_resume_cp) if isinstance(_resume_cp, dict) else {}
+                _checkpoint.update({
                     "task_id": self.task_id,
                     "task_type": "agent",
                     "status": "running",
                     "sid": _sid,
                     "task": self._goal_hint()[:200],
                     "created": datetime.datetime.now().isoformat(timespec="seconds"),
+                    "exec_ledger": list(getattr(self, "_exec_ledger", [])),
                 })
+                task_resume.save_checkpoint(mw.cfg, _checkpoint)
             except Exception:
                 pass
         # 续传模式：注入「继续上次任务」提示，强制模型从断点接着干。
         # 注意 _seq=-1 哨兵：_sync_to_session 不会把它回写进会话（system 角色本就不该持久化）。
         if self.resume:
-            # v4.222：断点幂等——从 checkpoint 恢复执行 ledger，构建不可幂等工具
-            # 的「已执行」哈希集，供 _exec_tool_calls 跳过重复执行（防副作用翻倍）。
-            try:
-                _cp = task_resume.load_checkpoint(mw.cfg, self.task_id)
-                self._exec_ledger = list(_cp.get("exec_ledger", [])) if _cp else []
-            except Exception:
-                self._exec_ledger = []
-            self._resume_done_hashes = {
-                e.get("args_hash") for e in (self._exec_ledger or [])
-                if e.get("side_effect_status") == "done"
-                and e.get("name") in _NON_IDEMPOTENT_TOOLS
-            }
+            # v4.222/v4.289.1：账本已在首次保存前由 _restore_resume_ledger 恢复。
             _goal = self._goal_hint() or "（未知原始目标）"
             if len(_goal) > 400:
                 _goal = _goal[:400] + "…"

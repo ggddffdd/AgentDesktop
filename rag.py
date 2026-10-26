@@ -110,8 +110,10 @@ class RAGStore:
                 json.dump({"chunks": self._chunks, "next_id": self._chunk_counter,
                            "files": self._files}, f, ensure_ascii=False)
             _os.replace(_tmp, self._index_path)
+            return True
         except Exception as e:
             log.warning("保存 RAG 索引失败: %s", e)
+            return False
 
     # ---------------------- embedding API ----------------------
 
@@ -297,11 +299,10 @@ class RAGStore:
             if not self.available:
                 return f"RAG 不可用: {file_path}"
 
-            # 清除该文件的旧索引
-            self._chunks = [c for c in self._chunks if c["source"] != str(file_path)]
-
+            # v4.289.1：先在局部构建完整新索引；任何 chunk 失败都保留旧数据。
+            new_chunks = []
+            next_counter = self._chunk_counter
             fname = p.name
-            ok = 0
             BATCH = 64
             for i in range(0, len(chunks), BATCH):
                 batch = chunks[i:i + BATCH]
@@ -309,30 +310,40 @@ class RAGStore:
                     embeddings = self._embed(batch)
                 except Exception as e:
                     log.warning("embedding API 批量请求失败: %s", e)
-                    # 逐条重试
+                    # 逐条重试；任一失败都不能拿残缺结果覆盖旧索引。
                     embeddings = []
                     for t in batch:
                         try:
                             embeddings.extend(self._embed([t]))
                         except Exception:
                             embeddings.append(None)
-
-                for j, (chunk, emb) in enumerate(zip(batch, embeddings)):
+                if len(embeddings) != len(batch):
+                    return f"索引失败，旧索引已保留: {fname}（embedding 数量不完整）"
+                for chunk, emb in zip(batch, embeddings):
                     if emb is None:
-                        continue
-                    self._chunks.append({
-                        "id": f"{fname}_chunk_{self._chunk_counter}",
+                        return f"索引失败，旧索引已保留: {fname}（embedding 失败）"
+                    new_chunks.append({
+                        "id": f"{fname}_chunk_{next_counter}",
                         "source": str(file_path),
                         "text": chunk,
                         "embedding": emb,
                     })
-                    self._chunk_counter += 1
-                    ok += 1
+                    next_counter += 1
 
+            old_state = (self._chunks, self._chunk_counter,
+                         self._files, self._src_set)
+            self._chunks = ([c for c in self._chunks if c["source"] != str(file_path)]
+                            + new_chunks)
+            self._chunk_counter = next_counter
+            self._files = dict(self._files)
             self._files[key] = {"mtime_ns": st.st_mtime_ns, "size": st.st_size}
+            self._src_set = set(self._src_set)
             self._src_set.add(key)
-            self._save_index()
-            return f"已索引: {fname} ({ok} chunks)"
+            if not self._save_index():
+                (self._chunks, self._chunk_counter,
+                 self._files, self._src_set) = old_state
+                return f"索引保存失败，旧索引已保留: {fname}"
+            return f"已索引: {fname} ({len(new_chunks)} chunks)"
         except MemoryError:
             return f"内存不足，已跳过: {Path(file_path).name}"
         except Exception as e:

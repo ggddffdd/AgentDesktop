@@ -69,13 +69,13 @@ def group_a_verifiers():
         check("A2 反例：文件不存在 → 验证不通过（防编造成功）",
               v2 is not None and v2[0] is False, "verify_after=%r" % (v2,))
 
-        # A3 空文件也算没落地（write_file 结局契约同样口径）
+        # A3 空文件也是合法写入结果；后验只复查文件是否真实存在
         empty = os.path.join(tools_mod.WORKSPACE_DIR, "pv227_empty.txt")
         with open(empty, "w", encoding="utf-8") as fh:
             fh.write("")
         v3 = tc.verify_after("write_file", {"path": "pv227_empty.txt"}, None)
-        check("A3 空文件 → 验证不通过（0 字节）",
-              v3 is not None and v3[0] is False, "verify_after=%r" % (v3,))
+        check("A3 空文件 → 验证通过（真实写入允许 0 字节）",
+              v3 is not None and v3[0] is True, "verify_after=%r" % (v3,))
     finally:
         for n in (rel, "pv227_never_written.txt", "pv227_empty.txt"):
             try:

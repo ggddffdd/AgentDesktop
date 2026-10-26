@@ -213,7 +213,11 @@ def resolve_ok(name, msg, args=None) -> Optional[bool]:
 
 
 def _outcome_write_file(msg, args) -> Optional[bool]:
-    """write_file 契约：不看文案，看文件是否真的落地且非空。"""
+    """write_file 后验：只能证伪，不能凭旧文件存在证明本次写入成功。
+
+    真正成败由 _h_write_file 的实际写入结果显式给出；legacy 重放没有本次
+    操作事实，因此文件存在（包括合法的 0 字节文件）时只能不表态。
+    """
     p = (args or {}).get("path")
     if not p or not isinstance(p, str):
         return None
@@ -225,7 +229,7 @@ def _outcome_write_file(msg, args) -> Optional[bool]:
                 ap = os.path.join(_tools.WORKSPACE_DIR, p)
             except Exception:
                 ap = os.path.abspath(p)
-        return os.path.isfile(ap) and os.path.getsize(ap) > 0
+        return False if not os.path.isfile(ap) else None
     except Exception:
         return None
 

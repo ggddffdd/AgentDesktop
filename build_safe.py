@@ -129,8 +129,8 @@ def _run_robocopy(src, dst, extra=None):
     根因：Windows 防病毒实时扫描会短暂锁住 _internal 里的 .pyd/.dll，robocopy 默认
     「百万次重试 + 30 秒间隔」会无限卡死构建（2026-10-15 复盘三次复现）；即便加 /R:1 /W:1
     也不够——复制过程被防病毒锁住时 robocopy 卡在「等待」而非「重试」，/R: 管不到。
-    shutil 遇锁抛异常，跳过该文件（dist 旧版兜底），构建绝不挂死。
-    注意：绝不删除目标额外文件（对应原 robocopy /MIR 禁忌）。
+    shutil 遇锁抛异常，由调用方判构建失败；v4.289.1 起不再拿 dist 旧文件
+    冒充同步成功，避免新旧混包。注意：绝不删除目标额外文件（对应原 /MIR 禁忌）。
     extra 兼容：含非 / 开头的文件名（如 ['小臭玩AI.exe']）则只复制该文件；
     含 /E 或其他 / 开关则递归目录复制。
     """
@@ -169,7 +169,9 @@ def _run_robocopy(src, dst, extra=None):
                 except (PermissionError, OSError):
                     skipped += 1
         if skipped:
-            print('[build_safe] 跳过 %d 个被锁文件（dist 旧版兜底）' % skipped)
+            # v4.289.1：旧文件兜底会形成新旧混包，不能把部分同步冒充成功。
+            print('[build_safe] ⛔ %d 个文件复制失败，构建同步失败（拒绝新旧混包）' % skipped)
+            return False
         return True
     except Exception as e:
         print('[build_safe] 复制异常: %s' % e)

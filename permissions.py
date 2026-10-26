@@ -214,14 +214,16 @@ class PermissionEngine:
         if not self.scope_paths:
             return True
         try:
-            p = os.path.normcase(os.path.abspath(path))
+            # v4.289.1：realpath 同时解析 symlink/junction；新文件会解析最近的
+            # 已存在父目录，不能只靠 abspath 的字符串前缀判断边界。
+            p = os.path.normcase(os.path.realpath(path))
         except Exception:
             return False
         # 审计修复 C2：裸 startswith 会让作用域 "D:\docs\小臭玩AI" 放行兄弟目录
         # "D:\docs\小臭玩AI_backup\..."（前缀越界写文件出沙箱）。改为「相等，或
         # 以带分隔符的目录前缀开头」；normcase 统一 Windows 盘符大小写。
         for s in self.scope_paths:
-            s = os.path.normcase(s)
+            s = os.path.normcase(os.path.realpath(s))
             if p == s:
                 return True
             prefix = s if s.endswith((os.sep, "/")) else s + os.sep
