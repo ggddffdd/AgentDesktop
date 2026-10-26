@@ -403,6 +403,15 @@ class _ToastManager(QObject):
                           on_close=lambda c: self._forget(layer, key, c))
         self._recent[key] = (card, now)
         layer.add(card)
+        # v4.289.3：add() 会强制淘汰最旧卡片，对应 _recent 条目必须同步清掉，
+        # 否则长跑反复弹不同提示会让字典无界增长。
+        self._prune_recent(layer)
+
+    def _prune_recent(self, layer):
+        live = set(layer.cards())
+        for k, (card, _ts) in list(self._recent.items()):
+            if card not in live:
+                self._recent.pop(k, None)
 
     def _forget(self, layer, key, card):
         if self._recent.get(key, (None,))[0] is card:

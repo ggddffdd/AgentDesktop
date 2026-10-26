@@ -1503,7 +1503,11 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin, QMainWi
     def _stop_talk(self):
         """松开按钮：停止录音并送去识别（纯 push-to-talk）。"""
         if self._busy:
-            # 上一条还在处理：丢弃本次录音，避免叠加
+            # 上一条还在处理：丢弃本次录音，但必须先停采集（否则麦克风/ffmpeg 残留）
+            try:
+                self.recorder.close()
+            except Exception:
+                pass
             self.rec_wav = None
             self._recording = False
             self.talk_btn.setText("按住说话")

@@ -47,7 +47,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: 计算本次改动的 .py 文件
+      - name: 计算本次全部变更文件
         id: changed
         shell: bash
         run: |
@@ -57,10 +57,12 @@ jobs:
           else
             BASE="${{ github.event.before }}"
           fi
-          mapfile -t FILES < <(git diff --name-only "${BASE}...HEAD" -- '*.py' 2>/dev/null)
+          # v4.289.3：密钥扫描必须覆盖 JSON/YAML/ENV 等所有变更文件，
+          # 不再只传 .py（检查器自身会按文件类型跳过不适用的语法检查）。
+          mapfile -t FILES < <(git diff --name-only --diff-filter=ACMR "${BASE}...HEAD" 2>/dev/null)
           echo "files=${FILES[*]}" >> "$GITHUB_OUTPUT"
-          echo "本次改动的 .py 文件：${FILES[*]:-（无）}"
-      - name: 跑 precommit_check（仅改动文件）
+          echo "全部变更文件：${FILES[*]:-（无）}"
+      - name: 跑 precommit_check（全部变更文件）
         run: python precommit_check.py ${{ steps.changed.outputs.files }}
 
   # ── 作业二：回归套件（offscreen Qt）──────────────────────────────

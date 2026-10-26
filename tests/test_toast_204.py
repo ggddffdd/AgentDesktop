@@ -165,6 +165,9 @@ texts = [[l.text() for l in c.findChildren(QLabel)] for c in cards]
 check("4b 保留的是最新的 3 条（第 3/4/5 条），最旧的被丢弃",
       any("第 5 条" in t for t in texts) and all("第 0 条" not in t for t in texts),
       f"实测 {texts}")
+# v4.289.3：强制淘汰卡片必须同步清理 _recent，否则长跑会无界增长
+check("4c _recent 随可见卡片有界", len(T._MGR._recent) <= T.MAX_VISIBLE,
+      f"recent={len(T._MGR._recent)} visible={T.MAX_VISIBLE}")
 
 # ---------------------------------------------------------------
 print("\n=== 判据 5 悬停暂停 / 移出重新计时 ===")

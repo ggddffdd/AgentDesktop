@@ -224,6 +224,13 @@ def run_guard_preflight():
     return p.returncode, ((p.stdout or b"") + (p.stderr or b"")).decode("utf-8", "replace")
 
 
+def guard_failure_row(grc, gout):
+    """护栏失败归一为扰动失败行；0/None（通过/不可用）不产生失败。"""
+    if grc in (0, None):
+        return None
+    return ("<护栏收尾>", 0, 1, "FAILED", 0.0, str(gout or ""))
+
+
 def run_one(path, timeout=None):
     """在子进程中跑单个套件，返回 (name, n_pass, n_fail, status, seconds, output)。"""
     timeout = timeout or TIMEOUT
@@ -469,7 +476,14 @@ def main():
                     print("   [护栏] 已尝试兜底还原：")
                     print("\n".join("   " + l for l in _gout.splitlines()[-12:]))
         if _p_list:
-            run_guard_preflight()      # 后置兜底：确认收工时源码是干净的
+            # 后置兜底：收工时源码必须干净；失败必须计入总退出码，
+            # 否则「源码被留在变异态」会被全绿汇总掩盖。
+            _grc, _gout = run_guard_preflight()
+            _grow = guard_failure_row(_grc, _gout)
+            if _grow is not None:
+                p_rows.append(_grow)
+                print("\n   [护栏] 收尾检查未通过，已计入失败：")
+                print("\n".join("   " + l for l in str(_gout).splitlines()[-30:]))
 
     total_pass = sum(r[1] for r in rows)
     total_fail = sum(r[2] for r in rows)

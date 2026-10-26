@@ -2148,6 +2148,11 @@ def _clip_output(out, hard_trunc, approx_bytes, limit=None):
     if len(out) <= limit:
         return out
     clipped = out[:limit]
+    if _STREAM_DROP_MARK_TEXT.strip() in out:
+        # v4.289.3：读取侧已丢弃 4MB 之后的输出；标记在尾部，裁剪会把它切掉，
+        # 这里统一改成回传尾部可见的截断说明。
+        return clipped + (f"\n…[输出过大已截断：子进程输出超过 4MB，"
+                          f"后续内容已丢弃，仅回传前 {limit} 字符]")
     if hard_trunc:
         return clipped + (f"\n…[输出过大已截断：原始约 {approx_bytes:,} 字节，"
                           f"仅回传前 {limit} 字符]")
@@ -2188,29 +2193,51 @@ def _preserve_traceback_tail(raw, out):
     return out.rstrip() + "\n\n[错误末行已保留] " + last_err
 
 
+_STREAM_DROP_MARK_TEXT = "\n[... 子进程输出超过 4MB，后续输出已丢弃 ...]\n"
+_STREAM_DROP_MARK = _STREAM_DROP_MARK_TEXT.encode("utf-8")
+
+
 def _stream_collect(proc, timeout, progress=None, should_stop=None, stop_event=None):
     """流式读取子进程 stdout/stderr（实时经 progress 回显），支持停止信号。
 
     返回 (stdout_bytes, stderr_bytes, outcome)，outcome ∈ {'done','timeout','stopped'}。
-    v4.186.0（②-A.3）：替代一次性 communicate，长任务可即时看到中间输出、且能被用户停止。
+    v4.289.3：按 64KB 分块读取，每路最多保留 2MB；读取侧即有界，
+    不再「先无限 append、结束后才截断」。超限追加可见丢弃标记。
     """
     import threading
     _so, _se = [], []
+    per_stream_limit = max(64 * 1024, _RAW_OUTPUT_HARD_LIMIT // 2)
+    _lock = threading.Lock()
+    _used = {"stdout": 0, "stderr": 0}
+    _dropped = {"stdout": False, "stderr": False}
 
-    def _reader(src, sink):
+    def _reader(src, sink, tag):
         try:
-            for line in iter(src.readline, b""):
-                sink.append(line)
-                if progress and callable(progress):
+            while True:
+                chunk = src.read(65536)
+                if not chunk:
+                    break
+                with _lock:
+                    room = per_stream_limit - _used[tag]
+                    if room > 0:
+                        sink.append(chunk[:room])
+                        _used[tag] += min(len(chunk), room)
+                    overflow = len(chunk) > max(room, 0)
+                    can_show = room > 0 and not _dropped[tag]
+                    if overflow and not _dropped[tag]:
+                        sink.append(_STREAM_DROP_MARK)
+                        _dropped[tag] = True
+                        can_show = False
+                if can_show and progress and callable(progress):
                     try:
-                        progress(line.decode("utf-8", "ignore"))
+                        progress(chunk.decode("utf-8", "ignore"))
                     except Exception:
                         pass
         except Exception:
             pass
 
-    t_out = threading.Thread(target=_reader, args=(proc.stdout, _so), daemon=True)
-    t_err = threading.Thread(target=_reader, args=(proc.stderr, _se), daemon=True)
+    t_out = threading.Thread(target=_reader, args=(proc.stdout, _so, "stdout"), daemon=True)
+    t_err = threading.Thread(target=_reader, args=(proc.stderr, _se, "stderr"), daemon=True)
     t_out.start()
     t_err.start()
     t0 = time.time()

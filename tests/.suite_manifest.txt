@@ -191,6 +191,7 @@ test_video_gen_breaker_260.py
 test_vision_channel.py
 test_vision_qc.py
 test_voice_ptt_282.py
+test_wave3_guards_293.py
 test_webengine_policy_265.py
 test_webengine_sethtml_272.py
 test_welcome_ia_199.py

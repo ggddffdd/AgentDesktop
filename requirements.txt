@@ -28,6 +28,8 @@ numpy==2.4.4
 # onnxruntime 源码零 import（仅剩日志噪音过滤名单提名），v4.283.1 退役。
 # rag.py 索引 Word、ui.py 导出 Word；spec 的 hiddenimports 已登记 'docx'
 python-docx==1.2.0
+# rag.py 的 PDF 文本抽取首选 pdfplumber（PyPDF2 仅历史回落，干净环境不再依赖它）
+pdfplumber==0.11.9
 
 # ---------- 语音合成主链（voice.py 直接 import，2026-10-16 补列）----------
 # 此前漏列：本机能跑只因装过，干净环境 pip install -r 装不到它。

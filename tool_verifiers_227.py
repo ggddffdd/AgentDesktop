@@ -24,7 +24,10 @@ v4.224 落地了 `register_verifier` / `verify_after` / `apply_post_verification
 刻意不让它参与决策：两套策略必然漂移（与 v4.226 删掉 `_AllowAllDecision` 同理）。
 """
 import json
+import logging
 import os
+
+log = logging.getLogger("tool_verifiers")
 
 from tool_contract import (
     register_verifier,
@@ -37,14 +40,21 @@ from tool_contract import (
 
 
 def _db_conn():
-    """取 database_tools 的连接对象（拿不到就返回 None → 验证器不表态）。"""
+    """取真实运行的 tools.db_tools 连接；拿不到就记警告并不表态。
+
+    v4.289.3：原实现找 database_tools.get_db()，但该函数从未存在，
+    三个数据库后验器长期静默空转。真实单例在 tools.db_tools。
+    """
     try:
-        import database_tools
-        inst = getattr(database_tools, "_db", None)
+        import tools as _tools
+        inst = getattr(_tools, "db_tools", None)
         if inst is None:
-            inst = database_tools.get_db()
+            import database_tools
+            inst = database_tools.DatabaseTools()
+            _tools.db_tools = inst
         return inst._get_connection()
-    except Exception:
+    except Exception as e:
+        log.warning("数据库后验无法取得连接（按不表态处理）：%s", e)
         return None
 
 
@@ -61,9 +71,9 @@ def _verify_db_insert(args, result=None):
     import contextlib
     conn = None
     try:
-        import database_tools
-        inst = getattr(database_tools, "_db", None) or database_tools.get_db()
-        conn = inst._get_connection()
+        conn = _db_conn()
+        if conn is None:
+            return None
         cols = [k for k in data if k not in ("id", "created_at", "updated_at")]
         if not cols:
             return None
@@ -100,9 +110,9 @@ def _verify_db_update(args, result=None):
         return None
     conn = None
     try:
-        import database_tools
-        inst = getattr(database_tools, "_db", None) or database_tools.get_db()
-        conn = inst._get_connection()
+        conn = _db_conn()
+        if conn is None:
+            return None
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM [%s] WHERE id = ?" % table, (rid,))
         n = cur.fetchone()[0]
@@ -129,9 +139,9 @@ def _verify_db_delete(args, result=None):
         return None
     conn = None
     try:
-        import database_tools
-        inst = getattr(database_tools, "_db", None) or database_tools.get_db()
-        conn = inst._get_connection()
+        conn = _db_conn()
+        if conn is None:
+            return None
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM [%s] WHERE id = ?" % table, (rid,))
         n = cur.fetchone()[0]

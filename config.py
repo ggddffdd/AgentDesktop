@@ -77,7 +77,7 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.289.2"
+APP_VERSION = "v4.289.3"
 APP_BUILD_DATE = "2026-10-26"
 
 # ---------- DeepSeek 错峰窗口（唯一配置处）----------
@@ -1571,13 +1571,16 @@ def load_dynamic_skills(compact=False):
     # v4.67：让技能管理器的「启用/禁用」在对话侧真实生效。
     # 规则：enabled_skills 为空（未配置）→ 全部启用（向后兼容）；
     #       非空 → 仅保留被显式启用的技能。
-    enabled = _load_enabled_skills()
-    if enabled:
-        keep = {normalize_skill_name(n) for n in enabled}
-        filtered = [sk for sk in all_skills
-                    if normalize_skill_name(sk.get("name", "")) in keep]
-        if filtered:
-            all_skills = filtered
+    # v4.289.3：显式「全禁用」必须把清单清空；白名单无任何匹配也必须为空，
+    # 不能回退成「全部技能」——那会让用户关掉技能后模型仍能看到/使用它们。
+    if skills_disabled_all():
+        all_skills = []
+    else:
+        enabled = _load_enabled_skills()
+        if enabled:
+            keep = {normalize_skill_name(n) for n in enabled}
+            all_skills = [sk for sk in all_skills
+                          if normalize_skill_name(sk.get("name", "")) in keep]
 
     # 名字固定排序：技能清单在稳定前缀里，目录遍历顺序一变就会让缓存失效。
     all_skills.sort(key=lambda sk: sk.get("name") or "")

@@ -7,7 +7,7 @@ import uuid
 import logging
 from datetime import datetime
 
-from config import APP_DIR
+from config import USER_DATA_DIR
 
 log = logging.getLogger("dsdesktop")
 
@@ -39,9 +39,14 @@ class Session:
 
 
 class SessionStore:
-    PATH = os.path.join(os.path.expanduser("~/Documents/小臭玩AI"), "sessions.json")
+    # v4.289.3：统一走 config.USER_DATA_DIR（支持 XC_USER_DATA_DIR 改道），
+    # 不再在测试/定制环境中写死真实用户目录。
+    PATH = os.path.join(USER_DATA_DIR, "sessions.json")
 
-    def __init__(self):
+    def __init__(self, path=None):
+        # path 显式注入供测试/隔离环境使用；不传保持原默认行为。
+        if path:
+            self.PATH = path
         self.sessions = {}
         self.active_sid = None
         self._corrupt_lock = False  # v4.125 N-02：坏档未备份时阻止空库覆盖

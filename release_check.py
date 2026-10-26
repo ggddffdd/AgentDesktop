@@ -340,7 +340,9 @@ def check_secrets(scan_dist=True):
         for exe in sorted(dist.glob("*.exe"))[:2]:
             hits, detail = _scan_pyz_secrets(exe)
             if hits is None:
-                warn(f"PYZ 密钥扫描跳过（{exe.name}）：{detail}")
+                # v4.289.3：产物存在却解析失败 = 没验过，不能以警告放行。
+                check(f"密钥扫描·解 PYZ 常量表（{exe.name}）", False,
+                      f"PYZ 解析失败：{detail}")
                 continue
             check(f"密钥扫描·解 PYZ 常量表（{exe.name}）", not hits,
                   "、".join(hits) if hits else detail)
@@ -527,7 +529,9 @@ def check_version(scan_dist=True):
         return
     v, err = _read_exe_version(exe)
     if v is None:
-        warn("已构建 exe 版本核对", err or "读取失败")
+        # v4.289.3：exe 已存在却读不出版本 = 产物不可核验，必须 fail-closed。
+        check("exe 内版本与 config 一致", False,
+              f"读取失败：{err or '未知原因'}")
         return
     check("exe 内版本与 config 一致", v == appv, f"exe={v} config={appv}")
 

@@ -25,6 +25,36 @@ import json
 import time
 import argparse
 import tempfile
+from urllib.parse import urlsplit, urlunsplit
+
+
+def _norm_url(url):
+    """URL 规范化：host 大小写、尾斜杠、fragment 不参与页面身份比较。"""
+    try:
+        p = urlsplit(str(url or ""))
+        path = (p.path or "").rstrip("/") or "/"
+        return urlunsplit((p.scheme.lower(), p.netloc.lower(), path, p.query, ""))
+    except Exception:
+        return str(url or "").rstrip("/")
+
+
+def _same_url(a, b):
+    return bool(a and b) and _norm_url(a) == _norm_url(b)
+
+
+def _pick_page(pages, url):
+    """在 CDP 已开标签页里选目标页：精确 URL 优先，否则保留第一个。"""
+    pages = list(pages or [])
+    if not pages:
+        return None
+    if url:
+        for pg in pages:
+            try:
+                if _same_url(pg.url, url):
+                    return pg
+            except Exception:
+                continue
+    return pages[0]
 
 
 def _looks_like_css(sel):
@@ -180,7 +210,7 @@ def main():
                 # CDP 接管：连接用户真实浏览器，继承其全部登录态与已开标签页
                 browser = p.chromium.connect_over_cdp(args.cdp)
                 context = browser.contexts[0] if browser.contexts else browser.new_context()
-                page = context.pages[0] if context.pages else context.new_page()
+                page = _pick_page(context.pages, args.url) or context.new_page()
                 close_ctx = False  # 不关闭用户的浏览器
                 cdp_mode = True
             else:
@@ -234,7 +264,7 @@ def main():
                     page.wait_for_timeout(_after)
                 elif cdp_mode and args.url and (
                     page.url in ("about:blank", "chrome://newtab/", "")
-                    or (args.action == "read" and args.url not in page.url)
+                    or (args.action == "read" and not _same_url(page.url, args.url))
                 ):
                     page.goto(args.url, wait_until=_until, timeout=timeout)
                     page.wait_for_timeout(_after)

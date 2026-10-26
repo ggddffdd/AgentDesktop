@@ -64,7 +64,7 @@ from token_compressor import compress
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.289.2"
+VERSION = "v4.289.3"
 
 
 def _wrap_tool_content_local(name, content, evidence_id=None):

@@ -413,8 +413,10 @@ _bct_src = read_src(BCT_PATH)
 check("G1  runner 整页 read 用 inner_text(\"body\")（H-07：无参直接 TypeError）",
       'inner_text("body")' in _br_src)
 
-check("G2  runner CDP read 导航分支 url not in page.url（v4.147.9：read 永远读到当前页的根因）",
-      "args.url not in page.url" in _br_src)
+check("G2  runner CDP read 用规范化精确 URL 比较（防前缀误判 + 目标页绑定）",
+      "_same_url(page.url, args.url)" in _br_src
+      and "args.url not in page.url" not in _br_src
+      and "_pick_page(context.pages, args.url)" in _br_src)
 
 check("G3  runner 出口 stdout.reconfigure(utf-8)（H-09：中文 JSON 被 GBK 污染）",
       'reconfigure(encoding="utf-8")' in _br_src)
