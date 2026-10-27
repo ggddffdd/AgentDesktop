@@ -82,6 +82,7 @@ test_legion_ui_polish_250.py
 test_legion_ui_polish_252.py
 test_legion_ux_269.py
 test_log_redirect_hyg.py
+test_memory_context_296.py
 test_memory_gate_196.py
 test_memory_metadata.py
 test_msg_budget_cap_224.py

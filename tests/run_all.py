@@ -77,6 +77,11 @@ def _child_env():
     env["PYTHONUTF8"] = "1"
     env["QT_QPA_PLATFORM"] = "offscreen"   # 需要 Qt 的套件不弹窗
     env.setdefault("XC_LOG_DIR", TEST_LOG_DIR)   # 套件日志→临时目录，不污染用户真实 debug.log
+    # 注意（v4.289.6 实测）：**不要**在这里统一注入 XC_USER_DATA_DIR ——
+    # config.WORKSPACE_DIR 默认跟随 USER_DATA_DIR，一刀切改道会让 11 个套件的
+    # 路径假设失效（实测 PASS=0 崩溃）。真实记忆被写坏的根因是
+    # `context_manager._user_data_dir()` 不跟随 config，已在该模块单点修好：
+    # 套件自己设 XC_USER_DATA_DIR 即可隔离，未设的套件行为与历史一致。
     return env
 
 

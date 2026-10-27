@@ -26,18 +26,45 @@ log = logging.getLogger("context_manager")
 # 全量写一次 JSON，长会话 O(n²) IO；节流后间隙置脏标记，由压缩/读取/退出前 flush。
 _KEY_SAVE_MIN_INTERVAL = 5.0
 
+# v4.289.6：合并摘要里 key_points 的上限。v4.289.0 只把「段数」收敛成有界，
+# 但单段内的 key_points 仍然无上限 —— 长会话里每条命中 todo/preference 的
+# 用户消息都会追加一条，实测 80 条消息就能堆到 60+ 条。超出后丢最旧的。
+_MAX_KEY_POINTS = 40
+
 
 def _user_data_dir():
-    p = Path.home() / "Documents" / "小臭玩AI"
+    """上下文摘要/关键信息的落盘目录（与 config.USER_DATA_DIR 同源）。
+
+    v4.289.6：原实现硬编码 `~/Documents/小臭玩AI`，既不认 `config.USER_DATA_DIR`
+    也不认 `XC_USER_DATA_DIR`。后果是判据套件把环境变量改道到临时目录后，本模块
+    **仍然读写真实用户目录**（实测：探测数据被并进了真实的 context_summary.json /
+    key_info.json）。现在跟随 config，与 session / memory_store 口径一致。
+    """
+    try:
+        import config
+        p = Path(getattr(config, "USER_DATA_DIR", "")
+                 or (Path.home() / "Documents" / "小臭玩AI"))
+    except Exception:
+        p = Path.home() / "Documents" / "小臭玩AI"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
 class ContextManager:
-    def __init__(self, max_window=20, compress_threshold=10,
+    def __init__(self, max_window=20, compress_threshold=30,
                  summary_path=None, key_info_path=None):
         self.max_window = max_window        # 保留最近 N 轮完整上下文
         self.compress_threshold = compress_threshold  # 超过 N 条触发自动压缩
+        # v4.289.6（实测修复）：阈值必须**大于**窗口。原默认是 10 < 20 ——
+        # 压缩后仍保留 20 条 > 10，于是每来一条消息就再压一次并落盘
+        # （实测 25 条触发 5 次写盘，会话越长越退化成「一条一写」）。
+        # 这里做一次防御性纠正，外部传错也不会退化成逐条压缩。
+        if self.compress_threshold <= self.max_window:
+            _fixed = self.max_window + 1
+            log.warning("compress_threshold(%s) <= max_window(%s)，"
+                        "自动抬到 %s（仅为打破「压缩后仍超阈值」的逐条压缩）",
+                        self.compress_threshold, self.max_window, _fixed)
+            self.compress_threshold = _fixed
         ud = _user_data_dir()
         self.summary_path = summary_path or str(ud / "context_summary.json")
         self.key_info_path = key_info_path or str(ud / "key_info.json")
@@ -154,6 +181,10 @@ class ContextManager:
                     if k not in _seen:
                         last.setdefault("key_points", []).append(p)
                         _seen.add(k)
+                # v4.289.6：单段 key_points 也要有界（只去重不裁会无限增长）
+                _pts = last.get("key_points", [])
+                if len(_pts) > _MAX_KEY_POINTS:
+                    del _pts[:len(_pts) - _MAX_KEY_POINTS]
                 last["message_count"] = (
                     last.get("message_count", 0) + inc.get("message_count", 0))
                 _end = inc.get("period", "")
@@ -177,14 +208,25 @@ class ContextManager:
             "key_points": [],
             "method": "heuristic",
         }
+        # v4.289.6：**段内也要去重**。原来只靠 `_compress` 合并时按 _seen 去重，
+        # 首次 append 的那段没有这一步 —— 同一批历史里重复说 N 遍的同一条内容
+        # 会一次性写进 N 个 key_points（实测 20 条重复消息首段出现 2 条）。
+        _seen = set()
         for msg in history:
             if msg["role"] != "user":
                 continue
             c = msg["content"]
             if any(k in c for k in ("TODO", "待办", "任务")):
-                summary["key_points"].append({"type": "todo", "content": c[:200]})
+                _kp = {"type": "todo", "content": c[:200]}
             elif any(k in c for k in ("记住", "偏好", "我喜欢", "约定")):
-                summary["key_points"].append({"type": "preference", "content": c[:200]})
+                _kp = {"type": "preference", "content": c[:200]}
+            else:
+                continue
+            _key = (_kp["type"], _kp["content"])
+            if _key in _seen:
+                continue
+            _seen.add(_key)
+            summary["key_points"].append(_kp)
         return summary
 
     def compress_with_llm(self, cfg=None):

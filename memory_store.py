@@ -341,22 +341,31 @@ def _backup_dir():
 
 
 def _prune_backups(bd):
-    """只删自己写的快照文件。目录（例如测试残留）删不掉就跳过，不要让整次快照失败。"""
+    """按类别轮转：memory_ / core_ / db_ 各保留最近 MAX_BACKUPS 份。
+
+    v4.289.6（实测修复）：原实现把三类混在一起按文件名全局排序再从头删——
+    字典序上 `core_` < `db_` < `memory_`，于是 **core_ 快照被系统性优先删光**
+    （实测 25 组裁完剩 memory 25 / core 10 / db 25），核心画像的备份反而最先
+    消失，`repair_memory` 也就修不回来。现在按类别各自轮转，与 docstring
+    「保留最近 MAX_BACKUPS 份」一致。
+    """
     try:
         names = sorted(os.listdir(bd))
     except Exception:
         return
-    snaps = [n for n in names if n.startswith(("memory_", "core_", "db_"))]
-    while len(snaps) > MAX_BACKUPS * 3:
-        victim = snaps.pop(0)
-        path = os.path.join(bd, victim)
-        try:
-            if os.path.isdir(path):
-                continue
-            os.remove(path)
-        except Exception as e:
-            log.warning("旧记忆快照删不掉，已跳过：%s", e)
-            break
+    for prefix in ("memory_", "core_", "db_"):
+        group = [n for n in names if n.startswith(prefix)]
+        if len(group) <= MAX_BACKUPS:
+            continue
+        group.sort()  # 文件名含 %Y%m%d_%H%M%S，字典序即时间序
+        for victim in group[:len(group) - MAX_BACKUPS]:
+            path = os.path.join(bd, victim)
+            try:
+                if os.path.isdir(path):
+                    continue
+                os.remove(path)
+            except Exception as e:
+                log.warning("旧记忆快照删不掉，已跳过：%s", e)
 
 
 def _snapshot_memory(tag=""):
