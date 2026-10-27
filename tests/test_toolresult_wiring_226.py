@@ -447,7 +447,7 @@ _tc.register_verifier("write_file",
 _tmpd = tempfile.mkdtemp(prefix="tr226_")
 try:
     _real = _tools.exec_tool({"agent_mode": True}, _tmpd, "write_file",
-                             {"path": "probe_226.txt", "content": "hello"},
+                             {"path": os.path.join(_tmpd, "probe_226.txt"), "content": "hello"},
                              perm_ctx=_Allow())
     check("D1 exec_tool 返回 ToolResult", hasattr(_real, "ok"), type(_real).__name__)
     check("D2 验证不通过时 ok=False（契约层已降级）", _real.ok is False)
@@ -463,7 +463,7 @@ try:
     # 反向：对照组（无验证器）必须仍是成功 —— 防「一律判失败」
     _tc._VERIFY_REGISTRY.pop("write_file", None)
     _real2 = _tools.exec_tool({"agent_mode": True}, _tmpd, "write_file",
-                              {"path": "probe_226b.txt", "content": "hi"},
+                              {"path": os.path.join(_tmpd, "probe_226b.txt"), "content": "hi"},
                               perm_ctx=_Allow())
     _e2 = _W._tool_outcome(_real2, "write_file", str(_real2.msg),
                            _W._tool_result_looks_failed)

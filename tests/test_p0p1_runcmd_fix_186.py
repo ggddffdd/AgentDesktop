@@ -28,7 +28,10 @@ for code, label in deny_cases:
 print("=== [B] P0-1: 正常代码 0 误伤 ===")
 ok_cases = [
     ("print(1+1)", "算术"),
-    ("open('report_tmp_probe.md','w').write('hi')", "写文件"),
+    # v4.289.6：改绝对临时路径——run_python 的 cwd 在用户数据目录，
+    # 相对名会把测试垃圾写进真实 workspace（实测残留 report_tmp_probe.md）。
+    ("open(%r,'w').write('hi')" % __import__("tempfile").mkstemp(
+        prefix="xc186_ok_", suffix=".md")[1], "写文件"),
     ("import json,os,re;print(json.dumps({'a':os.listdir('.')[:1]}))", "正常 import"),
     ("import subprocess; subprocess.run('ls -la', shell=True)", "普通 ls"),
     ("import subprocess; subprocess.run(['ls','-la'])", "argv 列表 ls"),
