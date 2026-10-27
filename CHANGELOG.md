@@ -6,6 +6,47 @@
 - **记录口径**：只写「用户可感知的变化」与「关键工程决定」，不写实现细节。每条都能对应到项目的验证报告或当日工作日志。
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
+
+## v4.289.5 — 2026-10-27
+
+**主题：产物级硬要求 + 工具执行入口收敛**
+
+GPT 审查（第二轮）最后两条建议的落地。两条都不引入新功能，只补齐现有判定与收敛重复实现。
+
+### ① 产物级硬要求（task_state.py / agent_task_mixin.py / agent_loop.py）
+- 背景：工具级硬要求刻意只认「字面点名」（`HARD_REQUIREMENT_POLICY`，v4.227 登记，
+  有判据+扰动锁住），于是「把结论存成 md」「导出到桌面」这类**只要产物、不点名工具**的
+  请求完全不进硬验收 —— 模型说一句「已保存」就能收尾。
+- 新增 `expect_save_from_text()` 与 `SAVE_REQUIREMENT_POLICY = "save_verb_and(ext_or_location)"`：
+  落盘动词 **且**（文件扩展名 或 明确落盘位置）才算。正例 7 / 反例 9 全部实测通过，
+  「这个想法存在吗」「保存一下」「cmd 命令」等均不误判。
+- `TaskState.expect_save` + `artifact_gap()`：`pending()/is_complete()` 消费，
+  `has_requirements()` 纳入（否则 nudge 与机器小结根本不介入），
+  `build_summary`/`verify_report` 同步反映。**工具名字面策略未动**。
+- 扩展名识别覆盖带点（`result.json`）与无点（`存成 md`）两种写法，裸扩展名带词边界防误命中。
+
+### ② 工具执行入口收敛（agent_exec_mixin.py / agent.py）
+- 新增 `_invoke_tool()`：全仓**唯一** `tools.exec_tool` 调用点，统一
+  `(result, deliverables, schedule, tool_result)` 四元组与异常归一（原串行两份逐字重复的
+  try/except + 并发第三份，三处兜底文案与返回形状迟早漂移）。
+- 新增 `_emit_tool_started()` / `_emit_tool_finished()`：全仓**唯一** `tool_started` /
+  `tool_finished` 发射点，串行、并发、`run_workflow` 三条路径共用；`success` 统一归一为
+  `bool(ToolResult.ok)`。
+- 串行路径：确认/拒绝分支保留各自结论，执行段合并为一次 `_invoke_tool` 调用；
+  并发闭包改调统一入口（`set_default_sid` 线程上下文保留）；
+  工作流分支的信号改走同一对 helper。
+- 判据：AST 断言 `exec_tool` 与两处 emit 各只剩 1 个调用点（注释不干扰），
+  并保留 `should_stop` 透传、`perm_ctx` 原样透传、四元组接到 `_tr` 的等价断言。
+
+### 判据适配（未删判据、未放水）
+- `test_toolresult_wiring_226` B3/B4：从「exec_tool 返回值赋给 _tr / dict 里 success 取 _okc」
+  等价改写为「`_invoke_tool` 四元组接到 _tr / `_emit_tool_finished` 第 5 实参取 _okc」。
+- `test_permission_failclosed_226` B1-B4：并发方法定位特征扩成「exec_tool 或 _invoke_tool」；
+  perm_ctx 链检查平移到「统一入口原样透传 dec」。
+
+### 测试
+- 新增 `test_acceptance_295.py`（15 项）、`test_exec_single_entry_295.py`（14 项）。
+- 全量回归与 release gate 结果以本次发布验收为准。
 ## v4.289.4 — 2026-10-27
 
 **主题：工作流失败进账本 + 并发停止不丢结果 + 去重按执行状态记账**

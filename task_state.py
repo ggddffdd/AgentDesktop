@@ -39,7 +39,7 @@ import os
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.289.4"
+VERSION = "v4.289.5"
 
 # ============================================================
 # 会产出实物的工具（按工具名 → 产物是否应当落盘到磁盘）
@@ -114,6 +114,55 @@ def required_from_text(text):
     return out
 
 
+# ------------------------------------------------------------
+# v4.289.5：**产物级**硬要求（用户显式要求产出文件）
+# ------------------------------------------------------------
+# 为什么要有这一层
+# ----------------
+# 工具级硬要求刻意只认「字面点名」（HARD_REQUIREMENT_POLICY），于是
+# 「把这份数据存成 csv」「把结论导出到桌面」这类**没点名工具、只要产物**的
+# 请求完全不进硬验收 —— 模型只说一句「已保存」就收尾，账本无感。
+#
+# 口径（宁可漏，不可错）—— 落盘动词 **且**（文件扩展名 或 明确落盘位置）：
+#   命中：「存成 md」「导出到桌面」「写入 result.json」「存到 D盘」
+#   不中：「这个想法存在吗」「保存一下」（动词命中但无产物线索 → 不算）
+#
+# 刻意不采用「只看落盘动词」：中文里「存/保存」出现在非落盘语境太多了，
+# 那会把闲聊也变成「必须有文件」的硬要求，逼模型去落盘一个不存在的产物。
+SAVE_REQUIREMENT_POLICY = "save_verb_and(ext_or_location)"
+
+_SAVE_VERBS = ("保存", "存成", "存到", "存为", "另存", "导出", "写入", "写到",
+               "落盘", "下载到", "生成文件")
+_SAVE_LOCATIONS = ("桌面", "d盘", "c盘", "e盘", "文件夹", "目录", "本地磁盘",
+                   "硬盘", "u盘", "下载目录")
+_SAVE_EXTS = (".md", ".txt", ".docx", ".doc", ".pdf", ".csv", ".xlsx", ".xls",
+              ".json", ".html", ".htm", ".png", ".jpg", ".jpeg", ".mp4",
+              ".py", ".zip", ".srt", ".yaml", ".yml")
+
+
+def expect_save_from_text(text):
+    """用户是否**显式**要求产出文件（见 SAVE_REQUIREMENT_POLICY）。
+
+    返回 bool。空文本 / 只命中动词 / 只命中扩展名 → False（fail-closed）。
+    """
+    import re
+    t = str(text or "")
+    if not t:
+        return False
+    low = t.lower()
+    if not any(v in t for v in _SAVE_VERBS):
+        return False
+    if any(e in low for e in _SAVE_EXTS):
+        return True
+    # 中文习惯的**无点**写法：「存成 md」「导出 pdf」「另存 json」。
+    # 必须带词边界：否则 cmd / docstring / xlsx 里的子串会误命中（长串优先）。
+    for e in sorted(_SAVE_EXTS, key=len, reverse=True):
+        bare = e[1:]
+        if re.search(r"(?<![a-z0-9])" + re.escape(bare) + r"(?![a-z0-9])", low):
+            return True
+    return any(p in low for p in _SAVE_LOCATIONS)
+
+
 # ============================================================
 # v4.227（P2-3）：把「只认字面点名」这条设计决定登记成**可检出的事实**
 # ============================================================
@@ -156,9 +205,9 @@ class TaskState(object):
 
     __slots__ = ("goal", "required_tools", "used_tools", "artifacts",
                  "failed_tools", "succeeded_tools", "current_step", "nudge_injected", "steps",
-                 "workflow_incomplete")
+                 "workflow_incomplete", "expect_save")
 
-    def __init__(self, goal="", required_tools=()):
+    def __init__(self, goal="", required_tools=(), expect_save=False):
         self.goal = goal or ""
         # 去重且保序：required_tools 的顺序 = 用户话里提到的顺序，
         # 补 nudge 时按这个顺序提示，读起来符合用户的心智模型。
@@ -177,6 +226,9 @@ class TaskState(object):
         self.nudge_injected = False
         self.steps = 0
         self.workflow_incomplete = None  # v4.233 断点 E：任务图未完整达成的节点集合（None=完整）
+        # v4.289.5：用户**显式**要求产出文件（落盘动词 + 扩展名/位置）。
+        # 与 required_tools 并列的第二类硬要求：不点名工具，但要求有产物。
+        self.expect_save = bool(expect_save)
 
     # --------------------------------------------------------
     # 记账
@@ -277,21 +329,37 @@ class TaskState(object):
     # --------------------------------------------------------
     def has_requirements(self):
         """本轮是否有「硬要求」——没有就完全不介入（gate 条件 1）。"""
-        return bool(self.required_tools)
+        return bool(self.required_tools) or bool(self.expect_save)
 
     def missing_tools(self):
         """点名了但从没调过的工具。"""
         used = set(self.used_tools)
         return [t for t in self.required_tools if t not in used]
 
+    def artifact_gap(self):
+        """用户显式要求落盘、但没有任何**成功落地**产物时的提示；否则 None。
+
+        v4.289.5：把「产物」这种硬要求从「工具是否被调用」里拆出来 ——
+        用户说「存成 md」，模型调了什么工具都行，但**必须真的落一个文件**，
+        否则这句「已保存」就是空话。
+        """
+        try:
+            if not getattr(self, "expect_save", False):
+                return None
+            if any(bool(ok) for (_p, ok, _t) in self.artifacts):
+                return None
+            return "用户要求产出文件，但本轮没有任何成功落地的产物"
+        except Exception:
+            return None
+
     def missing_artifacts(self):
         """声明了产物但磁盘上不存在的。"""
         return [(p, t) for (p, ok, t) in self.artifacts if not ok]
 
     def is_complete(self):
-        """全部硬要求满足（含工作流节点全部成功）。"""
+        """全部硬要求满足（含工作流节点全部成功、显式落盘诉求已落地）。"""
         return (not self.missing_tools() and not self.missing_artifacts()
-                and not self.workflow_unmet())
+                and not self.workflow_unmet() and not self.artifact_gap())
 
     def pending(self):
         """返回未达标清单（人类可读字符串列表）；空列表 = 达标。"""
@@ -313,6 +381,10 @@ class TaskState(object):
         # 仍可能基于部分产出给出「已完成」结论。
         for x in self.workflow_unmet():
             out.append("%s，需要重跑该环节或在结论里明确说明" % x)
+        # v4.289.5：显式落盘诉求没兑现（产物级硬要求）
+        _gap = self.artifact_gap()
+        if _gap:
+            out.append(_gap)
         return out
 
     # --------------------------------------------------------

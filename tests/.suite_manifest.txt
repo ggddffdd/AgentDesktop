@@ -1,4 +1,5 @@
 regression.py
+test_acceptance_295.py
 test_agent_behavior_226.py
 test_agent_loop_phases_226.py
 test_agent_memory_mixin_236.py
@@ -43,6 +44,7 @@ test_empty_state_208.py
 test_evidence_mask.py
 test_evidence_registry_195.py
 test_exec_retry_289.py
+test_exec_single_entry_295.py
 test_exec_state_294.py
 test_exec_tool_gate_219.py
 test_fail_log_tts_257.py

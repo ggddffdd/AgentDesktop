@@ -49,7 +49,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.289.4"
+VERSION = "v4.289.5"
 
 # ============================================================
 # 阶段常量
@@ -290,7 +290,16 @@ def verify_report(tstate):
             _wf_unmet = []
         for x in _wf_unmet:
             out.append("未满足：%s" % x)
-        if not missing and not artifacts and not _wf_unmet and used:
+        # v4.289.5：显式落盘诉求未兑现
+        _gap = None
+        try:
+            _gap_fn = getattr(tstate, "artifact_gap", None)
+            _gap = _gap_fn() if callable(_gap_fn) else None
+        except Exception:
+            _gap = None
+        if _gap:
+            out.append("未满足：%s" % _gap)
+        if not missing and not artifacts and not _wf_unmet and not _gap and used:
             out.append("账本核对：点名要求已全部落实，产物已落地")
     except Exception:
         return []
@@ -408,6 +417,14 @@ def build_summary(tstate):
             _wf_fn = getattr(ts, "workflow_unmet", None)
             for x in (list(_wf_fn() or ()) if callable(_wf_fn) else []):
                 unmet.append(x)
+        except Exception:
+            pass
+        # v4.289.5：显式落盘诉求未兑现（产物级硬要求）
+        try:
+            _gap_fn = getattr(ts, "artifact_gap", None)
+            _gap = _gap_fn() if callable(_gap_fn) else None
+            if _gap:
+                unmet.append(_gap)
         except Exception:
             pass
         lines.append("未完成：%s" % ("；".join(unmet[:6]) if unmet else "无"))

@@ -221,76 +221,75 @@ def _tuple_target_names(node):
 
 
 # B3 每条路径的 ToolResult 都必须先落到 `_tr` 再用。
-# 串行：直接 `exec_tool(...)` 的返回值赋给 _tr。
-# 并发：`exec_tool` 在闭包 `_exec_with_ctx` 里（AST 上是嵌套 FunctionDef），
-#      ToolResult 是经 `future.result()` 拿回来的 —— 判据必须跟到那条链路，
-#      否则会出现「判据扫不到 = 看起来没接线」的假红（本次实测踩过）。
+# v4.289.5：执行统一走 `_invoke_tool`（返回 result/deliverables/schedule/
+# tool_result 四元组），串行与并发都不再直接调 exec_tool —— 判据改为跟
+# `_invoke_tool` 的四元组必须接到 `_tr`，等价于原「exec_tool 返回值赋给 _tr」。
+_EXPECT_CALLS = {"串行": 2, "并发": 1}
 for _tag, _fn in (("串行", _serial), ("并发", _conc)):
     if _fn is None:
         continue
-    _execs = _calls(_fn, "exec_tool")
-    check("B3 %s路径有 exec_tool 调用" % _tag, len(_execs) >= 1,
-          "找到 %d 处" % len(_execs))
+    _inv = _calls(_fn, "_invoke_tool")
+    check("B3 %s路径走统一执行入口 _invoke_tool（期望 %d 处）"
+          % (_tag, _EXPECT_CALLS[_tag]), len(_inv) == _EXPECT_CALLS[_tag],
+          "找到 %d 处" % len(_inv))
+    _caught = 0
+    for _p in ast.walk(_fn):
+        if (isinstance(_p, ast.Assign)
+                and _tuple_target_names(_p) == ["result_str", "deliverables",
+                                                "schedule", "_tr"]
+                and _calls(_p, "_invoke_tool")):
+            _caught += 1
     if _tag == "串行":
-        _assigned = 0
-        for _p in ast.walk(_fn):
-            if isinstance(_p, ast.Assign) and any(
-                    isinstance(t, ast.Name) and t.id == "_tr"
-                    for t in _p.targets):
-                if _calls(_p, "exec_tool"):
-                    _assigned += 1
-        check("B3 串行 路径：exec_tool 返回值都赋给了 _tr（字段没在中途丢）",
-              _assigned == len(_execs), "%d/%d 处接住" % (_assigned, len(_execs)))
+        check("B3 串行 路径：_invoke_tool 四元组接到 _tr（ToolResult 没在中途丢）",
+              _caught == len(_inv) and _caught >= 1,
+              "接住 %d/%d 处" % (_caught, len(_inv)))
     else:
-        #并发：future.result() 必须赋给 _tr（ToolResult 从闭包回到主循环的入口）
-        _fut = _calls(_fn, "result")
-        check("B3 并发 路径有 future.result() 取回结果", len(_fut) == 1,
-              "找到 %d 处" % len(_fut))
-        _f_assigned = False
-        for _p in ast.walk(_fn):
-            if isinstance(_p, ast.Assign) and any(
-                    isinstance(t, ast.Name) and t.id == "_tr"
-                    for t in _p.targets):
-                if _calls(_p, "result"):
-                    _f_assigned = True
-        check("B3 并发 路径：future.result() 的结果赋给了 _tr", _f_assigned,
-              "并发路径的 ToolResult 没接住 → 字段在 as_completed 处丢失")
-        # 且后续解包用的是 _tr（不是 future.result() 再解一次）
-        _unpack_tr = any(
-            isinstance(_n, ast.Assign)
-            and _tuple_target_names(_n) == ["result_str", "deliverables", "schedule"]
-            and isinstance(_n.value, ast.Name) and _n.value.id == "_tr"
-            for _n in ast.walk(_fn))
-        check("B3 并发 路径：三元组从 _tr 解包（不再调 future.result()）",
-              _unpack_tr)
+        # 并发的 _invoke_tool 在闭包里 `return`，结果由 future.result() 四元组接住
+        _ret_inv = any(
+            isinstance(_p, ast.Return) and _p.value is not None
+            and _calls(_p, "_invoke_tool")
+            for _p in ast.walk(_fn))
+        check("B3 并发 路径：_invoke_tool 结果经闭包 return 回传（future 接住）",
+              _ret_inv, "闭包内 return _invoke_tool 未找到")
 
-# B4 tool_finished 的 success 必须取自 _okc（不再看文案前缀）
-# 本项目写法是 `self.tool_finished.emit({...dict字面量...})` —— **不是 kwargs**，
-# 所以要查 dict 字面量里的 "success" 键（查 keywords 会永远扫不到= 假红，
-# 本次实测踩过：okc=0 仍用其他=0 就是这个原因）。
-_okc_attrs = 0
-_success_other = 0
+# 并发：ToolResult 从闭包经 future.result() 回到主循环，必须是四元组解包
+if _conc is not None:
+    _fut = _calls(_conc, "result")
+    check("B3 并发 路径有 future.result() 取回结果", len(_fut) == 1,
+          "找到 %d 处" % len(_fut))
+    _f_unpack = any(
+        (isinstance(_p, ast.Assign)
+         and _tuple_target_names(_p) == ["result_str", "deliverables",
+                                         "schedule", "_tr"]
+         and _calls(_p, "result"))
+        for _p in ast.walk(_conc))
+    check("B3 并发 路径：future.result() 四元组接到 _tr", _f_unpack,
+          "并发路径的 ToolResult 没接住 → 字段在 as_completed 处丢失")
+
+# B4 完成信号的成败实参必须取自 _okc。
+# v4.289.5：信号发射收敛到 `_emit_tool_finished`，判据跟着改成「调它且第 5 个
+# 位置实参是 _okc」—— 等价于原「dict 里 "success": _okc」，不放宽。
+_okc_args = 0
+_okc_other = 0
 for _fn in (_serial, _conc):
     if _fn is None:
         continue
     for _n in ast.walk(_fn):
         if not (isinstance(_n, ast.Call) and isinstance(_n.func, ast.Attribute)
-                and _n.func.attr == "emit"):
+                and _n.func.attr == "_emit_tool_finished"):
             continue
-        if getattr(_n.func.value, "attr", "") != "tool_finished":
-            continue
-        _d = _n.args[0] if _n.args else None
-        if not (isinstance(_d, ast.Dict)):
-            continue
-        for _k, _v in zip(_d.keys, _d.values):
-            if isinstance(_k, ast.Constant) and _k.value == "success":
-                if isinstance(_v, ast.Name) and _v.id == "_okc":
-                    _okc_attrs += 1
-                else:
-                    _success_other += 1
+        _arg = _n.args[4] if len(_n.args) >= 5 else None
+        if _arg is None:
+            for _kw in _n.keywords:
+                if _kw.arg == "ok":
+                    _arg = _kw.value
+        if isinstance(_arg, ast.Name) and _arg.id == "_okc":
+            _okc_args += 1
+        else:
+            _okc_other += 1
 check("B4 两处 tool_finished 的 success 都取自 _okc",
-      _okc_attrs == 2 and _success_other == 0,
-      "okc=%d 仍用其他表达式=%d" % (_okc_attrs, _success_other))
+      _okc_args == 2 and _okc_other == 0,
+      "okc=%d 仍用其他表达式=%d" % (_okc_args, _okc_other))
 
 # B5 _okc 必须来自 _tool_outcome（唯一判定真源）
 _okc_src = 0

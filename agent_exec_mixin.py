@@ -109,6 +109,53 @@ class AgentExecMixin(object):
         except Exception:
             return ("", "{}")
 
+    def _invoke_tool(self, mw, app_dir, name, args, dec):
+        """执行一次工具调用并把异常归一为四元组（**唯一** exec_tool 调用点）。
+
+        v4.289.5（2026-10-27）：收敛执行入口。此前 `_run_serial` 里
+        「确认后执行」与「免确认执行」是两份逐字重复的 try/except，并发路径
+        又自己写第三份 —— 三处兜底文案与返回值形状迟早漂移。
+        本方法只管「跑一次 + 归一」，权限决策与人工确认留在调用方。
+
+        返回 `(result_str, deliverables, schedule, tool_result)`；
+        异常时 `tool_result=None`（下游 `_tool_outcome` 退回文案判据）。
+        """
+        try:
+            _tr = tools.exec_tool(
+                mw.cfg, app_dir, name, args,
+                should_stop=lambda: self._stop_requested,
+                perm_ctx=dec)
+            result_str, deliverables, schedule = _tr
+            return result_str, deliverables, schedule, _tr
+        except Exception as e:
+            log.warning("工具执行崩溃 %s: %s", name, e)
+            return f"工具执行崩溃：{e}", [], None, None
+
+    def _emit_tool_started(self, name, args, idx, total):
+        """发射「工具开始」信号（三条路径共用的唯一发射点）。"""
+        try:
+            self.tool_started.emit({
+                "name": name, "args": args, "index": idx, "total": total,
+            })
+        except Exception:
+            pass
+
+    def _emit_tool_finished(self, name, result_str, idx, duration_ms, ok):
+        """发射「工具完成」信号（三条路径共用的唯一发射点）。
+
+        成败取 `_tool_outcome` 的结论（ToolResult.ok 优先），不看文案前缀。
+        """
+        try:
+            self.tool_finished.emit({
+                "name": name,
+                "result_preview": str(result_str)[:200],
+                "index": idx,
+                "success": bool(ok),
+                "duration_ms": int(duration_ms),
+            })
+        except Exception:
+            pass
+
     def _run_concurrent(self, tool_calls, mw, APP_DIR):
         """并发执行工具调用（`tool_calls` 是 `[(tool_call, decision), ...]`）。
 
@@ -154,10 +201,8 @@ class AgentExecMixin(object):
                 if self._stop_requested:
                     self._emit_status("⏹ 已停止（用户请求）")
                     break  # v4.289.4：未提交的调用留给下方统一补「未执行」回执
-                # 发射工具开始信号
-                self.tool_started.emit({
-                    "name": name, "args": args, "index": idx, "total": total
-                })
+                # 发射工具开始信号（唯一发射点）
+                self._emit_tool_started(name, args, idx, total)
                 t0 = time.time()
                 # 审计修复 E1：线程池工作线程是全新线程，不继承 thread-local——
                 # 在任务函数内先注入默认 sid，并发执行的 context 工具同样命中当前会话。
@@ -165,11 +210,11 @@ class AgentExecMixin(object):
                 # v4.244.0（审查报告 T-2）：_dec 由 _exec_tool_calls 批次级 decide 统一传入
                 # （已含 task_risk + needs_user 校验），worker 内不再二次 decide——那处重算
                 # 既漏 task_risk 又不校验 needs_user，且只带来风险不带来信息。
+                # v4.289.5：执行统一走 `_invoke_tool`（全仓唯一 exec_tool 调用点）。
                 def _exec_with_ctx(_name=name, _args=args, _sid=_ctx_sid,
-                                  _stop=lambda: self._stop_requested, _dec_ctx=_dec):
+                                  _dec_ctx=_dec):
                     context_manager.set_default_sid(_sid)
-                    return tools.exec_tool(mw.cfg, APP_DIR, _name, _args,
-                                           should_stop=_stop, perm_ctx=_dec_ctx)
+                    return self._invoke_tool(mw, APP_DIR, _name, _args, _dec_ctx)
                 futures[pool.submit(_exec_with_ctx)] = (tc, t0, idx)
 
             for future in as_completed(futures):
@@ -179,8 +224,7 @@ class AgentExecMixin(object):
                 fn = tc.get("function", {})
                 name = fn.get("name", "")
                 try:
-                    _tr = future.result()
-                    result_str, deliverables, schedule = _tr
+                    result_str, deliverables, schedule, _tr = future.result()
                 except Exception as e:
                     result_str = f"工具执行异常：{e}"
                     deliverables = []
@@ -193,13 +237,7 @@ class AgentExecMixin(object):
                     self._tool_result_looks_failed)[0]
                 # 停止后不再刷 UI 卡片，但结果照常入账（诚实记录优先于界面安静）
                 if not self._stop_requested:
-                    self.tool_finished.emit({
-                        "name": name,
-                        "result_preview": str(result_str)[:200],
-                        "index": idx,
-                        "success": _okc,
-                        "duration_ms": dt,
-                    })
+                    self._emit_tool_finished(name, result_str, idx, dt, _okc)
                 self._handle_tool_result(
                     tc, name, fn, result_str, deliverables, schedule,
                     tool_result=_tr)

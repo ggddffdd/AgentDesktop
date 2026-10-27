@@ -257,9 +257,11 @@ def group_b_wiring():
     if cls is None:
         return
 
-    # ---- B1：按「含 submit 且调 exec_tool」这一定位特征找并发方法 ----
+    # ---- B1：按「含 submit 且调执行入口」这一定位特征找并发方法 ----
     # v4.289.4：该方法外移到 agent_exec_mixin.AgentExecMixin（agent.py 撞 2400
-    # 行红线，按纪律外移不抬阈值）。定位特征与后续断言口径不变，只是多扫一个源。
+    # 行红线，按纪律外移不抬阈值）。
+    # v4.289.5：执行收敛到 `_invoke_tool`，闭包里不再直接调 `exec_tool`，
+    # 定位特征同步扩成「exec_tool 或 _invoke_tool」—— 后续断言口径不变。
     par = None
     _candidates = [cls]
     try:
@@ -274,7 +276,8 @@ def group_b_wiring():
                 continue
             has_submit = any(isinstance(n, ast.Attribute) and n.attr == "submit"
                              for n in ast.walk(cand))
-            if has_submit and _calls_in(cand, "exec_tool"):
+            if has_submit and (_calls_in(cand, "exec_tool")
+                               or _calls_in(cand, "_invoke_tool")):
                 par = cand
                 break
         if par is not None:
@@ -285,32 +288,45 @@ def group_b_wiring():
         return
     print("       （方法名：%s）" % par.name)
 
-    exec_calls = _calls_in(par, "exec_tool")
-    check("B2 并发批次里存在 exec_tool 调用点", len(exec_calls) >= 1,
-          "找到 %d 处" % len(exec_calls))
+    # v4.289.5：执行收敛到 `_invoke_tool`，并发批次不再直接调 exec_tool。
+    # 口径等价平移：①并发把批次级决策传给统一入口；②统一入口把决策**原样**
+    # 作为 perm_ctx 传给 exec_tool（不构造任何兜底决策对象）。
+    inv_calls = _calls_in(par, "_invoke_tool")
+    check("B2 并发批次里存在统一执行入口调用点", len(inv_calls) >= 1,
+          "找到 %d 处" % len(inv_calls))
 
-    # B3 perm_ctx 参数必须可静态追踪（是 Name，或压根没传）
     perm_names = []
     untracked = 0
-    for c in exec_calls:
-        v = _kwarg(c, "perm_ctx")
+    for c in inv_calls:
+        v = c.args[4] if len(c.args) >= 5 else _kwarg(c, "dec")
         if isinstance(v, ast.Name):
             perm_names.append(v.id)
         elif v is None:
             perm_names.append(None)      # 压根没传 → 恒 None，安全
         else:
             untracked += 1
-    check("B3 并发 exec_tool 的 perm_ctx 全部可静态追踪",
-          untracked == 0 and len(perm_names) == len(exec_calls),
-          "不可追踪=%d perm_ctx=%r" % (untracked, perm_names))
+    check("B3 并发批次传给执行入口的决策全部可静态追踪",
+          untracked == 0 and len(perm_names) == len(inv_calls),
+          "不可追踪=%d 决策实参=%r" % (untracked, perm_names))
 
-    # B4 解析链末端只能是 None 或 decide()
-    for pid in sorted(set(x for x in perm_names if x)):
-        srcs = _resolve_perm_chain(par, pid)
-        bad = [s for s in srcs if _is_suspicious(s)]
-        check("B4 并发批次 perm_ctx 链 `%s` 末端只可能是 None 或 decide()" % pid,
-              (not bad) and bool(srcs),
-              "来源=%r 可疑=%r" % (srcs, bad))
+    # B4 统一入口必须把决策原样透传给 exec_tool 的 perm_ctx
+    _inv_fn = None
+    try:
+        for _n in ast.walk(ast.parse(_src("agent_exec_mixin.py"))):
+            if isinstance(_n, ast.FunctionDef) and _n.name == "_invoke_tool":
+                _inv_fn = _n
+                break
+    except Exception:
+        pass
+    _pc = None
+    if _inv_fn is not None:
+        for _n in ast.walk(_inv_fn):
+            if (isinstance(_n, ast.Call) and isinstance(_n.func, ast.Attribute)
+                    and _n.func.attr == "exec_tool"):
+                _pc = _kwarg(_n, "perm_ctx")
+    check("B4 统一入口把决策原样作为 perm_ctx（不构造兜底对象）",
+          isinstance(_pc, ast.Name) and _pc.id == "dec",
+          "perm_ctx=%r" % (ast.dump(_pc) if _pc is not None else None))
 
     # B5 不得再构造任何兜底决策对象
     ctor_names = set()

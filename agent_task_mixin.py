@@ -37,7 +37,7 @@ import tool_contract  # v4.258.0（P1-6）：成败判定归一到单一真源�
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.289.4"
+VERSION = "v4.289.5"
 
 
 class AgentTaskMixin(object):
@@ -89,7 +89,10 @@ class AgentTaskMixin(object):
         try:
             _t = self._last_user_text()
             self._tstate = task_state.TaskState(
-                _t, [n for n, _w in task_state.required_from_text(_t)])
+                _t, [n for n, _w in task_state.required_from_text(_t)],
+                # v4.289.5：第二类硬要求——用户显式要求产出文件（不点名工具）。
+                # 口径见 task_state.SAVE_REQUIREMENT_POLICY（宁可漏，不可错）。
+                expect_save=task_state.expect_save_from_text(_t))
         except Exception as e:
             log.warning("任务账本建立失败（已忽略，退化为不介入）: %s", e)
             try:

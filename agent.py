@@ -1567,10 +1567,8 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                 continue
             self._emit_status(f"执行工具：{name}")
 
-            # 发射工具开始信号
-            self.tool_started.emit({
-                "name": name, "args": args, "index": idx, "total": total
-            })
+            # 发射工具开始信号（唯一发射点）
+            self._emit_tool_started(name, args, idx, total)
             t0 = time.time()
 
             # 权限引擎统一决策（allowed / needs_user / reason）
@@ -1617,44 +1615,22 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                     # v4.245.0（审查报告 T-5）：确认后置 confirmed，exec_tool 最终闸门
                     # 据此放行（第二道锁：needs_user 但未确认的决策在闸门处 fail-closed）。
                     dec.confirmed = True
-                    try:
-                        _tr = tools.exec_tool(
-                            mw.cfg, APP_DIR, name, args,
-                            should_stop=lambda: self._stop_requested,
-                            perm_ctx=dec)
-                        result_str, deliverables, schedule = _tr
-                    except Exception as _te:
-                        result_str = f"工具执行崩溃：{_te}"
-                        deliverables, schedule = [], None
-                        _tr = None
+                    # v4.289.5：执行统一走 `_invoke_tool`（全仓唯一 exec_tool 调用点）。
+                    # 原实现在此与下方「免确认」分支各写一份逐字相同的 try/except，
+                    # 兜底文案与返回形状迟早漂移。
+                    result_str, deliverables, schedule, _tr = self._invoke_tool(
+                        mw, APP_DIR, name, args, dec)
             else:
                 # 允许且无需确认（只读 / 半自主 / 自动模式 / 白名单 / 会话信任）
-                try:
-                    _tr = tools.exec_tool(
-                        mw.cfg, APP_DIR, name, args,
-                        should_stop=lambda: self._stop_requested,
-                        perm_ctx=dec)
-                    result_str, deliverables, schedule = _tr
-                except Exception as _te:
-                    result_str = f"工具执行崩溃：{_te}"
-                    deliverables, schedule = [], None
-                    _tr = None
+                result_str, deliverables, schedule, _tr = self._invoke_tool(
+                    mw, APP_DIR, name, args, dec)
 
             dt = int((time.time() - t0) * 1000)
             _okc = self._tool_outcome(
                 _tr, name, result_str,
                 self._tool_result_looks_failed)[0]
-            # 发射工具完成信号
-            self.tool_finished.emit({
-                "name": name,
-                "result_preview": str(result_str)[:200],
-                "index": idx,
-                # v4.125 P2：失败判定从「前50字含'失败'」收窄为「开头就是失败模式」——
-                # 工具正文写"本次修复了失败原因"会被误标红叉（仅影响 UI 图标）。
-                # v4.226: 改用 ToolResult.ok（不再看文案前缀）
-                "success": _okc,
-                "duration_ms": dt,
-            })
+            # 发射工具完成信号（唯一发射点；成败取 ToolResult.ok，不看文案前缀）
+            self._emit_tool_finished(name, result_str, idx, dt, _okc)
             self._handle_tool_result(
                 tc, name, fn, result_str, deliverables, schedule,
                 tool_result=_tr)
@@ -1845,10 +1821,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
             # v4.108 M-25：workflow 也走全局工具序号 + started/finished 配对，
             # 让 UI 能显示一张「子代理工作流」卡片并在完成时原位替换。
             _wf_idx = self._next_tool_index()
-            self.tool_started.emit({
-                "name": "run_workflow", "args": {"type": _wf_type},
-                "index": _wf_idx, "total": 1,
-            })
+            self._emit_tool_started("run_workflow", {"type": _wf_type}, _wf_idx, 1)
             _t0 = time.time()
             # v4.289.4：先清上一轮残留，再按本轮任务图终态判成败。
             self._workflow_incomplete = None
@@ -1868,13 +1841,8 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                     error_code=None if _wf_ok else "WORKFLOW_INCOMPLETE")
             except Exception:
                 _wf_tr = None
-            self.tool_finished.emit({
-                "name": "run_workflow",
-                "result_preview": str(_wf_text)[:200],
-                "index": _wf_idx,
-                "success": _wf_ok,
-                "duration_ms": int((time.time() - _t0) * 1000),
-            })
+            self._emit_tool_finished("run_workflow", _wf_text, _wf_idx,
+                                     int((time.time() - _t0) * 1000), _wf_ok)
             # v4.289.4：走统一结算入口——原实现只 append 一条 tool message，
             # 主账本连「跑过工作流」都不知道，节点失败也就无从影响完成判定。
             self._handle_tool_result(
