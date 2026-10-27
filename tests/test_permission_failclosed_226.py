@@ -258,14 +258,26 @@ def group_b_wiring():
         return
 
     # ---- B1：按「含 submit 且调 exec_tool」这一定位特征找并发方法 ----
+    # v4.289.4：该方法外移到 agent_exec_mixin.AgentExecMixin（agent.py 撞 2400
+    # 行红线，按纪律外移不抬阈值）。定位特征与后续断言口径不变，只是多扫一个源。
     par = None
-    for cand in ast.walk(cls):
-        if not isinstance(cand, ast.FunctionDef):
-            continue
-        has_submit = any(isinstance(n, ast.Attribute) and n.attr == "submit"
-                         for n in ast.walk(cand))
-        if has_submit and _calls_in(cand, "exec_tool"):
-            par = cand
+    _candidates = [cls]
+    try:
+        _ex_cls = _cls_ast(_src("agent_exec_mixin.py"), "AgentExecMixin")
+        if _ex_cls is not None:
+            _candidates.append(_ex_cls)
+    except Exception:
+        pass
+    for _host in _candidates:
+        for cand in ast.walk(_host):
+            if not isinstance(cand, ast.FunctionDef):
+                continue
+            has_submit = any(isinstance(n, ast.Attribute) and n.attr == "submit"
+                             for n in ast.walk(cand))
+            if has_submit and _calls_in(cand, "exec_tool"):
+                par = cand
+                break
+        if par is not None:
             break
     check("B1 定位到并发执行方法（特征：含 submit 且调 exec_tool）",
           par is not None, "未找到")

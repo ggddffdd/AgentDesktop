@@ -342,8 +342,12 @@ check("LP9-6 收尾调 _loop_summary",
       "self._loop_summary(agent_loop)" in _agx)
 check("LP9-7 每步调 _loop_step",
       "self._loop_step(step)" in _agx)
-# 位置钉子：verify 必须在 _exec_tool_calls 之后；summary 必须在 break 之前
-_i_exec = _agx.find("self._exec_tool_calls(resp[")
+# 位置钉子：verify 必须在工具执行之后；summary 必须在 break 之前
+# v4.289.4：主循环调用点改为带异常兜底的 `_safe_exec_tool_calls`（异常不再穿出
+# 主循环），判据口径同步为「两种入口之一」，顺序要求不变。
+_i_exec = _agx.find("self._safe_exec_tool_calls(resp[")
+if _i_exec == -1:
+    _i_exec = _agx.find("self._exec_tool_calls(resp[")
 _i_ver = _agx.find("self._loop_verify(agent_loop)")
 check("LP9-8 _loop_verify 在工具执行之后",
       _i_exec != -1 and _i_ver != -1 and _i_ver > _i_exec,

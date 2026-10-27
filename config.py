@@ -77,8 +77,8 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.289.3"
-APP_BUILD_DATE = "2026-10-26"
+APP_VERSION = "v4.289.4"
+APP_BUILD_DATE = "2026-10-27"
 
 # ---------- DeepSeek 错峰窗口（唯一配置处）----------
 # 2026-10-14 核对官方价目，两页一致：

@@ -64,7 +64,7 @@ from token_compressor import compress
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.289.3"
+VERSION = "v4.289.4"
 
 
 def _wrap_tool_content_local(name, content, evidence_id=None):
@@ -270,4 +270,18 @@ class AgentResultMixin(object):
             # v4.60：先 Token 压缩（去HTML/去重/智能截断），再取上限
             # v4.195 批⑨：压缩后套证据编号首尾钉
             "content": _wrap_tool_content_local(name, _content, _eid),
-        })
+        })
+        # v4.289.4（2026-10-27 核实修复）：只登记**成功**执行的签名。
+        # 原实现在执行前登记，失败调用也留表 → 下一轮同参重试被当死循环拦掉。
+        # 传了 tool_result 才代表真的走过 exec_tool（占位/去重/取消不登记）。
+        if tool_result is not None and _ok:
+            try:
+                _raw = fn.get("arguments", "") if isinstance(fn, dict) else ""
+                _parsed = json.loads(_raw) if isinstance(_raw, str) and _raw else {}
+                if not isinstance(_parsed, dict):
+                    _parsed = {}
+                _remember = getattr(self, "_remember_tool_sig", None)
+                if callable(_remember):
+                    _remember(name, _parsed)
+            except Exception:
+                pass

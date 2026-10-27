@@ -171,6 +171,12 @@ print("\n--- B 接线层：AST 钉接线 ---")
 _ag_path = os.path.join(ROOT, "agent.py")
 _ag = open(_ag_path, encoding="utf-8").read()
 _tree = ast.parse(_ag)
+# v4.289.4：`_run_concurrent` 等工具执行方法外移到 agent_exec_mixin.py
+# （agent.py 撞 2400 行红线，按纪律外移不抬阈值）。判据同时扫两个源，
+# 「success 必须取自 _okc / _okc 必须来自 _tool_outcome」的要求不变。
+_exec_path = os.path.join(ROOT, "agent_exec_mixin.py")
+_exec_tree = (ast.parse(open(_exec_path, encoding="utf-8").read())
+              if os.path.isfile(_exec_path) else None)
 
 
 def _find_func(tree, fname, cls=None):
@@ -202,6 +208,8 @@ def _calls(node, fname):
 
 _serial = _find_func(_tree, "_run_serial")
 _conc = _find_func(_tree, "_run_concurrent")
+if _conc is None and _exec_tree is not None:
+    _conc = _find_func(_exec_tree, "_run_concurrent")
 check("B1 能定位 _run_serial", _serial is not None)
 check("B2 能定位 _run_concurrent", _conc is not None)
 

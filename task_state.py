@@ -39,7 +39,7 @@ import os
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.289.3"
+VERSION = "v4.289.4"
 
 # ============================================================
 # 会产出实物的工具（按工具名 → 产物是否应当落盘到磁盘）
@@ -231,22 +231,40 @@ class TaskState(object):
             return False
 
     def note_workflow_incomplete(self, failed, skipped, incomplete=None, cancelled=None):
-        """v4.233 断点 E：任务图内部有 failed/skipped 节点时，由 _run_workflow 回写。
+        """v4.233 断点 E / v4.289.4：任务图未成功节点回写账本。
 
-        仅记录未完整达成的节点集合（fail-open：异常也不影响主流程），作为
-        「工作流未完整达成」的可见标记。不动 gate 判定、不触发 nudge——
-        可见性修复（轻档），重档（把失败节点工具/产物回写 record_tool(ok=False)）
-        留作后续。
+        v4.289.4（2026-10-27 核实修复）：本字段此前只是「写了没人读」的装饰。
+        现在 `pending()` / `is_complete()` 会消费它，节点失败才真正影响完成判定。
+        四个集合全空表示本轮工作流完整达成 → 清空标记，避免上一轮失败残留
+        一直污染小结和补做判定。
         """
         try:
-            self.workflow_incomplete = {
-                "failed": list(failed or []),
-                "skipped": list(skipped or []),
-                "incomplete": list(incomplete or []),
-                "cancelled": list(cancelled or []),
-            }
+            _f = list(failed or [])
+            _s = list(skipped or [])
+            _i = list(incomplete or [])
+            _c = list(cancelled or [])
+            if _f or _s or _i or _c:
+                self.workflow_incomplete = {
+                    "failed": _f, "skipped": _s,
+                    "incomplete": _i, "cancelled": _c,
+                }
+            else:
+                self.workflow_incomplete = None
         except Exception:
             pass
+
+    def workflow_unmet(self):
+        """工作流未成功节点的人类可读清单；空列表 = 工作流全部达成。"""
+        try:
+            d = getattr(self, "workflow_incomplete", None) or {}
+        except Exception:
+            return []
+        out = []
+        for key, label in (("failed", "失败"), ("skipped", "跳过"),
+                           ("incomplete", "无产出"), ("cancelled", "取消")):
+            for n in (d.get(key) or ()):
+                out.append("工作流节点 %s %s" % (str(n), label))
+        return out
 
     def note_artifact(self, path, tool=""):
         """外部路径登记（agent 已算出绝对交付物时调用）。"""
@@ -271,8 +289,9 @@ class TaskState(object):
         return [(p, t) for (p, ok, t) in self.artifacts if not ok]
 
     def is_complete(self):
-        """全部硬要求满足。"""
-        return not self.missing_tools() and not self.missing_artifacts()
+        """全部硬要求满足（含工作流节点全部成功）。"""
+        return (not self.missing_tools() and not self.missing_artifacts()
+                and not self.workflow_unmet())
 
     def pending(self):
         """返回未达标清单（人类可读字符串列表）；空列表 = 达标。"""
@@ -289,6 +308,11 @@ class TaskState(object):
         for t in self.failed_tools:
             if t in self.required_tools and t not in self.succeeded_tools:
                 out.append("工具 %s 上次调用失败，需要重试或换方案" % t)
+        # v4.289.4：工作流节点失败/跳过/无产出/取消同样算未达标。
+        # 原实现只把集合记在字段里、判定全程不读 —— 节点失败后主 Agent
+        # 仍可能基于部分产出给出「已完成」结论。
+        for x in self.workflow_unmet():
+            out.append("%s，需要重跑该环节或在结论里明确说明" % x)
         return out
 
     # --------------------------------------------------------

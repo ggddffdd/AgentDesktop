@@ -26,6 +26,7 @@ import agent_loop  # v4.226：计划-执行-验证-总结 四阶段循环（判�
 from agent_task_mixin import AgentTaskMixin  # v4.225：任务账本接线（抽出以保住拆分红线 agent.py<2400）
 from agent_loop_mixin import AgentLoopMixin  # v4.226：四阶段循环接线（同上，抽出以保红线）
 from agent_result_mixin import AgentResultMixin
+from agent_exec_mixin import AgentExecMixin  # v4.289.4：工具执行/结算入口（外移守红线）
 # v4.236：自动记忆接线（提示词 + _auto_remember + _parse_remember_facts 从本文件尾部抽出，
 # 同样为保 <2400 红线）。AUTO_REMEMBER_PROMPT 仍从 agent 对外暴露，勿改调用方。
 from agent_memory_mixin import AgentMemoryMixin, AUTO_REMEMBER_PROMPT
@@ -174,8 +175,8 @@ _IDEMPOTENT_READ = frozenset({
     "list_skills", "rag_search",
 })
 
-class AgentWorker(AgentTaskMixin, AgentLoopMixin,
-                   AgentResultMixin, AgentMemoryMixin, QThread):
+class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
+                   AgentExecMixin, AgentMemoryMixin, QThread):
     """后台线程跑 Agent 循环，所有 UI 更新通过信号抛回主线程，彻底避免卡死。
     
     支持多工具并发执行（ThreadPoolExecutor）+ MCP 工具。
@@ -311,10 +312,11 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
         # 恢复判定体，并保留 _perturb_workflow_fail_visibility_233 的变异靶点。
         if _failed or _skipped or _incomplete or _cancelled:
             _n = len(_failed) + len(_skipped) + len(_incomplete) + len(_cancelled)
-            self._emit_status(
-                "⚠ 任务图未完整达成：%d 个节点未成功"
-                "（失败 %d / 跳过 %d / 无产出 %d / 取消 %d）"
-                % (_n, len(_failed), len(_skipped), len(_incomplete), len(_cancelled)))
+            _warn = ("⚠ 任务图未完整达成：%d 个节点未成功"
+                     "（失败 %d / 跳过 %d / 无产出 %d / 取消 %d）"
+                     % (_n, len(_failed), len(_skipped),
+                        len(_incomplete), len(_cancelled)))
+            self._emit_status(_warn)
             self._workflow_incomplete = {
                 "failed": _failed, "skipped": _skipped,
                 "incomplete": _incomplete, "cancelled": _cancelled,
@@ -327,9 +329,21 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                         _failed, _skipped, _incomplete, _cancelled)
             except Exception:
                 pass
-            return output
+            # v4.289.4：未完整必须**让模型看得见**——原实现只发 UI 状态、返回纯部分
+            # 输出，模型会把残缺结果当完整结论；输出为空时下游还会补一句
+            # 「（工作流已完成，无文本输出）」，等于对模型说谎。
+            _body = str(output or "").strip() or "（各节点均未产出可用文本）"
+            return (_warn + "\n以下只是部分产出，未覆盖的环节必须在结论里"
+                    "明确说明，不得当作已全部完成：\n" + _body)
 
         self._workflow_incomplete = None
+        # v4.289.4：成功时同步清账本，避免上一轮未完整标记残留污染小结。
+        try:
+            _ts = getattr(self, "_tstate", None)
+            if _ts is not None and hasattr(_ts, "note_workflow_incomplete"):
+                _ts.note_workflow_incomplete([], [], [], [])
+        except Exception:
+            pass
         self._emit_status("✅ 任务图完成")
         return output
 
@@ -1218,7 +1232,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 if content:
                     self.stream_commit.emit(content)
                 self._guard_blocked = False
-                self._exec_tool_calls(resp["tool_calls"], mw, APP_DIR)
+                self._safe_exec_tool_calls(resp["tool_calls"], mw, APP_DIR)
                 # v4.62：工具执行（如 web_search）可能很久，执行后再次检查超时，避免久等
                 if time.time() - _t0 > MAX_DURATION:
                     self._emit_status(f"⏰ Agent 超时（{int(time.time() - _t0)}s），已自动停止。")
@@ -1419,7 +1433,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                         if content:
                             self.stream_commit.emit(content)
                         self._guard_blocked = False
-                        self._exec_tool_calls(resp["tool_calls"], mw, APP_DIR)
+                        self._safe_exec_tool_calls(resp["tool_calls"], mw, APP_DIR)
                         if self._guard_blocked:
                             self._idle_steps = max(self._idle_steps, 1)
                         # v4.59 checkpoint：续跑中每步工具执行完也同步
@@ -1709,107 +1723,6 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
             detail = detail + "\n\n影响范围：\n" + _scope
         return title, detail
 
-    def _run_concurrent(self, tool_calls, mw, APP_DIR):
-        """并发执行工具调用（所有 tools 无数据依赖）"""
-        # v4.245.0（审查报告 T-3）：空批次直接返回，防 max_workers=0 抛 ValueError。
-        if not tool_calls:
-            return
-        max_workers = min(len(tool_calls), 5)
-        total = len(tool_calls)
-        self._emit_status(f"并发执行 {total} 个工具（{max_workers} 线程）…")
-
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {}
-            _seen_sigs = set()  # v4.120：批内完全重复调用去重（同 _run_serial）
-            for _seq_idx, (tc, _dec) in enumerate(tool_calls):
-                fn = tc.get("function", {})
-                name = fn.get("name", "")
-                try:
-                    args = json.loads(fn.get("arguments", "{}") or "{}")
-                except Exception:
-                    args = {}
-                _sig = (name, json.dumps(args, sort_keys=True, ensure_ascii=False))
-                if _sig in _seen_sigs:
-                    log.info("批内重复调用已去重: %s", name)
-                    self._handle_tool_result(
-                        tc, name, fn,
-                        "（与本次批内上一调用完全重复，已自动去重）", [], None)
-                    continue
-                _seen_sigs.add(_sig)
-                # v4.108 M-25：卡片 id 用全局单调序号（并发批内各工具唯一）
-                idx = self._next_tool_index()
-                _tr = None
-                if self._stop_requested:
-                    self._emit_status("⏹ 已停止（用户请求）")
-                    break
-                # 发射工具开始信号
-                self.tool_started.emit({
-                    "name": name, "args": args, "index": idx, "total": total
-                })
-                t0 = time.time()
-                # 审计修复 E1：线程池工作线程是全新线程，不继承 thread-local——
-                # 在任务函数内先注入默认 sid，并发执行的 context 工具同样命中当前会话。
-                _ctx_sid = self._ctx_sid
-                # v4.244.0（审查报告 T-2）：_dec 由 _exec_tool_calls 批次级 decide 统一传入
-                # （已含 task_risk + needs_user 校验），worker 内不再二次 decide——那处重算
-                # 既漏 task_risk 又不校验 needs_user，且只带来风险不带来信息。
-                def _exec_with_ctx(_name=name, _args=args, _sid=_ctx_sid,
-                                  _stop=lambda: self._stop_requested, _dec_ctx=_dec):
-                    context_manager.set_default_sid(_sid)
-                    return tools.exec_tool(mw.cfg, APP_DIR, _name, _args,
-                                           should_stop=_stop, perm_ctx=_dec_ctx)
-                futures[pool.submit(_exec_with_ctx)] = (tc, t0, idx)
-
-            for future in as_completed(futures):
-                # v4.58：stop 后跳过剩余并发工具的结果渲染（工具已提交无法取消，但不渲染）
-                if self._stop_requested:
-                    continue
-                tc, t0, idx = futures[future]
-                fn = tc.get("function", {})
-                name = fn.get("name", "")
-                try:
-                    _tr = future.result()
-                    result_str, deliverables, schedule = _tr
-                except Exception as e:
-                    result_str = f"工具执行异常：{e}"
-                    deliverables = []
-                    schedule = None
-                    _tr = None
-
-                dt = int((time.time() - t0) * 1000)
-                _okc = self._tool_outcome(
-                    _tr, name, result_str,
-                    self._tool_result_looks_failed)[0]
-                # 发射工具完成信号
-                self.tool_finished.emit({
-                    "name": name,
-                    "result_preview": str(result_str)[:200],
-                    "index": idx,
-                    # v4.125 P2：失败判定从「前50字含'失败'」收窄为「开头就是失败模式」——
-                # 工具正文写"本次修复了失败原因"会被误标红叉（仅影响 UI 图标）。
-                # v4.226: 改用 ToolResult.ok（不再看文案前缀）
-                "success": _okc,
-                    "duration_ms": dt,
-                })
-                self._handle_tool_result(
-                    tc, name, fn, result_str, deliverables, schedule,
-                    tool_result=_tr)
-
-        # v4.108 H-03 修复：停止后为所有未拿到回执的 tool_calls 补占位 tool 消息——
-        # assistant.tool_calls 已落库，缺回执会让下一轮 API 400（会话带毒）。
-        if self._stop_requested:
-            _done_ids = set()
-            for m in self.messages:
-                if m.get("role") == "tool":
-                    _done_ids.add(m.get("tool_call_id"))
-            for tc in tool_calls:
-                if tc.get("id") not in _done_ids:
-                    self.messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.get("id", ""),
-                        "content": "（系统提示：用户已停止任务，该工具调用未完成执行。）",
-                    })
-
     def _run_workflow_guarded(self, wf_type, task, mw, args):
         """带权限闸的 run_workflow（v4.169.0 审查 P0-4）。
 
@@ -1906,6 +1819,28 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
             _args = self._safe_args(_wf_tc)
             _wf_type = _args.get("type", "research_write")
             _task = _args.get("task", "")
+            # v4.289.4（2026-10-27 核实修复）：工作流分支在通用签名判定**之前**
+            # return，签名从不登记 → 同参数可以反复起任务图（重复烧搜索配额）。
+            # 这里补一道同口径的幂等判定：同参数工作流已成功跑过就拦下本次。
+            if not isinstance(getattr(self, "_recent_tool_sigs", None), list):
+                self._recent_tool_sigs = []
+            if self._tool_sig_of(_wf_tc) in self._recent_tool_sigs:
+                self.tool_log.emit({
+                    "name": "护栏", "args": "",
+                    "result": "检测到同参数工作流重复调用，已拦截（任务图已执行过）。",
+                })
+                self.messages.append({
+                    "role": "tool",
+                    "tool_call_id": _wf_tc.get("id", ""),
+                    "content": ("（系统提示：同参数的子代理工作流已执行过，本次重复调用"
+                                "已被拦截。如需重跑请调整任务描述或参数。）"),
+                })
+                self._fill_missing_tool_receipts(
+                    [tc for tc in tool_calls if tc is not _wf_tc],
+                    "（系统提示：该调用已被同批的 run_workflow 子代理工作流取代，"
+                    "无需单独执行。）")
+                self._guard_blocked = True
+                return
             self._emit_status(f"🔄 触发子代理工作流：{_wf_type}")
             # v4.108 M-25：workflow 也走全局工具序号 + started/finished 配对，
             # 让 UI 能显示一张「子代理工作流」卡片并在完成时原位替换。
@@ -1915,19 +1850,36 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 "index": _wf_idx, "total": 1,
             })
             _t0 = time.time()
+            # v4.289.4：先清上一轮残留，再按本轮任务图终态判成败。
+            self._workflow_incomplete = None
             _out = self._run_workflow_guarded(_wf_type, _task, mw, _args)
-            self.messages.append({
-                "role": "tool",
-                "tool_call_id": _wf_tc.get("id", ""),
-                "content": _out or "（工作流已完成，无文本输出）",
-            })
+            _wf_incomplete = getattr(self, "_workflow_incomplete", None)
+            _wf_ok = not _wf_incomplete
+            if _out:
+                _wf_text = _out
+            elif _wf_ok:
+                _wf_text = "（工作流无文本输出）"
+            else:
+                _wf_text = "（工作流未完整达成，且未产出文本）"
+            try:
+                from tool_contract import ToolResult as _ToolResult
+                _wf_tr = _ToolResult(
+                    ok=_wf_ok, msg=_wf_text, verified=True,
+                    error_code=None if _wf_ok else "WORKFLOW_INCOMPLETE")
+            except Exception:
+                _wf_tr = None
             self.tool_finished.emit({
                 "name": "run_workflow",
-                "result_preview": str(_out)[:200],
+                "result_preview": str(_wf_text)[:200],
                 "index": _wf_idx,
-                "success": bool(_out),
+                "success": _wf_ok,
                 "duration_ms": int((time.time() - _t0) * 1000),
             })
+            # v4.289.4：走统一结算入口——原实现只 append 一条 tool message，
+            # 主账本连「跑过工作流」都不知道，节点失败也就无从影响完成判定。
+            self._handle_tool_result(
+                _wf_tc, "run_workflow", _wf_tc.get("function", {}),
+                _wf_text, [], None, tool_result=_wf_tr)
             # v4.108 H-02 修复：同批其余 tool_calls 必须补占位回执——
             # assistant 消息已带完整 tool_calls 落库，缺 tool 回执会让下一轮 API 400。
             for tc in tool_calls:
@@ -1966,9 +1918,8 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
             self._remember_calls += _rem_in_batch
         # 防"同参数疯狂调工具"护栏（v4.57）：同一批 (name, args) 签名与最近已执行的
         # 完全相同 → 判定为死循环空转，整批拦截并塞一条 tool 结果，逼模型出正文而非继续空转。
-        if not hasattr(self, "_recent_tool_sigs"):
+        if not isinstance(getattr(self, "_recent_tool_sigs", None), list):
             self._recent_tool_sigs = []
-        new_sigs = []
         dup_all = True
         _has_non_idempotent = False
         for tc in tool_calls:
@@ -1978,8 +1929,9 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 args = json.loads(fn.get("arguments", "{}") or "{}")
             except Exception:
                 args = fn.get("arguments", "")
-            sig = (_nm, json.dumps(args, ensure_ascii=False))
-            new_sigs.append(sig)
+            # v4.289.4：signature 与批内去重同口径（sort_keys），否则参数键序不同
+            # 就能绕过护栏。
+            sig = (_nm, json.dumps(args, sort_keys=True, ensure_ascii=False))
             # v4.245.0（审查报告 T-4）：幂等读类工具重复调用合理（复查/轮询），
             # 不参与死循环判定；只对非幂等/有副作用工具做全等拦截。
             if _nm in _IDEMPOTENT_READ:
@@ -2001,8 +1953,9 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin,
                 })
             self._guard_blocked = True  # v4.60：通知主循环，这次工具调用被拦截了
             return
-        self._recent_tool_sigs.extend(new_sigs)
-        self._recent_tool_sigs = self._recent_tool_sigs[-12:]
+        # v4.289.4：签名不在这里登记——原实现在**执行前**就 extend，失败的调用
+        # 也留表，下一轮同参重试会被当死循环整批拦掉。改为在结算入口
+        # `_handle_tool_result` 确认成功后才走 `_remember_tool_sig`。
         engine = mw.permission_engine
         decs = []
         for tc in tool_calls:

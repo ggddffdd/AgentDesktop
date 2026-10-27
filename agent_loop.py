@@ -49,7 +49,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.289.3"
+VERSION = "v4.289.4"
 
 # ============================================================
 # 阶段常量
@@ -281,7 +281,16 @@ def verify_report(tstate):
         for (p, tool) in artifacts:
             out.append("未满足：产物 %s 未在磁盘上落地（%s 声称成功）"
                        % (p, tool or "工具"))
-        if not missing and not artifacts and used:
+        # v4.289.4：工作流未成功节点也要进核验记录（此前只写字段、无人读）
+        _wf_unmet = []
+        try:
+            _wf_fn = getattr(tstate, "workflow_unmet", None)
+            _wf_unmet = list(_wf_fn() or ()) if callable(_wf_fn) else []
+        except Exception:
+            _wf_unmet = []
+        for x in _wf_unmet:
+            out.append("未满足：%s" % x)
+        if not missing and not artifacts and not _wf_unmet and used:
             out.append("账本核对：点名要求已全部落实，产物已落地")
     except Exception:
         return []
@@ -393,6 +402,14 @@ def build_summary(tstate):
             unmet.append("产物 %s 未落地" % p)
         for t in failed:
             unmet.append("工具 %s 执行失败" % t)
+        # v4.289.4：工作流节点未成功也写进「未完成」段——原实现整体忽略该状态，
+        # 小结会写「未完成：无」而工作流其实只跑出部分产出。
+        try:
+            _wf_fn = getattr(ts, "workflow_unmet", None)
+            for x in (list(_wf_fn() or ()) if callable(_wf_fn) else []):
+                unmet.append(x)
+        except Exception:
+            pass
         lines.append("未完成：%s" % ("；".join(unmet[:6]) if unmet else "无"))
         lines.append("（以上由系统按真实工具调用记录生成，与你的自述可能不一致；"
                      "如有出入以本段为准。）")

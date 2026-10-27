@@ -6,6 +6,47 @@
 - **记录口径**：只写「用户可感知的变化」与「关键工程决定」，不写实现细节。每条都能对应到项目的验证报告或当日工作日志。
 - **版本号**：`v4.<主线>.<补丁>`；同一版本可能多次构建，以标注「已发布 exe」的最后一版为准。
 - 新版本在上。
+## v4.289.4 — 2026-10-27
+
+**主题：工作流失败进账本 + 并发停止不丢结果 + 去重按执行状态记账**
+
+外部审查（GPT）指出三处工作逻辑风险，逐条用源码与动态实测核实后修复。
+三条均成立；其中「并发停止」除了丢结果，本身还带一个必现崩溃。
+
+### ① 工作流节点失败进入完成判定（agent.py / task_state.py / agent_loop.py）
+- `_finalize_workflow` 把「⚠ 任务图未完整达成（失败/跳过/无产出/取消）」拼进**返回文本**，
+  模型不再只拿到纯部分产出；空输出时不再退化成「（工作流已完成，无文本输出）」。
+- `run_workflow` 分支改走 `_handle_tool_result` 统一结算：主账本终于记录「跑过工作流」，
+  节点失败记为 `failed_tools` 并带 `error_code=WORKFLOW_INCOMPLETE`。
+- `TaskState.pending()/is_complete()` 新增 `workflow_unmet()` 消费；`agent_loop.build_summary`
+  的「未完成」段与 `verify_report` 同步反映。工作流成功时清空标记，避免残留污染后续轮次。
+
+### ② 并发停止回收已启动结果（agent.py → agent_exec_mixin.py）
+- 修掉必崩缺陷：`_run_concurrent` 收到 `list(zip(tc, decs))`，补占位段却对元组调 `.get()`
+  → 用户停止并发批次时抛 `AttributeError`，穿透 `run()`（只有 finally）导致 `done.emit()`
+  不发、busy 不复位、断点不写。
+- 停止语义对齐串行路径：不再提交新工具；已提交的 future **全部回收**并走结算入口记账；
+  只有确实未提交的调用补「该工具调用未执行」回执。
+- 新增 `_safe_exec_tool_calls` 包住两处主循环调用点：工具批次异常不再穿出主循环，
+  并统一补齐 tool 回执（防下一轮 API 400 会话带毒）。
+
+### ③ 去重签名按执行状态记账
+- 签名从「执行前登记」改为「成功后才登记」（`_remember_tool_sig`）：失败调用不再污染
+  签名表，同参重试不会被当死循环拦掉；护栏对「重复成功调用」仍然生效。
+- `run_workflow` 分支补同口径幂等判定（原来在签名逻辑之前 return，同参数可反复起任务图）。
+- 护栏签名补 `sort_keys`，与批内去重同口径（原来键序不同就能绕过）。
+
+### 结构
+- 新增 `agent_exec_mixin.py`：工具执行/结算入口外移，`agent.py` 从 2440 行回到 2267 行，
+  `< 2400` 红线**未抬阈值**。
+- 判据适配（未删判据）：`test_agent_loop_phases_226` LP9-8 认 `_safe_exec_tool_calls` 调用点；
+  `test_toolresult_wiring_226` B2/B4/B5 与 `test_permission_failclosed_226` B1 同时扫
+  `agent_exec_mixin.py`。
+
+### 测试
+- 新增 `test_exec_state_294.py`（15 项：停止前置/执行中停止/未执行回执/记账不丢 + 去重四态）。
+- 新增 `test_workflow_state_294.py`（16 项：如实上报/账本消费/成功不误报）。
+- 全量回归与 release gate 结果以本次发布验收为准。
 
 ## v4.289.3 — 2026-10-26
 

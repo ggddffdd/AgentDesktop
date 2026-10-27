@@ -43,6 +43,7 @@ test_empty_state_208.py
 test_evidence_mask.py
 test_evidence_registry_195.py
 test_exec_retry_289.py
+test_exec_state_294.py
 test_exec_tool_gate_219.py
 test_fail_log_tts_257.py
 test_focus_chrome_264.py
@@ -197,4 +198,5 @@ test_webengine_sethtml_272.py
 test_welcome_ia_199.py
 test_worker_isolation_292.py
 test_workflow_fail_visibility_233.py
+test_workflow_state_294.py
 test_workspace_routing.py
