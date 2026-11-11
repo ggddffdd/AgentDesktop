@@ -6177,6 +6177,58 @@ def github_search_skill_repos(query, limit=8, timeout=20):
     return out, None
 
 
+def github_search_skill_gaps(names, limit=8, timeout=20):
+    """v4.294.0：按 PM 报的**缺口名**逐个去 GitHub 搜，返回 {name: {repos, err}}。
+
+    未认证 GitHub API 只有 60 次/小时，所以串行、去重、只搜传进来的真名；
+    类别词（「技能」）与空串一律跳过，绝不替用户凑一个泛词发出去。
+    """
+    out = {}
+    seen = set()
+    for raw in (names or []):
+        nm = str(raw or "").strip()
+        if not nm or nm in seen or _is_generic_skill_query(nm):
+            continue
+        seen.add(nm)
+        repos, err = github_search_skill_repos(nm, limit=limit, timeout=timeout)
+        out[nm] = {"repos": list(repos or []), "err": err}
+    return out
+
+
+def skill_gap_search_report(result, per_gap=3):
+    """把「按缺口名搜」的结果渲染成对话流文本。
+
+    同时回一份**全局编号**的扁平候选表（调用方塞进 _last_skill_cands），
+    让「装第N个」直接落位不错号；搜不到就如实说，不拿通用仓库凑数。
+    返回 (flat, text)。
+    """
+    result = result or {}
+    flat = []
+    lines = ["🔎 按 PM 报的缺口名去 GitHub 找（只搜不装，装要你点头）："]
+    for nm, item in result.items():
+        item = item or {}
+        repos = item.get("repos") or []
+        err = item.get("err")
+        lines.append("- **%s**" % nm)
+        if err:
+            lines.append("    ❌ GitHub 搜索失败：%s" % err)
+            continue
+        if not repos:
+            lines.append("    GitHub 没搜到相关仓库 —— 换个更具体的说法再试，"
+                         "例如「去 GitHub 找 <英文关键词>」。")
+            continue
+        for r in repos[:max(1, int(per_gap))]:
+            flat.append(r)
+            lines.append("    %d) %s ★%s ｜ %s" % (
+                len(flat), r.get("full_name", "?"), r.get("stars", 0),
+                str(r.get("description") or "")[:60]))
+    if flat:
+        lines.append("说「装第N个」我就装（装前自动安全审计）；不装也没关系。")
+    else:
+        lines.append("这次没找到可用候选，也可以直接说「去 GitHub 找 <具体名字>」换个词。")
+    return flat, "\n".join(lines)
+
+
 def _safe_license_text(repo):
     """把 license 字段转成 UI 可读：'—' 表示无 license（⚠️红旗），其它直接显示。"""
     lic = (repo or {}).get("license") or "—"
@@ -7261,6 +7313,25 @@ _SK_INTENT_SEARCH = re.compile(
     r"^(?:去|上|到)?\s*(?:github|git|网上|仓库)?\s*(?:搜|找|查)\s*(?:一下)?\s*(?:技能)?[：: ]?\s*(.+)$",
     re.I)
 
+# v4.294.0：「找技能」里的「技能」是**类别词**，不是搜索关键词。
+# 旧版正则的 `(?:技能)?` 会回溯，把「技能」（甚至「找技能库」切出「库」）
+# 当成 arg，再被 github_search_skill_repos 拼成 "技能 SKILL.md" 搜回一堆
+# 通用 skill 仓库 —— 跟 PM 报告里的真实缺口毫无关系。
+# 只做「归一化后整体相等」的判定，绝不把「技能」从具体词里删掉，
+# 免得「漫剧分镜技能」这类真关键词被误判成泛词。
+_SK_GENERIC_TOKENS = ("一下", "相关", "的", "可用", "能用", "合适", "对应",
+                      "有些", "些", "个", "里", "中")
+_SK_GENERIC_WORDS = frozenset({
+    "", "技能", "技能库", "技能包", "库", "skill", "skills",
+})
+
+
+def _is_generic_skill_query(q):
+    t = str(q or "").strip().lower().replace(" ", "").replace("\u3000", "")
+    for w in _SK_GENERIC_TOKENS:
+        t = t.replace(w, "")
+    return t in _SK_GENERIC_WORDS
+
 
 _TEAM_BUILD_PREFIXES = (
     "帮我组个团队", "帮我组建一个团队", "帮我拉个团队", "帮我建个团队",
@@ -7397,7 +7468,11 @@ def parse_skill_intent(text):
         return "install", m.group(1)
     m = _SK_INTENT_SEARCH.match(t)
     if m and m.group(1).strip():
-        return "search", m.group(1).strip()
+        q = m.group(1).strip()
+        # v4.294.0：泛词交给「按缺口名去找」，不再拿类别词去 GitHub 瞎搜。
+        if _is_generic_skill_query(q):
+            return "find", ""
+        return "search", q
     m = _SK_INTENT_INSTALL.match(t)
     if m and m.group(1).strip():
         return "install", m.group(1).strip()

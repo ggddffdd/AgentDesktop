@@ -924,6 +924,10 @@ class GHWorker(QThread):
             if self.mode == "search":
                 payload, err = legion.github_search_skill_repos(
                     self.kw.get("query", ""), limit=10)
+            elif self.mode == "find":
+                # v4.294.0：按缺口名批量搜（只搜不装，装要用户点头）
+                payload, err = legion.github_search_skill_gaps(
+                    self.kw.get("queries") or [], limit=10), None
             elif self.mode == "list":
                 payload, err = legion.github_list_skill_files(
                     self.kw.get("repo", ""), self.kw.get("branch"))
@@ -2350,7 +2354,7 @@ class LegionWindow(QWidget):
                 panel.say("系统",
                           "💬 军团没在跑，没有项目经理在线，这句没送达，也没有后台执行。\n"
                           "· 缺角角色在「批准组建」时已自动入库，不用再建；\n"
-                          "· 找技能：说「去 GitHub 找 <技能名>」或「缺技能」看缺口清单；\n"
+                          "· 找技能：直接说「找技能」，我按 PM 报的缺口名去 GitHub 找；也可说「去 GitHub 找 <技能名>」；\n"
                           "· 开工：说「启动军团 <任务描述>」。")
             return
         if self.worker.send_message(text, urgent=urgent):
@@ -2460,6 +2464,12 @@ class LegionWindow(QWidget):
         p, rep = legion.approve_team_plan(
             self.data, p, plan, self.data.get("role_library") or [],
             adopt_missing=True)
+        # v4.294.0：PM 报的差技能留在会话里，供对话里「找技能」按真名去搜。
+        # 只留内存、不落盘、不改数据结构：批准完 _team_plan 就置 None，
+        # 旧版缺口随它一起消失，于是「缺技能」也只会回「没检测到缺口」。
+        self._last_skill_gaps = [
+            dict(x) for x in (plan.get("missing_skills") or [])
+            if isinstance(x, dict) and str(x.get("name") or "").strip()]
         try:
             rec, _ = legion.save_team_recipe(self.data, need, plan)
             if rec:
@@ -3385,13 +3395,49 @@ class LegionWindow(QWidget):
         kind：list=查当前缺口；search=去 GitHub 找；install=装（序号 / owner/repo / 关键词）。
         「缺口 → 找 → 装」全程在对话里说完，不必等跑完弹窗、也不必点按钮。
         """
+        if kind == "find":
+            # v4.294.0：「找技能」= 按 PM 报的缺口名去找，而不是拿「技能」
+            # 这个类别词去 GitHub 搜回一堆不相干的通用 skill 仓库。
+            gaps = list(getattr(self, "_last_skill_gaps", None) or [])
+            if not gaps:
+                _meta = getattr(getattr(self, "worker", None), "last_meta", None) or {}
+                gaps = [g for g in (_meta.get("skill_gaps") or [])
+                        if isinstance(g, dict)]
+            names = []
+            for g in gaps[:5]:          # 最多 5 个，别一次烧光 GitHub 配额
+                nm = str(g.get("name") or "").strip()
+                if nm and nm not in names:
+                    names.append(nm)
+            if not names:
+                self._skill_say("当前没有 PM 报的技能缺口，不用盲找。"
+                                "要说具体名字，例如「去 GitHub 找 漫剧分镜节拍表」。")
+                return
+            self._skill_say("⏳ 按 PM 报的缺口名去 GitHub 找：%s …"
+                            % "、".join(names))
+            self._skill_find_worker = GHWorker("find", self, queries=names)
+            self._skill_find_worker.done.connect(self._on_skill_find)
+            self._skill_find_worker.start()
+            return
         if kind == "list":
             meta = getattr(getattr(self, "worker", None), "last_meta", None) or {}
             gaps = meta.get("skill_gaps") or []
             res = meta.get("skill_candidates") or {}
             if not gaps:
-                self._skill_say("当前没检测到技能缺口（PM 没报、成员产出里也没扫到信号）。"
-                                "若你知道缺什么，说「去GitHub找 <关键词>」。")
+                # v4.294.0：批准组建报的缺口留在会话里，军团没跑时也要能查到。
+                # 旧版只认 worker.last_meta，于是「缺技能」在这时谎称没缺口。
+                gaps = list(getattr(self, "_last_skill_gaps", None) or [])
+            if not gaps:
+                self._skill_say("当前没有 PM 报的技能缺口，也没检测到成员产出信号。"
+                                "若你知道缺什么，说「去 GitHub 找 <关键词>」。")
+                return
+            if not res:
+                # 没真去搜过就别用「已自动去 GitHub 找候选」那句谎话；
+                # worker 跑批路径（res 非空）仍走原报告，不误伤引擎。
+                names = [str(g.get("name") or "").strip() for g in gaps
+                         if isinstance(g, dict) and str(g.get("name") or "").strip()]
+                self._skill_say("🔧 PM 报的技能缺口（只列缺口，没联网搜）：%s\n"
+                                "说「找技能」我就按这些名字去 GitHub 找（只搜不装）。"
+                                % "、".join(names[:5]))
                 return
             self._skill_say(legion.skill_candidates_report_text(gaps, res))
             return
@@ -3440,6 +3486,15 @@ class LegionWindow(QWidget):
                 str(r.get("description") or "")[:60]))
         lines.append("说「装第N个」我就装（装前自动安全审计）。")
         self._skill_say("\n".join(lines))
+
+    def _on_skill_find(self, payload, err):
+        """v4.294.0：按缺口名批量搜的统一回调 —— 只搜不装。"""
+        if err:
+            self._skill_say("❌ 按缺口名找技能失败：%s" % err)
+            return
+        flat, text = legion.skill_gap_search_report(payload or {})
+        self._last_skill_cands = flat
+        self._skill_say(text)
 
     def _skill_install(self, repo):
         full = (repo or {}).get("full_name") or ""

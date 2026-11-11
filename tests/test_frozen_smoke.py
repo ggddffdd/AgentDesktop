@@ -261,7 +261,11 @@ def main():
                       "status_label"],
         "legion_worker": ["accepted_with_warning", "带风险接受",
                           "_wave_incomplete_members", "_accept_with_warning"],
-        "legion": ["record_hash", "verify_auth_chain", "sanitize_text"],
+        # v4.294.0：按缺口名找技能的纯函数真的进包。
+        # 字面量已实测在旧 exe（v4.293.0）常量表里全部缺失，不是假绿。
+        "legion": ["record_hash", "verify_auth_chain", "sanitize_text",
+                   "github_search_skill_gaps", "_is_generic_skill_query",
+                   "skill_gap_search_report", "按 PM 报的缺口名去 GitHub 找"],
         "video_pipeline": ["manifest.json", "resume_remote_clips",
                            "abandon_remote_clips", "pending_remote_shots",
                            "clip_dest_path"],
@@ -416,7 +420,11 @@ def main():
         # ⚠️ 字面量要在**旧 exe 常量表里确实缺失**才算判据：「军团没在跑」
         # 「去 GitHub 找」旧构建里本来就有（假绿），已实测换成下面三个。
         "legion_ui": ["_chat_send_pm", "没有项目经理在线", "这句没送达",
-                      "自动入库"],
+                      "自动入库",
+                      # v4.294.0：会话内缺口 + 按缺口名搜 + 诚实清单，
+                      # 四个字面量同样实测旧 exe 常量表缺失。
+                      "_last_skill_gaps", "按 PM 报的缺口名去 GitHub 找：",
+                      "当前没有 PM 报的技能缺口", "只列缺口，没联网搜"],
     }
     for mod, keys in marks.items():
         mi = info.get(mod) or {}

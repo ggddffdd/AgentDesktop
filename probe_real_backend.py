@@ -174,7 +174,7 @@ PROBES = (
 
 def main():
     print("=" * 64)
-    print("真后端探针 v4.293.0 —— 只验「通 + 结构」，不验内容质量")
+    print("真后端探针 v4.294.0 —— 只验「通 + 结构」，不验内容质量")
     print("=" * 64)
     results = []
     for name, fn in PROBES:

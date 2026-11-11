@@ -288,7 +288,8 @@ class LegionChatPanel(QWidget):
     def set_skill_helper(self, cb):
         """cb(kind, arg) —— v4.139 P2：技能指令处理器（由 LegionWindow 实现）。
 
-        kind ∈ {"list"（查缺口）, "search"（去 GitHub 找）, "install"（装）}，
+        kind ∈ {"list"（查缺口）, "find"（按 PM 报的缺口名去 GitHub 找）,
+                "search"（指定词去 GitHub 找）, "install"（装）}，
         arg 是缺口名/序号。让「缺技能 → GitHub 找 → 装」全程在对话里说完。
         """
         self._skill_cb = cb
