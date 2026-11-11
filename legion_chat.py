@@ -44,6 +44,10 @@ _ROLE_COLOR = {
     "授权":      THEME["warn_gold"],   # 授权待决（琥珀）
     "成果":      THEME["role_purple"],   # 成果（紫）
     "波次":      THEME["role_wave_gray"],   # 波次分隔条（深灰）
+    # v4.292.0：色表自 v4.247.0 纯文本流后已无渲染用途，只经 _ROLE_NAMES
+    # 参与历史回放的合法 role 校验。漏这个键 → 换项目/重启后成员发言被
+    # _load_history():805 静默过滤掉，所以必须登记。
+    "成员":      THEME["role_sys_gray"],   # 成员状态发言（身份，不上色）
 }
 _ROLE_NAMES = set(_ROLE_COLOR.keys())   # 历史回放时的合法 role 校验集
 
@@ -564,6 +568,46 @@ class LegionChatPanel(QWidget):
                 pass
 
     # ---------- 渲染方法（接收 LegionWindow 转发）----------
+    def on_member_status(self, pid, key, role, wave, status):
+        """v4.292.0：worker.board_update → 成员状态发言。
+
+        接 legion_worker._board() 已有的 5 参广播（pid, node_key, role,
+        wave, status），只把「成员节点」的终态落进时间线，给原本隐形的
+        成员一个发言身份。生命周期节点 / 闸门 / 计划 / 运行中一律不出声。
+
+        信号里**不含正文**：summary 只写进数据层 legion_board/<pid>.json，
+        没有随 emit 传出来。本波不改信号签名，因此只做「谁交稿了 /
+        谁没跑通」这类状态发言，不显示产出首句。
+        """
+        k = str(key or "")
+        # 过滤口径取自 legion_status_widget._refresh():280（真正把三类
+        # 非成员节点排除在计数外的那一行）。on_board():262-268 只显式
+        # 挡了 "run"，照抄会漏掉 pm_plan / gate_w*。
+        if not k or k.startswith("gate_w") or k in ("run", "pm_plan"):
+            return
+        # 成员节点真实值域只有这 6 个（legion_worker.py:569/591/599/
+        # 603/612/617）；running 不进时间线，其余未识别值静默忽略，
+        # 不写 approved / failed 这类信号里永不出现的死分支。
+        verdict = {
+            "done": "交稿",
+            "error": "没跑通",
+            "incomplete": "没交上稿",
+            "cancelled": "已取消",
+        }.get(str(status or ""))
+        if not verdict:
+            return
+        r = str(role or "").strip()
+        w = str(wave or "").strip()
+        # legion_worker.py:603 的降级 emit 只传 status，role/wave 都是
+        # 空串；拼文案时必须能缺段，否则会渲染成「 · 第 波 · 交稿」。
+        parts = []
+        if r:
+            parts.append(r)
+        if w:
+            parts.append("第 %s 波" % w)
+        parts.append(verdict)
+        self._record("成员", " · ".join(parts))
+
     def on_log(self, text):
         """执行日志 → 按「整段」渲染成卡片（不再逐行拆碎，治「密」）。
 
@@ -743,7 +787,8 @@ class LegionChatPanel(QWidget):
 
         字号/行距由 self.log 的 QSS 统一对齐主聊天。wave/ts 仅历史回放沿用，不再渲染。
         """
-        prefix = {"你": "你：", "项目经理": "项目经理：", "成果": "成果："}.get(role)
+        prefix = {"你": "你：", "项目经理": "项目经理：", "成果": "成果：",
+                  "成员": "成员 · "}.get(role)   # v4.292.0：纯文本前缀，零 QSS
         if prefix:
             self._insert(prefix + text)
         else:

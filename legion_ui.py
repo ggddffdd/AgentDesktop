@@ -3691,6 +3691,10 @@ class LegionWindow(QWidget):
         self.worker.replan_request.connect(self.chat_panel.on_replan)  # v4.135.0 对话页同步
         # v4.183.0：任务板状态广播 → 状态条实时刷新
         self.worker.board_update.connect(self.status_strip.on_board)
+        # v4.292.0：同一广播再接进对话时间线，给成员一个发言身份。
+        # 直连 5 参槽，不用 lambda（避免引用生命周期坑）；信号已由 Qt
+        # 跨线程排队到主线程，两个槽按 connect 顺序执行。
+        self.worker.board_update.connect(self.chat_panel.on_member_status)
         self.status_strip.reset()
         try:
             _waves = legion.wave_members(p)
