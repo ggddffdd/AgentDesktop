@@ -112,11 +112,20 @@ class ChatAuditMixin:
             warn = (f"⚠️ 自动核验失败：回复中引用的 {'、'.join(missed[:8])} "
                     f"在本轮实际读取的文件（{flist}）中未找到，疑似编造。"
                     "采信前请要求给出【路径+行号+原文摘录】三件套。")
-            self.store.active().messages.append({
-                "role": "audit_warn", "content": warn,
-            })
+            self.store.active().messages.append(self._audit_warn_record(warn))
         except Exception:
             pass  # 校验器绝不阻断 agent 完成流程
+    def _audit_warn_record(self, warn, severity="critical"):
+        """v4.291.0：警示统一落「执行记录」；critical 才在最终答复旁突出显示。
+
+        用 getattr 兜底：审计族单测里常用只挂 ChatAuditMixin 的假 window，
+        没有 _stamp_task_message 时也不能把警示吞掉（否则判据假红）。
+        """
+        rec = {"role": "audit_warn", "content": warn,
+               "warn_severity": severity, "log_kind": "warn"}
+        stamp = getattr(self, "_stamp_task_message", None)
+        return stamp(rec, kind="warn") if callable(stamp) else rec
+
     def _audit_warn_html(self, text):
         """v4.189：audit_warn 警示卡 HTML（配色走 THEME['warn'] 派生，
         过 UI 裸 hex 护栏 + 换肤跟随）。三处（实时直显 / 重放 / 导出）共用。"""
@@ -247,9 +256,7 @@ class ChatAuditMixin:
                     f"{'、'.join(sorted(mentioned)[:3])}，但本轮工具记录中没有"
                     "对应的 read_file/run_python 调用——疑似未读编造，"
                     "请要求它先真读再答。")
-            self.store.active().messages.append({
-                "role": "audit_warn", "content": warn,
-            })
+            self.store.active().messages.append(self._audit_warn_record(warn))
             # 同上：只落 store，UI 交给 _flush_render 统一渲染（防重复卡）
         except Exception:
             pass  # 校验器绝不阻断 agent 完成流程
@@ -408,9 +415,7 @@ class ChatAuditMixin:
             warn = (f"⚠️ 读取核验失败：回复声称整份读完，但本轮实际"
                     f"：{'；'.join(_d)}——疑似**漏读整段却下结论**（不是只差百分之几，"
                     "是中间有洞）。请要求它用 read_file offset=缺口起点 补读后重新回答。")
-            self.store.active().messages.append({
-                "role": "audit_warn", "content": warn,
-            })
+            self.store.active().messages.append(self._audit_warn_record(warn))
             # 同上：只落 store，UI 交给 _flush_render 统一渲染（防重复卡）
         except Exception:
             pass  # 校验器绝不阻断 agent 完成流程
@@ -620,9 +625,7 @@ class ChatAuditMixin:
             warn = (f"⚠️ 计数核验失败：{_d}——**读全了不等于数得对**。"
                     "这类数字没有原文出处可对照，采信前请要求它逐个数一遍"
                     "（或用脚本对文件做确定性计数）。")
-            self.store.active().messages.append({
-                "role": "audit_warn", "content": warn,
-            })
+            self.store.active().messages.append(self._audit_warn_record(warn))
             # 同上：只落 store，UI 交给 _flush_render 统一渲染（防重复卡）
         except Exception:
             pass  # 校验器绝不阻断 agent 完成流程
@@ -848,9 +851,7 @@ class ChatAuditMixin:
                     % (n_claim, len(bad)) + "\n".join(lines)
                     + ("\n（判据不是「有没有 URL」，而是「被引证据原文里有没有这个事实」）"
                        if any(b[0] == "unsupported" for b in bad) else ""))
-            self.store.active().messages.append({
-                "role": "audit_warn", "content": warn,
-            })
+            self.store.active().messages.append(self._audit_warn_record(warn))
             # 只落 store，UI 交给 _flush_render 统一渲染（防重复卡）
         except Exception:
             pass  # 校验器绝不阻断 agent 完成流程
@@ -939,9 +940,9 @@ class ChatAuditMixin:
                     "但回复里有句子说得太满：\n%s\n应改为：%s"
                     % (vd["level"], vd["reason"], "\n".join(lines),
                        _unc.system_hint(vd["level"])))
-            self.store.active().messages.append({
-                "role": "audit_warn", "content": warn,
-            })
+            # 批⑬「说得太满」属语气问题，不改事实结论 → 只进执行记录，不抢回答层级
+            self.store.active().messages.append(
+                self._audit_warn_record(warn, "info"))
         except Exception:
             pass  # 校验器绝不阻断 agent 完成流程
     def _extract_read_path(self, args):

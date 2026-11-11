@@ -4,9 +4,8 @@
 v4.289.2 从 ui.py 抽出「工具完成」事件处理，守住 ui.py < 10000 行红线。
 抽出的代码保持原行为，仅增加 worker 身份门控：旧 worker 迟到事件直接丢弃。
 """
-import html as html_mod
-
 import ui_focus
+from ui_task_container_mixin import set_task_phase
 from PySide6.QtWidgets import QSystemTrayIcon
 
 
@@ -21,7 +20,8 @@ class ChatAgentEventsMixin:
             return
         name = data.get("name", "")
         display_name = self._TOOL_NAME_MAP.get(name, name)
-        result_preview = html_mod.escape(str(data.get("result_preview", ""))[:100])
+        # v4.291.0：这里只留原文，唯一转义点是 _tool_card_html（避免双重转义）
+        result_preview = str(data.get("result_preview", ""))[:100]
         agent_index = data.get("index", 0)
 
         rec = self._live_tools.get(agent_index)
@@ -38,6 +38,8 @@ class ChatAgentEventsMixin:
                 "args_preview": "", "status": "done", "result": result_preview,
             }
         self._tool_progress_note(display_name, running=False)
+        # v4.291.0：任务卡头同步到「刚完成 X」
+        set_task_phase(self, "刚完成 " + display_name)
         # 原位替换 running 卡 → done 卡。默认不刷卡，只更新输入框上方的进度条。
         if self._show_tool_details() and getattr(self, "chat_view", None) is not None:
             self.chat_view.replace_live(

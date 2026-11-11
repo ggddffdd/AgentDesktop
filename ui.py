@@ -128,6 +128,10 @@ from ui_msg import (  # noqa: F401
 )
 from ui_audit_mixin import ChatAuditMixin
 from ui_session_mixin import ChatSessionMixin  # v4.290.0：会话管理外移守红线
+# v4.291.0：任务容器 + 气泡格式化族外移（ui.py 逼近 10000 行红线，按纪律搬家）
+from ui_task_container_mixin import (TaskContainerMixin, split_leading_notice,
+                                     stamp_task_message, set_task_phase,
+                                     set_route_badge)
 import ui_routing
 from ui_focus_host import FocusChromeMixin
 import ui_focus
@@ -289,7 +293,7 @@ DELIVERY_ICON_FALLBACK = "附件"
 
 
 class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
-                 ChatSessionMixin, QMainWindow):
+                 ChatSessionMixin, TaskContainerMixin, QMainWindow):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
@@ -1149,6 +1153,8 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             label_second() + "background:transparent;")
         tp.addWidget(self._tool_progress_detail)
         ia_lay.addWidget(self._tool_progress)
+        # v4.291.0：长任务期间追加消息的三选一条（默认隐藏）
+        self._build_pending_bar(ia_lay)
 
         persona_row = QHBoxLayout()
         persona_row.setSpacing(8)
@@ -1170,6 +1176,8 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             f"QPushButton:hover{{border-color:{THEME['danger']};color:{THEME['danger']};}}")
         self.trust_badge_btn.clicked.connect(self._revoke_session_trust)
         persona_row.addWidget(self.trust_badge_btn, 0)
+        # v4.291.0：普通回答 / 执行任务的入口状态，自动切换时徽章直接变色
+        self._build_route_badge(persona_row)
         persona_row.addStretch(1)
         ia_lay.addLayout(persona_row)
 
@@ -2974,6 +2982,10 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             self._automation_lock = (task.get("id") or "").strip() or "run"
             self._automation_inflight_id = task.get("id")
             self._automation_finish_guard = None
+            # v4.291.0：自动化任务也是一轮 Agent 任务，同样收进可折叠任务容器
+            _start_round = getattr(self, "_start_task_round", None)
+            if callable(_start_round):
+                _start_round(session, task.get("name") or msg)
             self._agent_run(bound_sid=session.sid)
             return True
         except Exception as e:
@@ -4496,90 +4508,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
                 self._refresh_recent_on_welcome()
                 self.status_label.setText(f"已重命名为「{s.title}」")
 
-    # ============ 聊天气泡渲染 ============
-    def _fmt_bubble(self, role, text, idx=None):
-        """v4.104：flex 布局气泡（Chromium 渲染，圆角/阴影/动画真实生效）。
-        assistant 正文走 data-md 通道，由页面内 marked.js 渲染 Markdown（代码块/列表/表格）。
-        idx：消息序号，assistant 气泡附带「重新生成/改写问题」操作链接（app:// 协议）。"""
-        if role == "user":
-            esc = html_mod.escape(text).replace("\n", "<br>")
-            esc = re.sub(r'(https?://[^\s\u4e00-\u9fff，。、；：！？（）()【】<>"]+)',
-                         r'<a href="\1" target="_blank">\1</a>', esc)
-            if not esc.strip():
-                esc = "…"
-            # v4.288.3：user 气泡也带「复制」——此前操作行只有 assistant 有，
-            # 用户自己发的长指令想重用只能手动划选。col 是 flex-end，
-            # actions 自动右对齐；复制走 copy: 分支取 store 里的原文。
-            actions = ""
-            if idx is not None:
-                actions = '<div class="actions"><a href="app://copy/%d">复制</a></div>' % idx
-            return (
-                '<div class="msg-row user">'
-                '<div class="col"><div class="bubble">{esc}</div>{actions}</div>'
-                '</div>'
-            ).format(esc=esc, actions=actions)
-        # assistant：Markdown 交给页面内 marked.js 渲染（HTML 属性转义即可，
-        # 浏览器 getAttribute 解码回原文；属性内合法保留换行）
-        raw = text if (text and str(text).strip()) else "…"
-        md_attr = html_mod.escape(raw, quote=True)
-        actions = ""
-        if idx is not None:
-            actions = (
-                '<div class="actions">'
-                f'<a href="app://copy/{idx}">复制</a>'
-                f'<a href="app://regen/{idx}">重新生成</a>'
-                f'<a href="app://edit/{idx}">改写问题</a>'
-                f'<span class="sep">|</span>'
-                f'<a href="app://fb_up/{idx}">▲</a>'
-                f'<a href="app://fb_down/{idx}">▼</a>'
-                '</div>'
-            )
-        return (
-            '<div class="msg-row ai">'
-            '<div class="col">'
-            f'<div class="bubble"><div class="md" data-md="{md_attr}"></div></div>'
-            f'{actions}'
-            '</div></div>'
-        )
-
-    def _hl(self, escaped):
-        """v4.75：对话内搜索高亮——在转义后的 HTML 文本中，对标签外可见文本做大小写不敏感
-        的 <mark> 包裹；标签（含 <a href>、<br>）原样保留，避免破坏链接/结构。"""
-        q = getattr(self, "_search_query", "")
-        if not q:
-            return escaped
-        try:
-            qe = re.escape(html_mod.escape(q))
-        except Exception:
-            return escaped
-        if not qe:
-            return escaped
-        parts = re.split(r'(<[^>]+>)', escaped)
-        for i in range(0, len(parts), 2):  # 偶数段=可见文本
-            parts[i] = re.sub(
-                qe,
-                f'<span style="background-color:{THEME["tpl_hl_bg"]};color:#000;'
-                r'border-radius:6px;padding:0 4px;">\g<0></span>',
-                parts[i], flags=re.IGNORECASE)
-        return "".join(parts)
-
-    def _wrap_msg(self, bubble, idx):
-        """v4.75：给每条气泡外层包一个带 id + 命名锚点的 div，供对话内搜索 scrollToAnchor 跳转定位。"""
-        if idx is None:
-            return bubble
-        return f'<div id="msg_{idx}"><a name="msg_{idx}"></a>{bubble}</div>'
-
     # ============ v4.75：对话内搜索 / 单条重生成 / 改写问题 ============
-    def _extract_text(self, m):
-        """从一条消息取出纯文本（兼容 str 与多模态 list 内容）。"""
-        c = m.get("content", "")
-        if isinstance(c, str):
-            return c
-        if isinstance(c, list):
-            return "".join(p.get("text", "") for p in c
-                           if isinstance(p, dict) and p.get("type") == "text")
-        return ""
-
     def _on_anchor_clicked(self, url):
         """v4.75：处理气泡内的 regen:/edit: 链接；其余（http 等）交给系统浏览器。
         v4.108 H-06 修复：QWebEngineView 的链接信号传 str（QTextBrowser 时代是 QUrl），
@@ -5199,7 +5128,8 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             if len(msgs) > MAX_RENDERED_MSGS:
                 _skipped = len(msgs) - MAX_RENDERED_MSGS
                 parts = [
-                    f'<div style="text-align:center;color:{THEME["faint"]};'
+                    f'<div class="trim-note" data-hidden="{_skipped}" '
+                    f'style="text-align:center;color:{THEME["faint"]};'
                     f'font-size:12px;margin:12px 0;">'
                     f'—— 更早的 {_skipped} 条消息已折叠（仅渲染最近 '
                     f'{MAX_RENDERED_MSGS} 条，保护渲染进程）——</div>'
@@ -5287,99 +5217,6 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             return
         bubble = self._fmt_bubble("assistant", self._streaming_text)
         self.chat_view.update_stream(bubble)
-
-    def _build_parts(self, msgs, start_idx=0):
-        """构建完整 HTML 片段列表（仅 setHtml 时使用）。
-        v4.120：start_idx 供「只渲染最近 N 条」场景保持原消息序号（搜索跳转不错位）。"""
-        parts = []
-        for i, m in enumerate(msgs, start=start_idx):
-            bubble = self._fmt_single_message(m, i)
-            if bubble:
-                parts.append(bubble)
-        return parts
-
-    def _fmt_single_message(self, m, idx=None):
-        """v4.60：格式化单条消息为 HTML 片段，供增量渲染复用。
-        idx：消息序号，传入后外层包 <div id="msg_{idx}"> 供搜索跳转定位。"""
-        # v4.60o：内部注入指令（如"记住能力"时要求调 remember）不渲染成气泡
-        if m.get("_internal"):
-            return ""
-        # v4.120：role=tool 是 Agent 断点续跑的上下文数据（v4.108 回写，全量结果
-        # ≤6000 字），不是展示数据——渲染成气泡会与 tool_log 卡片重复（同一次调用
-        # 看两遍），且把 DOM 撑到 OOM（白屏真凶）。界面只渲染 tool_log 卡片。
-        if m.get("role") == "tool":
-            return ""
-        # v4.189 批③：自动核验警示——专用黄卡渲染（区别于 assistant 气泡）
-        if m.get("role") == "audit_warn":
-            bubble = ('<div class="tool-wrap">'
-                      f'<div style="background:{self.AUDIT_WARN_BG};'
-                      f'border-left:3px solid {self.AUDIT_WARN_BORDER};border-radius:8px;'
-                      'padding:8px 12px;font-size:12px;">'
-                      + html_mod.escape(str(m.get("content", ""))) + "</div></div>")
-            return self._wrap_msg(bubble, idx)
-        if m.get("role") == "tool_log":
-            name = m.get("name", "")
-            result = m.get("result", "")
-            chips = ui_focus.chip_html(ui_focus.extract_artifact_paths(
-                name, m.get("args", ""), result))
-            if name == "image_gen" and re.search(r"\.(png|jpe?g|webp|gif)$", result, re.I):
-                img_abs = os.path.join(APP_DIR, result).replace("/", os.sep)
-                if os.path.isfile(img_abs):
-                    bubble = (
-                        '<div class="tool-wrap">'
-                        f'<img src="file:///{img_abs.replace(os.sep, "/")}" '
-                        f'style="max-width:320px;border-radius:10px;"/>'
-                        f'<div style="font-size:{THEME["font_micro"]};color:{THEME["faint"]};margin-top:4px;">'
-                        f'{html_mod.escape(result)}</div>{chips}</div>'
-                    )
-                    return self._wrap_msg(bubble, idx)
-            if not self._show_tool_details():
-                if chips:
-                    return self._wrap_msg(
-                        f'<div class="tool-wrap artifact-chips">{chips}</div>', idx)
-                return ""
-            card = tools_mod.card_html(name, m.get("args", ""), result)
-            bubble = f'<div class="tool-wrap">{card}{chips}</div>'
-            return self._wrap_msg(bubble, idx)
-        else:
-            raw = m.get("content", "")
-            if isinstance(raw, list):
-                # v4.104：多模态（文本+图片）——flex 标记，文本部分同旧逻辑转义+换行
-                mm_parts = []
-                for part in raw:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        t = part.get("text", "")
-                        if t:
-                            mm_parts.append(html_mod.escape(t).replace("\n", "<br>"))
-                    elif isinstance(part, dict) and part.get("type") == "image_url":
-                        url = part.get("image_url", {}).get("url", "")
-                        if url:
-                            mm_parts.append(
-                                '<br><img src="' + html_mod.escape(url) + '" '
-                                'style="max-width:300px;border-radius:10px;margin:8px 0;"><br>'
-                            )
-                inner = "".join(mm_parts) if mm_parts else "[图片消息]"
-                if m.get("role") == "user":
-                    bubble = (
-                        '<div class="msg-row user">'
-                        '<div class="col">'
-                        f'<div class="bubble">{inner}</div></div>'
-                        '</div>'
-                    )
-                else:
-                    bubble = (
-                        '<div class="msg-row ai">'
-                        '<div class="col">'
-                        f'<div class="bubble">{inner}</div></div>'
-                        '</div>'
-                    )
-                return self._wrap_msg(bubble, idx)
-            # v4.57：空正文幽灵跳过
-            if (m.get("role") == "assistant"
-                    and not raw
-                    and not m.get("tool_calls")):
-                return ""
-            return self._wrap_msg(self._fmt_bubble(m.get("role"), raw, idx), idx)
 
     # ============ 交付物面板 (260px) ============
     def _build_deliverables(self):
@@ -7582,13 +7419,25 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
 
     def _on_input_changed(self):
         if not self._busy:
-            has_text = bool(self.input_box.toPlainText().strip())
+            raw = self.input_box.toPlainText().strip()
+            has_text = bool(raw)
             has_images = bool(self.input_box.get_images())
             self.send_btn.setEnabled(has_text or has_images)
+            # v4.291.0：发之前就让用户知道「这条会当普通回答还是执行任务」。
+            try:
+                will_task = bool(self.agent_mode) or (
+                    has_text and bool(self._message_needs_agent(raw)))
+                set_route_badge(self, "task" if will_task else "chat",
+                                preview=has_text)
+            except Exception:
+                pass
 
     def send(self):
         # v4.102 fix7：_busy 检查提到最前——上一条任务未结束时，直接提示并保留输入，
         # 不做图片压缩/文件解析等无效工作（之前压缩日志写了消息却被丢弃，用户以为卡死）。
+        # v4.291.0：长任务期间不再一句「稍候」把消息吞掉 —— 先交给排队/补充条接管。
+        if self._busy and self._handle_busy_send():
+            return
         if self._busy:
             self.status_label.setText("上一条还在处理，请稍候再发（本条已保留在输入框）")
             return
@@ -7738,6 +7587,9 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         statement_only = self._message_is_statement_only(clean_text)
         if use_agent and not statement_only:
             self._busy = True
+            # v4.291.0：本轮盖章 + 任务卡先立起来，过程消息不再平铺成气泡。
+            self._start_task_round(session, clean_text)
+            set_route_badge(self, "task", auto=not self.agent_mode)
             self.send_btn.setEnabled(False)
             self._busy_timeout.start(120000)
             self.status_label.setText(
@@ -7748,6 +7600,8 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             except Exception as e:
                 log.error("Agent 启动失败: %s", e)
                 self._reset_busy()
+                # v4.291.0：worker 没起来就不会有 _on_agent_done，任务卡别永远停在「进行中」
+                self._end_task_round(session=session, ok=False, reason="启动失败")
                 self.status_label.setText(f"Agent 出错: {e}")
                 self._on_input_changed()
         elif statement_only:
@@ -7976,12 +7830,12 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         def _clip(s, n=500):
             s = str(s or "")
             return s if len(s) <= n else s[:n] + "…(截断)"
-        rec = {
+        rec = stamp_task_message(self, {
             "role": "tool_log",
             "name": entry.get("name", ""),
             "args": _clip(entry.get("args", ""), 300),
             "result": _clip(entry.get("result", ""), 500),
-        }
+        }, "tool")
         # v4.195 批⑨：把证据编号一并落库。
         #
         # 这一步是根治的关键接口：result 被裁到 500 后，**任何依赖它的回验都只能
@@ -8021,7 +7875,12 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
 
     def _tool_card_html(self, ui_seq, display_name, args_preview="", done=False,
                         result_preview=""):
-        """v4.108 M-25：统一生成 live 工具卡 HTML（running/done 两态共用）。"""
+        """v4.108 M-25：统一生成 live 工具卡 HTML（running/done 两态共用）。
+        v4.291.0：名称/参数/结果在这里**统一** HTML 转义——调用方一律传原文，
+        否则工具返回的 <script>/超长文本会撑坏聊天页 DOM。"""
+        display_name = html_mod.escape(str(display_name or ""))
+        args_preview = html_mod.escape(str(args_preview or ""))
+        result_preview = html_mod.escape(str(result_preview or ""))
         if done:
             return (
                 f'<div class="tool-card" id="live-tool-{ui_seq}" '
@@ -8051,7 +7910,9 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         if isinstance(args, dict):
             vals = [str(v) for v in args.values() if v]
             if vals:
-                args_preview = html_mod.escape(vals[0][:30])
+                args_preview = vals[0][:30]
+        # v4.291.0：任务卡头部同步「正在做什么」，不只靠状态栏一行小字
+        set_task_phase(self, "正在 " + display_name, display_name)
         # v4.108 M-25：UI 自管唯一 DOM id（agent index 只做 started↔finished 配对键）
         self._live_seq += 1
         ui_seq = self._live_seq
@@ -8132,14 +7993,28 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         self._streaming = False
         _target = self._agent_write_session(worker)
         msgs = _target.messages
+        # v4.291.0：任务轮里把「\n\n 开头的系统通知 / 机器小结 / 任务图未完整
+        # 前缀」从正式回答里剥出来，收进折叠执行记录；普通对话完全不走这条。
+        if getattr(self, "_active_task_id", ""):
+            notice, body = split_leading_notice(text)
+        else:
+            notice, body = "", text
+        prev = msgs[-1].get("content") if msgs else None
         # v4.60o：末条防重——渲染竞态或循环重提同一句时，避免重复气泡
         if (msgs and msgs[-1].get("role") == "assistant"
-                and msgs[-1].get("content") == text):
+                and (prev == text or (notice and prev == notice)
+                     or (body and prev == body))):
             self.chat_view.end_stream()  # v4.104 fix：先清流式残留再重渲染
             self._render_throttled()
             self._speak(text)
             return
-        msgs.append({"role": "assistant", "content": text})
+        if notice:
+            msgs.append(stamp_task_message(self,
+                {"role": "assistant", "content": notice,
+                 "log_kind": "notice"}, "notice"))
+        if body:
+            msgs.append(stamp_task_message(self,
+                {"role": "assistant", "content": body}))
         self._track_context("assistant", text, sid=getattr(_target, "sid", None))
         self._save_throttled()  # v4.58：批量保存
         # v4.108 M-25：不再强制全量重建（旧 v4.96 方案）——jsRenderAll 会清空 DOM，
@@ -8222,11 +8097,17 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         # v4.196 批⑬：语气—证据等级匹配——管「没编造但说得太满」那一半。
         self._audit_tone_evidence()
         self._clear_tool_progress()
+        # v4.291.0：任务收口 —— 挑出最终答复、卡头落终态、重摆一次 DOM，
+        # 让正式回答从折叠执行记录里浮出来。
+        self._end_task_round(session=self._agent_write_session(worker),
+                             ok=not resumable,
+                             reason="已暂停" if resumable else "")
         self._do_save()  # v4.58：agent 结束做一次最终落盘
         self._flush_render()  # v4.60o：冲刷待渲染定时器，避免末条消息重复插入
         self.input_box.setFocus()
         # 自动化任务：按这一轮的回复判定成功或失败，并在会话外面通知。
         self._finish_automation_run(stopped=bool(resumable))
+        self._drain_queued_send()  # v4.291.0：排队消息在收口后自动发出
 
 
 
@@ -9454,6 +9335,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         self._save_cfg()
         self._sync_persona_widgets()
         self._refresh_agent_mode_card()
+        set_route_badge(self, "task" if self.agent_mode else "chat")
         self.status_label.setText("总是启用工具：开" if self.agent_mode else "总是启用工具：关")
 
     # 触发自动路由到 Agent 的执行意图关键词（普通模式下命中即按 Agent 执行）

@@ -14,6 +14,7 @@ from PySide6.QtGui import QDesktopServices
 
 import config
 import ui_focus
+from ui_task_container_mixin import set_route_badge
 from toast import toast
 
 
@@ -68,6 +69,8 @@ class FocusChromeMixin:
                 combo.setCurrentIndex(idx)
             combo.blockSignals(False)
         self._sync_persona_widgets()
+        # v4.291.0：换档后同步输入区「普通回答 / 执行任务」徽章
+        set_route_badge(self, "task" if agent_on else "chat")
         self.status_label.setText(ui_focus.persona_status(tier))
 
     def _refresh_agent_mode_card(self):

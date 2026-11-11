@@ -144,6 +144,8 @@ want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         # 模块的常量；漏了的话 `info.get(mod)` 返回 {}，marks 里的每个键都会
         # 判红（v4.227 首跑就栽在这：一次改判据后冒出 15 条红，全是这一条原因）。
         "untrusted_boundary", "agent_result_mixin", "tool_verifiers_227",
+        # v4.291.0：任务容器 + 气泡格式化族（ui.py 顶层 import，漏包会白屏）
+        "ui_task_container_mixin",
         ]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
@@ -404,7 +406,12 @@ def main():
                   "_twin_fingerprint", "_job_seg_ok", "_save_job_state",
                   "_job_done_count", "断点续跑", "failed_segs",
                   # v4.179.0：reference 模式（背景锁定）+ 并发出片
-                  "_gen_parallel", "_gen_serial", "ref_mode", "并发出片"]
+                  "_gen_parallel", "_gen_serial", "ref_mode", "并发出片"],
+        # v4.291.0：任务容器真的进包、且是本版新代码（不是旧构建）
+        "ui_task_container_mixin": [
+                  "split_leading_notice", "stamp_task_message",
+                  "task_box_html", "task_log_row_html", "task_final",
+                  "warn_severity", "执行记录"],
     }
     for mod, keys in marks.items():
         mi = info.get(mod) or {}

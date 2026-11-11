@@ -154,6 +154,7 @@ test_sys_read_first_285.py
 test_system_control_a.py
 test_system_control_b.py
 test_system_prompt_routing_221.py
+test_task_container_291.py
 test_task_graph_cancel.py
 test_task_graph_fail_skip.py
 test_task_graph_incomplete.py

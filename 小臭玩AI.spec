@@ -46,6 +46,8 @@ hiddenimports = ['toast', 'empty_state', 'PySide6', 'PySide6.QtPrintSupport', 'P
                # v4.264.0 专注对话：纯逻辑 + ChatWindow mixin。顶层 import，
                # 仍显式登记，避免打包后 ModuleNotFoundError。
                'ui_focus', 'ui_focus_host',
+               # v4.291.0 任务容器 + 气泡格式化族（ui.py 顶层 import，仍显式登记）
+               'ui_task_container_mixin',
                # v4.267.0 路由纯判定从 ChatWindow 外移。ui.py 顶层 import，
                # 仍显式登记，避免打包后 ModuleNotFoundError。
                'ui_routing',

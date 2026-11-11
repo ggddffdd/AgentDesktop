@@ -146,8 +146,10 @@ check("ui.THEME['font_body'] == theme_qss.F['body']",
 print("\n=== 4) 源码不得再出现 <12px 的字号（防回潮）===")
 # v4.216.0：ui.py 拆出的四个 UI 模块一并纳入字号巡逻（样式随代码搬家，
 # 巡逻范围必须跟着走，否则新文件成了盲区）
+# v4.291.0：气泡格式化族搬到 ui_task_container_mixin.py，字号巡逻跟着扩范围
 SCAN_FILES = ['ui.py', 'theme_tokens.py', 'ui_widgets.py', 'ui_workers.py',
-              'ui_msg.py', 'ui_audit_mixin.py', 'automation_panel.py', 'director_panel.py',
+              'ui_msg.py', 'ui_audit_mixin.py', 'ui_task_container_mixin.py',
+              'automation_panel.py', 'director_panel.py',
               'legion_chat.py', 'legion_status_widget.py', 'chat_web.py',
               'director_web.py', 'skill_market_ui.py', 'skill_manager_ui.py',
               'tool_manager_ui.py', 'onboarding.py', 'legion_ui.py']

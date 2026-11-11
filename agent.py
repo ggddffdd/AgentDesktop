@@ -391,6 +391,9 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
         self.resume = bool(resume)
         self.stopped_by_user = False  # 结束时回填：是否因用户停止而终止（供 UI 决定是否显示「继续」）
         self._workflow_incomplete = None  # v4.233 断点 E：最近一次任务图未完整达成的节点集合（None=完整）
+        # v4.291.0：长任务期间用户在输入框追加的「补充当前任务」指令。
+        # 主线程 append，run() 每步开头整体摘走；整体换 list 避免读写竞态。
+        self._pending_notes = []
         # ④ 防御性：给 baseline（sys_msg + 清洗后的历史）打 _seq=0 哨兵，标记「已存在于
         # session、禁止回写」；运行内新生成的消息单调递增 _seq（种子取 session 已有最大
         # _seq 之上，避免跨运行 _seq 撞号）。_sync_to_session 据此按序号对齐回写，
@@ -1065,6 +1068,21 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
         for step in range(1, self._max_steps + 1):
             self._tstate_step(step)  # v4.225：账本同步步号
             self._loop_step(step)    # v4.226：四阶段循环同步步号
+            # v4.291.0：长任务期间用户追加的补充说明，在下一步模型调用前合进上下文。
+            # 整体换 list（原子）而非切片删除，主线程同时 append 也不会丢。
+            # 用 role=user 才能过 _build_api_history；_is_sync_writable 白名单
+            # 只认 assistant/tool，所以它不会变成一条可见的用户气泡。
+            _pending = getattr(self, "_pending_notes", None)
+            if _pending:
+                self._pending_notes = []
+                for _n in _pending:
+                    self.messages.append({
+                        "role": "user",
+                        "content": ("【用户在任务执行中补充】" + str(_n)
+                                    + "\n请把这条补充合进当前任务继续推进，"
+                                      "不要重新开局、不要重复已完成的工作。"),
+                    })
+                    self._emit_status("已收到补充：" + str(_n)[:40])
             # v4.60：超时保护。v4.290.0：单轮时限可配（默认 600s，原写死 180s），
             # 另加整任务总预算兜底，防单轮放宽后无限跑。
             elapsed = time.time() - _round_t0
@@ -2039,6 +2057,18 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
         except Exception:
             pass
         return goal
+
+    def inject_note(self, text):
+        """v4.291.0：主线程调用——长任务期间用户追加的「补充当前任务」。
+
+        只排队，不直接改 self.messages（后台线程正在跑，避免竞态）；run() 每步
+        开头整体摘走。整体换 list 而非切片删除，主线程 append 不会丢。
+        """
+        t = str(text or "").strip()
+        if not t:
+            return False
+        self._pending_notes.append(t[:2000])
+        return True
 
     def _is_sync_writable(self, m):
         """v4.108 M-14：判定消息可否回写进可见会话历史。

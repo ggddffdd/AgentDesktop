@@ -101,6 +101,12 @@ class _ChatPage(QWebEnginePage):
 def _build_html(theme: dict) -> str:
     t = {k: v for k, v in theme.items() if isinstance(v, str)}
     theme_json = json.dumps(t, ensure_ascii=False)
+    # 增量裁剪阈值与全量重绘上限同源，别在 JS 里另写一个 magic number。
+    try:
+        from config import MAX_RENDERED_MSGS as _limit
+        _dom_limit = int(_limit)
+    except Exception:
+        _dom_limit = 300
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
@@ -172,6 +178,47 @@ html, body {{ margin:0; padding:0; background: {t.get("bg", "#F7F8FC")};
 .tool-result {{ color: {t.get("dim", "#5F6368")}; margin-left: 8px; font-style: italic; }}
 .tool-wrap {{ margin: 8px 0 8px 40px; }}
 .tool-wrap .tool-card {{ border-left: 3px solid {t.get("tool_done", "#34A853")}; }}
+/* ---- 任务容器：一轮任务只占一行，展开才看执行记录（v4.291.0） ---- */
+.task-box {{ margin: 10px 0 12px 20px; border: 1px solid {t.get("border", "#E5E7EB")};
+  border-radius: 10px; background: {t.get("card", "#FFFFFF")}; overflow: hidden; }}
+.task-head {{ display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  cursor: pointer; list-style: none; font-size: 12.5px; user-select: none; }}
+.task-head::-webkit-details-marker {{ display: none; }}
+.task-head:hover {{ background: {t.get("panel2", "#F1F3F4")}; }}
+.task-state {{ flex: 0 0 18px; text-align: center; font-weight: bold;
+  color: {t.get("accent", "#1A73E8")}; }}
+.task-box[data-task-state="已完成"] .task-state {{ color: {t.get("tool_done", "#34A853")}; }}
+.task-box[data-task-state="失败"] .task-state,
+.task-box[data-task-state="已暂停"] .task-state {{ color: {t.get("danger", "#D93025")}; }}
+.task-title {{ font-weight: 600; color: {t.get("text", "#202124")};
+  max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.task-phase {{ flex: 1; color: {t.get("faint", "#6B7280")}; font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.task-toggle {{ color: {t.get("accent", "#1A73E8")}; font-size: 0; white-space: nowrap; }}
+.task-toggle::after {{ content: "展开记录"; font-size: 12px;
+  color: {t.get("accent", "#1A73E8")}; }}
+.task-box[open] .task-toggle::after {{ content: "收起记录";
+  color: {t.get("faint", "#6B7280")}; }}
+.task-log {{ border-top: 1px solid {t.get("border", "#E5E7EB")};
+  padding: 6px 12px 10px 12px; max-height: 360px; overflow-y: auto; }}
+.task-row {{ display: flex; align-items: flex-start; gap: 8px; padding: 4px 0;
+  border-bottom: 1px dashed {t.get("border", "#E5E7EB")}; font-size: 12px;
+  line-height: 1.55; word-break: break-word; overflow-wrap: anywhere; }}
+.task-row:last-child {{ border-bottom: none; }}
+.tr-tag {{ flex: 0 0 38px; color: {t.get("faint", "#6B7280")}; font-size: 12px;
+  padding-top: 1px; }}
+.tr-text {{ flex: 1; color: {t.get("dim", "#5F6368")}; }}
+.task-row.tr-critical .tr-text {{ color: {t.get("danger", "#D93025")}; }}
+.task-row.tr-notice .tr-text {{ color: {t.get("warn", "#B06000")}; }}
+.task-row .artifact-chips {{ margin-left: auto; }}
+.answer-warn {{ margin: 8px 0 4px 20px; padding: 6px 10px; font-size: 12px;
+  border-left: 3px solid {t.get("danger", "#D93025")};
+  background: {t.get("card_blue_bg", "#EEF4FF")};
+  color: {t.get("danger", "#D93025")}; border-radius: 6px; }}
+.answer-warn a {{ color: {t.get("accent", "#1A73E8")}; margin-left: 10px;
+  text-decoration: none; }}
+.trim-note {{ text-align: center; color: {t.get("faint", "#6B7280")};
+  font-size: 12px; margin: 12px 0; }}
 /* ---- 搜索高亮 ---- */
 mark {{ background: #ffd54f; color: #000; border-radius: 6px; padding: 0 4px; }}
 /* ---- 流式光标 ---- */
@@ -223,9 +270,95 @@ function stick() {{
 window.addEventListener('scroll', function() {{
   follow = (document.body.scrollHeight - window.scrollY - window.innerHeight) < 48;
 }});
+/* ---- 任务容器：归组追加 + 卡头状态 + 长会话 DOM 裁剪（v4.291.0） ---- */
+var DOM_LIMIT = {_dom_limit};
+function parseHead(s) {{
+  try {{ return JSON.parse(s || '{{}}'); }} catch (e) {{ return {{}}; }}
+}}
+function setPhase(box, phase, count) {{
+  box.setAttribute('data-phase', phase || '');
+  box.setAttribute('data-count', String(count || 0));
+  var el = box.querySelector('.task-phase');
+  if (el) el.textContent = (phase ? phase + ' · ' : '') + (count || 0) + ' 条执行记录';
+}}
+function applyHead(box, head) {{
+  if (!head) return;
+  var st = head.state || '已完成';
+  box.setAttribute('data-task-state', st);
+  if (st === '失败' || st === '已暂停') box.open = true;
+  var icon = st === '进行中' ? '…' : (st === '已完成' ? '✓' : '!');
+  var s = box.querySelector('.task-state'); if (s) s.textContent = icon;
+  var t = box.querySelector('.task-title'); if (t) t.textContent = head.label || '执行任务';
+  // 实时累加的记录数不能被后端较旧的快照倒扣回去
+  var n = box.querySelectorAll('.task-row').length;
+  setPhase(box, head.phase || '', Math.max(head.count || 0, n));
+}}
+function makeTaskBox(tid, head) {{
+  var d = document.createElement('details');
+  d.className = 'task-box'; d.id = 'taskbox_' + tid;
+  d.setAttribute('data-task-state', '进行中');
+  var sm = document.createElement('summary'); sm.className = 'task-head';
+  sm.innerHTML = '<span class="task-state">…</span><span class="task-title"></span>'
+    + '<span class="task-phase"></span><span class="task-toggle">展开记录</span>';
+  d.appendChild(sm);
+  var lg = document.createElement('div'); lg.className = 'task-log';
+  d.appendChild(lg);
+  container.appendChild(d);
+  applyHead(d, head);
+  return d;
+}}
+function updateTaskCount(box) {{
+  var n = box.querySelectorAll('.task-row').length;
+  setPhase(box, box.getAttribute('data-phase') || '', n);
+}}
+function trimHistory() {{
+  var nodes = Array.prototype.slice.call(container.children);
+  var note = container.querySelector('.trim-note');
+  var hidden = note ? (parseInt(note.getAttribute('data-hidden') || '0', 10) || 0) : 0;
+  var trim = nodes.filter(function(n) {{
+    return n.id !== 'stream-bubble' && !n.classList.contains('trim-note');
+  }});
+  if (trim.length <= DOM_LIMIT) return;
+  var over = trim.length - DOM_LIMIT, removed = 0;
+  for (var i = 0; i < trim.length && removed < over; i++) {{
+    var n = trim[i];
+    if (n.classList.contains('task-box') && n.getAttribute('data-task-state') === '进行中') continue;
+    n.remove(); removed++;
+  }}
+  if (!removed) return;
+  hidden += removed;
+  if (!note) {{
+    note = document.createElement('div');
+    note.className = 'trim-note';
+    container.insertBefore(note, container.firstChild);
+  }}
+  note.setAttribute('data-hidden', String(hidden));
+  note.textContent = '—— 更早的 ' + hidden + ' 条消息已折叠（只保留最近 '
+    + DOM_LIMIT + ' 条，保护渲染进程）——';
+}}
+window.jsSetTaskHead = function(tid, headJson) {{
+  var head = typeof headJson === 'string' ? parseHead(headJson) : (headJson || {{}});
+  var box = document.getElementById('taskbox_' + tid);
+  if (!box) makeTaskBox(tid, head); else applyHead(box, head);
+  stick();
+}};
 window.jsAppend = function(html) {{
-  container.insertAdjacentHTML('beforeend', html);
-  renderMd(container.lastElementChild || container);
+  var tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  var first = tmp.firstElementChild;
+  var tid = first && first.getAttribute('data-task');
+  if (tid) {{
+    var box = document.getElementById('taskbox_' + tid);
+    if (!box) box = makeTaskBox(tid, parseHead(first.getAttribute('data-task-head')));
+    var log = box.querySelector('.task-log');
+    while (tmp.firstChild) log.appendChild(tmp.firstChild);
+    renderMd(log);
+    updateTaskCount(box);
+  }} else {{
+    container.insertAdjacentHTML('beforeend', html);
+    renderMd(container.lastElementChild || container);
+  }}
+  trimHistory();
   stick();
 }};
 window.jsStream = function(html) {{
@@ -246,6 +379,7 @@ window.jsEndStream = function() {{
 window.jsRenderAll = function(html) {{
   container.innerHTML = html;
   renderMd(container);
+  trimHistory();
   stick();
 }};
 window.jsClear = function() {{ container.innerHTML = ''; }};
@@ -289,7 +423,10 @@ window.jsHighlight = function(q) {{
 }};
 window.jsScrollTo = function(idx) {{
   var el = document.getElementById('msg_' + idx);
-  if (el) el.scrollIntoView({{ block: 'center', behavior: 'smooth' }});
+  if (!el) return;
+  var box = el.closest ? el.closest('details.task-box') : null;
+  if (box) box.open = true;   // 折叠区里的命中项要先展开才滚得到
+  el.scrollIntoView({{ block: 'center', behavior: 'smooth' }});
 }};
 window.jsReplaceLive = function(id, html) {{
   var el = document.getElementById(id);
@@ -302,6 +439,12 @@ document.addEventListener('click', function(e) {{
   var a = (t && t.closest) ? t.closest('a') : null;
   if (!a) return;
   var href = a.getAttribute('href') || '';
+  if (href.indexOf('app://taskbox/') === 0) {{
+    e.preventDefault();
+    var box = document.getElementById('taskbox_' + href.substring(14));
+    if (box) {{ box.open = true; box.scrollIntoView({{ block: 'center', behavior: 'smooth' }}); }}
+    return;
+  }}
   if (href.indexOf('app://') === 0) {{
     e.preventDefault();
     console.log('__xc__' + href.substring(6).replace('/', ':'));
@@ -528,3 +671,7 @@ class ChatWebView(QWebEngineView):
 
     def replace_live(self, id_: str, html: str):
         self._exec(f"jsReplaceLive({self._js_str(id_)}, {self._js_str(html)})")
+
+    def set_task_head(self, tid: str, head_json: str):
+        """创建/更新聊天流里的任务卡头（阶段、状态、记录数）。"""
+        self._exec(f"jsSetTaskHead({self._js_str(tid)}, {self._js_str(head_json)})")

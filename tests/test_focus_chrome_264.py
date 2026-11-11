@@ -53,6 +53,15 @@ def _const(tree, name):
 
 ui_src = _read("ui.py")
 ui_tree = ast.parse(ui_src)
+# v4.291.0：气泡格式化族（含 _fmt_single_message）从 ui.py 外移到
+# ui_task_container_mixin.py 守 10000 行红线。判据强度不变：仍要求
+# 「消息渲染函数体里真的调用 chip_html」，只是按项目既有做法拼两个源扫。
+try:
+    container_src = _read("ui_task_container_mixin.py")
+    container_tree = ast.parse(container_src)
+except OSError:
+    container_src = ""
+    container_tree = ast.parse("")
 wg_src = _read("ui_widgets.py")
 wg_tree = ast.parse(wg_src)
 try:
@@ -279,7 +288,8 @@ check("F25 芯片含打开与在文件夹显示",
       "打开" in html and "在文件夹显示" in html and "app://openfile/" in html
       and "app://reveal/" in html)
 check("F26 空路径没有芯片（反向：不是恒输出按钮）", focus.chip_html([]) == "")
-fmt = _fn_src(ui_src, ui_tree, "_fmt_single_message")
+fmt = (_fn_src(ui_src, ui_tree, "_fmt_single_message")
+       or _fn_src(container_src, container_tree, "_fmt_single_message"))
 check("F27 消息渲染会拼芯片", "chip_html" in fmt or "artifact-chips" in fmt)
 check("F28 交付物卡片有打开/在文件夹显示，打开方法在 mixin",
       "在文件夹显示" in ui_src and "def _open_artifact" in host_src
