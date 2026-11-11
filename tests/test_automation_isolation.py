@@ -154,8 +154,13 @@ def group_b_ast():
         calls = [c for c in ast.walk(fire)
                  if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
                  and c.func.attr == "active"]
-        check("B1 _fire 不再调用 store.active()（不混入用户当前会话）",
-              not calls, f"fire 里有 {len(calls)} 处 .active() 调用")
+        # v4.290.0：允许**恰好一处** `.active()`，但只能用于记录「用户原会话」
+        # （`_automation_prev_sid`，供收尾切回）。会话来源仍必须是
+        # `_automation_session(task)` —— 那条由 B4 继续钉死。
+        _prev_marker = "_automation_prev_sid" in src_seg
+        check("B1 _fire 不把 store.active() 当会话来源（仅允许记录原会话）",
+              (not calls) or (len(calls) == 1 and _prev_marker),
+              f"fire 里有 {len(calls)} 处 .active() 调用，记录原会话={_prev_marker}")
         check("B4 消息 append 到 _automation_session 返回的会话",
               "self._automation_session(task)" in src_seg,
               "fire 里没有取专属会话")

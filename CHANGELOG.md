@@ -8,6 +8,58 @@
 - 新版本在上。
 
 
+
+## v4.290.0 — 2026-11-11
+
+**主题：自动化与普通对话不再串台 + 任务不再 3 分钟被砍 + 会话列表整理**
+
+大哥报障：「做任务还串台，自动化和普通对话串一起，任务没完成就超时停止」。
+逐条核实后确认是三条机制性缺陷（不是偶发），按 P0 → P1 → P2 修复。
+
+### P0 串台：自动化任务抢占会话后不归还（ui.py）
+- 根因：`_agent_run` 用 `store.active()` 取会话、不认 `bound_sid`，所以
+  `_fire_automation_run` 必须先 `switch()` 到 `auto_{task_id}`；而**任务跑完从不切回**，
+  用户下一条消息直接写进自动化会话。
+- 修：启动前记录原会话 sid，收尾（`_on_agent_done`）调 `_restore_session_after_automation()`
+  切回。只在「当前仍停在自动化会话」时切——用户中途自己点走就不打扰；原会话已删除、
+  switch 抛异常都不硬来。
+- 启动失败路径清掉归还标记，避免下次收尾拿过期 sid 去切。
+
+### P1 超时：180 秒硬编码 + 续跑不重置计时（agent.py / config.py）
+- `MAX_DURATION = 180` 原来是 `_run_inner` 的局部常量，做 PPT/视频/多步搜索必被砍。
+  改为 `config.get_agent_time_budget()`：默认**单轮 600s、整任务 1800s**，
+  可用 `agent_round_seconds` / `agent_total_seconds` 配置（重启生效，非法值回退、越界夹取）。
+- 新增 `_round_t0` 本轮起点：主循环与每个续跑轮各自计时。原来续跑复用 `_t0`，
+  180 秒一到续跑一进来就立刻再判超时，`AGENT_RESUME_ROUNDS` 等于没生效。
+- 续跑循环原本**完全没有超时检查**（只有步数在拦），现补上「本轮时限 + 总预算」双闸；
+  总预算耗尽也标可续，保留分阶段结果。
+- 超时文案区分「本轮超时」与「总时长达到上限」，不再笼统说 Agent 超时。
+
+### P2 互斥：自动化任务不再打断用户任务（ui.py）
+- `_on_automation_tick` 原来只看 `self._busy`，而 `_busy` 带 120 秒超时兜底
+  （`_busy_timeout` 会自动置回 False）——长任务跑到 2 分钟后自动化任务趁虚而入，
+  `_agent_run` 起新任务前 `request_stop()` 旧 worker，把用户任务强杀。
+- 修：闸门补 `_agent_active`（真正的运行标志）；`_fire_automation_run` 内再拦一道
+  （还有别的调用路径）。返回 False 不 mark_fired，下一 tick 重试。
+
+### 新开对话与对话列表（ui.py → ui_session_mixin.py）
+- 会话下拉框**过滤 `auto_` 自动化会话**（混在用户列表里正是「串台」的视觉来源）；
+  置顶优先 + 按创建时间倒序（原来按 dict 插入顺序，最新会话排最后）。
+- 连点「新对话」不再堆空会话：当前会话为空则复用；停在空的自动化会话时不复用。
+- `_close_session` 清理上下文摘要的路径从硬编码 `~/Documents/小臭玩AI` 改走
+  `config.USER_DATA_DIR` —— 与 context_manager 同源（改道环境才删得到文件）。
+
+### 结构
+- 新增 `ui_session_mixin.py`（会话列表/新建/关闭外移）：ui.py 10082 → **9982 行**，
+  `< 10000` 红线**未抬阈值**。
+- 判据适配 3 处（未放水）：`test_permission_gates` E 组与 `test_session_ui_290` 拼
+  两个源扫；`test_automation_isolation` B1 允许「恰好一处 `.active()` 且只用于记录原会话」；
+  `test_automation_fire_order` B 接受 `_busy or _agent_active` 的 BoolOp 写法。
+
+### 测试
+- 新增 4 套 44 项：`test_session_isolation_290`(12)、`test_time_budget_290`(15)、
+  `test_automation_mutex_290`(7)、`test_session_ui_290`(10)。
+- 全量回归与 release gate 结果以本次发布验收为准。
 ## v4.289.6 — 2026-10-27
 
 **主题：记忆清理细节 + 上下文压缩策略**

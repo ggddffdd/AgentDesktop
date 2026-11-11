@@ -127,6 +127,7 @@ from ui_msg import (  # noqa: F401
     is_transient_net_error, humanize_net_error,
 )
 from ui_audit_mixin import ChatAuditMixin
+from ui_session_mixin import ChatSessionMixin  # v4.290.0：会话管理外移守红线
 import ui_routing
 from ui_focus_host import FocusChromeMixin
 import ui_focus
@@ -287,7 +288,8 @@ DELIVERY_ICON_FALLBACK = "附件"
 
 
 
-class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin, QMainWindow):
+class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
+                 ChatSessionMixin, QMainWindow):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
@@ -2840,7 +2842,11 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin, QMainWi
                     self._fire_reminder(t.get("message", ""))
                 else:
                     # 执行任务：App 忙则跳过，等下一 tick 重试（不标记 fired）
-                    if self._busy:
+                    # v4.290.0（P2）：`_busy` 带 120 秒超时兜底（_busy_timeout 会把它
+                    # 置回 False），长任务跑到 2 分钟后自动化任务就能趁虚而入 ——
+                    # 而 `_agent_run` 起新任务前会 `request_stop()` 旧 worker，
+                    # 等于把用户正在跑的任务强杀。这里补上真正的运行标志。
+                    if self._busy or getattr(self, "_agent_active", False):
                         continue
                     # 同一时刻只跑一个。锁在 _fire 里同步置上，本轮其它任务等它收口。
                     if getattr(self, "_automation_lock", None):
@@ -2880,6 +2886,37 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin, QMainWi
             self.store.sessions[sid] = s
         return s
 
+    def _restore_session_after_automation(self):
+        """自动化任务收尾：把活动会话切回用户原来那个（防串台）。
+
+        v4.290.0（2026-11-11 实测修复）：`_fire_automation_run` 为满足
+        `_agent_run` 的 `store.active()` 取值，会 switch 到 `auto_{task_id}`，
+        但**从不切回** —— 任务结束后 active 仍停在自动化会话，用户下一条消息
+        直接写进那里，表现就是「自动化任务和普通对话串在一起」。
+
+        只在「当前仍停在本轮自动化会话」时切回：用户中途自己点去别的会话，
+        说明他在别处，不能把他拽回来。
+        """
+        prev = getattr(self, "_automation_prev_sid", None)
+        self._automation_prev_sid = None
+        if not prev:
+            return
+        try:
+            cur = self.store.active()
+            cur_sid = getattr(cur, "sid", "") if cur is not None else ""
+            if not cur_sid.startswith(automation.SESSION_SID_PREFIX):
+                return                      # 用户已自己切走，不打扰
+            if cur_sid == prev:
+                return
+            if prev not in self.store.sessions:
+                return                      # 原会话已被删，不硬切
+            self.store.switch(prev)
+            self.store.save()
+            self._render_messages(force_bottom=True)
+            log.info("自动化任务收尾：活动会话已切回 %s", prev)
+        except Exception as e:
+            log.warning("自动化任务收尾切回会话失败（已忽略）: %s", e)
+
     def _fire_automation_run(self, task):
         """把任务的执行指令交给 Agent 跑在**任务专属会话**里（结果在该会话流式显示）。
 
@@ -2894,6 +2931,15 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin, QMainWi
         """
         appended = None
         session = None
+        # v4.290.0（P2 双保险）：用户任务在跑就不抢。tick 闸门已经拦过一次，
+        # 这里再拦是因为 `_fire_automation_run` 还有别的调用路径，
+        # 而 `_agent_run` 会 request_stop 掉旧 worker —— 那是不可逆的打断。
+        # 返回 False = 未提交（调用方不 mark_fired，下一 tick 重试）。
+        if (getattr(self, "_agent_active", False)
+                and not getattr(self, "_auto_task_active", None)):
+            log.info("用户任务进行中，自动化任务「%s」延后到下一 tick",
+                     task.get("name", ""))
+            return False
         try:
             msg = (task.get("message") or "").strip()
             if not msg:
@@ -2908,6 +2954,15 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin, QMainWi
             session.messages.append(appended)
             # 专属会话成为 active（_agent_run 读 store.active()），用户的原会话
             # 完整保留在侧栏，随时点回去——分流是「可见的」，不是静默的。
+            # v4.290.0：切之前先记下用户原来的会话，收尾时还回去（_on_agent_done）。
+            # 原实现只 switch 不归还 → 下一条消息默认写进自动化会话 = 串台。
+            try:
+                _prev = self.store.active()
+                _prev_sid = getattr(_prev, "sid", "") if _prev is not None else ""
+                self._automation_prev_sid = (
+                    _prev_sid if _prev_sid and _prev_sid != session.sid else None)
+            except Exception:
+                self._automation_prev_sid = None
             self.store.switch(session.sid)
             self.store.save()
             # 切到对话页（nav index 0）让用户看到结果
@@ -2933,6 +2988,9 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin, QMainWi
                     pass
             self._automation_lock = None
             self._automation_inflight_id = None
+            # v4.290.0：启动失败没跑起来，收尾逻辑不触发 → 这里把归还标记清掉，
+            # 否则下次收尾会拿着过期的 sid 去切会话。
+            self._automation_prev_sid = None
             log.error("自动化任务执行失败（已回滚，将自动重试）: %s", e)
             return False
 
@@ -4174,28 +4232,6 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin, QMainWi
         self._refresh_session_combo()
         self._refresh_recent_on_welcome()
 
-    def _refresh_session_combo(self):
-        """刷新对话页顶部的会话下拉框。"""
-        if not hasattr(self, "session_combo"):
-            return
-        self.session_combo.blockSignals(True)
-        self.session_combo.clear()
-        active_sid = self.store.active_sid
-        idx = 0
-        for i, (sid, s) in enumerate(self.store.sessions.items()):
-            title = s.title or "新会话"
-            display = title if len(title) <= 24 else title[:23] + "…"
-            self.session_combo.addItem(display, sid)
-            if sid == active_sid:
-                idx = i
-        self.session_combo.setCurrentIndex(idx)
-        self.session_combo.blockSignals(False)
-
-    def _on_session_combo(self, index):
-        sid = self.session_combo.itemData(index)
-        if sid:
-            self._switch_session(sid)
-
     # ============ 欢迎页卡片点击 ============
     def _on_welcome_card(self):
         sender = self.sender()
@@ -4388,51 +4424,6 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin, QMainWi
         self._update_nav_styles(0)
         self.input_box.setFocus()
         self._scan_agent_resume()  # v4.101：切到有暂停任务的会话时提示「继续」
-
-    def _new_session(self):
-        self._reset_session_trust()   # v4.169.0 P0-6：信任不跨会话
-        self.store.new_session()
-        self._sync_product_context()   # v4.129
-        self._rendered_msg_count = 0  # v4.60：新建会话重置增量渲染计数
-        self._refresh_session_combo()
-        self._render_messages(force_bottom=True)
-        self._refresh_skill_buttons()
-        self._update_skill_bar()
-        self._refresh_deliverables()
-        self._refresh_recent_on_welcome()
-        self.input_box.setFocus()
-
-    def _close_session(self, sid):
-        if self._busy:
-            self.status_label.setText("正在处理，稍后再关闭会话")
-            return
-        # v4.169.0 P0-6：关掉的是**当前**会话时才清信任（关别的会话不该影响手头的操作）
-        _was_active = False
-        try:
-            _cur = self.store.active()
-            _was_active = (_cur is not None and getattr(_cur, "sid", None) == sid)
-        except Exception:
-            pass
-        self.store.remove(sid)
-        if _was_active:
-            self._reset_session_trust()
-        # v4.73：删除会话时一并清理其独立的上下文摘要文件，避免残留串台
-        try:
-            import os as _os
-            _ud = _os.path.expanduser("~/Documents/小臭玩AI")
-            for _f in (f"context_summary_{sid}.json", f"key_info_{sid}.json"):
-                _p = _os.path.join(_ud, _f)
-                if _os.path.exists(_p):
-                    _os.remove(_p)
-        except Exception:
-            pass
-        self._refresh_session_combo()
-        self._render_messages(force_bottom=True)
-        self._refresh_skill_buttons()
-        self._update_skill_bar()
-        self._refresh_deliverables()
-        self._refresh_recent_on_welcome()
-        self.input_box.setFocus()
 
     def _delete_active_session(self):
         """删除当前对话：先确认，避免误删历史。"""
@@ -8178,6 +8169,8 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin, QMainWi
         self._agent_active = False
         self._reset_busy()
         self._auto_task_active = None   # v4.215.0：自动化受限工具标记随轮次收口
+        # v4.290.0（P0 串台修复）：自动化任务跑完后把活动会话还给用户。
+        self._restore_session_after_automation()
         self.stop_btn.setVisible(False)
         self.stop_btn.setEnabled(True)
         self.resume_agent_btn.setVisible(False)

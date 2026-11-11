@@ -77,8 +77,8 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.289.6"
-APP_BUILD_DATE = "2026-10-27"
+APP_VERSION = "v4.290.0"
+APP_BUILD_DATE = "2026-11-11"
 
 # ---------- DeepSeek 错峰窗口（唯一配置处）----------
 # 2026-10-14 核对官方价目，两页一致：
@@ -1672,6 +1672,37 @@ def get_agent_step_budget(cfg=None):
             v = default
         out.append(v)
     return tuple(out)
+
+
+# ---------- v4.290.0：Agent 时间预算（从写死改为可配） ----------
+# 背景（2026-11-11 大哥报障「任务没完成就超时停止」）：`MAX_DURATION = 180`
+# 此前**硬编码在 `_run_inner` 的局部变量**里——做 PPT / 视频 / 多步搜索
+# 三分钟必然被砍；且续跑轮复用同一个起点 `_t0`，一进续跑就立刻再判超时，
+# `AGENT_RESUME_ROUNDS` 形同虚设。与 v4.104.1 把步数改为可配同理：
+# 改 config.json 重启即生效，不必为调一个秒数重打包。
+AGENT_ROUND_SECONDS = 600     # 单轮（含每个续跑轮）时限
+AGENT_TOTAL_SECONDS = 1800    # 整任务总预算（含所有续跑轮），兜底防卡死
+
+
+def get_agent_time_budget(cfg=None):
+    """取当前生效的时间预算：优先 config.json（cfg），回退模块默认。
+
+    返回 `(round_seconds, total_seconds)`。非法值（非数字/非正数）回退默认；
+    round 夹在 [60, 3600]，total 夹在 [120, 14400]，防手滑写出离谱值。
+    """
+    d = cfg if isinstance(cfg, dict) else {}
+
+    def _pick(key, default, lo, hi):
+        try:
+            v = int(d.get(key, default))
+        except (TypeError, ValueError):
+            v = default
+        if v <= 0:
+            v = default
+        return max(lo, min(hi, v))
+
+    return (_pick("agent_round_seconds", AGENT_ROUND_SECONDS, 60, 3600),
+            _pick("agent_total_seconds", AGENT_TOTAL_SECONDS, 120, 14400))
 
 # ---------- v4.102 fix12：Agent 单任务 token 预算熔断 ----------
 # 背景：续跑/步数预算（AGENT_RESUME_*）只约束「轮次」，不约束「token 花销」。

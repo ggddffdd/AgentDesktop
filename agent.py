@@ -863,7 +863,15 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
         self._question_steps = 0  # v4.61：连续追问步计数（防刷屏）
         self._fail_steps = 0     # v4.66：连续工具全失败步计数（防死循环刷屏）
         self._nudge_count = 0  # v4.60：nudge 触发次数，独立于 _force_retries
-        MAX_DURATION = 180     # v4.60：单次 agent 最长 3 分钟，超时自动停止
+        # v4.290.0：时间预算从写死改为可配（原 MAX_DURATION=180 硬编码，见 config 注释）。
+        # `_round_t0` 是**本轮**起点：主循环与每个续跑轮都重置，单轮各自享有 round 时限；
+        # `_t0` 保持整任务起点，用于总预算兜底与耗时统计。
+        try:
+            MAX_DURATION, _TOTAL_BUDGET = config.get_agent_time_budget(
+                getattr(mw, "cfg", None))
+        except Exception:
+            MAX_DURATION, _TOTAL_BUDGET = 600, 1800
+        _round_t0 = _t0
         MAX_FAIL_STEPS = 3     # v4.66：连续工具全失败步上限，超出则早停防死循环
         self._fake_steps = 0   # v4.98：文字伪造工具调用计数（撒谎检测）
         MAX_FAKE_RETRIES = 3   # v4.98：伪造工具调用最多容忍次数，超出诚实提示并停止
@@ -1057,12 +1065,25 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
         for step in range(1, self._max_steps + 1):
             self._tstate_step(step)  # v4.225：账本同步步号
             self._loop_step(step)    # v4.226：四阶段循环同步步号
-            # v4.60：超时保护——超过 3 分钟自动停止，防止慢模型无响应
-            elapsed = time.time() - _t0
+            # v4.60：超时保护。v4.290.0：单轮时限可配（默认 600s，原写死 180s），
+            # 另加整任务总预算兜底，防单轮放宽后无限跑。
+            elapsed = time.time() - _round_t0
+            _total_elapsed = time.time() - _t0
+            if _total_elapsed > _TOTAL_BUDGET:
+                self._emit_status(
+                    f"⏰ 任务总时长达到上限（{int(_total_elapsed)}s），已自动停止。")
+                self.stream_commit.emit(
+                    f"\n\n⏰ 任务总时长达到上限（{int(_total_elapsed)}秒），已自动停止。"
+                    "分阶段做完的部分结果已保留，可点「继续」接着干。")
+                self._stop_toast(
+                    f"任务总时长达到上限（{int(_total_elapsed)}秒），已自动停止。", "warn")
+                self._mark_resumable("total_budget")
+                break
             if elapsed > MAX_DURATION:
-                self._emit_status(f"⏰ Agent 超时（{int(elapsed)}s），已自动停止。建议切回 DeepSeek 获得更快响应。")
-                self.stream_commit.emit(f"\n\n⏰ 执行超时（{int(elapsed)}秒），已自动停止。Agnes 免费模型速度较慢，建议切回 DeepSeek。")
-                self._stop_toast(f"任务执行超时（{int(elapsed)}秒），已自动停止。可切回 DeepSeek 提速。", "warn")  # v4.281.0：跨视图可见
+                self._emit_status(f"⏰ 本轮超时（{int(elapsed)}s），已自动停止。")
+                self.stream_commit.emit(
+                    f"\n\n⏰ 本轮执行超时（{int(elapsed)}秒），已自动停止。")
+                self._stop_toast(f"任务执行超时（{int(elapsed)}秒），已自动停止。", "warn")  # v4.281.0：跨视图可见
                 self._mark_resumable("timeout")  # 超时均可续
                 break
             if self._stop_requested:
@@ -1154,11 +1175,13 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                 break
 
             # v4.62：步内超时检查（单次模型调用最长 90s，避免下一轮开头才拦导致大幅超额）
-            if time.time() - _t0 > MAX_DURATION:
-                self._emit_status(f"⏰ Agent 超时（{int(time.time() - _t0)}s），已自动停止。")
+            # v4.290.0：改看本轮起点 `_round_t0`（续跑轮各自计时）
+            if time.time() - _round_t0 > MAX_DURATION:
+                _el = int(time.time() - _round_t0)
+                self._emit_status(f"⏰ 本轮超时（{_el}s），已自动停止。")
                 self.stream_commit.emit(
-                    f"\n\n⏰ 执行超时（{int(time.time() - _t0)}秒），已自动停止。")
-                self._stop_toast(f"任务执行超时（{int(time.time() - _t0)}秒），已自动停止。", "warn")  # v4.281.0：跨视图可见
+                    f"\n\n⏰ 本轮执行超时（{_el}秒），已自动停止。")
+                self._stop_toast(f"任务执行超时（{_el}秒），已自动停止。", "warn")  # v4.281.0：跨视图可见
                 self._mark_resumable("timeout")  # 超时均可续
                 break
             content = resp.get("content") or ""
@@ -1234,11 +1257,13 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                 self._guard_blocked = False
                 self._safe_exec_tool_calls(resp["tool_calls"], mw, APP_DIR)
                 # v4.62：工具执行（如 web_search）可能很久，执行后再次检查超时，避免久等
-                if time.time() - _t0 > MAX_DURATION:
-                    self._emit_status(f"⏰ Agent 超时（{int(time.time() - _t0)}s），已自动停止。")
+                # v4.290.0：改看本轮起点 `_round_t0`
+                if time.time() - _round_t0 > MAX_DURATION:
+                    _el = int(time.time() - _round_t0)
+                    self._emit_status(f"⏰ 本轮超时（{_el}s），已自动停止。")
                     self.stream_commit.emit(
-                        f"\n\n⏰ 执行超时（{int(time.time() - _t0)}秒），已自动停止。")
-                    self._stop_toast(f"任务执行超时（{int(time.time() - _t0)}秒），已自动停止。", "warn")  # v4.281.0：跨视图可见
+                        f"\n\n⏰ 本轮执行超时（{_el}秒），已自动停止。")
+                    self._stop_toast(f"任务执行超时（{_el}秒），已自动停止。", "warn")  # v4.281.0：跨视图可见
                     self._mark_resumable("tool_timeout")  # v4.289.2：工具后超时也可续
                     break
                 # v4.66：连续工具失败护栏——模型反复调工具但每步都报错（文件找不到、
@@ -1393,10 +1418,34 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                 self._tstate_resume_reset_nudge()  # v4.225：续跑轮可再补一轮
                 self._force_retries = 0
                 resume_steps = range(1, self._max_resume_steps + 1)
+                # v4.290.0：续跑轮**单独计时**。原来复用 `_t0`，单轮 180 秒一到，
+                # 续跑一进来就立刻再判超时，`AGENT_RESUME_ROUNDS` 等于没生效。
+                _round_t0 = time.time()
                 for rstep in resume_steps:
                     self._tstate_resume_step(self._max_steps, rstep)  # v4.225：账本跨轮延续
                     if self._stop_requested:
                         self._emit_status("⏹ 已停止（用户请求）")
+                        break
+                    # v4.290.0：续跑轮同样受「本轮时限 + 总预算」约束。原来续跑循环
+                    # 完全没有超时检查，模型卡住时能一直耗下去（只有步数在拦）。
+                    _total_elapsed = time.time() - _t0
+                    if _total_elapsed > _TOTAL_BUDGET:
+                        self._emit_status(
+                            f"⏰ 任务总时长达到上限（{int(_total_elapsed)}s），已自动停止。")
+                        self.stream_commit.emit(
+                            f"\n\n⏰ 任务总时长达到上限（{int(_total_elapsed)}秒），已自动停止。")
+                        self._stop_toast(
+                            f"任务总时长达到上限（{int(_total_elapsed)}秒），已自动停止。", "warn")
+                        self._mark_resumable("total_budget")
+                        break
+                    if time.time() - _round_t0 > MAX_DURATION:
+                        _el = int(time.time() - _round_t0)
+                        self._emit_status(f"⏰ 续跑轮超时（{_el}s），已自动停止。")
+                        self.stream_commit.emit(
+                            f"\n\n⏰ 续跑轮执行超时（{_el}秒），已自动停止。")
+                        self._stop_toast(
+                            f"续跑轮执行超时（{_el}秒），已自动停止。", "warn")
+                        self._mark_resumable("timeout")
                         break
                     self._emit_status(f"Agent 续跑（第 {rstep} 步）…")
                     force_required = self._force_next or (rstep == 1 and self._needs_action

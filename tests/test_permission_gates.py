@@ -220,6 +220,12 @@ def part_d_run_workflow_gate():
 def part_e_session_trust_reset():
     print("\n-- E) 会话信任不跨会话（P0-6） --")
     src = open(_UI_PATH, encoding="utf-8-sig").read()
+    # v4.290.0：`_new_session` / `_close_session` 外移到 ui_session_mixin.py
+    # （ui.py 撞 10000 行红线，按纪律外移、不抬阈值）。判据拼两个源看，
+    # 「新建/关闭会话必须清信任」的要求不变。
+    _mix = os.path.join(os.path.dirname(_UI_PATH), "ui_session_mixin.py")
+    if os.path.isfile(_mix):
+        src = open(_mix, encoding="utf-8-sig").read() + "\n" + src
     check("E1 存在 _reset_session_trust", "def _reset_session_trust(" in src)
     for ent in ("def _switch_session(", "def _new_session("):
         seg = src[src.index(ent):]

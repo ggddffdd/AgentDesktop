@@ -205,11 +205,20 @@ def group_a_order_and_guards(src, tree):
           f"守卫@{getattr(empty_guard, 'lineno', None)} fire@{fire_line}")
 
     # B：busy 跳过保留（回归守卫）
-    busy = any(isinstance(st, ast.If) and isinstance(st.test, ast.Attribute)
-               and st.test.attr == "_busy"
+    # v4.290.0：闸门升级为 `self._busy or _agent_active`（_busy 带 120s 超时会
+    # 自动解锁，长任务会被自动化趁虚而入）—— 判据接受 BoolOp 里含 _busy 的写法，
+    # 「忙就 continue」这条要求不变。
+    def _mentions_busy(node):
+        if isinstance(node, ast.Attribute) and node.attr == "_busy":
+            return True
+        if isinstance(node, ast.BoolOp):
+            return any(_mentions_busy(v) for v in node.values)
+        return False
+
+    busy = any(isinstance(st, ast.If) and _mentions_busy(st.test)
                and any(isinstance(s, ast.Continue) for s in st.body)
                for st in run_branch)
-    check("B   `if self._busy: continue` 跳过保留", busy)
+    check("B   `if self._busy ...: continue` 跳过保留", busy)
 
 
 def group_d_fire_contract(tree):
