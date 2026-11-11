@@ -125,7 +125,7 @@ toc = sorted(za.toc)
 want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         "video_pipeline", "vision_qc", "director_panel", "director_web",
         "legion_worker", "agent_node", "agent", "agent_text", "ui", "ui_routing", "tools", "core_agnes",
-        "core.agnes", "legion", "permissions", "risk", "route_log", "config",
+        "core.agnes", "legion", "legion_ui", "permissions", "risk", "route_log", "config",
         # v4.211.4：主对话决策审计的公共件（permissions 顶层 import，必在包里）
         "tool_audit",
         "digital_twin_panel",
@@ -412,6 +412,11 @@ def main():
                   "split_leading_notice", "stamp_task_message",
                   "task_box_html", "task_log_row_html", "task_final",
                   "warn_severity", "执行记录"],
+        # v4.293.0：军团未运行时的对话内回执真的进包。
+        # ⚠️ 字面量要在**旧 exe 常量表里确实缺失**才算判据：「军团没在跑」
+        # 「去 GitHub 找」旧构建里本来就有（假绿），已实测换成下面三个。
+        "legion_ui": ["_chat_send_pm", "没有项目经理在线", "这句没送达",
+                      "自动入库"],
     }
     for mod, keys in marks.items():
         mi = info.get(mod) or {}

@@ -4172,10 +4172,16 @@ def _merge_val(new, base, cur):
     if new is _MISSING:            # UI 删了该键
         # 盘上仍是 base 值 → 跟随删除；盘上也改了 → 数据冲突，UI 的删除意图仍优先
         return _MISSING
-    if cur is _MISSING:            # 盘删了；UI 还留着
-        if base is _MISSING or new == base:
-            return _MISSING        # UI 没动 → 尊重盘的删除
-        return new                 # UI 改过 → UI 为准
+    if cur is _MISSING:            # 盘上没有这个键 / 元素
+        if base is _MISSING:
+            # v4.293.0：base 与盘都没有 = UI 新增，必须保留。
+            # 旧版把这里一并当成「盘删了」返回 _MISSING，导致批准组建时
+            # adopt_missing_roles 新增的角色、以及任何新增字典键，
+            # 在 _ui_save_legion 的三方合并里被静默吞掉（说「已新增」却没落盘）。
+            return new
+        if new == base:
+            return _MISSING        # 确实盘删了 + UI 没动 → 尊重盘的删除
+        return new                 # 盘删了 + UI 改过 → UI 为准
     if new == cur:
         return new
     if base is not _MISSING and new == base:
@@ -7606,7 +7612,27 @@ def apply_team_plan(proj, plan, lib=None):
         parts.append("⚠️ 第 %s 波整波无人匹配，已删除该波，后续波次序号前移。"
                      % "、".join(str(n) for n in emptied))
     # v4.124：缺角 / 缺技能不静默吞掉，明确报告给用户
+    # v4.293.0：这行写的是「库里没有」，就得真按角色库判。对话路径批准时
+    # adopt_missing_roles 已经把缺角草案入库，旧版却照着 plan 原样复读，
+    # 于是同一条回复里「✅ 新增 1 个角色」后面紧跟着「🆕 缺角…需你决定是否补角色」，
+    # 自相矛盾，把用户引向一句根本没有执行入口的指令（PM 因此显得「不做事」）。
+    # 弹窗路径没采纳草案 → 库里确实没有 → 原文案照旧，不变量不翻。
     mr = plan.get("missing_roles") or []
+    if mr and isinstance(lib, list):
+        have = set()
+        for r in lib:
+            if not isinstance(r, dict):
+                continue
+            k = _norm_role_key(r.get("name"))
+            if k:
+                have.add(k)
+            for a in _role_alias_list(r):
+                ka = _norm_role_key(a)
+                if ka:
+                    have.add(ka)
+        mr = [x for x in mr
+              if not (isinstance(x, dict)
+                      and _norm_role_key(x.get("name")) in have)]
     if mr:
         parts.append("🆕 缺角（库里没有，需你决定是否补角色）：%s"
                      % "、".join(str(x.get("name", "?")) for x in mr))

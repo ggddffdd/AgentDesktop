@@ -2342,6 +2342,16 @@ class LegionWindow(QWidget):
         """对话页输入框 → PM 留言（复用既有 _on_send_pm 的投送逻辑）。"""
         if self.worker is None or not self.worker.isRunning():
             self.log_view.append(f"\n💬 你 → 项目经理：{text}\n（军团未运行，消息未发送）\n")
+            # v4.293.0：旧版只往技术日志框写这一行，对话时间线零回显 ——
+            # 用户说「建角色，找技能」后看着像 PM 不理人。这里补一条对话内回执，
+            # 明确告知没送达，并给出真正有执行入口的指令（别再让人对着空气下令）。
+            panel = getattr(self, "chat_panel", None)
+            if panel is not None and hasattr(panel, "say"):
+                panel.say("系统",
+                          "💬 军团没在跑，没有项目经理在线，这句没送达，也没有后台执行。\n"
+                          "· 缺角角色在「批准组建」时已自动入库，不用再建；\n"
+                          "· 找技能：说「去 GitHub 找 <技能名>」或「缺技能」看缺口清单；\n"
+                          "· 开工：说「启动军团 <任务描述>」。")
             return
         if self.worker.send_message(text, urgent=urgent):
             kind = "急件" if urgent else "备忘"
