@@ -112,6 +112,19 @@ def _ui_save_legion(data):
     return ok
 
 
+def team_approve_reply(rep):
+    """v4.296.0：批准组建回复 = 原样报告 + 通用开工引导（Qt-free 纯函数）。
+
+    旧版在报告尾巴无条件硬拼一句带具体任务名的固定示例，
+    不管本次组队是漫剧还是别的任务都挂着它，看着像 PM 串台。
+    ⚠️ 不把示例换成当前需求文本：_parse_launch_command 有 60 字上限，
+       而组队需求允许 100 字，长需求照抄会被当普通留言（死指令）。
+    ⚠️ 也不叫人点「▶ 启动军团」：批准组建后 task_edit 是空的，
+       _run_legion 的缺任务检查会拦（半死指令）。
+    """
+    return str(rep or "") + "\n\n➡️ 说「启动军团 <任务描述>」就能开工"
+
+
 class _NoWheelCombo(QComboBox):
     """v4.149.0：滚轮不切档的 QComboBox（军团编排页用）。
 
@@ -2494,7 +2507,7 @@ class LegionWindow(QWidget):
         _ui_save_legion(self.data)
         self._refresh_projects(select_id=p.get("id"))
         self._rebuild_waves()
-        self.chat_panel.say("系统", rep + " 直接说「启动军团 做小红书带货」就能开工")
+        self.chat_panel.say("系统", team_approve_reply(rep))
 
     def _chat_manage(self, kind):
         """v4.247.0：对话项目管理命令 → 复用既有方法（危险操作内部自带确认）。"""
