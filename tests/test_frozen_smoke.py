@@ -125,7 +125,7 @@ toc = sorted(za.toc)
 want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         "video_pipeline", "vision_qc", "director_panel", "director_web",
         "legion_worker", "agent_node", "agent", "agent_text", "ui", "ui_routing", "tools", "core_agnes",
-        "core.agnes", "legion", "legion_ui", "permissions", "risk", "route_log", "config",
+        "core.agnes", "legion", "legion_ui", "legion_chat", "permissions", "risk", "route_log", "config",
         # v4.211.4：主对话决策审计的公共件（permissions 顶层 import，必在包里）
         "tool_audit",
         "digital_twin_panel",
@@ -425,6 +425,12 @@ def main():
                       # 四个字面量同样实测旧 exe 常量表缺失。
                       "_last_skill_gaps", "按 PM 报的缺口名去 GitHub 找：",
                       "当前没有 PM 报的技能缺口", "只列缺口，没联网搜"],
+        # v4.295.0：成员发言带产出首句真的进包。
+        # 四个字面量已双向验证：当前源码编译后确有、旧 exe 常量表确实缺失
+        # （注释里的「产出首句已在盘上」不进常量表，不可拿来当判据）。
+        "legion_chat": ["member_line_summary", "_MEMBER_SUMMARY_MAX",
+                        "读该成员节点的产出首句",
+                        "v4.295.0 起按 (pid, key) 回读该"],
     }
     for mod, keys in marks.items():
         mi = info.get(mod) or {}

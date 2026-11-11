@@ -27,7 +27,7 @@ from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTextEdit,
                                QPushButton, QLineEdit, QLabel)
 
-import legion  # 仅取数据层目录 LEGION_DIR；不触碰引擎，保证改 UI 不破壳
+import legion  # v4.295.0：取 LEGION_DIR 与任务板只读快照 board_get；不触碰引擎，保证改 UI 不破壳
 from legion_feedback import (
     failure_oneline, fold_log_line, is_failure_log, team_lineup_brief,
 )
@@ -50,6 +50,36 @@ _ROLE_COLOR = {
     "成员":      THEME["role_sys_gray"],   # 成员状态发言（身份，不上色）
 }
 _ROLE_NAMES = set(_ROLE_COLOR.keys())   # 历史回放时的合法 role 校验集
+
+# v4.295.0：成员发言带产出首句。worker._board() 是「先 legion.board_update()
+# 写盘、再 emit 5 参信号」，summary 早就在 legion_board/<pid>.json 的
+# nodes[node_key].summary 里，只是没随信号传出来。这里按 (pid, key) 回读，
+# 不改信号签名、不碰引擎 / 状态条 / 调度 / QSS。
+_MEMBER_SUMMARY_MAX = 40
+
+
+def member_line_summary(pid, key, verdict):
+    """读该成员节点的产出首句；读不到 / 脏数据一律返回空串（降级不抛）。"""
+    try:
+        node = (legion.board_get(pid).get("nodes") or {}).get(str(key or "")) or {}
+        s = node.get("summary")
+    except Exception:
+        return ""
+    if not isinstance(s, str):
+        return ""
+    s = " ".join(s.split())          # 换行 / 制表 / 连续空白一并压掉
+    if not s:
+        return ""
+    # worker 的 cancelled summary 是「已取消：<reason>」，判词已在前面出现过，
+    # 剥掉前缀只留原因，避免「已取消 · 已取消：…」。
+    v = str(verdict or "")
+    if v and s.startswith(v):
+        s = s[len(v):].lstrip("：: 　")
+    if not s:
+        return ""
+    if len(s) > _MEMBER_SUMMARY_MAX:
+        s = s[:_MEMBER_SUMMARY_MAX] + "…"
+    return s
 
 # 系统日志里出现这些 token → 升级为「警示」色（琥珀/红），让问题一眼可见
 _WARN_TOKENS = ("⚠️", "🔴", "☠", "❌", "失败", "拦截", "缺口", "异常", "ERROR")
@@ -576,9 +606,10 @@ class LegionChatPanel(QWidget):
         wave, status），只把「成员节点」的终态落进时间线，给原本隐形的
         成员一个发言身份。生命周期节点 / 闸门 / 计划 / 运行中一律不出声。
 
-        信号里**不含正文**：summary 只写进数据层 legion_board/<pid>.json，
-        没有随 emit 传出来。本波不改信号签名，因此只做「谁交稿了 /
-        谁没跑通」这类状态发言，不显示产出首句。
+        信号里**不含正文**：summary 由 _board() 先写进数据层
+        legion_board/<pid>.json，再 emit。v4.295.0 起按 (pid, key) 回读该
+        节点的产出首句，拼进同一行，让成员在群里真的说得出话；信号签名、
+        引擎、状态条、QSS 一律不动。
         """
         k = str(key or "")
         # 过滤口径取自 legion_status_widget._refresh():280（真正把三类
@@ -607,6 +638,11 @@ class LegionChatPanel(QWidget):
         if w:
             parts.append("第 %s 波" % w)
         parts.append(verdict)
+        # v4.295.0：产出首句已在盘上，按 (pid, key) 回读拼进同一行。
+        # 读不到 / 空串就保持 v4.292.0 的原样，零降级风险。
+        line = member_line_summary(pid, k, verdict)
+        if line:
+            parts.append(line)
         self._record("成员", " · ".join(parts))
 
     def on_log(self, text):

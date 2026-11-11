@@ -71,6 +71,7 @@ test_legion_audit.py
 test_legion_chat_ui.py
 test_legion_data_fetch_249.py
 test_legion_data_verify_250.py
+test_legion_member_summary_295.py
 test_legion_member_voice_292.py
 test_legion_orch_audit_251.py
 test_legion_permissions.py
