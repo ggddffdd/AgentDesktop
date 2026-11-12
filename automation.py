@@ -336,16 +336,71 @@ def reply_is_real_success(reply, stopped=False, tools_ran=False):
     return len(text) >= _MIN_SUBSTANTIVE
 
 
-def failure_reason(reply, stopped=False):
-    """给用户看的一句原因，不含内部词。"""
+# v4.297.0：把 Agent 记下的「可续停止真因」翻成人话。
+# 旧实现把超时 / token 熔断 / 模型报错 / 步数耗尽一律说成「中途停了」，
+# 大哥在面板上只看到一句笼统话，查不出 12:57 那次其实是 token 预算撞线。
+# 只列已知的 reason；未知值 fail-closed 回退旧文案，绝不编新词。
+STOP_REASON_TEXT = {
+    "token_budget": "token 预算用尽了，这次不算完成",
+    "timeout": "跑超时了，这次不算完成",
+    "total_budget": "总时长到上限了，这次不算完成",
+    "tool_timeout": "工具跑超时了，这次不算完成",
+    "model_error": "模型调用出错了，这次不算完成",
+    "max_steps": "步数用完了，这次不算完成",
+    "resume_exhausted": "自动续跑次数用完了，这次不算完成",
+}
+
+
+def failure_reason(reply, stopped=False, stop_reason=""):
+    """给用户看的一句原因，不含内部词。stop_reason 来自 worker._resumable_reason。"""
     if stopped:
-        return "中途停了，这次不算完成"
+        return STOP_REASON_TEXT.get(str(stop_reason or "").strip(),
+                                   "中途停了，这次不算完成")
     text = reply.strip() if isinstance(reply, str) else ""
     if not text:
         return "没有给出结果"
     if _contains_refusal(text):
         return "没有真正做完，还在等你切换干活方式"
     return "没有产出可用结果"
+
+
+def history_for_agent(messages, prefix):
+    """v4.297.0：自动化专属会话的「薄投喂视图」，只裁投喂、不动落盘。
+
+    背景：v4.215 起每个定时任务复用同一个 auto_{task_id} 会话，几百条
+    tool / tool_log / 空气泡只增不减；每轮把整份历史回灌、每步再重发一遍，
+    单任务累计 token 一路涨到 804168/800000 撞熔断，任务被记成「中途停了」。
+
+    定时任务每轮都是一张新的任务单，不需要上一轮的执行流水。这里只返回
+    「上一轮最终答复 + 本轮指令」：Agent 仍看得见上次干了什么，但几百条
+    工具记录不进模型上下文。落盘的完整执行记录一条不删，随时可回放。
+    """
+    if not isinstance(messages, (list, tuple)) or not prefix:
+        return []
+    msgs = [m for m in messages if isinstance(m, dict)]
+    idx = -1
+    for i in range(len(msgs) - 1, -1, -1):
+        m = msgs[i]
+        if (m.get("role") == "user"
+                and str(m.get("content") or "").lstrip().startswith(prefix)):
+            idx = i
+            break
+    if idx < 0:
+        return []
+    out = []
+    for m in reversed(msgs[:idx]):
+        if m.get("role") != "assistant":
+            continue
+        c = m.get("content")
+        if not isinstance(c, str) or not c.strip():
+            continue
+        if "本轮执行小结" in c:      # 系统自动生成的执行小结不是上一轮结论
+            continue
+        out.append(dict(m))
+        break
+    out.extend(dict(m) for m in msgs[idx:]
+               if m.get("role") in ("user", "assistant", "tool"))
+    return out
 
 
 def _retry_blocked(task, now):

@@ -70,7 +70,7 @@ class ChatSessionMixin(object):
             if (_cur is not None
                     and not _cur_sid.startswith(automation.SESSION_SID_PREFIX)
                     and not getattr(_cur, "messages", None)):
-                self._render_messages(force_bottom=True)
+                self._render_messages(force_bottom=True, follow_nav=True)
                 self.input_box.setFocus()
                 return
         except Exception:
@@ -80,7 +80,7 @@ class ChatSessionMixin(object):
         self._sync_product_context()   # v4.129
         self._rendered_msg_count = 0  # v4.60：新建会话重置增量渲染计数
         self._refresh_session_combo()
-        self._render_messages(force_bottom=True)
+        self._render_messages(force_bottom=True, follow_nav=True)
         self._refresh_skill_buttons()
         self._update_skill_bar()
         self._refresh_deliverables()
@@ -116,7 +116,7 @@ class ChatSessionMixin(object):
         except Exception:
             pass
         self._refresh_session_combo()
-        self._render_messages(force_bottom=True)
+        self._render_messages(force_bottom=True, follow_nav=True)
         self._refresh_skill_buttons()
         self._update_skill_bar()
         self._refresh_deliverables()

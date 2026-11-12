@@ -144,6 +144,25 @@ def progress_caption(running_name, done, total):
     return ""
 
 
+def page_after_render(has_content, current_index, follow_nav=False):
+    """v4.297.0：渲染消息后要不要切主栈页面。返回目标 index，None = 原地不动。
+
+    旧行为把「渲染」和「切页」绑死：只要会话有消息就 setCurrentIndex(1)。
+    Agent 每跳一个过程气泡 / 工具卡 / 流式 delta 都会渲染一次，用户点在任何
+    模板、工作流、设置页都会被反复拽回对话页。
+
+    现在后台渲染（默认）一律不切；只有用户主动动作显式传 follow_nav=True
+    才按老规矩切：有内容 → 对话页(1)，空会话 → 首页(0)。已在目标页不重复切。
+    """
+    if not follow_nav:
+        return None
+    if has_content and current_index != 1:
+        return 1
+    if not has_content and current_index != 0:
+        return 0
+    return None
+
+
 def extract_artifact_paths(name, args, result):
     """从工具参数/结果里抽出看起来像文件的路径。非产物类工具返回空。"""
     name = str(name or "")

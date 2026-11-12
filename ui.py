@@ -609,7 +609,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         self._init_settings_model_combo()
 
         # 初始化
-        self._render_messages(force_bottom=True)   # 首屏聊天内容，必须在 show 之前跑
+        self._render_messages(force_bottom=True, follow_nav=True)   # 首屏聊天内容，必须在 show 之前跑
         self._refresh_recent_on_welcome()
         self.input_box.setFocus()
         # v4.152 启动提速：以下 6 项都是「把数据填进控件」的刷新动作，与「窗口能不能显示」
@@ -2973,8 +2973,8 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
                 self._automation_prev_sid = None
             self.store.switch(session.sid)
             self.store.save()
-            # 切到对话页（nav index 0）让用户看到结果
-            self._switch_nav(0)
+            # v4.297.0：不再主动抢页。任务在专属会话里跑，跨视图 toast 会通知；
+            # 用户停在哪个页面就留在哪，想看进度自己点过去。
             self._render_messages(force_bottom=True)
             # v4.215.0：_agent_run 据此应用受限工具集（full_tools=True 除外）
             self._auto_task_active = task
@@ -3006,7 +3006,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             log.error("自动化任务执行失败（已回滚，将自动重试）: %s", e)
             return False
 
-    def _finish_automation_run(self, stopped=False):
+    def _finish_automation_run(self, stopped=False, stop_reason=""):
         """自动化收口：只有回复真的做成才 mark_fired，否则记失败并允许补跑。
 
         通知走托盘和状态栏，不依赖用户正停在任务会话里。
@@ -3050,7 +3050,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             automation.mark_fired(task)
             title, message = "任务做完了", "自动化任务「%s」做完了。" % name
         else:
-            reason = automation.failure_reason(reply, stopped=stopped)
+            reason = automation.failure_reason(reply, stopped=stopped, stop_reason=stop_reason)
             automation.mark_failed(task, reason=reason)
             title = "任务没做完"
             message = "自动化任务「%s」没做完：%s。稍后会再试。" % (name, reason)
@@ -4579,7 +4579,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         del msgs[idx:]
         self.store.save()
         self._rendered_msg_count = 0
-        self._render_messages()
+        self._render_messages(follow_nav=True)
         self._run_for_trigger(self._extract_text(msgs[prompt_idx]), "重新生成")
 
     def _edit_message(self, idx):
@@ -5101,13 +5101,16 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             import logging as _lg
             _lg.getLogger("dsdesktop").error("会话存盘失败（对话可能未保存！）: %s", e)
 
-    def _render_messages(self, force_bottom=False):
+    def _render_messages(self, force_bottom=False, follow_nav=False):
         session = self.store.active()
-        has_content = bool(session.messages) or self._streaming
-        if has_content and self.main_stack.currentIndex() != 1:
-            self.main_stack.setCurrentIndex(1)
-        elif not has_content and self.main_stack.currentIndex() != 0:
-            self.main_stack.setCurrentIndex(0)
+        # v4.297.0：切页决策抽到 ui_focus.page_after_render。后台渲染（过程气泡 /
+        # 工具卡 / 流式 delta / 自动化收尾）一律不抢焦点；只有用户主动动作
+        # 显式 follow_nav=True 才按老规矩切页（有内容→对话页 / 空会话→首页）。
+        _target = ui_focus.page_after_render(
+            bool(session.messages) or self._streaming,
+            self.main_stack.currentIndex(), follow_nav)
+        if _target is not None:
+            self.main_stack.setCurrentIndex(_target)
 
         # v4.156.1 修复：ChatWebView 已延迟到 show() 之后创建（见 _build_chat_view），
         # 构造期（_init_ui 行 ~2029 首屏渲染）访问 self.chat_view 会 AttributeError 崩溃。
@@ -7505,7 +7508,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             self.store.save()
             self.input_box.clear()
             self._rendered_msg_count = 0
-            self._render_messages()
+            self._render_messages(follow_nav=True)
         elif has_images:
             content = [{"type": "text", "text": clean_text}]
             total_orig = 0; total_final = 0
@@ -7564,7 +7567,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
 
         self.store.save()
         self.input_box.clear()
-        self._render_messages()
+        self._render_messages(follow_nav=True)
 
         # 自动路由：默认是普通对话模式，但"搜索→写文件→数据分析"这类多步任务
         # 普通模式根本干不了（没工具、一次性回答）。检测到执行意图时自动走 Agent 真正执行。
@@ -7758,7 +7761,24 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         # list（含图像），非视觉归一化为纯文本（list 原样发接口会 400）。
         # v4.125 N-01：Agent 管线历史走保真压缩（_build_api_history）——
         # 保留 tool_calls+tool 配对，续跑/继续时模型看得见工具调用记录，不再失忆重干。
-        hist = _build_api_history(session.messages, vision_ok=_vision_ok,
+        # v4.297.0：自动化专属会话（auto_{id}）几百条 tool / tool_log / 空气泡
+        # 只增不减，每轮整份回灌会把单任务 token 堆到熔断（804168/800000）。
+        # 定时任务每轮都是一张新任务单，这里改成薄的投喂视图：上一轮最终答复
+        # + 本轮指令。落盘的完整执行记录一条不删，随时可回放。
+        # 双保险：既要 _auto_task_active 在跑，也要 sid 确实是专属会话前缀，
+        # 免得标志位残留时把普通聊天历史一起砍了。裁剪失败/无本轮指令一律
+        # fail-open 回退原历史，绝不因为优化把任务弄丢。
+        _auto_t = getattr(self, "_auto_task_active", None)
+        _hist_src = session.messages
+        if _auto_t is not None and str(getattr(session, "sid", "") or "").startswith(
+                automation.SESSION_SID_PREFIX):
+            try:
+                _thin = automation.history_for_agent(_hist_src, self._AUTO_TASK_PREFIX)
+                if _thin:
+                    _hist_src = _thin
+            except Exception:
+                pass
+        hist = _build_api_history(_hist_src, vision_ok=_vision_ok,
                                   max_history=self.cfg["max_history"],
                                   char_budget=self.cfg.get("history_char_budget", 0),
                                   msg_budget=self.cfg.get("msg_budget"))
@@ -7768,7 +7788,6 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         # v4.215.0：自动化任务的独立工具权限（外部审核 P1）—— 无人值守触发时
         # 默认受限工具集（无 EXEC/EXTERNAL/硬确认项，不会卡确认框、不会被
         # session_trusted 静默放行越权）；任务 full_tools=True 才放开全部。
-        _auto_t = getattr(self, "_auto_task_active", None)
         if _auto_t is not None and not _auto_t.get("full_tools"):
             all_tools = automation.filter_tools_safe(all_tools, _auto_t)
         # 可观测性：Agent 整轮任务——一次登记覆盖整轮，不按工具调用刷屏
@@ -8106,7 +8125,10 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         self._flush_render()  # v4.60o：冲刷待渲染定时器，避免末条消息重复插入
         self.input_box.setFocus()
         # 自动化任务：按这一轮的回复判定成功或失败，并在会话外面通知。
-        self._finish_automation_run(stopped=bool(resumable))
+        # v4.297.0：把 worker 记下的真因（token_budget / timeout / model_error …）
+        # 带下去，面板不再把一切可续停止笼统说成「中途停了」。
+        _stop_reason = str(getattr(w, "_resumable_reason", "") or "")
+        self._finish_automation_run(stopped=bool(resumable), stop_reason=_stop_reason)
         self._drain_queued_send()  # v4.291.0：排队消息在收口后自动发出
 
 

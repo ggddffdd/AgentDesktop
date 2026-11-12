@@ -146,6 +146,9 @@ want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         "untrusted_boundary", "agent_result_mixin", "tool_verifiers_227",
         # v4.291.0：任务容器 + 气泡格式化族（ui.py 顶层 import，漏包会白屏）
         "ui_task_container_mixin",
+        # v4.297.0：切页决策与自动化薄投喂视图所在模块（ui.py 顶层 import）。
+        # ⚠️ 加新模块必须同步加进 want，否则 info.get(mod)={} → marks 全假红。
+        "ui_focus", "automation",
         ]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
@@ -224,6 +227,18 @@ def main():
 
     print("\n-- 2) 本次新增行为真的在包里（不是旧构建）--")
     marks = {
+        # v4.297.0：字面量全部由 _dev_history/probe_v42970_marks.py 双向验过
+        # 「当前源码编译后确有 × 旧 exe(v4.296.0) 常量表确实缺失」。
+        # `_thin` 旧包本来就有（假绿），已剔除，勿再加回来。
+        "ui_focus": ["page_after_render", "follow_nav",
+                     "v4.297.0：渲染消息后要不要切主栈页面",
+                     "现在后台渲染（默认）一律不切", "已在目标页不重复切"],
+        "automation": ["STOP_REASON_TEXT", "history_for_agent", "stop_reason",
+                       "token 预算用尽了，这次不算完成",
+                       "跑超时了，这次不算完成",
+                       "总时长到上限了，这次不算完成",
+                       "v4.297.0：自动化专属会话的「薄投喂视图」",
+                       "定时任务每轮都是一张新的任务单"],
         "intent_guard": ["is_non_action_message", "blocks_tool_call",
                          "praise", "negation", "imperative",
                          # v4.168.3：否定判据两道闸（长度 + 位置）
@@ -297,7 +312,11 @@ def main():
                # v4.174.0：图像链路「路由目标 ↔ 视觉能力判定」必须一致
                "VISION_MODEL_KW", "deepseek-flash",
                # v4.177.0：历史注入的字符预算闸（第二道闸，按体量）
-               "_fit_history_to_budget"],
+               "_fit_history_to_budget",
+               # v4.297.0：渲染不抢页 + 失败真因 + 自动化薄投喂，三处接线都在 ui。
+               # 同样双向验过旧 exe 缺失；注释里的中文不进常量表，勿拿注释当判据。
+               "page_after_render", "history_for_agent", "stop_reason",
+               "follow_nav", "_hist_src"],
         # v4.267.0：复杂度 / 工具意图的实现在 ui_routing，ui 上只剩薄包装。
         "ui_routing": ["route_judge", "is_complex_v2", "route_complex_v1",
                        "_needs_tool_intent", "is_non_action_message"],
