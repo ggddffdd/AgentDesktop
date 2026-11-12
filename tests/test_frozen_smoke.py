@@ -232,13 +232,20 @@ def main():
         # `_thin` 旧包本来就有（假绿），已剔除，勿再加回来。
         "ui_focus": ["page_after_render", "follow_nav",
                      "v4.297.0：渲染消息后要不要切主栈页面",
-                     "现在后台渲染（默认）一律不切", "已在目标页不重复切"],
+                     "现在后台渲染（默认）一律不切", "已在目标页不重复切",
+                     # v4.298.0：空工具表不携带 tool_choice 的发送前护栏
+                     "guard_tool_choice"],
         "automation": ["STOP_REASON_TEXT", "history_for_agent", "stop_reason",
                        "token 预算用尽了，这次不算完成",
                        "跑超时了，这次不算完成",
                        "总时长到上限了，这次不算完成",
                        "v4.297.0：自动化专属会话的「薄投喂视图」",
-                       "定时任务每轮都是一张新的任务单"],
+                       "定时任务每轮都是一张新的任务单",
+                       # v4.298.0：三条早停真因（probe_v42980_marks.py 双向验过）
+                       "tool_backend_down", "verify_stalled", "tool_fail",
+                       "搜索/网页资料源连不上，这次不算完成",
+                       "一直卡在核验没进展，这次不算完成",
+                       "工具一直报错，这次不算完成"],
         "intent_guard": ["is_non_action_message", "blocks_tool_call",
                          "praise", "negation", "imperative",
                          # v4.168.3：否定判据两道闸（长度 + 位置）
@@ -316,7 +323,9 @@ def main():
                # v4.297.0：渲染不抢页 + 失败真因 + 自动化薄投喂，三处接线都在 ui。
                # 同样双向验过旧 exe 缺失；注释里的中文不进常量表，勿拿注释当判据。
                "page_after_render", "history_for_agent", "stop_reason",
-               "follow_nav", "_hist_src"],
+               "follow_nav", "_hist_src",
+               # v4.298.0：发送前护栏确实接在 _agent_call 里
+               "guard_tool_choice"],
         # v4.267.0：复杂度 / 工具意图的实现在 ui_routing，ui 上只剩薄包装。
         "ui_routing": ["route_judge", "is_complex_v2", "route_complex_v1",
                        "_needs_tool_intent", "is_non_action_message"],
@@ -346,7 +355,14 @@ def main():
                   "_deliverable_satisfied", "_FILE_KINDS", "_deliverables",
                   "_exec_ledger", "_resume_done_hashes", "_NON_IDEMPOTENT_TOOLS",
                   "_is_resume_dup", "_record_exec_ledger", "_tool_args_hash",
-                  "wrap_untrusted", "_wrap_tool_content"],
+                  "wrap_untrusted", "_wrap_tool_content",
+                  # v4.298.0：核验停滞早停 + 后端失败真因（全部双向验过旧 exe 缺失；
+                  # `tool_fail` 旧包本来就有，属假绿，勿加进 agent 这组）
+                  "MAX_VERIFY_STALL_STEPS", "_verify_stall_steps",
+                  "_last_verify_sig", "_last_fail_backend_down",
+                  "verify_stalled", "tool_backend_down",
+                  "⏹ 核验一直没有进展，已自动停止空转。",
+                  "⏹ 搜索/网页资料源一直连不上，已停止空转。"],
         # v4.227.0：不可信边界的真身搬到这里了（v4.222 写在 agent.py，
         # v4.227 外移成独立模块 —— agent.py 只做 re-export，静态扫描器盯
         # re-export 的 import 图不稳，所以标签字面量钉在真身这个模块上）。
@@ -393,7 +409,12 @@ def main():
         # 校验随之跟到 agent_text 模块，否则误报 agent 缺符号（假红）。
         "agent_text": ["is_non_action_message",
                   # v4.168.1：程序化抓取否决 + 裸 URL 判据
-                  "_prog_fetch_intent", "_is_bare_url", "_PROG_FETCH_KW"],
+                  "_prog_fetch_intent", "_is_bare_url", "_PROG_FETCH_KW",
+                  # v4.298.0：资料源/后端不可用判定（probe 双向验过）
+                  "tool_result_backend_down", "_BACKEND_DOWN_MARKS",
+                  "未找到搜索结果（最后错误：", "境外主题搜索无法获取",
+                  "本次调用失败：[UNVERIFIED_OUTCOME]",
+                  "UNEXPECTED_EOF_WHILE_READING", "任务图未完整达成"],
         # v4.225.0：统一意图对象（Intent 值对象 + ROUTE_REGISTRY 注册表
         # + classify 唯一入口 + 路由段自动生成）
         "intent": ["Intent", "classify", "ROUTE_REGISTRY", "_route_hint_text",

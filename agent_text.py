@@ -867,3 +867,33 @@ def _detect_action_intent(messages):
     if _gen_intent(text, _IMAGE_OBJ) or _gen_intent(text, _VIDEO_OBJ) or _phrase_hit(text):
         return True
     return any(k in text for k in _ACTION_KEYWORDS)
+
+
+# v4.298.0：工具结果里的「资料源 / 后端不可用」强特征。
+# 只收带明确错误上下文的字样，绝不收裸「失败 / 未找到搜索结果」——
+# 后者可能只是这个词确实没结果，或者用户在讨论某次失败，误判会误杀正常任务。
+_BACKEND_DOWN_MARKS = (
+    "未找到搜索结果（最后错误：",          # tool_web_search 全链路挂掉且带异常
+    "境外主题搜索无法获取",                 # 境外模式明确报不可用
+    "本次调用失败：[UNVERIFIED_OUTCOME]",   # 证据登记：结果不可信
+    "WORKFLOW_INCOMPLETE",                  # 任务图未完整达成
+    "任务图未完整达成",
+    "HTTP Error 4", "HTTP Error 5",
+    "UNEXPECTED_EOF_WHILE_READING", "[SSL:",
+    "Read timed out", "连接超时",
+)
+
+
+def tool_result_backend_down(text):
+    """v4.298.0：这条工具回执是否明确表示「资料源/后端连不上」。
+
+    供 agent.py 的 v4.66 连续工具失败护栏使用。旧护栏的 _FAIL_MARKERS 只认
+    文件/命令类本地错误，2026-11-12 实机里 Brave 422 / DuckDuckGo SSL /
+    WORKFLOW_INCOMPLETE 一类回执一个都不认识，于是「连续失败 3 步早停」
+    从未触发，任务一路硬跑 20 步 × 3 轮、拖了 24 分钟。
+
+    纯函数、不读盘不联网；坏档一律 False（fail-closed 交给调用方累加计数）。
+    """
+    if not isinstance(text, str) or not text:
+        return False
+    return any(k in text for k in _BACKEND_DOWN_MARKS)

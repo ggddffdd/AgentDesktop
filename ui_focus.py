@@ -163,6 +163,22 @@ def page_after_render(has_content, current_index, follow_nav=False):
     return None
 
 
+def guard_tool_choice(body):
+    """v4.298.0：发送前护栏——工具表为空时绝不携带 tool_choice。
+
+    OpenAI 兼容通道会直接 400「tool_choice is only allowed when tools are
+    specified」。实测 2026-11-12 14:09:56：`_run_workflow` 的 analyst 节点
+    `tools=set()` → my_tools=[]，但 `_agent_call` 仍按工具意图设了 required。
+    放在四个 tool_choice 分支之后兜底，路由本身一个字都不用改。
+    就地修改并返回 body；坏档原样返回，不抛异常。
+    """
+    if not isinstance(body, dict):
+        return body
+    if not body.get("tools"):
+        body.pop("tool_choice", None)
+    return body
+
+
 def extract_artifact_paths(name, args, result):
     """从工具参数/结果里抽出看起来像文件的路径。非产物类工具返回空。"""
     name = str(name or "")

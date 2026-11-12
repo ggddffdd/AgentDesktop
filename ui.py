@@ -8722,6 +8722,10 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
                 if isinstance(m, dict) else m
                 for m in body["messages"]
             ]
+        # v4.298.0：发送前最后一道护栏——工具表为空时摘掉 tool_choice。
+        # 四个分支（guard / force_tool / refuse / required）都可能在空工具表下
+        # 设它，通道会 400「tool_choice is only allowed when tools are specified」。
+        ui_focus.guard_tool_choice(body)
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
 
         full_content = ""

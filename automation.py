@@ -348,6 +348,10 @@ STOP_REASON_TEXT = {
     "model_error": "模型调用出错了，这次不算完成",
     "max_steps": "步数用完了，这次不算完成",
     "resume_exhausted": "自动续跑次数用完了，这次不算完成",
+    # v4.298.0：早停护栏登记的真因。旧实现没有 reason，面板只会写「中途停了」。
+    "tool_backend_down": "搜索/网页资料源连不上，这次不算完成",
+    "tool_fail": "工具一直报错，这次不算完成",
+    "verify_stalled": "一直卡在核验没进展，这次不算完成",
 }
 
 

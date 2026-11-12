@@ -641,10 +641,20 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                      if m.get("role") == "tool"]
         if not tool_msgs:
             return False
+        _backend_down = False
         for tm in tool_msgs:
             c = tm.get("content", "") or ""
-            if not any(k in c for k in self._FAIL_MARKERS):
+            _hit = any(k in c for k in self._FAIL_MARKERS)
+            # v4.298.0：资料源/后端不可用也算失败。旧护栏只认本地文件/命令错，
+            # 今天 Brave 422 / SSL EOF / WORKFLOW_INCOMPLETE 全被当成「成功」，
+            # 连续失败护栏永远不触发。顺手记下是不是后端挂了，供早停文案分流。
+            if not _hit and agent_text.tool_result_backend_down(c):
+                _hit = True
+                _backend_down = True
+            if not _hit:
+                self._last_fail_backend_down = False
                 return False
+        self._last_fail_backend_down = _backend_down
         return True
 
 
@@ -876,6 +886,10 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
             MAX_DURATION, _TOTAL_BUDGET = 600, 1800
         _round_t0 = _t0
         MAX_FAIL_STEPS = 3     # v4.66：连续工具全失败步上限，超出则早停防死循环
+        # v4.298.0：核验结论「未满足项」连续 N 步一字未变 = 补做毫无进展。
+        # 2026-11-12 实机：自动化任务核验未过硬跑 20 步 → 自动续跑 20 步 →
+        # 再 20 步，从 14:13 拖到 14:26。20 步上限与 token 熔断兜不住这种空转。
+        MAX_VERIFY_STALL_STEPS = 8
         self._fake_steps = 0   # v4.98：文字伪造工具调用计数（撒谎检测）
         MAX_FAKE_RETRIES = 3   # v4.98：伪造工具调用最多容忍次数，超出诚实提示并停止
         self._last_step_sig = None  # v4.102 fix8：上一步 (content, tool_calls) 签名
@@ -1292,12 +1306,27 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                     self._fail_steps = 0
                 if self._fail_steps >= MAX_FAIL_STEPS:
                     self._note_exit("tool_fail")  # v4.195 批⑪
-                    self._emit_status("⏹ 工具连续失败，已自动停止。请检查路径/命令。")
-                    self.stream_commit.emit(
-                        "\n\n⏹ 检测到工具连续多次执行失败（如文件找不到或命令报错），"
-                        "已自动停止以避免空转。请确认：聊天附件是否发送成功、命令是否用了 "
-                        "PowerShell 语法（Get-ChildItem / 2>$null / Select-String）；或换一种"
-                        "更直接的问法（例如直接说『总结这份报告』）。")
+                    # v4.298.0：按真因分流。资料源连不上时让用户去查 PowerShell
+                    # 语法是纯误导，自动化面板也只会笼统写「中途停了」。
+                    _bd = bool(getattr(self, "_last_fail_backend_down", False))
+                    if _bd:
+                        self._emit_status("⏹ 搜索/网页资料源一直连不上，已停止空转。")
+                        self.stream_commit.emit(
+                            "\n\n⏹ 搜索或网页资料源连续多次连不上，已停止空转。"
+                            "已完成的部分都保留了，等网络恢复可以点「继续」接着做；"
+                            "也可以换个不需要联网的做法。")
+                    else:
+                        self._emit_status("⏹ 工具连续失败，已自动停止。请检查路径/命令。")
+                        self.stream_commit.emit(
+                            "\n\n⏹ 检测到工具连续多次执行失败（如文件找不到或命令报错），"
+                            "已自动停止以避免空转。请确认：聊天附件是否发送成功、命令是否用了 "
+                            "PowerShell 语法（Get-ChildItem / 2>$null / Select-String）；或换一种"
+                            "更直接的问法（例如直接说『总结这份报告』）。")
+                    if _bd:
+                        self._mark_resumable("tool_backend_down")
+                    else:
+                        self._mark_resumable("tool_fail")
+                    self._sync_to_session(mw)
                     break
                 # v4.60o/4.60p：sys_info 跑完后注入指令
                 #  - "记住能力" → 用 remember 把真实清单写长期记忆
@@ -1322,6 +1351,34 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                 # v4.226（四阶段循环）：工具批次执行完 → 进 VERIFY 固化核验记录。
                 # 只标注阶段+存记录，**不注入指令**（补做仍由 v4.225 收尾闸门独管）。
                 self._loop_verify(agent_loop)
+                # v4.298.0：核验停滞早停。「未满足项」连续 8 步一字未变 =
+                # 每一步的补做都没让账本前进一步。只比未满足项，不比整份记录：
+                # 「已真实调用工具」会随 used_tools 累积而变，拿全文比永远不命中。
+                # 实测 2026-11-12：核验未过硬跑 20 步 → 续跑 20 步 → 再 20 步，
+                # 14:13 拖到 14:26，前台过程气泡一直刷、像卡死。
+                _lp_stall = getattr(self, "_loop", None)
+                _v_sig = ""
+                if (_lp_stall is not None
+                        and getattr(_lp_stall, "verification", None)
+                        and not getattr(_lp_stall, "verified", False)):
+                    _v_sig = repr([str(x) for x in _lp_stall.verification
+                                   if str(x).startswith("未满足")])
+                if (_v_sig and _v_sig != "[]"
+                        and _v_sig == getattr(self, "_last_verify_sig", "")):
+                    self._verify_stall_steps = getattr(self, "_verify_stall_steps", 0) + 1
+                else:
+                    self._verify_stall_steps = 0
+                self._last_verify_sig = _v_sig
+                if self._verify_stall_steps >= MAX_VERIFY_STALL_STEPS:
+                    self._note_exit("verify_stalled")
+                    self._emit_status("⏹ 核验一直没有进展，已自动停止空转。")
+                    self.stream_commit.emit(
+                        "\n\n⏹ 连续多步核验结果一模一样、迟迟达不到目标，已停止空转。"
+                        "已完成的部分都保留了，可以点「继续」接着做，"
+                        "或把任务拆小、换个更明确的做法。")
+                    self._mark_resumable("verify_stalled")
+                    self._sync_to_session(mw)
+                    break
             else:
                 # v4.98 撒谎检测器：模型用文字"演"工具调用（伪造 [工具]/✅ 已保存/
                 # run_python( 等）却不真发 tool_call，这种内容不能当最终结果展示，

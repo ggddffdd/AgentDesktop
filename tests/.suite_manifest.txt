@@ -10,6 +10,7 @@ test_app_close_218.py
 test_attachment_and_director_gates.py
 test_audio_regress.py
 test_audit_273.py
+test_auto_stall_298.py
 test_automation_clarify_279.py
 test_automation_fire_order.py
 test_automation_isolation.py
