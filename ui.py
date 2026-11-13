@@ -847,27 +847,10 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         new_btn.clicked.connect(self._new_session)
         hb.addWidget(new_btn)
 
-        rename_btn = QPushButton()
-        rename_btn.setFixedSize(32, 32)
-        rename_btn.setToolTip("重命名当前对话")
-        rename_btn.setIcon(_nav_icon_qicon("编辑", THEME["dim"], 15))
-        rename_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['card']};"
-            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;}}"
-            f"QPushButton:hover{{border-color:{THEME['accent']};}}")
-        rename_btn.clicked.connect(self._rename_session)
-        hb.addWidget(rename_btn)
-
-        del_btn = QPushButton()
-        del_btn.setFixedSize(32, 32)
-        del_btn.setToolTip("删除当前对话")
-        del_btn.setIcon(_nav_icon_qicon("删除", THEME["danger"], 15))
-        del_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['card']};"
-            f"border:1px solid {THEME['border']};border-radius:8px;padding:0;}}"
-            f"QPushButton:hover{{border-color:{THEME['danger']};background:{THEME['danger_hover_red']};}}")
-        del_btn.clicked.connect(self._delete_active_session)
-        hb.addWidget(del_btn)
+        # v4.299.0：顶栏精简——「重命名 / 删除」两个 32×32 小按钮从顶栏撤下，
+        # 收进右侧「⋯」溢出菜单（_open_chat_overflow）。顶栏只留
+        # 会话下拉 + ＋新建 + 会话管理 + ⋯，不再一排零碎图标。
+        # 两个动作的功能入口不变（会话管理对话框内也有重命名/删除）。
 
         mgr_btn = QPushButton()
         mgr_btn.setFixedSize(32, 32)
@@ -1447,6 +1430,10 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         menu.addAction("技能市场", self._open_skill_market)
         menu.addAction("工作流", self._open_workflow_manager)
         menu.addAction("导出对话", self.export_session)
+        # v4.299.0：顶栏撤下的两个会话动作收进这里（原顶栏 32×32 小按钮）。
+        menu.addSeparator()
+        menu.addAction("重命名对话", self._rename_session)
+        menu.addAction("删除当前对话", self._delete_active_session)
         btn = getattr(self, "_chat_overflow_btn", None)
         if btn is not None:
             menu.exec(btn.mapToGlobal(QPoint(0, btn.height())))
@@ -3508,8 +3495,9 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
 
         tb_layout.addStretch(1)
 
-        # ---- 右侧头像（v4.114：渐变底人形图标）----
+        # ---- 右侧头像（v4.299.0：自定义头像，点击更换）----
         self.user_avatar = _make_avatar_label(34)
+        self.user_avatar.clicked.connect(self._change_user_avatar)
         tb_layout.addWidget(self.user_avatar)
 
         # ---- 系统按钮 ----
@@ -3620,6 +3608,48 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             f"letter-spacing:-0.5px;margin-bottom:24px;")
         scl.addWidget(title)
 
+        # ---- 居中大输入框（v4.299.0：ChatGPT 式快速开始）----
+        # 放在标题正下方、能力卡片之上：一句话回车直接开工，不用再先切到对话页。
+        # 发送复用对话页的 input_box + send()，不新增第二条发送链。
+        quick_center = QHBoxLayout()
+        quick_center.setContentsMargins(0, 0, 0, 0)
+        quick_center.addStretch(1)
+        quick_box = QWidget()
+        quick_box.setMaximumWidth(680)
+        quick_box.setStyleSheet(
+            f"QWidget{{background:{THEME['card']};border:1px solid {THEME['border']};"
+            f"border-radius:16px;}}")
+        # Qt 无 CSS box-shadow —— 柔和阴影用统一 helper 只加在这个关键输入框上。
+        try:
+            from theme_qss import drop_shadow
+            drop_shadow(quick_box)
+        except Exception:
+            pass
+        qb_lay = QHBoxLayout(quick_box)
+        qb_lay.setContentsMargins(18, 4, 8, 4)
+        qb_lay.setSpacing(8)
+        self.welcome_input = QLineEdit()
+        self.welcome_input.setPlaceholderText("输入你的需求，回车直接开始…")
+        self.welcome_input.setStyleSheet(
+            f"QLineEdit{{background:transparent;border:none;font-size:15px;"
+            f"color:{THEME['text']};padding:12px 0;}}")
+        self.welcome_input.returnPressed.connect(self._welcome_quick_send)
+        qb_lay.addWidget(self.welcome_input, 1)
+        quick_send = QPushButton("↑")
+        quick_send.setFixedSize(34, 34)
+        quick_send.setCursor(Qt.PointingHandCursor)
+        quick_send.setToolTip("发送")
+        quick_send.setStyleSheet(
+            f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
+            f"border-radius:17px;font-size:{THEME['font_icon_btn']};font-weight:600;}}"
+            f"QPushButton:hover{{background:{THEME['accent_hover']};}}")
+        quick_send.clicked.connect(self._welcome_quick_send)
+        qb_lay.addWidget(quick_send)
+        quick_center.addWidget(quick_box, 1)
+        quick_center.addStretch(1)
+        scl.addLayout(quick_center)
+        scl.addSpacing(30)
+
         # ---- 4 张能力卡片 ----
         # v4.199.0：换掉旧的「写文章 / 写代码 / 做设计」。那三张的问题是
         # **说的事和这个产品没关系** —— 它们回答的是「AI 能干什么」这种通用问题，
@@ -3663,7 +3693,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
                 f"QPushButton{{"
                 f"background:{card_bg};"
                 f"border:1px solid {THEME['border']};"
-                f"border-radius:10px;"
+                f"border-radius:14px;"
                 f"text-align:left;"
                 f"}}"
                 f"QPushButton:hover{{"
@@ -4061,9 +4091,11 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
 
         sb.addStretch(1)
 
-        # ---- 用户区（v4.114：渐变底人形图标头像）----
+        # ---- 用户区（v4.299.0：自定义头像，点击更换）----
         user_row = QHBoxLayout()
         avatar = _make_avatar_label(34)
+        self._sidebar_avatar = avatar
+        avatar.clicked.connect(self._change_user_avatar)
         user_row.addWidget(avatar)
         uname = QLabel("User")
         uname.setStyleSheet(
@@ -4079,6 +4111,36 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         self._nav_collapsed = False      # 初始为展开（宽度由 _init_ui 决定，见 resizeEvent）
 
         self._update_nav_styles(-1)
+
+    def _change_user_avatar(self):
+        """v4.299.0：点击用户头像 → 弹出「更换 / 恢复默认」菜单。"""
+        import ui_avatar
+        from PySide6.QtGui import QCursor
+        menu = QMenu(self)
+        act_change = menu.addAction("更换头像…")
+        act_reset = menu.addAction("恢复默认头像")
+        act_reset.setEnabled(ui_avatar.has_custom_avatar())
+        chosen = menu.exec(QCursor.pos())
+        if chosen == act_change:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "选择头像图片", "",
+                "图片文件 (*.png *.jpg *.jpeg *.bmp *.webp)")
+            if not path:
+                return
+            ok, msg = ui_avatar.set_custom_avatar(path)
+            if not ok:
+                QMessageBox.warning(self, "更换头像", msg)
+            self._refresh_user_avatars()
+        elif chosen == act_reset:
+            ui_avatar.clear_custom_avatar()
+            self._refresh_user_avatars()
+
+    def _refresh_user_avatars(self):
+        """更换/恢复后，同步刷新顶栏与侧栏两处头像。"""
+        for lbl in (getattr(self, "user_avatar", None),
+                    getattr(self, "_sidebar_avatar", None)):
+            if lbl is not None and hasattr(lbl, "refresh"):
+                lbl.refresh()
 
     def _set_sidebar_collapsed(self, collapsed):
         """v4.198.0：侧栏展开/折叠切换（纯视觉，不动页面栈、不动导航下标）。
@@ -4245,6 +4307,16 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         self._refresh_recent_on_welcome()
 
     # ============ 欢迎页卡片点击 ============
+    def _welcome_quick_send(self):
+        """欢迎页大输入框：回车 / 点 ↑ → 填入对话页输入框、切到对话页并发送。"""
+        text = self.welcome_input.text().strip()
+        if not text:
+            return
+        self.input_box.setPlainText(text)
+        self.welcome_input.clear()
+        self._switch_nav(0)   # 对话页
+        self.send()
+
     def _on_welcome_card(self):
         sender = self.sender()
         if not sender:

@@ -186,7 +186,6 @@ if os.path.isfile(FIXTURE):
             ("QPushButton", '{"background": "transparent", "border": "none", "color": "#1A73E8", "font-size": "12px", "padding": "0 4px"}'): 1,
             ("QPushButton", '{"background": "transparent", "border": "none", "color": "#202124", "font-size": "13px", "padding": "0 4px", "text-align": "left"}'): 1,
             ("QPushButton", '{"background": "transparent", "border": "none", "color": "#6B7280", "font-size": "12px", "padding": "0 4px"}'): 1,
-            ("QPushButton:hover", '{"background": "#1765CC"}'): 1,
             ("QPushButton:hover", '{"background": "#E4E8F2", "color": "#EA4335"}'): 1,
             ("QPushButton:hover", '{"background": "#FCE8E6", "border-color": "#EA4335"}'): 1,
             ("QPushButton:hover", '{"color": "#1A73E8"}'): 1,
@@ -267,6 +266,17 @@ if os.path.isfile(FIXTURE):
                             ' "font-size": "12px", "padding": "8px",'
                             ' "text-align": "left"}'): 1,
             ("QPushButton:hover", '{"background": "#D2D5DA"}'): 1,
+        }),
+    }
+
+    # v4.299.0（界面美化第 1 波）：顶栏「重命名/删除」两个 32×32 按钮撤下、收进「⋯」，
+    # 其样式从 ui.py 消失（before-only），按登记制扣除。生成：_dev_history/_diff_299.py。
+    KNOWN_MIGRATIONS_299 = {
+        "ui.py": collections.Counter({
+            ("", '{"QPushButton": "hover"}'): 1,
+            ("QPushButton", '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "8px", "padding": "0"}'): 2,
+            ("QPushButton:hover", '{"background": "#FCE8E6", "border-color": "#EA4335"}'): 1,
+            ("QPushButton:hover", '{"border-color": "#1A73E8"}'): 1,
         }),
     }
 
@@ -358,6 +368,11 @@ if os.path.isfile(FIXTURE):
                             ' "padding": "0 4px", "text-align": "left"}'): 1,
             ("QPushButton", '{"background": "transparent", "border": "none",'
                             ' "border-radius": "24px", "color": "#5F6368"}'): 1,
+            # v4.299.0：欢迎页居中大输入框（quick_box 白卡 + QLineEdit + 圆形发送钮）。
+            # 词条是新的，配色复用既有 THEME。条数写死，多一份照样红。
+            ('QLineEdit', '{"background": "transparent", "border": "none", "color": "#202124", "font-size": "15px", "padding": "12px 0"}'): 1,
+            ('QPushButton', '{"background": "#1A73E8", "border": "none", "border-radius": "17px", "color": "#FFFFFF", "font-size": "16px", "font-weight": "600"}'): 1,
+            ('QWidget', '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "16px"}'): 1,
         }),
         "ui_widgets.py": collections.Counter({
             ("", '{"color": "#202124", "font-size": "13px", "line-height": "1.55"}'): 1,
@@ -372,7 +387,8 @@ if os.path.isfile(FIXTURE):
         known = (KNOWN_MIGRATIONS_206.get(fn, collections.Counter())
                  + KNOWN_MIGRATIONS_207.get(fn, collections.Counter())
                  + KNOWN_MIGRATIONS_216.get(fn, collections.Counter())
-                 + KNOWN_MIGRATIONS_264.get(fn, collections.Counter()))
+                 + KNOWN_MIGRATIONS_264.get(fn, collections.Counter())
+                 + KNOWN_MIGRATIONS_299.get(fn, collections.Counter()))
         # known_add 通道：既吸收「同词条 +1 实例」，也吸收 v4.216 搬入侧（新文件词条）
         known_add = (KNOWN_ADDITIONS.get(fn, collections.Counter())
                      + KNOWN_MIGRATION_TARGETS_216.get(fn, collections.Counter()))

@@ -149,6 +149,9 @@ want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         # v4.297.0：切页决策与自动化薄投喂视图所在模块（ui.py 顶层 import）。
         # ⚠️ 加新模块必须同步加进 want，否则 info.get(mod)={} → marks 全假红。
         "ui_focus", "automation",
+        # v4.299.0：自定义头像模块（ui_widgets._make_avatar_label / ui 引用，
+        # 漏包则头像区直接崩）。同样必须加进 want 才会被验证。
+        "ui_avatar",
         ]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
@@ -325,7 +328,17 @@ def main():
                "page_after_render", "history_for_agent", "stop_reason",
                "follow_nav", "_hist_src",
                # v4.298.0：发送前护栏确实接在 _agent_call 里
-               "guard_tool_choice"],
+               "guard_tool_choice",
+               # v4.299.0：界面美化第 1 波（大输入框 + 自定义头像接线 + 顶栏精简），
+               # 均经旧 exe 常量表双向验过缺失（剔除「删除当前对话」假绿）。
+               "welcome_input", "_welcome_quick_send", "输入你的需求，回车直接开始",
+               "更换头像", "恢复默认头像", "重命名对话",
+               "_change_user_avatar", "_refresh_user_avatars", "_sidebar_avatar",
+               "drop_shadow"],
+        # v4.299.0：自定义头像模块的新字面量（旧包无此模块，全为 USE）。
+        "ui_avatar": ["AvatarLabel", "avatar_pixmap", "set_custom_avatar",
+                      "clear_custom_avatar", "default_avatar_pixmap",
+                      "点击更换头像", "avatar.png"],
         # v4.267.0：复杂度 / 工具意图的实现在 ui_routing，ui 上只剩薄包装。
         "ui_routing": ["route_judge", "is_complex_v2", "route_complex_v1",
                        "_needs_tool_intent", "is_non_action_message"],

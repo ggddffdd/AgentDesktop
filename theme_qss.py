@@ -172,7 +172,7 @@ def btn_primary(font_size: str = "13px", weight: int = 600,
     dis = disabled_color or THEME["accent_disabled"]
     return (
         f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
-        f"border-radius:8px;padding:0 16px;font-size:{font_size};font-weight:{weight};}}"
+        f"border-radius:10px;padding:0 16px;font-size:{font_size};font-weight:{weight};}}"
         f"QPushButton:focus{{{_focus_ring(THEME['accent'])}}}"
         f"QPushButton:hover{{background:{THEME['accent_hover']};}}"
         f"QPushButton:disabled{{background:{dis};color:white;}}"
@@ -273,7 +273,7 @@ def input_style(widget: str = "QLineEdit", font_size: str = None) -> str:
     size = font_size or F["body"]
     return (
         f"{widget}{{background:{THEME['card']};border:1px solid {THEME['border']};"
-        f"border-radius:8px;padding:8px 10px;font-size:{size};color:{THEME['text']};}}"
+        f"border-radius:10px;padding:8px 10px;font-size:{size};color:{THEME['text']};}}"
         f"{widget}:focus{{border:1px solid {THEME['accent']};}}"
     )
 
@@ -282,7 +282,7 @@ def combo_style() -> str:
     """下拉框。源自 director_panel.py `_combo_style`（L213）。"""
     return (
         f"QComboBox{{background:{THEME['card']};border:1px solid {THEME['border']};"
-        f"border-radius:8px;padding:0 12px;font-size:13px;color:{THEME['text']};}}"
+        f"border-radius:10px;padding:0 12px;font-size:13px;color:{THEME['text']};}}"
         f"QComboBox::drop-down{{border:none;}}"
         f"QComboBox:focus{{{_focus_ring(THEME['card'])}}}"
         f"QComboBox:disabled{{color:{THEME['dim']};}}"
@@ -462,3 +462,23 @@ def toast_close_btn() -> str:
         f"color:{THEME['faint']};font-size:{F['second']};padding:0 2px;}}"
         f"QPushButton:hover{{color:{THEME['text']};}}"
     )
+
+
+def drop_shadow(widget, blur=26, dy=4, alpha=20):
+    """给关键控件加柔和阴影（v4.299.0）。
+
+    Qt Widgets 没有 CSS box-shadow —— 阴影只能用 QGraphicsDropShadowEffect
+    逐个控件加。全局套阴影既无必要也有重绘/性能风险，故只暴露为 helper，
+    供欢迎页大输入框、卡片等少数关键元素局部调用。
+    返回 effect 便于调用方持有引用（防止被 GC 后阴影失效）。
+    """
+    from PySide6.QtWidgets import QGraphicsDropShadowEffect
+    from PySide6.QtGui import QColor
+    eff = QGraphicsDropShadowEffect(widget)
+    eff.setBlurRadius(blur)
+    eff.setOffset(0, dy)
+    c = QColor(16, 24, 40)
+    c.setAlpha(alpha)
+    eff.setColor(c)
+    widget.setGraphicsEffect(eff)
+    return eff

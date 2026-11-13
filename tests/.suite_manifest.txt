@@ -191,6 +191,7 @@ test_twin_seg_resilience.py
 test_ui_a11y_2102.py
 test_ui_focus_auto_297.py
 test_ui_hex_guard_fallback.py
+test_ui_polish_299.py
 test_uidecision_fix_186.py
 test_uncertainty_gate_196.py
 test_unified_intent_225.py
