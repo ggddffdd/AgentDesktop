@@ -107,6 +107,7 @@ from ui_widgets import (  # noqa: F401
     InfoDialog, MultiLineInput, SessionManagerDialog, _EdgeResizeFilter,
     _NoWheelCombo, _NAV_ICONS, _brief_err, _session_preview, _nav_icon_pixmap,
     _make_avatar_label, _nav_icon_qicon, _skill_icon_name, resource_path,
+    build_workspace_shell, workspace_card,
     clamp_dialog_to_screen, clamp_popup_to_screen, SKILL_ICON_MAP,
     SKILL_ICON_FALLBACK, _WM_NCHITTEST, _HTCLIENT, _HTCAPTION, _HTLEFT,
     _HTRIGHT, _HTTOP, _HTTOPLEFT, _HTTOPRIGHT, _HT_BOTTOM, _HT_BOTTOMLEFT,
@@ -2247,20 +2248,16 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
     # ============ 生图页 ============
     def _build_image_page(self):
         # v4.152.2：幂等（同 _build_orchestrate_page）
-        from theme_qss import label_body, label_second, label_title_xl
+        from theme_qss import label_body, label_second, label_title
         if getattr(self, "_image_built", False):
             return
         self._image_built = True
         page = self.image_page
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(32, 24, 32, 24)
-        lay.setSpacing(16)
-        head = QLabel("生图 · Agnes Image")
-        head.setStyleSheet(label_title_xl())
-        lay.addWidget(head)
-        sub = QLabel(f"模型：{self.cfg.get('image_gen_model','agnes-image-2.1-flash')}　尺寸可下方选择")
-        sub.setStyleSheet(label_second())
-        lay.addWidget(sub)
+        lay, _, _ = build_workspace_shell(
+            page, "生图 · Agnes Image",
+            f"模型：{self.cfg.get('image_gen_model','agnes-image-2.1-flash')}　尺寸可在下方选择")
+        form_card, form_lay = workspace_card()
+        lay.addWidget(form_card)
 
         # ---- 参数行：尺寸下拉 ----
         opt_row = QHBoxLayout()
@@ -2289,7 +2286,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             f"selection-background-color:{THEME['accent']};}}")
         opt_row.addWidget(self.image_size_combo)
         opt_row.addStretch(1)
-        lay.addLayout(opt_row)
+        form_lay.addLayout(opt_row)
 
         self.image_prompt = QTextEdit()
         self.image_prompt.setFixedHeight(90)
@@ -2298,7 +2295,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             f"QTextEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
             f"border-radius:10px;padding:12px 12px;font-size:13px;color:{THEME['text']};}}"
             f"QTextEdit:focus{{border:1px solid {THEME['accent']};}}")
-        lay.addWidget(self.image_prompt)
+        form_lay.addWidget(self.image_prompt)
 
         row = QHBoxLayout()
         gen = QPushButton("生成图片")
@@ -2310,7 +2307,18 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         self.image_status.setStyleSheet(label_second())
         row.addWidget(self.image_status)
         row.addStretch(1)
-        lay.addLayout(row)
+        form_lay.addLayout(row)
+
+        result_card, result_lay = workspace_card()
+        result_top = QHBoxLayout()
+        result_title = QLabel("生成结果")
+        result_title.setStyleSheet(label_title())
+        result_top.addWidget(result_title)
+        result_top.addStretch(1)
+        result_hint = QLabel("双击结果打开文件")
+        result_hint.setStyleSheet(label_second())
+        result_top.addWidget(result_hint)
+        result_lay.addLayout(result_top)
 
         self._image_paths = []
         self.image_result = QListWidget()
@@ -2318,7 +2326,8 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             f"QListWidget{{background:{THEME['card']};border:1px solid {THEME['border']};"
             f"border-radius:10px;padding:8px;font-size:13px;color:{THEME['text']};}}")
         self.image_result.itemDoubleClicked.connect(self._open_image_result)
-        lay.addWidget(self.image_result, 1)
+        result_lay.addWidget(self.image_result, 1)
+        lay.addWidget(result_card, 1)
 
     def _gen_image(self):
         prompt = self.image_prompt.toPlainText().strip()
@@ -2375,20 +2384,16 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
     # ============ 生视频页 ============
     def _build_video_page(self):
         # v4.152.2：幂等（同 _build_orchestrate_page）
-        from theme_qss import label_body, label_second, label_title_xl
+        from theme_qss import label_body, label_second, label_title
         if getattr(self, "_video_built", False):
             return
         self._video_built = True
         page = self.video_page
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(32, 24, 32, 24)
-        lay.setSpacing(16)
-        head = QLabel("生视频 · Agnes Video")
-        head.setStyleSheet(label_title_xl())
-        lay.addWidget(head)
-        sub = QLabel("文生视频 / 图生视频（Agnes 直连，免费）。生成可能需数分钟，请耐心等待。")
-        sub.setStyleSheet(label_second())
-        lay.addWidget(sub)
+        lay, _, _ = build_workspace_shell(
+            page, "生视频 · Agnes Video",
+            "文生视频 / 图生视频（Agnes 直连，免费）。生成可能需数分钟，请耐心等待。")
+        form_card, form_lay = workspace_card()
+        lay.addWidget(form_card)
 
         self.video_prompt = QTextEdit()
         self.video_prompt.setFixedHeight(90)
@@ -2402,7 +2407,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             f"QTextEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
             f"border-radius:10px;padding:12px 12px;font-size:13px;color:{THEME['text']};}}"
             f"QTextEdit:focus{{border:1px solid {THEME['accent']};}}")
-        lay.addWidget(self.video_prompt)
+        form_lay.addWidget(self.video_prompt)
 
         # ---- 选项行：时长 / 横竖 / 生成 ----
         opt = QHBoxLayout()
@@ -2436,7 +2441,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         gen.setStyleSheet(self._primary_btn_style())
         gen.clicked.connect(self._gen_video)
         opt.addWidget(gen)
-        lay.addLayout(opt)
+        form_lay.addLayout(opt)
 
         # ---- 首帧 / 尾帧上传（关键帧模式）----
         def _frame_row(label_text, line_edit, tooltip):
@@ -2464,11 +2469,11 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             return row
 
         self.video_first = QLineEdit()
-        lay.addLayout(_frame_row("首帧", self.video_first,
-                                 "首帧图 URL，或点“浏览”选本地图（可选；仅首帧=首帧锁定）"))
+        form_lay.addLayout(_frame_row("首帧", self.video_first,
+                                      "首帧图 URL，或点“浏览”选本地图（可选；仅首帧=首帧锁定）"))
         self.video_last = QLineEdit()
-        lay.addLayout(_frame_row("尾帧", self.video_last,
-                                 "尾帧图 URL，或点“浏览”选本地图（与首帧同选=首尾帧过渡）"))
+        form_lay.addLayout(_frame_row("尾帧", self.video_last,
+                                      "尾帧图 URL，或点“浏览”选本地图（与首帧同选=首尾帧过渡）"))
 
         # ---- 参考图（reference 模式，最多 5 张）----
         # 2026-09-06 新增：agnes-video-2.5-flash 支持 ≤5 张参考图（内核会自动切 reference 模式），
@@ -2509,7 +2514,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         ref_clear.setStyleSheet(_ref_btn_style)
         ref_clear.clicked.connect(self._clear_video_refs)
         ref_row.addWidget(ref_clear)
-        lay.addLayout(ref_row)
+        form_lay.addLayout(ref_row)
 
         self.video_ref_list = QListWidget()
         self.video_ref_list.setFixedHeight(76)
@@ -2518,7 +2523,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             f"QListWidget{{background:{THEME['card']};border:1px solid {THEME['border']};"
             f"border-radius:8px;padding:4px;font-size:12px;color:{THEME['text']};}}")
         self.video_ref_list.itemDoubleClicked.connect(self._remove_video_ref)
-        lay.addWidget(self.video_ref_list)
+        form_lay.addWidget(self.video_ref_list)
 
         hint = QLabel("模式：① 加了参考图→参考图模式（≤5 张，模型参考其人物/场景/画风，多图优先）"
                       "；② 只加首帧或首尾帧→关键帧模式（首帧锁定/首尾过渡）；③ 都没加→纯文生视频。\n"
@@ -2526,11 +2531,22 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
                       "会自动交给配音（画面里不要再重复一遍）。")
         hint.setStyleSheet(label_second())
         hint.setWordWrap(True)
-        lay.addWidget(hint)
+        form_lay.addWidget(hint)
 
         self.video_status = QLabel("")
         self.video_status.setStyleSheet(label_second())
-        lay.addWidget(self.video_status)
+        form_lay.addWidget(self.video_status)
+
+        result_card, result_lay = workspace_card()
+        result_top = QHBoxLayout()
+        result_title = QLabel("生成结果")
+        result_title.setStyleSheet(label_title())
+        result_top.addWidget(result_title)
+        result_top.addStretch(1)
+        result_hint = QLabel("双击结果播放视频")
+        result_hint.setStyleSheet(label_second())
+        result_top.addWidget(result_hint)
+        result_lay.addLayout(result_top)
 
         self._video_paths = []
         self.video_result = QListWidget()
@@ -2538,7 +2554,8 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             f"QListWidget{{background:{THEME['card']};border:1px solid {THEME['border']};"
             f"border-radius:10px;padding:8px;font-size:13px;color:{THEME['text']};}}")
         self.video_result.itemDoubleClicked.connect(self._open_video_result)
-        lay.addWidget(self.video_result, 1)
+        result_lay.addWidget(self.video_result, 1)
+        lay.addWidget(result_card, 1)
 
     def _gen_video(self):
         prompt = self.video_prompt.toPlainText().strip()
@@ -3064,34 +3081,14 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
     def _build_tools_page(self):
         # v4.152.2：幂等（同 _build_orchestrate_page）
         from theme_qss import label_second, scroll_transparent
-        from theme_qss import label_second, label_title_xl
         if getattr(self, "_tools_built", False):
             return
         self._tools_built = True
         page = self.tools_page
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(32, 24, 32, 24)
-        lay.setSpacing(16)
-        head = QLabel("工具箱")
-        head.setStyleSheet(label_title_xl())
-        lay.addWidget(head)
-        sub = QLabel("点选技能后将应用到当前对话，并自动切到对话页。")
-        sub.setStyleSheet(label_second())
-        lay.addWidget(sub)
-
-        # 技能市场入口
-        market_row = QHBoxLayout()
-        market_btn = QPushButton("浏览技能市场")
-        market_btn.setFixedHeight(34)
-        market_btn.setCursor(Qt.PointingHandCursor)
-        market_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
-            f"border-radius:8px;padding:0 16px;font-size:13px;font-weight:500;}}"
-            f"QPushButton:hover{{background:{THEME['accent_hover']};}}")
+        lay, _, market_btn = build_workspace_shell(
+            page, "工具箱", "点选技能后将应用到当前对话，并自动切到对话页。",
+            action_text="浏览技能市场")
         market_btn.clicked.connect(self._open_skill_market)
-        market_row.addWidget(market_btn)
-        market_row.addStretch(1)
-        lay.addLayout(market_row)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -3148,41 +3145,17 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         # v4.152.2：幂等（同 _build_orchestrate_page）。
         # 设置页是这批里最重的（实测首次构建 431ms），但也被验证脚本直接访问
         # （_verify_ui_model_v41490 读 self.agnes_text_combo）→ 幂等是必需的。
-        from theme_qss import scroll_transparent
-        from theme_qss import label_body, label_second, label_title, label_title_xl
+        from theme_qss import label_body, label_second, label_title
         from theme_qss import FONT_FAMILY
         if getattr(self, "_settings_built", False):
             return
         self._settings_built = True
         page = self.settings_page
         page.setFont(QFont(FONT_FAMILY, 13))
-        # v4.152.3：设置页内容总高超过可视区，但此前**没有滚动容器** ——
-        # QVBoxLayout 会把 4 张卡片**平均压缩**（实测每张只剩 117px，卡片内每个控件
-        # 被压到 5~6px、互相重叠；而 QComboBox 是 v=Fixed(32px) 不参与压缩，会溢出到
-        # 相邻行 —— 表现为「下拉挤在文字中间」）。
-        # 修法：套一层 QScrollArea（沿用本项目 `_build_tools_page` 的既有模式），
-        # 卡片按内容撑开，超出部分滚动，不再被压。
-        _scroll = QScrollArea()
-        _scroll.setWidgetResizable(True)
-        _scroll.setFrameShape(QFrame.NoFrame)
-        _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        _scroll.setStyleSheet(scroll_transparent())
-        _inner = QWidget()
-        _inner.setStyleSheet(f"background:{THEME['bg']};")
-        _scroll.setWidget(_inner)
-        _outer = QVBoxLayout(page)
-        _outer.setContentsMargins(0, 0, 0, 0)
-        _outer.setSpacing(0)
-        _outer.addWidget(_scroll, 1)
-        lay = QVBoxLayout(_inner)          # ← 原来直接挂 page 的 lay 现在挂到 inner
-        lay.setContentsMargins(32, 24, 32, 24)
-        lay.setSpacing(16)
-        head = QLabel("设置")
-        head.setStyleSheet(f"{label_title_xl()}background:transparent;")
-        lay.addWidget(head)
-        sub = QLabel("模型和密钥、干活方式、备份都在这一页，不用再开第二层。")
-        sub.setStyleSheet(f"{label_second()}background:transparent;")
-        lay.addWidget(sub)
+        # 长表单继续滚动；页头、边距和正文间距改由共享工作区骨架统一。
+        lay, _, _ = build_workspace_shell(
+            page, "设置", "模型和密钥、干活方式、备份都在这一页，不用再开第二层。",
+            scroll=True)
 
         info = QWidget()
         info.setObjectName("settingsInfoCard")
@@ -6065,7 +6038,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         # 视觉上就是「挤成一团」。这里给足宽度，并同时把 combo 的最小宽度降到 200。
         from theme_qss import label_body, label_micro, label_second
         popup, layout = self._popup_base(360)
-        self._popup_title(layout, "设置")
+        self._popup_title(layout, "模型与连接")
 
         # v4.112 P2：弹层组卡片统一风格（与设置页 info card 对齐：radius 10 + padding 16）
         group_style = (

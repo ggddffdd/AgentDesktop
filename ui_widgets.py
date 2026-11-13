@@ -11,7 +11,7 @@ _NoWheelCombo、_EdgeResizeFilter、TaskStatusStrip、RES_PRESETS、_NAV_ICONS�
 from PySide6.QtCore import (QAbstractNativeEventFilter, QByteArray, QPoint, QRect, Qt, Signal)
 from PySide6.QtGui import (QIcon, QPainter, QPixmap)
 from PySide6.QtSvg import (QSvgRenderer)
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QTextEdit, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QTextEdit, QVBoxLayout, QWidget)
 import ctypes
 import os
 import re
@@ -21,7 +21,7 @@ from config import (ensure_workspace)
 from datetime import (datetime)
 from empty_state import (empty_state)
 from pathlib import (Path)
-from theme_qss import (btn_dialog, label_body, label_micro, label_second, label_title, scroll_transparent)
+from theme_qss import (btn_dialog, btn_primary, label_body, label_micro, label_second, label_title, label_title_xl, scroll_transparent)
 from theme_tokens import THEME  # v4.216.0：THEME 唯一真源
 
 _WM_NCHITTEST = 0x0084
@@ -69,6 +69,85 @@ _NAV_ICONS = {
     "导出":   '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>',
     "设置":   '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
 }
+
+
+def build_workspace_shell(page, title, subtitle, *, scroll=False,
+                          action_text="", action_callback=None):
+    """创作 / 系统页的统一工作区骨架。
+
+    只负责页头、边距和滚动容器，不碰各页业务控件。返回
+    ``(正文布局, 滚动区或 None, 页头主按钮或 None)``。导演台这类底部有常驻
+    输入条的页面，可继续在 ``page.layout()`` 上追加底部控件。
+    """
+    outer = QVBoxLayout(page)
+    outer.setContentsMargins(0, 0, 0, 0)
+    outer.setSpacing(0)
+
+    scroll_area = None
+    if scroll:
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setStyleSheet(scroll_transparent())
+        body = QWidget()
+        body.setStyleSheet("background:transparent;")
+        scroll_area.setWidget(body)
+        outer.addWidget(scroll_area, 1)
+    else:
+        body = QWidget()
+        body.setStyleSheet("background:transparent;")
+        outer.addWidget(body, 1)
+
+    lay = QVBoxLayout(body)
+    lay.setContentsMargins(32, 28, 32, 24)
+    lay.setSpacing(16)
+
+    header = QWidget()
+    header.setObjectName("workspaceHeader")
+    header.setStyleSheet("background:transparent;")
+    header_lay = QHBoxLayout(header)
+    header_lay.setContentsMargins(0, 0, 0, 0)
+    header_lay.setSpacing(16)
+    text_col = QVBoxLayout()
+    text_col.setSpacing(6)
+    title_lbl = QLabel(title)
+    title_lbl.setObjectName("workspaceTitle")
+    title_lbl.setStyleSheet(label_title_xl() + "background:transparent;")
+    text_col.addWidget(title_lbl)
+    subtitle_lbl = QLabel(subtitle)
+    subtitle_lbl.setObjectName("workspaceSubtitle")
+    subtitle_lbl.setWordWrap(True)
+    subtitle_lbl.setStyleSheet(label_second() + "background:transparent;")
+    text_col.addWidget(subtitle_lbl)
+    header_lay.addLayout(text_col, 1)
+
+    action_btn = None
+    if action_text:
+        action_btn = QPushButton(action_text)
+        action_btn.setObjectName("workspaceAction")
+        action_btn.setFixedHeight(36)
+        action_btn.setCursor(Qt.PointingHandCursor)
+        action_btn.setStyleSheet(btn_primary())
+        if callable(action_callback):
+            action_btn.clicked.connect(action_callback)
+        header_lay.addWidget(action_btn, 0, Qt.AlignTop)
+    lay.addWidget(header)
+    return lay, scroll_area, action_btn
+
+
+def workspace_card():
+    """统一白卡容器：参数区 / 结果区共用，返回 (卡片, 纵向布局)。"""
+    card = QFrame()
+    card.setObjectName("workspaceCard")
+    card.setStyleSheet(
+        f"QFrame#workspaceCard{{background:{THEME['card']};"
+        f"border:1px solid {THEME['border']};border-radius:12px;}}")
+    lay = QVBoxLayout(card)
+    lay.setContentsMargins(20, 18, 20, 18)
+    lay.setSpacing(12)
+    return card, lay
+
+
 def _brief_err(exc, limit=160):
     """把异常压成一行短文本（v4.205.0：专供 toast 的 detail）。
 

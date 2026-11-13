@@ -152,6 +152,8 @@ want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         # v4.299.0：自定义头像模块（ui_widgets._make_avatar_label / ui 引用，
         # 漏包则头像区直接崩）。同样必须加进 want 才会被验证。
         "ui_avatar",
+        # v4.301.0：共享工作区骨架、任务页头主操作与导演台收起高度。
+        "ui_widgets", "automation_panel", "director_chat",
         ]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
@@ -339,11 +341,19 @@ def main():
                # 五个标记均已双向验过：当前 exe 常量表存在、v4.299.0 旧 exe 缺失。
                # 旧「输入你的需求，回车直接开始」已随新欢迎页删除，改钉搜索空态新文案。
                "_filter_sidebar_sessions", "_open_sidebar_session_menu",
-               "welcomeQuickBox", "输入你的需求，或拖入文件…", "没有匹配的对话"],
+               "welcomeQuickBox", "输入你的需求，或拖入文件…", "没有匹配的对话",
+               # v4.301.0：七页共享骨架与设置去重复标题。
+               "build_workspace_shell", "workspace_card", "模型与连接"],
         # v4.299.0：自定义头像模块的新字面量（旧包无此模块，全为 USE）。
         "ui_avatar": ["AvatarLabel", "avatar_pixmap", "set_custom_avatar",
                       "clear_custom_avatar", "default_avatar_pixmap",
                       "点击更换头像", "avatar.png"],
+        # v4.301.0：以下标记在 v4.300.0 旧 exe 常量表中均应缺失；
+        # 打包前必须先红，打包后转绿，防止拿旧构建冒充本版。
+        "ui_widgets": ["build_workspace_shell", "workspace_card",
+                       "workspaceHeader", "workspaceCard"],
+        "automation_panel": ["auto_new_btn"],
+        "director_chat": ["对话区默认 80px"],
         # v4.267.0：复杂度 / 工具意图的实现在 ui_routing，ui 上只剩薄包装。
         "ui_routing": ["route_judge", "is_complex_v2", "route_complex_v1",
                        "_needs_tool_intent", "is_non_action_message"],

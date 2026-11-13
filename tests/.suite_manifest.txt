@@ -217,3 +217,4 @@ test_worker_isolation_292.py
 test_workflow_fail_visibility_233.py
 test_workflow_state_294.py
 test_workspace_routing.py
+test_workspace_shell_301.py

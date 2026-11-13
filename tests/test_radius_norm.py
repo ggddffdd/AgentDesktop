@@ -37,7 +37,7 @@ def check(label, got, exp=True, extra=""):
 FILES = ['ui.py', 'director_panel.py', 'legion_ui.py', 'automation_panel.py',
          'digital_twin_panel.py', 'director_chat.py', 'legion_chat.py', 'onboarding.py',
          'skill_market_ui.py', 'skill_manager_ui.py', 'tool_manager_ui.py', 'main.py',
-         'chat_web.py', 'director_web.py']
+         'chat_web.py', 'director_web.py', 'ui_widgets.py']
 
 RE = re.compile(r'border-radius:\s*([0-9]+)px')
 
@@ -73,6 +73,10 @@ EXEMPT = {
     },
     'director_panel.py': {
         14: '28px 步骤徽章（胶囊 28/2）',
+        12: 'v4.301 工作区参数白卡（§4.6 指定）',
+    },
+    'ui_widgets.py': {
+        12: 'v4.301 workspaceCard 共享白卡（§4.6 指定）',
     },
     'automation_panel.py': {
         9: '自动化 badge（胶囊）',
@@ -124,6 +128,8 @@ def main():
         #   改到下面 2b 段去守（同一个语义，扫法不同）。
         ('chat_web.py', 14, 'Web 聊天气泡必须保持 14px 胶囊'),
         ('director_panel.py', 14, '步骤徽章必须保持 14px 胶囊'),
+        ('director_panel.py', 12, '导演参数白卡必须保持 §4.6 的 12px 圆角'),
+        ('ui_widgets.py', 12, '共享工作区白卡必须保持 §4.6 的 12px 圆角'),
         ('automation_panel.py', 9, '自动化 badge 必须保持 9px 胶囊'),
     ]
     for f, v, label in expect_present:

@@ -617,39 +617,28 @@ def _cancel_all_director_bg(app, reason="项目已重置", stage="reset"):
 # ---------- 面板构建 ----------
 def build_director_panel(app):
     from theme_qss import scroll_transparent
-    from theme_qss import label_body, label_micro, label_second, label_title_xl
+    from theme_qss import label_body, label_micro, label_second
+    from ui_widgets import build_workspace_shell
     page = app.director_page
 
-    # 主滚动区（防止内容溢出压到对话框）
-    scroll = QScrollArea()
-    scroll.setWidgetResizable(True)
-    scroll.setStyleSheet(scroll_transparent())
-    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-    body = QWidget()
-    lay = QVBoxLayout(body)
-    lay.setContentsMargins(24, 16, 24, 20)
-    lay.setSpacing(12)
-
-    head = QLabel("导演台 · video-agent")
-    head.setStyleSheet(label_title_xl())
-    lay.addWidget(head)
-    sub = QLabel("主题 → ①剧本（可改）→ ②人物三视图（角色锁定）→ ③分镜（逐镜可改）→ "
-                 "④关键帧+场景图 → ⑤逐镜生成（每镜可预览/单镜改）→ ⑥合成成片。"
-                 "每步都自动把人物三视图/关键帧作参照，减少人物与场景崩坏。")
-    sub.setStyleSheet(label_second())
-    lay.addWidget(sub)
+    # 正文统一滚动；底部导演对话仍挂在页外层，不随正文滚走。
+    lay, scroll, _ = build_workspace_shell(
+        page, "导演台 · video-agent",
+        "主题 → ①剧本（可改）→ ②人物三视图（角色锁定）→ ③分镜（逐镜可改）→ "
+        "④关键帧+场景图 → ⑤逐镜生成（每镜可预览/单镜改）→ ⑥合成成片。"
+        "每步都自动把人物三视图/关键帧作参照，减少人物与场景崩坏。", scroll=True)
 
     # 步骤指示器
     step_box = QWidget()
     step_lay = QHBoxLayout(step_box)
     step_lay.setContentsMargins(0, 0, 0, 0)
-    step_lay.setSpacing(8)
+    step_lay.setSpacing(4)
     app.director_step_labels = []
     for i, name in enumerate(STEP_LABELS):
         lb = _StepChip(app, i, f"{i} {name}")
         lb.setAlignment(Qt.AlignCenter)
         lb.setFixedHeight(28)
+        lb.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         lb.setStyleSheet(_step_style(i == 0))
         step_lay.addWidget(lb, 1)
         app.director_step_labels.append(lb)
@@ -663,8 +652,8 @@ def build_director_panel(app):
     # ---------- 参数区（步骤0可改，开始后禁用） ----------
     app.director_inputs = []
     params = QGroupBox("创作参数")
-    params.setStyleSheet(f"QGroupBox{{background:transparent;border:1px solid {THEME['border']};"
-                         f"border-radius:10px;padding:16px 16px 12px;font-size:13px;color:{THEME['text']};}}")
+    params.setStyleSheet(f"QGroupBox{{background:{THEME['card']};border:1px solid {THEME['border']};"
+                         f"border-radius:12px;padding:16px 16px 12px;font-size:13px;color:{THEME['text']};}}")
     pl = QVBoxLayout(params)
     pl.setSpacing(12)
 
@@ -937,6 +926,7 @@ def build_director_panel(app):
     sl.setSpacing(12)
     shint = QLabel("① 剧本已生成。可直接编辑下面文字，或点「✎ 重写剧本」→ 在下方「导演对话」里补一句意见。"
                    "满意后点「采用剧本」，也可以在对话框里直接说「采用」。")
+    shint.setWordWrap(True)
     shint.setStyleSheet(label_second())
     sl.addWidget(shint)
     app.director_story_edit = QTextEdit()
@@ -1020,6 +1010,7 @@ def build_director_panel(app):
     shhint = QLabel("② 分镜已生成。可逐镜修改「中文/英文提示词/运镜/台词/场景」，也可删镜或加镜；"
                     "满意后点「采用分镜 → 生成」。要让分镜整体重排，点「✎ 重排分镜」→ 在下方"
                     "「导演对话」里说怎么改（如「开头太慢，第一镜给个特写」）。")
+    shhint.setWordWrap(True)
     shhint.setStyleSheet(label_second())
     shl.addWidget(shhint)
     shots_scroll = QScrollArea()
@@ -1177,11 +1168,8 @@ def build_director_panel(app):
         f"border-radius:10px;padding:8px 12px;font-size:12px;color:{THEME['text']};}}")
     lay.addWidget(app.director_log)
 
-    # 把所有内容装入滚动区，挂到页面
-    scroll.setWidget(body)
-    outer = QVBoxLayout(page)
-    outer.setContentsMargins(0, 0, 0, 0)
-    outer.addWidget(scroll, 1)
+    # 页头与正文已由共享骨架挂到 page；底部导演对话保持常驻。
+    outer = page.layout()
 
     # v4.107：导演台底部常驻「导演对话」条——独立会话，主对话框零交集。
     # 局部懒导入，避免 director_chat → agent → ui 的循环依赖在模块加载期炸。
@@ -1328,15 +1316,15 @@ def resume_status_text(data):
 def _step_style(active, done=False, skipped=False):
     if active:
         return (f"QLabel{{background:{THEME['accent']};color:white;border-radius:14px;"
-                f"font-size:13px;font-weight:600;padding:0 12px;}}")
+                f"font-size:12px;font-weight:600;padding:0 6px;}}")
     if skipped:
         return (f"QLabel{{background:transparent;color:{THEME['dim']};border:1px dashed {THEME['border']};"
-                f"border-radius:14px;font-size:13px;padding:0 12px;}}")
+                f"border-radius:14px;font-size:12px;padding:0 6px;}}")
     if done:
         return (f"QLabel{{background:{THEME['card']};color:{THEME['live_green']};border:1px solid {THEME['border']};"
-                f"border-radius:14px;font-size:13px;padding:0 12px;}}")
+                f"border-radius:14px;font-size:12px;padding:0 6px;}}")
     return (f"QLabel{{background:transparent;color:{THEME['dim']};border:1px solid {THEME['border']};"
-            f"border-radius:14px;font-size:13px;padding:0 12px;}}")
+            f"border-radius:14px;font-size:12px;padding:0 6px;}}")
 
 
 class _StepChip(QLabel):

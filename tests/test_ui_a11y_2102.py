@@ -418,14 +418,14 @@ for fn in Q.SCAN_TARGETS:
             if props and ":" in sel:
                 pseudo.add(sel)
 
-check("D1 冻结锚点（test_tokens_200 B1）看不见 theme_qss 产出的交互态"
-      "（快照里没有 QPushButton:focus）—— 本事实必须显式记着",
-      "QPushButton:focus" not in pseudo,
-      "锚点已能覆盖 theme_qss 交互态 —— 请重估 C1 与 B1 的分工，"
-      "并把本判据改成「覆盖存在」而不是「覆盖缺失」")
+check("D1 冻结锚点（test_tokens_200 B1）已覆盖 theme_qss 产出的交互态"
+      "（快照里有 QPushButton:focus）",
+      "QPushButton:focus" in pseudo,
+      "v4.301 共享骨架调用 btn_primary 后，扫描链已能覆盖；不得再退回盲区")
 
-check("D2 上一条盲区由本套件 C1 补上（theme_qss 交互态另有守门人）",
-      not missing and bool(FOCUS_FUNCS), "C1 未覆盖")
+check("D2 C1 仍逐项验证焦点声明非空、含 border 且选择器顺序有效",
+      not missing and not empty and not borderless and not badorder
+      and bool(FOCUS_FUNCS), "C1 未覆盖")
 
 print(f"\n=== 汇总：{len(FAIL)} 条失败 ===")
 for f in FAIL:

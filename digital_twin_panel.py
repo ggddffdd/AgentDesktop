@@ -103,20 +103,14 @@ def _migrate_legacy_avatars(new_dir):
 
 
 def build_twin_panel(app):
-    from theme_qss import label_body, label_second, label_title_xl
+    from theme_qss import label_body, label_second, label_title
+    from ui_widgets import build_workspace_shell, workspace_card
     page = app.twin_page
-    lay = QVBoxLayout(page)
-    lay.setContentsMargins(32, 24, 32, 24)
-    lay.setSpacing(16)
-
-    head = QLabel("数字人分身 · 我自己")
-    head.setStyleSheet(label_title_xl())
-    lay.addWidget(head)
-    sub = QLabel("本人形象 + 口播台词 → 数字人口播视频（Agnes 直连，免费）。"
-                 "长台词自动分段生成并拼接，段间用上一片段末帧接力（脸不跳变）；"
-                 "成片自动烧录「AI 生成」标识。")
-    sub.setStyleSheet(label_second())
-    lay.addWidget(sub)
+    lay, _, _ = build_workspace_shell(
+        page, "数字人分身 · 我自己",
+        "本人形象 + 口播台词 → 数字人口播视频（Agnes 直连，免费）。"
+        "长台词自动分段生成并拼接，段间用上一片段末帧接力（脸不跳变）；"
+        "成片自动烧录「AI 生成」标识。", scroll=True)
 
     # ---------------- 本人形象库 ----------------
     avatar_box = QGroupBox("本人形象（参考图）")
@@ -407,13 +401,25 @@ def build_twin_panel(app):
     _refresh_twin_qc_banner(app)
 
     # ---------------- 结果列表 ----------------
+    result_card, result_lay = workspace_card()
+    result_top = QHBoxLayout()
+    result_title = QLabel("生成结果")
+    result_title.setStyleSheet(label_title())
+    result_top.addWidget(result_title)
+    result_top.addStretch(1)
+    result_hint = QLabel("双击结果播放视频")
+    result_hint.setStyleSheet(label_second())
+    result_top.addWidget(result_hint)
+    result_lay.addLayout(result_top)
     app.twin_paths = []
     app.twin_result = QListWidget()
+    app.twin_result.setMinimumHeight(120)
     app.twin_result.setStyleSheet(
         f"QListWidget{{background:{THEME['card']};border:1px solid {THEME['border']};"
         f"border-radius:10px;padding:8px;font-size:13px;color:{THEME['text']};}}")
     app.twin_result.itemDoubleClicked.connect(lambda it: _twin_open_result(app, it))
-    lay.addWidget(app.twin_result, 1)
+    result_lay.addWidget(app.twin_result, 1)
+    lay.addWidget(result_card, 1)
 
     # 若尚未添加任何本人照片，给个引导
     if not app.twin_selected_portrait:

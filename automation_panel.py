@@ -287,7 +287,8 @@ class TaskEditDialog(QDialog):
 
 def build_automation_panel(app):
     from theme_qss import scroll_transparent
-    from theme_qss import label_second, label_title_xl
+    from theme_qss import label_second
+    from ui_widgets import build_workspace_shell
     page = app.automation_page
     # 清空旧布局（若有）
     if page.layout() is not None:
@@ -297,29 +298,12 @@ def build_automation_panel(app):
             if w:
                 w.deleteLater()
 
-    lay = QVBoxLayout(page)
-    lay.setContentsMargins(32, 24, 32, 24)
-    lay.setSpacing(16)
-
-    head = QLabel("⏰ 自动化任务")
-    head.setStyleSheet(label_title_xl())
-    lay.addWidget(head)
-
-    sub = QLabel("定时提醒 / 定时执行任务。到点后：提醒会弹窗，执行任务会自动交给 Agent 在后台跑（需 App 保持运行）。")
-    sub.setWordWrap(True)
-    sub.setStyleSheet(label_second())
-    lay.addWidget(sub)
-
-    # 新建按钮
-    top_row = QHBoxLayout()
-    new_btn = QPushButton("＋ 新建任务")
-    new_btn.setFixedHeight(36)
-    new_btn.setCursor(Qt.PointingHandCursor)
-    new_btn.setStyleSheet(_PRIMARY_QSS)
+    lay, _, new_btn = build_workspace_shell(
+        page, "自动化任务",
+        "定时提醒 / 定时执行任务。到点后：提醒会弹窗，执行任务会自动交给 Agent 在后台跑（需 App 保持运行）。",
+        action_text="＋ 新建任务")
     new_btn.clicked.connect(lambda: _open_edit(app, None))
-    top_row.addWidget(new_btn)
-    top_row.addStretch(1)
-    lay.addLayout(top_row)
+    app.auto_new_btn = new_btn
 
     # 列表滚动区
     scroll = QScrollArea()
@@ -389,6 +373,9 @@ def _refresh_list(app):
             w.deleteLater()
 
     tasks = st.list_all()
+    # 空态已有居中的新建按钮，页头入口此时隐藏，避免同一屏重复两个主操作。
+    if getattr(app, "auto_new_btn", None) is not None:
+        app.auto_new_btn.setVisible(bool(tasks))
     if not tasks:
         # v4.206.0：走 empty_state 组件（DESIGN.md §12）。**有意的视觉变化**：
         # 一行居中灰字 → 徽章 + 主/副文案 + 行动按钮。按钮直接开新建对话框，

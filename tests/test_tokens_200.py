@@ -165,7 +165,8 @@ if os.path.isfile(FIXTURE):
             ("", '{"QPushButton": "hover"}'): 2,
             ("", '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "10px"}'): 1,
             ("", '{"color": "#1A73E8", "font-size": "12px"}'): 2,
-            ("", '{"color": "#202124", "font-size": "15px", "font-weight": "600"}'): 3,
+            # v4.301 生图/生视频新增两个结果标题，抵消原净迁出 3 中的两条，净迁出为 1。
+            ("", '{"color": "#202124", "font-size": "15px", "font-weight": "600"}'): 1,
             ("", '{"color": "#34A853", "font-size": "12px"}'): 1,
             # v4.264 有一处 12px 次级字留在 ui.py，净迁出是 2。
             ("", '{"color": "#5F6368", "font-size": "12px"}'): 2,
@@ -307,6 +308,34 @@ if os.path.isfile(FIXTURE):
         }),
     }
 
+    # v4.301.0（布局第 3 波）：七页页头与滚动骨架收口到 ui_widgets，
+    # 工具/任务主操作迁入共享页头。以下是旧页头、重复按钮和独立滚动区撤下后的
+    # 净减少；逐条由冻结基线多重集计算，未重拍历史基线。
+    KNOWN_MIGRATIONS_301 = {
+        "automation_panel.py": collections.Counter({
+            ('', '{"color": "#202124", "font-size": "20px", "font-weight": "700"}'): 1,
+            ('', '{"color": "#5F6368", "font-size": "12px"}'): 1,
+        }),
+        "digital_twin_panel.py": collections.Counter({
+            ('', '{"color": "#202124", "font-size": "20px", "font-weight": "700"}'): 1,
+        }),
+        "director_panel.py": collections.Counter({
+            ('QScrollArea', '{"background": "transparent", "border": "none"}'): 1,
+            ('', '{"color": "#202124", "font-size": "20px", "font-weight": "700"}'): 1,
+            ('QGroupBox', '{"background": "transparent", "border": "1px solid #E5E7EB", "border-radius": "10px", "color": "#202124", "font-size": "13px", "padding": "16px 16px 12px"}'): 1,
+        }),
+        "ui.py": collections.Counter({
+            ('', '{"color": "#5F6368", "font-size": "12px"}'): 1,
+            ('QScrollArea', '{"background": "transparent", "border": "none"}'): 1,
+            ('', '{"QPushButton": "hover"}'): 1,
+            ('QPushButton', '{"background": "#1A73E8", "border": "none", "border-radius": "8px", "color": "#FFFFFF", "font-size": "13px", "font-weight": "500", "padding": "0 16px"}'): 1,
+            ('QPushButton:hover', '{"background": "#1765CC"}'): 1,
+            ('', '{"background": "#F7F8FC"}'): 1,
+            ('', '{"color": "#202124", "font-size": "20px", "font-weight": "700"}'): 3,
+            ('', '{"background": "transparent", "color": "#202124", "font-size": "20px", "font-weight": "700"}'): 1,
+        }),
+    }
+
     KNOWN_ADDITIONS = {
         "automation_panel.py": collections.Counter({
             ("QCheckBox", '{"color": "#202124", "font-size": "13px"}'): 2,
@@ -323,9 +352,8 @@ if os.path.isfile(FIXTURE):
                  ' "border-radius": "8px", "color": "#9A6700",'
                  ' "font-size": "12px", "font-weight": "600",'
                  ' "padding": "6px 10px"}'): 1,
-            # v4.270.0：需求卡多一行旁白说明，复用 label_second()（12px dim），
-            # 不是新配色。条数写死 1，再多挂一份照样红。
-            ('', '{"color": "#5F6368", "font-size": "12px"}'): 1,
+            # v4.270 需求卡旁白说明仍在；v4.301 共享页头替换旧导演台副标题后，
+            # 相对冻结基线的净新增回到 0，旧 +1 登记同步撤掉，防止过期豁免。
         }),
         "digital_twin_panel.py": collections.Counter({
             ('', '{"background": "#FFF4D6", "border": "1px solid #E8C36A",'
@@ -406,7 +434,8 @@ if os.path.isfile(FIXTURE):
             ('', '{"background": "transparent", "border": "none", "color": "#202124", "font-size": "13px", "font-weight": "600"}'): 1,
             ('', '{"background": "transparent", "border": "none", "color": "#6B7280", "font-size": "12px"}'): 1,
             ('', '{"background": "transparent", "color": "#1A73E8", "font-size": "13px", "font-weight": "600"}'): 1,
-            ('', '{"background": "transparent", "color": "#5F6368", "font-size": "12px"}'): 2,
+            # v4.301 工具页旧副标题撤下后，这条透明灰字的净新增由 2 调整为 1。
+            ('', '{"background": "transparent", "color": "#5F6368", "font-size": "12px"}'): 1,
             ('', '{"background": "transparent", "color": "#6B7280", "font-size": "12px", "font-weight": "600"}'): 1,
             ('', '{"background": "transparent", "color": "#6B7280", "font-size": "12px", "padding": "12px"}'): 1,
             ('', '{"background": "transparent", "color": "#6B7280", "font-size": "12px", "padding-left": "12px", "padding-top": "2px"}'): 1,
@@ -428,6 +457,31 @@ if os.path.isfile(FIXTURE):
         }),
     }
 
+    # v4.301.0 新增共享工作区页头、白卡和结果标题；导演台参数卡有意改为
+    # 白底 12px 圆角。所有颜色/字号仍来自既有 THEME/token，数量写死防继续膨胀。
+    KNOWN_ADDITIONS_301 = {
+        "digital_twin_panel.py": collections.Counter({
+            ('', '{"color": "#202124", "font-size": "15px", "font-weight": "600"}'): 1,
+        }),
+        "director_panel.py": collections.Counter({
+            ('QGroupBox', '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "12px", "color": "#202124", "font-size": "13px", "padding": "16px 16px 12px"}'): 1,
+        }),
+        "ui_widgets.py": collections.Counter({
+            ('', '{"background": "transparent"}'): 3,
+            ('', '{"background": "transparent", "color": "#202124", "font-size": "20px", "font-weight": "700"}'): 1,
+            ('', '{"background": "transparent", "color": "#5F6368", "font-size": "12px"}'): 1,
+            ('QFrame#workspaceCard', '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "12px"}'): 1,
+            ('QScrollArea', '{"background": "transparent", "border": "none"}'): 1,
+            ('QPushButton', '{"background": "#1A73E8", "border": "none", "border-radius": "10px", "color": "#FFFFFF", "font-size": "13px", "font-weight": "600", "padding": "0 16px"}'): 1,
+            ('', '{"QPushButton": "focus"}'): 1,
+            ('QPushButton:focus', '{"border": "2px solid #FFFFFF"}'): 1,
+            ('', '{"QPushButton": "hover"}'): 1,
+            ('QPushButton:hover', '{"background": "#1765CC"}'): 1,
+            ('', '{"QPushButton": "disabled"}'): 1,
+            ('QPushButton:disabled', '{"background": "#A6C4F0", "color": "#FFFFFF"}'): 1,
+        }),
+    }
+
     files = sorted(set(before) | set(after))
     for fn in files:
         cb = collections.Counter(before.get(fn, []))
@@ -438,10 +492,12 @@ if os.path.isfile(FIXTURE):
                  + KNOWN_MIGRATIONS_216.get(fn, collections.Counter())
                  + KNOWN_MIGRATIONS_264.get(fn, collections.Counter())
                  + KNOWN_MIGRATIONS_299.get(fn, collections.Counter())
-                 + KNOWN_MIGRATIONS_300.get(fn, collections.Counter()))
+                 + KNOWN_MIGRATIONS_300.get(fn, collections.Counter())
+                 + KNOWN_MIGRATIONS_301.get(fn, collections.Counter()))
         # known_add 通道：既吸收「同词条 +1 实例」，也吸收 v4.216 搬入侧（新文件词条）
         known_add = (KNOWN_ADDITIONS.get(fn, collections.Counter())
                      + KNOWN_ADDITIONS_300.get(fn, collections.Counter())
+                     + KNOWN_ADDITIONS_301.get(fn, collections.Counter())
                      + KNOWN_MIGRATION_TARGETS_216.get(fn, collections.Counter()))
         # 扣掉已登记的有意迁移后，剩下的差异必须为零
         rest_before = cb - ca - known
@@ -612,8 +668,8 @@ def _scan_scroll(src_dir):
 
 _raw_scroll, _n_scroll = _scan_scroll(ROOT)
 check("F1 透明滚动区裸写残留 == 0", _raw_scroll == 0, f"实测残留 {_raw_scroll}")
-# v4.300.0：侧栏功能导航也纳入统一透明滚动区，13 → 14。
-check("F2 scroll_transparent 调用点 == 14", _n_scroll == 14, f"实测 {_n_scroll}")
+# v4.301.0：导演台/设置两处独立滚动区收进共享骨架（14 - 2 + 1 = 13）。
+check("F2 scroll_transparent 调用点 == 13", _n_scroll == 13, f"实测 {_n_scroll}")
 _sr = dict(Q.iter_rules(tq.scroll_transparent())).get("QScrollArea", {})
 check("F3 scroll_transparent 输出属性集合正确",
       frozenset(_sr.items())
