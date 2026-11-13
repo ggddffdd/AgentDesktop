@@ -53,6 +53,13 @@ class ChatSessionMixin(object):
                 if sid == active_sid:
                     idx = i
             self.session_combo.setCurrentIndex(idx)
+            # v4.300.0：会话下拉退为兼容数据源，可见标题同步到对话页顶栏。
+            title_btn = getattr(self, "chat_session_title", None)
+            if title_btn is not None:
+                active = self.store.active()
+                title = (getattr(active, "title", "") or "新会话")
+                display = title if len(title) <= 28 else title[:27] + "…"
+                title_btn.setText(display + "  ▾")
         finally:
             self.session_combo.blockSignals(False)
 

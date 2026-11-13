@@ -331,10 +331,15 @@ def main():
                "guard_tool_choice",
                # v4.299.0：界面美化第 1 波（大输入框 + 自定义头像接线 + 顶栏精简），
                # 均经旧 exe 常量表双向验过缺失（剔除「删除当前对话」假绿）。
-               "welcome_input", "_welcome_quick_send", "输入你的需求，回车直接开始",
+               "welcome_input", "_welcome_quick_send",
                "更换头像", "恢复默认头像", "重命名对话",
                "_change_user_avatar", "_refresh_user_avatars", "_sidebar_avatar",
-               "drop_shadow"],
+               "drop_shadow",
+               # v4.300.0：侧栏会话管理 + 新欢迎页真的进包。
+               # 五个标记均已双向验过：当前 exe 常量表存在、v4.299.0 旧 exe 缺失。
+               # 旧「输入你的需求，回车直接开始」已随新欢迎页删除，改钉搜索空态新文案。
+               "_filter_sidebar_sessions", "_open_sidebar_session_menu",
+               "welcomeQuickBox", "输入你的需求，或拖入文件…", "没有匹配的对话"],
         # v4.299.0：自定义头像模块的新字面量（旧包无此模块，全为 USE）。
         "ui_avatar": ["AvatarLabel", "avatar_pixmap", "set_custom_avatar",
                       "clear_custom_avatar", "default_avatar_pixmap",

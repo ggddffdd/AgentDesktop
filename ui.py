@@ -819,12 +819,26 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
 
         # 会话头
         header = QWidget()
-        header.setFixedHeight(48)
+        header.setFixedHeight(56)
         header.setStyleSheet(f"background:{THEME['bg']};border-bottom:1px solid {THEME['border']};")
         hb = QHBoxLayout(header)
-        hb.setContentsMargins(8, 0, 8, 0)
+        hb.setContentsMargins(16, 0, 12, 0)
         hb.setSpacing(8)
 
+        self.chat_session_title = QPushButton()
+        self.chat_session_title.setFixedHeight(34)
+        self.chat_session_title.setMinimumWidth(160)
+        self.chat_session_title.setMaximumWidth(360)
+        self.chat_session_title.setCursor(Qt.PointingHandCursor)
+        self.chat_session_title.setToolTip("打开完整会话管理")
+        self.chat_session_title.setStyleSheet(
+            f"QPushButton{{background:transparent;border:none;color:{THEME['text']};"
+            f"font-size:{THEME['font_title']};font-weight:600;text-align:left;padding:0 4px;}}"
+            f"QPushButton:hover{{color:{THEME['accent']};}}")
+        self.chat_session_title.clicked.connect(self._open_session_manager)
+        hb.addWidget(self.chat_session_title)
+
+        # 旧下拉仍作为兼容数据源保留（既有会话测试/外部调用不破坏），但不占顶栏。
         self.session_combo = _NoWheelCombo()
         self.session_combo.setFixedHeight(32)
         self.session_combo.setMinimumWidth(160)
@@ -835,22 +849,10 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             f"QComboBox:focus{{border:1px solid {THEME['accent']};}}"
             f"QComboBox::drop-down{{border:none;width:20px;}}")
         self.session_combo.currentIndexChanged.connect(self._on_session_combo)
-        hb.addWidget(self.session_combo)
+        self.session_combo.setVisible(False)
 
-        new_btn = QPushButton("＋")
-        new_btn.setFixedSize(32, 32)
-        new_btn.setToolTip("新建对话")
-        new_btn.setStyleSheet(
-            f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
-            f"border-radius:8px;padding:0;font-size:15px;font-weight:500;}}"
-            f"QPushButton:hover{{background:{THEME['accent_hover']};}}")
-        new_btn.clicked.connect(self._new_session)
-        hb.addWidget(new_btn)
-
-        # v4.299.0：顶栏精简——「重命名 / 删除」两个 32×32 小按钮从顶栏撤下，
-        # 收进右侧「⋯」溢出菜单（_open_chat_overflow）。顶栏只留
-        # 会话下拉 + ＋新建 + 会话管理 + ⋯，不再一排零碎图标。
-        # 两个动作的功能入口不变（会话管理对话框内也有重命名/删除）。
+        # v4.300.0：新建与历史会话归侧栏；顶栏只留当前标题、会话管理和更多。
+        # 重命名/删除仍在溢出菜单与侧栏右键中，功能入口不减少。
 
         mgr_btn = QPushButton()
         mgr_btn.setFixedSize(32, 32)
@@ -3454,20 +3456,9 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         tb_layout.setContentsMargins(16, 0, 12, 0)
         tb_layout.setSpacing(12)
 
-        # ---- 左侧 Logo + 应用名 ----
-        logo_icon = QLabel()
-        logo_icon.setFixedSize(28, 28)
-        logo_icon.setScaledContents(True)
-        logo_icon.setPixmap(QPixmap(resource_path("images/logo.png")).scaled(
-            28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        tb_layout.addWidget(logo_icon)
-        logo_name = QLabel("小臭玩AI")
-        logo_name.setStyleSheet(
-            f"font-size:16px;font-weight:600;color:{THEME['text']};background:transparent;")
-        logo_name.setCursor(Qt.PointingHandCursor)
-        logo_name.mousePressEvent = lambda e: self._go_home()
-        tb_layout.addWidget(logo_name)
-        tb_layout.addSpacing(16)
+        # v4.300：品牌只保留侧栏一处；顶栏不再重复 Logo/应用名。
+        # 左右 stretch 让当前对话搜索在可用区域内居中，窗口按钮仍固定右侧。
+        tb_layout.addStretch(1)
 
         # ---- 搜索框（可伸缩：200~480，宽屏顶满 480，窄窗不再挤爆顶栏）----
         # v4.199.0：原来是 setFixedSize(480,36)。窗口一窄，Logo/头像/三个系统按钮
@@ -3566,13 +3557,12 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
 
     # ============ 欢迎页 ============
     def _build_welcome_page(self):
-        """构建欢迎页：问候语 + 标题 + 4 张能力卡片 + 最近对话列表（含摘要）。"""
-        from theme_qss import label_second, label_title, scroll_transparent
+        """欢迎页：居中问候 + 大输入区 + 四个轻建议；最近会话归侧栏。"""
+        from theme_qss import label_body, label_second, scroll_transparent, drop_shadow
         wl = QVBoxLayout(self.welcome_page)
-        wl.setContentsMargins(32, 36, 32, 28)
+        wl.setContentsMargins(24, 20, 24, 20)
         wl.setSpacing(0)
 
-        # 滚动区域包裹
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -3580,10 +3570,10 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         scroll_content = QWidget()
         scroll_content.setStyleSheet("background:transparent;")
         scl = QVBoxLayout(scroll_content)
-        scl.setContentsMargins(0, 0, 0, 0)
+        scl.setContentsMargins(24, 24, 24, 24)
         scl.setSpacing(0)
+        scl.addStretch(1)
 
-        # ---- 问候语 ----
         hour = datetime.now().hour
         if hour < 6:
             greeting_text = "夜深了"
@@ -3596,45 +3586,67 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         else:
             greeting_text = "晚上好"
 
-        greeting = QLabel(f"{greeting_text}")
-        greeting.setStyleSheet(
-            label_title(color_key="accent") + "margin-bottom:4px;")
-        scl.addWidget(greeting)
+        badge = QLabel(f"{APP_VERSION} · 你的本地 AI 搭档")
+        badge.setAlignment(Qt.AlignCenter)
+        badge.setStyleSheet(
+            f"color:{THEME['accent']};background:{THEME['card_blue_bg']};"
+            f"border-radius:10px;padding:6px 12px;"
+            + label_second(color_key="accent", weight="semibold"))
+        scl.addWidget(badge, 0, Qt.AlignCenter)
+        scl.addSpacing(18)
 
-        # ---- 标题 ----
-        title = QLabel("今天想做什么？")
+        title = QLabel(f"{greeting_text}，大哥。\n今天想做点什么？")
+        title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet(
-            f"font-size:28px;font-weight:700;color:{THEME['text']};"
-            f"letter-spacing:-0.5px;margin-bottom:24px;")
+            f"font-size:32px;font-weight:700;color:{THEME['text']};"
+            f"letter-spacing:-0.5px;line-height:1.3;")
         scl.addWidget(title)
+        scl.addSpacing(10)
+        subtitle = QLabel("写文案、对表格、生图、跑军团 —— 一句话就行。")
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet(label_second() + "background:transparent;")
+        scl.addWidget(subtitle)
+        scl.addSpacing(28)
 
-        # ---- 居中大输入框（v4.299.0：ChatGPT 式快速开始）----
-        # 放在标题正下方、能力卡片之上：一句话回车直接开工，不用再先切到对话页。
-        # 发送复用对话页的 input_box + send()，不新增第二条发送链。
+        # 大输入区：上行输入，下行附件/路由/发送；只保留一条真实发送链。
         quick_center = QHBoxLayout()
         quick_center.setContentsMargins(0, 0, 0, 0)
         quick_center.addStretch(1)
-        quick_box = QWidget()
+        quick_box = QFrame()
+        quick_box.setObjectName("welcomeQuickBox")
+        quick_box.setMinimumWidth(320)
         quick_box.setMaximumWidth(680)
         quick_box.setStyleSheet(
-            f"QWidget{{background:{THEME['card']};border:1px solid {THEME['border']};"
-            f"border-radius:16px;}}")
-        # Qt 无 CSS box-shadow —— 柔和阴影用统一 helper 只加在这个关键输入框上。
-        try:
-            from theme_qss import drop_shadow
-            drop_shadow(quick_box)
-        except Exception:
-            pass
-        qb_lay = QHBoxLayout(quick_box)
-        qb_lay.setContentsMargins(18, 4, 8, 4)
+            f"QFrame#welcomeQuickBox{{background:{THEME['card']};"
+            f"border:1px solid {THEME['border']};border-radius:16px;}}")
+        drop_shadow(quick_box)
+        qb_lay = QVBoxLayout(quick_box)
+        qb_lay.setContentsMargins(18, 12, 18, 12)
         qb_lay.setSpacing(8)
         self.welcome_input = QLineEdit()
-        self.welcome_input.setPlaceholderText("输入你的需求，回车直接开始…")
+        self.welcome_input.setPlaceholderText("输入你的需求，或拖入文件…")
         self.welcome_input.setStyleSheet(
             f"QLineEdit{{background:transparent;border:none;font-size:15px;"
-            f"color:{THEME['text']};padding:12px 0;}}")
+            f"color:{THEME['text']};padding:10px 0;}}")
         self.welcome_input.returnPressed.connect(self._welcome_quick_send)
-        qb_lay.addWidget(self.welcome_input, 1)
+        qb_lay.addWidget(self.welcome_input)
+
+        quick_bar = QHBoxLayout()
+        quick_bar.setSpacing(8)
+        self.welcome_attach_btn = QPushButton("＋ 附件")
+        self.welcome_attach_btn.setFixedHeight(32)
+        self.welcome_attach_btn.setCursor(Qt.PointingHandCursor)
+        self.welcome_attach_btn.setStyleSheet(
+            f"QPushButton{{background:{THEME['panel2']};color:{THEME['dim']};"
+            f"border:none;border-radius:8px;padding:0 12px;font-size:{THEME['font_second']};}}"
+            f"QPushButton:hover{{background:{THEME['card_blue_bg']};color:{THEME['accent']};}}")
+        self.welcome_attach_btn.clicked.connect(self._on_attach_file)
+        quick_bar.addWidget(self.welcome_attach_btn)
+        quick_bar.addStretch(1)
+        route_lbl = QLabel("Auto · 智能路由")
+        route_lbl.setAlignment(Qt.AlignCenter)
+        route_lbl.setStyleSheet(label_second() + "background:transparent;")
+        quick_bar.addWidget(route_lbl)
         quick_send = QPushButton("↑")
         quick_send.setFixedSize(34, 34)
         quick_send.setCursor(Qt.PointingHandCursor)
@@ -3644,13 +3656,16 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             f"border-radius:17px;font-size:{THEME['font_icon_btn']};font-weight:600;}}"
             f"QPushButton:hover{{background:{THEME['accent_hover']};}}")
         quick_send.clicked.connect(self._welcome_quick_send)
-        qb_lay.addWidget(quick_send)
-        quick_center.addWidget(quick_box, 1)
+        quick_bar.addWidget(quick_send)
+        qb_lay.addLayout(quick_bar)
+        # 输入卡权重 4、两侧各 1：宽屏可达到设计的 680px，
+        # 不再被三个等权 stretch 挤成可用宽度的三分之一。
+        quick_center.addWidget(quick_box, 4)
         quick_center.addStretch(1)
         scl.addLayout(quick_center)
-        scl.addSpacing(30)
+        scl.addSpacing(24)
 
-        # ---- 4 张能力卡片 ----
+        # ---- 4 个轻建议（保留 card_data / prompts 的既有契约）----
         # v4.199.0：换掉旧的「写文章 / 写代码 / 做设计」。那三张的问题是
         # **说的事和这个产品没关系** —— 它们回答的是「AI 能干什么」这种通用问题，
         # 而这个产品真正需要首页承担的，是「能力发现」：
@@ -3661,281 +3676,165 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         cards_row.setSpacing(14)
 
         card_data = [
-            ("blue",   "文档", "文件对账",
-             "上传表格或文档，核对差异、出具报告"),
-            ("orange", "生图", "生成配图",
-             "一句话描述画面，直接出图"),
-            ("purple", "数字人", "数字人视频",
-             "一张照片配台词，生成口播视频"),
-            ("green",  "军团", "军团编排",
-             "多 Agent 分工，自动跑完一条流水线"),
+            ("blue",   "文档", "文件对账", "核对表格差异"),
+            ("orange", "生图", "生成配图", "一句话出图"),
+            ("purple", "数字人", "数字人视频", "照片配台词"),
+            ("green",  "军团", "军团编排", "多 Agent 流水线"),
         ]
 
         self.welcome_cards = []
         for color_key, icon_str, card_title, card_desc in card_data:
             card = QPushButton()
-            # 最小宽 200 → 176：4 张并排，窗口约 960px 起才不会被挤（4×176+3×14=746）。
-            card.setMinimumSize(176, 150)
-            card.setMaximumHeight(158)
+            card.setMinimumSize(180, 52)
+            card.setFixedHeight(52)
             card.setCursor(Qt.PointingHandCursor)
-
-            # 卡片配色
-            bg_key = f"card_{color_key}_bg"
-            icon_key = f"card_{color_key}_icon"
-            card_bg = THEME.get(bg_key, THEME["surface_raised"])
-            card_icon_color = THEME.get(icon_key, THEME["accent"])
-            # 图标底座：取图标色叠 12% 透明度（浅色底 + 深色图标，柔和色块）
+            card.setToolTip(card_title + " · " + card_desc)
+            card_icon_color = THEME.get(f"card_{color_key}_icon", THEME["accent"])
             _ic = QColor(card_icon_color)
             chip_bg = (f"rgba({_ic.red()},{_ic.green()},{_ic.blue()},0.12)"
-                       if _ic.isValid() else card_bg)
-
+                       if _ic.isValid() else THEME["card_blue_bg"])
             card.setStyleSheet(
-                f"QPushButton{{"
-                f"background:{card_bg};"
-                f"border:1px solid {THEME['border']};"
-                f"border-radius:14px;"
-                f"text-align:left;"
-                f"}}"
-                f"QPushButton:hover{{"
-                f"border-color:{card_icon_color};"
-                f"background:{THEME['elev']};"
-                f"margin:-2px;"
-                f"}}"
-            )
+                f"QPushButton{{background:{THEME['card']};"
+                f"border:1px solid {THEME['border']};border-radius:10px;text-align:left;}}"
+                f"QPushButton:hover{{border-color:{THEME['accent']};"
+                f"background:{THEME['card_blue_bg']};}}")
 
-            # 卡片内部布局。
-            # 🔇 样式表的 padding 只管按钮自身文字，不约束内部布局——
-            # margins 必须显式给足，否则图标/标题/描述全怼在左上角挤成一团。
-            card_lay = QVBoxLayout(card)
-            card_lay.setContentsMargins(20, 16, 16, 16)
-            card_lay.setSpacing(0)
+            card_lay = QHBoxLayout(card)
+            card_lay.setContentsMargins(12, 6, 10, 6)
+            card_lay.setSpacing(8)
+            card_icon_lbl = QLabel()
+            card_icon_lbl.setFixedSize(28, 28)
+            card_icon_lbl.setAlignment(Qt.AlignCenter)
+            card_icon_lbl.setPixmap(_nav_icon_pixmap(icon_str, card_icon_color, 22, device_ratio=1.0))
+            card_icon_lbl.setStyleSheet(f"background:{chip_bg};border-radius:8px;border:none;")
+            card_lay.addWidget(card_icon_lbl, 0, Qt.AlignVCenter)
 
-            # 图标底座（圆角色块，图标居中）——比裸图标更有层次
-            chip = QLabel()
-            chip.setFixedSize(36, 36)
-            chip.setAlignment(Qt.AlignCenter)
-            # v4.288.4：_nav_icon_pixmap 已修 DPR（物理2x→逻辑=size），此处沿用
-            # 历史视觉（36 逻辑铺满 36 底座）→ 显式 size=36 + ratio=1.0 保形
-            chip.setPixmap(_nav_icon_pixmap(icon_str, card_icon_color, 36, device_ratio=1.0))
-            chip.setStyleSheet(
-                f"background:{chip_bg};border-radius:8px;border:none;")
-            card_lay.addWidget(chip)
-            card_lay.addSpacing(14)
-
+            # 标题与短说明同一行：是轻建议，不再渲染成两行的迷你说明书。
+            txt_row = QHBoxLayout()
+            txt_row.setContentsMargins(0, 0, 0, 0)
+            txt_row.setSpacing(6)
             title_lbl = QLabel(card_title)
             title_lbl.setStyleSheet(
-                f"font-size:16px;font-weight:600;color:{THEME['text']};"
-                f"background:transparent;border:none;")
-            card_lay.addWidget(title_lbl)
-            card_lay.addSpacing(7)
-
-            desc_lbl = QLabel(card_desc)
-            desc_lbl.setWordWrap(True)
+                label_body(weight="semibold") + "background:transparent;border:none;")
+            txt_row.addWidget(title_lbl)
+            desc_lbl = QLabel("· " + card_desc)
             desc_lbl.setStyleSheet(
-                f"font-size:12px;color:{THEME['dim']};"
+                f"font-size:{THEME['font_second']};color:{THEME['dim']};"
                 f"background:transparent;border:none;")
-            card_lay.addWidget(desc_lbl)
-            card_lay.addStretch()
-
+            txt_row.addWidget(desc_lbl, 1)
+            card_lay.addLayout(txt_row, 1)
             card.clicked.connect(self._on_welcome_card)
             self.welcome_cards.append(card)
-            col = QVBoxLayout()
-            col.setSpacing(6)
-            col.addWidget(card)
-            _page = ui_focus.WELCOME_PAGE_BY_TITLE.get(card_title)
-            if _page:
-                page_btn = QPushButton("打开%s" % _page)
-                page_btn.setFixedHeight(32)
-                page_btn.setCursor(Qt.PointingHandCursor)
-                page_btn.setToolTip("仍可进入%s专用页" % _page)
-                page_btn.setStyleSheet(
-                    f"QPushButton{{background:transparent;border:none;color:{THEME['accent']};"
-                    f"font-size:12px;text-align:left;padding:0 4px;}}"
-                    f"QPushButton:hover{{color:{THEME['accent_hover']};}}")
-                page_btn.clicked.connect(lambda _, lab=_page: self._open_nav_label(lab))
-                col.addWidget(page_btn)
-            cards_row.addLayout(col, stretch=1)
+            cards_row.addWidget(card, 1)
 
         scl.addLayout(cards_row)
-        scl.addSpacing(32)
-
-        # ---- 最近对话区域 ----
-        recent_header = QHBoxLayout()
-        recent_label = QLabel("最近对话")
-        recent_label.setStyleSheet(
-            label_second(color_key="faint", weight="semibold") + "text-transform:uppercase;letter-spacing:0.5px;")
-        recent_header.addWidget(recent_label)
-        recent_header.addStretch(1)
-        view_all = QLabel("查看全部")
-        view_all.setStyleSheet(
-            label_second(color_key="accent", weight="normal"))
-        view_all.setCursor(Qt.PointingHandCursor)
-        view_all.mousePressEvent = lambda e: self._open_session_manager()
-        recent_header.addWidget(view_all)
-        scl.addLayout(recent_header)
-        scl.addSpacing(10)
-
-        # 最近对话列表容器
-        self.welcome_recent_container = QWidget()
-        self.welcome_recent_container.setStyleSheet("background:transparent;")
-        self.welcome_recent_layout = QVBoxLayout(self.welcome_recent_container)
-        self.welcome_recent_layout.setContentsMargins(0, 0, 0, 0)
-        self.welcome_recent_layout.setSpacing(0)
-        scl.addWidget(self.welcome_recent_container)
-
         scl.addStretch(1)
         scroll.setWidget(scroll_content)
         wl.addWidget(scroll)
 
+    def _filter_sidebar_sessions(self, _text=""):
+        """侧栏搜索只过滤用户会话，不改当前会话，也不触发页面跳转。"""
+        self._refresh_recent_on_welcome()
+
     def _refresh_recent_on_welcome(self):
-        """刷新欢迎页的最近对话列表。"""
-        # 清空旧项
+        """刷新侧栏最近会话（方法名保留，兼容既有调用与空态判据）。"""
         from theme_qss import label_body, label_micro
-        while self.welcome_recent_layout.count():
-            item = self.welcome_recent_layout.takeAt(0)
+        layout = getattr(self, "sidebar_session_layout", None)
+        if layout is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
             w = item.widget()
             if w:
                 w.deleteLater()
 
-        # v4.79：置顶优先 + 创建时间倒序，取最多 5 个（含置顶、排除当前激活）
-        recent = [s.sid for s in self.store.all_sorted()
-                  if s.messages and s.sid != self.store.active_sid][:5]
-
-        if not recent:
-            # v4.210.0（BUG 审核 P2-2）：这里原来**不分情况**就说"还没有对话"。
-            # 但 recent 过滤掉了当前会话（`s.sid != active_sid`）—— 用户只开了
-            # 1 个会话、正停在上面时，recent 为空，页面却告诉他"还没有对话"。
-            # 这和 #3「搜索无结果 vs 一个都没有」是同一类文案说谎。
-            # 分叉：**真的一个会话都没有** 才说"还没有对话"。
-            _has_any_session = bool(self.store.all_sorted())
-            if _has_any_session:
-                # 有会话、只是"列表里没有别的" —— 不说"还没有"，也不给
-                # 「新建对话」按钮（他已经在新会话里了，再建一个是噪音）。
-                # 指引的「查看全部」在上方标题栏里真实存在（5616 行，可点）。
-                self.welcome_recent_layout.addWidget(empty_state(
-                    "这里是最近对话",
-                    hint="你正在的这个会话不重复列出。点上方「查看全部」管理全部会话。",
-                    icon="对话"))
-                return
-            # v4.206.0：抽成 empty_state 组件（DESIGN.md §12）。**视觉零变化** ——
-            # 徽章 44 + 图标 20 + 主文案 13px/600/dim(+4px 上留白) + 副文案 12px/faint
-            # + 胶囊按钮 116×32 accent 底白字，逐项等价于 v4.112 那段内联 QSS。
-            self.welcome_recent_layout.addWidget(empty_state(
-                "还没有对话",
-                hint="点击下方开始你的第一条对话",
-                action="新建对话", on_action=self._new_session, icon="对话"))
+        query = self.sidebar_session_search.text().strip() if hasattr(
+            self, "sidebar_session_search") else ""
+        sessions = [s for s in self.store.all_sorted(query=query)
+                    if not str(s.sid).startswith(automation.SESSION_SID_PREFIX)][:3]
+        if not sessions:
+            if query:
+                empty = QLabel("没有匹配的对话")
+                empty.setAlignment(Qt.AlignCenter)
+                empty.setStyleSheet(label_micro() + "padding:12px;background:transparent;")
+                layout.addWidget(empty)
+            else:
+                layout.addWidget(empty_state(
+                    "还没有对话",
+                    hint="点击下方开始你的第一条对话",
+                    action="新建对话", on_action=self._new_session, icon="对话"))
             return
 
-        dot_colors = [THEME["accent"], THEME["ok"], THEME["tool_running"]]
-        for i, sid in enumerate(recent):
-            s = self.store.sessions[sid]
+        for s in sessions:
+            sid = s.sid
             title = s.title or "新会话"
-            display = title if len(title) <= 28 else title[:27] + "…"
-            # 时间
-            ts = getattr(s, 'updated_at', None) or s.created or datetime.now()
-            if isinstance(ts, str):
-                try:
-                    ts = datetime.fromisoformat(ts)
-                except ValueError:
-                    ts = datetime.now()
-            time_str = ts.strftime("%H:%M")
-
-            row = QWidget()
-            row.setCursor(Qt.PointingHandCursor)
-            # v4.199.0：40 → 56。标题 13px + 摘要 12px + 行距 2px + 上下留白。
-            # 沿用一期的教训：**往容器里加内容，必须同步抬容器高度** ——
-            # 不然第二行直接被裁掉，比没有摘要更糟。
+            display = title if len(title) <= 22 else title[:21] + "…"
+            active = sid == self.store.active_sid
+            row = QPushButton()
             row.setFixedHeight(56)
+            row.setCursor(Qt.PointingHandCursor)
+            row.setContextMenuPolicy(Qt.CustomContextMenu)
+            row.setToolTip("点击继续对话；右键可重命名、置顶或删除")
+            row.setStyleSheet(
+                f"QPushButton{{background:{THEME['card_blue_bg'] if active else 'transparent'};"
+                f"border:none;border-radius:8px;text-align:left;padding:0;}}"
+                f"QPushButton:hover{{background:{THEME['sidebar_hover']};}}")
             rl = QHBoxLayout(row)
-            rl.setContentsMargins(0, 0, 0, 0)
-            rl.setSpacing(12)
-
-            dot = QLabel("")
-            dot.setFixedSize(6, 6)
-            dot.setStyleSheet(
-                f"background:{dot_colors[i % len(dot_colors)]};"
-                f"border-radius:3px;margin-top:7px;")
-            # 圆点要对齐第一行标题。两行结构下如果垂直居中，圆点会漂到两行中间。
-            rl.addWidget(dot, 0, Qt.AlignTop)
-
-            # ---- 标题 + 摘要（上下两行）----
+            rl.setContentsMargins(10, 5, 10, 5)
+            rl.setSpacing(0)
             txt_col = QVBoxLayout()
             txt_col.setContentsMargins(0, 0, 0, 0)
             txt_col.setSpacing(2)
-
-            lbl = QLabel(display)
+            lbl = QLabel(("★ " if getattr(s, "pinned", False) else "") + display)
             lbl.setStyleSheet(
-                f"color:{THEME['dim']};font-size:13px;background:transparent;")
+                label_body(color_key="accent" if active else "text",
+                           weight="semibold" if active else "medium")
+                + "background:transparent;border:none;")
             txt_col.addWidget(lbl)
-
-            # v4.207.0：只改文案，**不接 empty_state**（DESIGN §12.5 已记理由）。
-            # 这里是"这个会话还没有消息"，属于**行内字段兜底**而不是空区域 ——
-            # 套上徽章+主副+按钮的行内形态会把会话行高顶变形。
-            # "暂无内容" 太含糊（看起来像加载失败），改成说清"还没有消息"。
+            # 行内短摘要故意不接 empty_state；空会话与有摘要的会话仍保持同一行高。
             preview_lbl = QLabel(_session_preview(s) or "还没有消息")
             preview_lbl.setStyleSheet(
-                f"{label_micro()}background:transparent;")
+                f"{label_micro()}background:transparent;border:none;")
             txt_col.addWidget(preview_lbl)
             rl.addLayout(txt_col, 1)
+            row.clicked.connect(lambda _, s=sid: self._switch_session(s))
+            row.customContextMenuRequested.connect(
+                lambda pos, s=sid: self._open_sidebar_session_menu(s, pos))
+            layout.addWidget(row)
 
-            time_lbl = QLabel(time_str)
-            time_lbl.setStyleSheet(
-                f"color:{THEME['placeholder']};font-size:12px;background:transparent;"
-                f"margin-top:1px;")
-            rl.addWidget(time_lbl, 0, Qt.AlignTop)
+    def _open_sidebar_session_menu(self, sid, pos):
+        """侧栏会话右键：复用既有重命名/置顶/删除链，不另造数据逻辑。"""
+        s = self.store.sessions.get(sid)
+        if s is None:
+            return
+        menu = QMenu(self)
+        act_rename = menu.addAction("重命名对话")
+        act_pin = menu.addAction("取消置顶" if getattr(s, "pinned", False) else "置顶对话")
+        menu.addSeparator()
+        act_delete = menu.addAction("删除对话")
+        chosen = menu.exec(self.sender().mapToGlobal(pos))
+        if chosen == act_rename:
+            if sid != self.store.active_sid:
+                self._switch_session(sid)
+            self._rename_session()
+        elif chosen == act_pin:
+            self.store.set_pinned(sid, not getattr(s, "pinned", False))
+            self._refresh_session_combo()
+            self._refresh_recent_on_welcome()
+        elif chosen == act_delete:
+            self._request_delete_session(sid, s.title or "新会话")
 
-            # 悬停删除按钮
-            del_btn = QPushButton("×")
-            # v4.210.3：22→32 命中区（UI_QA §8）。透明底 + 图标居中 → 观感不变。
-            del_btn.setFixedSize(32, 32)
-            del_btn.setCursor(Qt.PointingHandCursor)
-            del_btn.setStyleSheet(
-                f"QPushButton{{background:transparent;color:{THEME['placeholder']};"
-                f"border:none;font-size:16px;font-weight:600;border-radius:6px;}}"
-                f"QPushButton:hover{{color:{THEME['danger']};background:{THEME['sidebar_hover']};}}")
-            del_btn.clicked.connect(
-                lambda _, s=sid, t=title: self._request_delete_session(s, t))
-            rl.addWidget(del_btn)
-
-            # 整行点击切换（点到删除按钮除外）
-            def _make_press(sid, del_btn, container_ref):
-                def _press(e):
-                    if container_ref.childAt(e.pos()) is del_btn:
-                        return
-                    self._switch_session(sid)
-                return _press
-
-            # 底部分隔线（最后一项不加）
-            if i < len(recent) - 1:
-                sep_w = QFrame()
-                sep_w.setFrameShape(QFrame.HLine)
-                sep_w.setStyleSheet(f"QFrame{{color:{THEME['separator']};max-height:1px;}}")
-                # 用嵌套 layout 实现分隔线
-                wrapper = QVBoxLayout()
-                wrapper.setContentsMargins(0, 0, 0, 0)
-                wrapper.setSpacing(0)
-                wrapper.addWidget(row)
-                wrapper.addWidget(sep_w)
-                container = QWidget()
-                container.setLayout(wrapper)
-                container.setStyleSheet("background:transparent;")
-                container.mousePressEvent = _make_press(sid, del_btn, container)
-                self.welcome_recent_layout.addWidget(container)
-            else:
-                row.mousePressEvent = _make_press(sid, del_btn, row)
-                self.welcome_recent_layout.addWidget(row)
-
-    # ============ 侧边栏 (256px 导航) ============
+    # ============ 侧边栏（新对话 + 会话 + 导航）============
     def _build_sidebar(self):
-        """构建侧栏(256)：Logo + 6 导航 pill + 用户区。"""
-        from theme_qss import label_body
+        """侧栏：Logo + 新对话 + 会话搜索/列表 + 功能导航 + 用户区。"""
+        from theme_qss import label_body, label_micro, scroll_transparent
         self.sidebar = QWidget()
-        self.sidebar.setFixedWidth(256)
+        self.sidebar.setFixedWidth(NAV_EXPANDED_W)
         self.sidebar.setStyleSheet(
             f"QWidget#sidebarWidget{{background:{THEME['sidebar']};border-right:1px solid {THEME['border']};}}")
         self.sidebar.setObjectName("sidebarWidget")
         sb = QVBoxLayout(self.sidebar)
-        sb.setContentsMargins(16, 16, 16, 16)
+        sb.setContentsMargins(12, 14, 12, 12)
         sb.setSpacing(8)
 
         # ---- Logo 行 ----
@@ -3949,13 +3848,64 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         logo_name = QLabel("小臭玩AI")
         logo_name.setStyleSheet(
             f"font-size:16px;font-weight:600;color:{THEME['text']};padding-left:8px;background:transparent;")
+        logo_name.setCursor(Qt.PointingHandCursor)
+        logo_name.setToolTip("返回欢迎页")
+        logo_name.mousePressEvent = lambda e: self._go_home()
         logo_row.addWidget(logo_name, 1)
         sb.addLayout(logo_row)
         sb.addSpacing(12)
         # v4.198.0：折叠态要藏掉文字，留引用（详见 _set_sidebar_collapsed）
         self._sidebar_logo_name = logo_name
 
-        # ---- 导航 pill（v4.135.0：新增「军团」项）----
+        self.sidebar_new_btn = QPushButton("＋ 新对话")
+        self.sidebar_new_btn.setFixedHeight(40)
+        self.sidebar_new_btn.setCursor(Qt.PointingHandCursor)
+        self.sidebar_new_btn.setStyleSheet(
+            f"QPushButton{{background:{THEME['accent']};color:{THEME['white']};"
+            f"border:none;border-radius:10px;font-size:{THEME['font_body']};font-weight:600;}}"
+            f"QPushButton:hover{{background:{THEME['accent_hover']};}}")
+        self.sidebar_new_btn.clicked.connect(self._new_session)
+        sb.addWidget(self.sidebar_new_btn)
+
+        self.sidebar_session_search = QLineEdit()
+        self.sidebar_session_search.setFixedHeight(34)
+        self.sidebar_session_search.setPlaceholderText("搜索对话…")
+        self.sidebar_session_search.setClearButtonEnabled(True)
+        self.sidebar_session_search.setStyleSheet(
+            f"QLineEdit{{background:{THEME['card']};border:1px solid {THEME['border']};"
+            f"border-radius:8px;padding:0 10px;color:{THEME['text']};"
+            f"font-size:{THEME['font_second']};}}"
+            f"QLineEdit:focus{{border-color:{THEME['accent']};}}")
+        self.sidebar_session_search.textChanged.connect(self._filter_sidebar_sessions)
+        sb.addWidget(self.sidebar_session_search)
+
+        self.sidebar_recent_header = QWidget()
+        recent_head = QHBoxLayout(self.sidebar_recent_header)
+        recent_head.setContentsMargins(4, 2, 0, 0)
+        recent_head.setSpacing(4)
+        recent_title = QLabel("最近对话")
+        recent_title.setStyleSheet(label_micro() + "background:transparent;font-weight:600;")
+        recent_head.addWidget(recent_title, 1)
+        all_btn = QPushButton("全部")
+        all_btn.setFixedHeight(32)
+        all_btn.setCursor(Qt.PointingHandCursor)
+        all_btn.setToolTip("打开完整会话管理")
+        all_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;border:none;color:{THEME['accent']};"
+            f"font-size:{THEME['font_second']};padding:0 6px;}}"
+            f"QPushButton:hover{{color:{THEME['accent_hover']};}}")
+        all_btn.clicked.connect(self._open_session_manager)
+        recent_head.addWidget(all_btn)
+        sb.addWidget(self.sidebar_recent_header)
+
+        self.sidebar_session_container = QWidget()
+        self.sidebar_session_container.setStyleSheet("background:transparent;")
+        self.sidebar_session_layout = QVBoxLayout(self.sidebar_session_container)
+        self.sidebar_session_layout.setContentsMargins(0, 0, 0, 0)
+        self.sidebar_session_layout.setSpacing(3)
+        sb.addWidget(self.sidebar_session_container)
+
+        # ---- 功能导航（下标与 main_stack 保持一一对应）----
         self.nav_buttons = []
         self._nav_group_labels = []   # v4.198.0：组标题（折叠时隐藏）
         # 面板挂载范式（整合工作台）：
@@ -3989,7 +3939,8 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
                 _group_of[_m] = _gname
         self._nav_group_of = dict(_group_of)
         self._nav_index_by_label = {}
-        self._nav_more_open = False
+        # v4.300：默认展示完整功能导航；保留「收起」作为用户主动精简的出口。
+        self._nav_more_open = True
         self._nav_more_wrap = None
         self._nav_more_btn = None
         _cur_group = None
@@ -4000,14 +3951,14 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             _in_more = _g in NAV_MORE_GROUPS
             if _in_more and self._nav_more_wrap is None:
                 more_btn = QPushButton()
-                more_btn.setFixedHeight(44)
+                more_btn.setFixedHeight(38)
                 more_btn.setCursor(Qt.PointingHandCursor)
                 mbox = QWidget(more_btn)
                 mbox.setStyleSheet("background:transparent;")
                 mil = QHBoxLayout(mbox)
-                mil.setContentsMargins(16, 0, 8, 0)
+                mil.setContentsMargins(12, 0, 8, 0)
                 mil.setSpacing(8)
-                m_text = QLabel("更多")
+                m_text = QLabel("收起")
                 from theme_qss import label_body as _label_body
                 m_text.setStyleSheet(
                     _label_body(color_key="dim", weight="medium") + "background:transparent;")
@@ -4019,7 +3970,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
                 more_btn.setProperty("iconBox", mbox)
                 more_btn.setStyleSheet(
                     f"QPushButton{{background:transparent;color:{THEME['dim']};border:none;"
-                    f"border-radius:24px;}}"
+                    f"border-radius:8px;}}"
                     f"QPushButton:hover{{background:{THEME['blue_hover']};color:{THEME['text']};}}")
                 more_btn.clicked.connect(self._toggle_nav_more)
                 # v4.288.3：不再在此处 addWidget——「收起/更多」开关挪到导航列表
@@ -4030,7 +3981,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
                 _more_lay = QVBoxLayout(self._nav_more_wrap)
                 _more_lay.setContentsMargins(0, 0, 0, 0)
                 _more_lay.setSpacing(4)
-                self._nav_more_wrap.setVisible(False)
+                self._nav_more_wrap.setVisible(True)
                 nav_lay.addWidget(self._nav_more_wrap)
             target = _more_lay if _in_more else nav_lay
             if _g is not None and _g != _cur_group:
@@ -4040,11 +3991,11 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
                     if self._nav_group_labels:
                         # v4.288.3：10→16——组与组之间原来只隔 10px，
                         # 「协作/创作/系统」标题和项目挤在一起没有呼吸感。
-                        target.addSpacing(16)
+                        target.addSpacing(12)
                     _gl = QLabel(_g)
                     _gl.setStyleSheet(
                         f"color:{THEME['faint']};font-size:{THEME['font_micro']};"
-                        f"padding-left:16px;padding-top:2px;background:transparent;")
+                        f"padding-left:12px;padding-top:2px;background:transparent;")
                     target.addWidget(_gl)
                     self._nav_group_labels.append(_gl)
             # v4.114：SVG 线性图标替代 emoji——矢量描边风格统一，基线天然齐平，
@@ -4053,7 +4004,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             box = QWidget(btn)
             box.setStyleSheet("background:transparent;")
             il = QHBoxLayout(box)
-            il.setContentsMargins(16, 0, 8, 0)
+            il.setContentsMargins(12, 0, 8, 0)
             il.setSpacing(8)
             icon_lbl = QLabel()
             icon_lbl.setFixedSize(18, 18)
@@ -4073,7 +4024,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             btn.setProperty("navIcon", icon)
             btn.setProperty("iconBox", box)   # v4.198.0：折叠时改它的内边距让图标居中
             btn.setProperty("navMore", _in_more)
-            btn.setFixedHeight(44)
+            btn.setFixedHeight(38)
             btn.setCursor(Qt.PointingHandCursor)
             btn.clicked.connect(lambda _, idx=i: self._switch_nav(idx))
             target.addWidget(btn)
@@ -4081,7 +4032,14 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             # v4.135.0：记住「军团」的导航下标（避免在别处写死数字，插入新项不串页）
             if label == "军团":
                 self._legion_nav_idx = i
-        sb.addWidget(nav_container)
+        nav_scroll = QScrollArea()
+        nav_scroll.setWidgetResizable(True)
+        nav_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        nav_scroll.setFrameShape(QFrame.NoFrame)
+        nav_scroll.setStyleSheet(scroll_transparent())
+        nav_scroll.setWidget(nav_container)
+        sb.addWidget(nav_scroll, 1)
+        self._sidebar_nav_scroll = nav_scroll
 
         # v4.288.3：「收起/更多」开关补挂到导航列表底部——wrap（折叠组容器）
         # 仍在「对话」之后原位，只挪开关本身；开关贴着列表末尾、User 区之前，
@@ -4089,21 +4047,18 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         if self._nav_more_btn is not None:
             nav_lay.addWidget(self._nav_more_btn)
 
-        sb.addStretch(1)
-
-        # ---- 用户区（v4.299.0：自定义头像，点击更换）----
+        # ---- 用户区（固定底部；v4.299.0：自定义头像，点击更换）----
         user_row = QHBoxLayout()
         avatar = _make_avatar_label(34)
         self._sidebar_avatar = avatar
         avatar.clicked.connect(self._change_user_avatar)
         user_row.addWidget(avatar)
-        uname = QLabel("User")
+        uname = QLabel("大哥")
         uname.setStyleSheet(
             label_body(weight="medium") + "background:transparent;")
         user_row.addWidget(uname, 1)
-        online = QLabel("● 在线")
-        online.setStyleSheet(
-            f"font-size:12px;color:{THEME['ok']};background:transparent;")
+        online = QLabel("本地模式")
+        online.setStyleSheet(label_micro() + "background:transparent;")
         user_row.addWidget(online)
         sb.addLayout(user_row)
         self._sidebar_uname = uname      # v4.198.0：折叠时隐藏
@@ -4161,6 +4116,13 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         try:
             if getattr(self, "_sidebar_logo_name", None) is not None:
                 self._sidebar_logo_name.setVisible(not collapsed)
+            if getattr(self, "sidebar_new_btn", None) is not None:
+                self.sidebar_new_btn.setText("＋" if collapsed else "＋ 新对话")
+            for _w in (getattr(self, "sidebar_session_search", None),
+                       getattr(self, "sidebar_recent_header", None),
+                       getattr(self, "sidebar_session_container", None)):
+                if _w is not None:
+                    _w.setVisible(not collapsed)
             for _lbl in getattr(self, "_nav_group_labels", []) or []:
                 _lbl.setVisible(not collapsed)
             _extra = []
@@ -4194,26 +4156,26 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             pass
 
     def _update_nav_styles(self, active):
-        """刷新导航 pill 选中态：active=-1 表示首页(无选中)。v4.114 SVG 图标同步换色。"""
-        from theme_qss import label_body, label_title
+        """导航选中态：浅蓝底 + 蓝色文字/图标；active=-1 表示欢迎页。"""
+        from theme_qss import label_body
         for i, btn in enumerate(self.nav_buttons):
             text_lbl = btn.property("textLbl")
             icon_lbl = btn.property("iconLbl")
             icon_name = btn.property("navIcon")
             if i == active:
                 btn.setStyleSheet(
-                    f"QPushButton{{background:{THEME['accent']};color:white;border:none;"
-                    f"border-radius:24px;}}"
-                    f"QPushButton:hover{{background:{THEME['accent_hover']};color:white;}}")
+                    f"QPushButton{{background:{THEME['card_blue_bg']};color:{THEME['accent']};"
+                    f"border:none;border-radius:8px;}}"
+                    f"QPushButton:hover{{background:{THEME['sidebar_hover']};}}")
                 if text_lbl:
                     text_lbl.setStyleSheet(
-                        label_title(color_key="white") + "background:transparent;")
+                        label_body(color_key="accent", weight="semibold") + "background:transparent;")
                 if icon_lbl and icon_name:
-                    icon_lbl.setPixmap(_nav_icon_pixmap(icon_name, THEME["white"], 18))
+                    icon_lbl.setPixmap(_nav_icon_pixmap(icon_name, THEME["accent"], 18))
             else:
                 btn.setStyleSheet(
                     f"QPushButton{{background:transparent;color:{THEME['dim']};border:none;"
-                    f"border-radius:24px;}}"
+                    f"border-radius:8px;}}"
                     f"QPushButton:hover{{background:{THEME['blue_hover']};color:{THEME['text']};}}")
                 if text_lbl:
                     text_lbl.setStyleSheet(
@@ -4337,8 +4299,12 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             "用军团编排完成这个任务：",
         ]
         if 0 <= idx < len(prompts):
-            self.input_box.setPlainText(prompts[idx])
-        self.input_box.setFocus()
+            text = prompts[idx]
+            self.input_box.setPlainText(text)
+            # v4.300.0：建议卡在欢迎页直接可见地回填，不再写进隐藏输入框假装有反馈。
+            self.welcome_input.setText(text)
+            self.welcome_input.setCursorPosition(len(text))
+        self.welcome_input.setFocus()
 
     def _on_attach_file(self):
         paths, _ = QFileDialog.getOpenFileNames(self, "选择文件")
@@ -4346,6 +4312,10 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             return
         for p in paths:
             self._ingest_attachment(p)
+        # 欢迎页选择附件后，文件标记也要在欢迎输入区可见，不能藏到对话页。
+        if hasattr(self, "welcome_input") and self.main_stack.currentWidget() is self.welcome_page:
+            self.welcome_input.setText(self.input_box.toPlainText().strip())
+            self.welcome_input.setFocus()
 
     def _ingest_attachment(self, p):
         """v4.189：附件入口统一（加号选择 / 窗口拖拽共用）。

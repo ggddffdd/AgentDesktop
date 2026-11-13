@@ -159,9 +159,10 @@ if os.path.isfile(FIXTURE):
     KNOWN_MIGRATIONS_216 = {
         "ui.py": collections.Counter({
             ("", '{"QComboBox": "focus"}'): 1,
-            ("", '{"QLineEdit": "focus"}'): 2,
-            # v4.264 专注对话把两处 hover 标记留在了 ui.py，净迁出是 4 不是 6。
-            ("", '{"QPushButton": "hover"}'): 4,
+            ("", '{"QLineEdit": "focus"}'): 1,
+            # v4.300 会话搜索框替代旧欢迎输入框，QSS 净迁移继续按实测消耗数锁定。
+            # v4.300 侧栏导航重构再消耗两条旧 hover 标记，净迁出是 2。
+            ("", '{"QPushButton": "hover"}'): 2,
             ("", '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "10px"}'): 1,
             ("", '{"color": "#1A73E8", "font-size": "12px"}'): 2,
             ("", '{"color": "#202124", "font-size": "15px", "font-weight": "600"}'): 3,
@@ -188,9 +189,7 @@ if os.path.isfile(FIXTURE):
             ("QPushButton", '{"background": "transparent", "border": "none", "color": "#6B7280", "font-size": "12px", "padding": "0 4px"}'): 1,
             ("QPushButton:hover", '{"background": "#E4E8F2", "color": "#EA4335"}'): 1,
             ("QPushButton:hover", '{"background": "#FCE8E6", "border-color": "#EA4335"}'): 1,
-            ("QPushButton:hover", '{"color": "#1A73E8"}'): 1,
             ("QPushButton:hover", '{"color": "#5F6368"}'): 1,
-            ("QScrollArea", '{"background": "transparent", "border": "none"}'): 1,
         }),
     }
     # 搬入侧（after 方向登记，走 known_add 通道吃 B1c 反向判据）：
@@ -280,6 +279,34 @@ if os.path.isfile(FIXTURE):
         }),
     }
 
+    # v4.300.0（布局第 2 波）：侧栏改为「新对话 + 搜索 + 最近会话 + 轻导航」，
+    # 欢迎页改为居中输入区与轻建议。下列是旧大胶囊导航、卡片墙和重复会话区
+    # 撤下后的净减少；由 _dev_history/_diff_300.py 从冻结基线逐条计算，非重拍基线。
+    KNOWN_MIGRATIONS_300 = {
+        "ui.py": collections.Counter({
+            # 顶栏重复品牌撤下，唯一品牌保留在侧栏。
+            ('', '{"background": "transparent", "color": "#202124", "font-size": "16px", "font-weight": "600"}'): 1,
+            ('', '{"background": "transparent", "border": "none", "color": "#202124", "font-size": "16px", "font-weight": "600"}'): 1,
+            ('', '{"background": "transparent", "color": "#34A853", "font-size": "12px"}'): 1,
+            ('', '{"background": "transparent", "color": "#5F6368", "font-size": "13px"}'): 1,
+            ('', '{"background": "transparent", "color": "#6B7280", "font-size": "12px", "margin-top": "1px"}'): 1,
+            ('', '{"background": "transparent", "color": "#6B7280", "font-size": "12px", "padding-left": "16px", "padding-top": "2px"}'): 1,
+            ('', '{"background": "transparent", "color": "#FFFFFF", "font-size": "15px", "font-weight": "600"}'): 1,
+            ('', '{"background": "transparent"}'): 1,
+            ('', '{"color": "#1A73E8", "font-size": "12px", "font-weight": "400"}'): 1,
+            ('', '{"color": "#1A73E8", "font-size": "15px", "font-weight": "600", "margin-bottom": "4px"}'): 1,
+            ('', '{"color": "#202124", "font-size": "28px", "font-weight": "700", "letter-spacing": "-0.5px", "margin-bottom": "24px"}'): 1,
+            ('', '{"color": "#6B7280", "font-size": "12px", "font-weight": "600", "letter-spacing": "0.5px", "text-transform": "uppercase"}'): 1,
+            ('QFrame', '{"color": "#E5E7EB", "max-height": "1px"}'): 1,
+            ('QPushButton', '{"background": "#1A73E8", "border": "none", "border-radius": "24px", "color": "#FFFFFF"}'): 1,
+            ('QPushButton', '{"background": "#1A73E8", "border": "none", "border-radius": "8px", "color": "#FFFFFF", "font-size": "15px", "font-weight": "500", "padding": "0"}'): 1,
+            ('QPushButton', '{"background": "transparent", "border": "none", "border-radius": "24px", "color": "#5F6368"}'): 1,
+            ('QPushButton', '{"background": "transparent", "border": "none", "border-radius": "6px", "color": "#6B7280", "font-size": "16px", "font-weight": "600"}'): 1,
+            ('QPushButton:hover', '{"background": "#1765CC", "color": "#FFFFFF"}'): 1,
+            ('QPushButton:hover', '{"background": "#E4E8F2", "color": "#EA4335"}'): 1,
+        }),
+    }
+
     KNOWN_ADDITIONS = {
         "automation_panel.py": collections.Counter({
             ("QCheckBox", '{"color": "#202124", "font-size": "13px"}'): 2,
@@ -363,19 +390,41 @@ if os.path.isfile(FIXTURE):
                             ' "font-size": "12px", "padding": "0 12px",'
                             ' "text-align": "left"}'): 1,
             ("", '{"color": "#6B7280", "font-size": "12px", "padding-left": "20px"}'): 1,
-            ("QPushButton", '{"background": "transparent", "border": "none",'
-                            ' "color": "#1A73E8", "font-size": "12px",'
-                            ' "padding": "0 4px", "text-align": "left"}'): 1,
-            ("QPushButton", '{"background": "transparent", "border": "none",'
-                            ' "border-radius": "24px", "color": "#5F6368"}'): 1,
-            # v4.299.0：欢迎页居中大输入框（quick_box 白卡 + QLineEdit + 圆形发送钮）。
-            # 词条是新的，配色复用既有 THEME。条数写死，多一份照样红。
-            ('QLineEdit', '{"background": "transparent", "border": "none", "color": "#202124", "font-size": "15px", "padding": "12px 0"}'): 1,
+            # v4.300：欢迎页圆形发送钮仍保留；旧输入框、白卡和大胶囊导航已由新结构替代。
             ('QPushButton', '{"background": "#1A73E8", "border": "none", "border-radius": "17px", "color": "#FFFFFF", "font-size": "16px", "font-weight": "600"}'): 1,
-            ('QWidget', '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "16px"}'): 1,
         }),
         "ui_widgets.py": collections.Counter({
             ("", '{"color": "#202124", "font-size": "13px", "line-height": "1.55"}'): 1,
+        }),
+    }
+
+    # v4.300.0 新增侧栏会话行、搜索框、轻导航及欢迎页快速操作条。
+    # 23 个词条、25 个实例全部使用既有 THEME/token；写死数量，后续多一条仍会红。
+    KNOWN_ADDITIONS_300 = {
+        "ui.py": collections.Counter({
+            ('', '{"background": "rgba(26,115,232,0.08)", "border-radius": "10px", "color": "#1A73E8", "font-size": "12px", "font-weight": "600", "padding": "6px 12px"}'): 1,
+            ('', '{"background": "transparent", "border": "none", "color": "#202124", "font-size": "13px", "font-weight": "600"}'): 1,
+            ('', '{"background": "transparent", "border": "none", "color": "#6B7280", "font-size": "12px"}'): 1,
+            ('', '{"background": "transparent", "color": "#1A73E8", "font-size": "13px", "font-weight": "600"}'): 1,
+            ('', '{"background": "transparent", "color": "#5F6368", "font-size": "12px"}'): 2,
+            ('', '{"background": "transparent", "color": "#6B7280", "font-size": "12px", "font-weight": "600"}'): 1,
+            ('', '{"background": "transparent", "color": "#6B7280", "font-size": "12px", "padding": "12px"}'): 1,
+            ('', '{"background": "transparent", "color": "#6B7280", "font-size": "12px", "padding-left": "12px", "padding-top": "2px"}'): 1,
+            ('', '{"color": "#202124", "font-size": "32px", "font-weight": "700", "letter-spacing": "-0.5px", "line-height": "1.3"}'): 1,
+            ('QFrame#welcomeQuickBox', '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "16px"}'): 1,
+            ('QLineEdit', '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "8px", "color": "#202124", "font-size": "12px", "padding": "0 10px"}'): 1,
+            ('QLineEdit', '{"background": "transparent", "border": "none", "color": "#202124", "font-size": "15px", "padding": "10px 0"}'): 1,
+            ('QLineEdit:focus', '{"border-color": "#1A73E8"}'): 1,
+            ('QPushButton', '{"background": "#1A73E8", "border": "none", "border-radius": "10px", "color": "#FFFFFF", "font-size": "13px", "font-weight": "600"}'): 1,
+            ('QPushButton', '{"background": "#F1F3F4", "border": "none", "border-radius": "8px", "color": "#5F6368", "font-size": "12px", "padding": "0 12px"}'): 1,
+            ('QPushButton', '{"background": "#FFFFFF", "border": "1px solid #E5E7EB", "border-radius": "10px", "text-align": "left"}'): 1,
+            ('QPushButton', '{"background": "rgba(26,115,232,0.08)", "border": "none", "border-radius": "8px", "color": "#1A73E8"}'): 1,
+            ('QPushButton', '{"background": "transparent", "border": "none", "border-radius": "8px", "color": "#5F6368"}'): 2,
+            ('QPushButton', '{"background": "transparent", "border": "none", "color": "#1A73E8", "font-size": "12px", "padding": "0 6px"}'): 1,
+            ('QPushButton', '{"background": "transparent", "border": "none", "color": "#202124", "font-size": "15px", "font-weight": "600", "padding": "0 4px", "text-align": "left"}'): 1,
+            ('QPushButton:hover', '{"background": "#E4E8F2"}'): 1,
+            ('QPushButton:hover', '{"background": "rgba(26,115,232,0.08)", "border-color": "#1A73E8"}'): 1,
+            ('QPushButton:hover', '{"background": "rgba(26,115,232,0.08)", "color": "#1A73E8"}'): 1,
         }),
     }
 
@@ -388,9 +437,11 @@ if os.path.isfile(FIXTURE):
                  + KNOWN_MIGRATIONS_207.get(fn, collections.Counter())
                  + KNOWN_MIGRATIONS_216.get(fn, collections.Counter())
                  + KNOWN_MIGRATIONS_264.get(fn, collections.Counter())
-                 + KNOWN_MIGRATIONS_299.get(fn, collections.Counter()))
+                 + KNOWN_MIGRATIONS_299.get(fn, collections.Counter())
+                 + KNOWN_MIGRATIONS_300.get(fn, collections.Counter()))
         # known_add 通道：既吸收「同词条 +1 实例」，也吸收 v4.216 搬入侧（新文件词条）
         known_add = (KNOWN_ADDITIONS.get(fn, collections.Counter())
+                     + KNOWN_ADDITIONS_300.get(fn, collections.Counter())
                      + KNOWN_MIGRATION_TARGETS_216.get(fn, collections.Counter()))
         # 扣掉已登记的有意迁移后，剩下的差异必须为零
         rest_before = cb - ca - known
@@ -561,7 +612,8 @@ def _scan_scroll(src_dir):
 
 _raw_scroll, _n_scroll = _scan_scroll(ROOT)
 check("F1 透明滚动区裸写残留 == 0", _raw_scroll == 0, f"实测残留 {_raw_scroll}")
-check("F2 scroll_transparent 调用点 == 13", _n_scroll == 13, f"实测 {_n_scroll}")
+# v4.300.0：侧栏功能导航也纳入统一透明滚动区，13 → 14。
+check("F2 scroll_transparent 调用点 == 14", _n_scroll == 14, f"实测 {_n_scroll}")
 _sr = dict(Q.iter_rules(tq.scroll_transparent())).get("QScrollArea", {})
 check("F3 scroll_transparent 输出属性集合正确",
       frozenset(_sr.items())
@@ -652,8 +704,10 @@ for _fn in Q.SCAN_TARGETS:
 
 check("G1 有字号 token 的加粗变体已收口（残留 == 0）", _bold_left == 0,
       f"实测残留 {_bold_left}")
-check("G2 无字号 token 的孤例恒为 4（16px x3 + 28px x1，不许长大）",
-      _no_token == 4, f"实测 {_no_token}")
+# v4.300.0：欢迎主标题按设计用 32px；旧 28px 标题和卡片裸 16px 标题消失。
+# 孤例只剩侧栏 Logo 16px + 欢迎主标题 32px，继续锁死不许长大。
+check("G2 无字号 token 的孤例恒为 2（侧栏 Logo 16px + 欢迎标题 32px）",
+      _no_token == 2, f"实测 {_no_token}")
 
 check("G3 label_second 默认不带 font-weight（102 处旧调用零影响）",
       "font-weight" not in tq.label_second())

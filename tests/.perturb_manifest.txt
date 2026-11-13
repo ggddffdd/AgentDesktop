@@ -113,6 +113,7 @@ _perturb_twin_bg_img_264.py
 _perturb_twin_bg_lock_262.py
 _perturb_ui_a11y.py
 _perturb_ui_hex_guard_fallback.py
+_perturb_ui_layout_300.py
 _perturb_unified_intent_225.py
 _perturb_untrusted_boundary_222.py
 _perturb_untrusted_hardening_227.py

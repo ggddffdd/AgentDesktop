@@ -64,14 +64,14 @@ ACCEPTED = {
     ("skill_market_ui.py", "uninst"): 30,          # 「卸载」文字按钮
 }
 
-# 本轮修好的 9 处：钉住"确实到了 32px"
+# 既有 8 处修好点 + v4.300 新增「全部」按钮，钉住确实到了 32px。
 # v4.216.0：retry/clear/delb/chk/pin 五个 owner 随 SessionManagerDialog 迁到
-# ui_widgets.py（源码钉与 AST 实测都改按新文件对账；del_btn/api_key_toggle 仍在 ui.py）
+# ui_widgets.py。v4.300 顶栏 del_btn 已收进溢出菜单，删除过期钉子，不为测试加回旧按钮。
 PINS = [
     ("toast.py", "self._close_btn", "self._close_btn.setFixedSize(32, 32)"),
     ("ui_widgets.py", "self.retry_btn", "self.retry_btn.setFixedHeight(32)"),
     ("ui_widgets.py", "self.clear_btn", "self.clear_btn.setFixedHeight(32)"),
-    ("ui.py", "del_btn", "del_btn.setFixedSize(32, 32)"),
+    ("ui.py", "all_btn", "all_btn.setFixedHeight(32)"),
     ("ui_widgets.py", "delb", "delb.setFixedSize(32, 32)"),
     ("ui_widgets.py", "chk", "chk.setFixedSize(32, 32)"),
     ("ui_widgets.py", "pin", "pin.setFixedSize(32, 32)"),
@@ -324,7 +324,7 @@ check("F3 ACCEPTED 登记值与实测一致（改小/改大都算漂移）", not
 note(f"ACCEPTED {len(ACCEPTED)} 条；其中已不在 <{TARGET}px 名单里的（视为已修好）："
      f"{[f'{f} {o}' for (f, o) in ACCEPTED if not [r for r in SMALL if (r['file'], r['owner']) == (f, o)]] or '（无）'}")
 
-print("\n=== P 本轮修好的 9 处（钉住 32px）===")
+print(f"\n=== P {len(PINS)} 处现存可点控件（钉住 32px）===")
 
 for _f, _o, _pin in PINS:
     _src_ok = _pin in BLANKED.get(_f, "")

@@ -288,7 +288,8 @@ if _refresh is not None:
     _h = [a[0] for a in _calls("setFixedHeight", "row") if a and isinstance(a[0], int)]
     check("C6 行高 >= 48（13px 标题 + 12px 摘要 + 行距）", bool(_h) and max(_h) >= 48,
           extra=f"{max(_h) if _h else '未设置'}px")
-    check("C7 摘要缺失时有兜底文案", "或 \"暂无内容\"" in seg or '"暂无内容"' in seg)
+    # v4.300：与 test_empty_state_207 的统一口径对齐，保留「必须有兜底」而非删判据。
+    check("C7 摘要缺失时有兜底文案", '"还没有消息"' in seg)
 
 _pv = _top_level_func("_session_preview")
 if _pv is not None:

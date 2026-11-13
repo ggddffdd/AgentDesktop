@@ -322,8 +322,8 @@ _ok_titles = {
     "还没有任务",         # automation_panel
     "本波还没有成员",     # legion_ui
     "暂无待审核技能",     # ui.py 技能审核
-    # v4.210.0（P2-2 / P2-3）新增两处，同屏指引按钮均已 grep 确认真实存在：
-    "这里是最近对话",     # ui.py 欢迎页 · "有会话但都被过滤掉"分支（非"还没有"）
+    # v4.300.0：当前会话保留在侧栏，旧「这里是最近对话」伪空态不再合法；
+    # 军团删光最后一波后的区域空态继续保留。
     "还没有波次",         # legion_ui 波次区 · 删光最后一波后
 }
 _seen = set()
@@ -339,7 +339,7 @@ for f in os.listdir(ROOT):
         continue
     for m in re.finditer(r'empty_state\(\s*f?"([^"]*)"', read(f)):
         _seen.add(m.group(1))
-check("E1 全项目 empty_state 主文案仍只有那 6 处合法空态",
+check("E1 全项目 empty_state 主文案与合法登记集合完全一致",
       _seen == _ok_titles, sorted(_seen ^ _ok_titles))
 for _t in ("还没有素材", "还没有工程可导出", "还没有可用片段", "还没有任何授权记录",
            "还没有生成过报告", "还没有选中团队"):

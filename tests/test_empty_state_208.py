@@ -264,10 +264,10 @@ _counts = {
     "automation_panel.py": len(re.findall(r"\bempty_state\(", _ap_code)),
     "legion_ui.py": len(re.findall(r"\bempty_state\(", _leg_code)),
 }
-# v4.210.0：4+1+1=6 → 5+1+2=8；v4.216.0：ui 5 → ui 3 + ui_widgets 2（总数不变）
 # v4.274.0：ui.py 再加聊天页加载失败空状态，3 → 4，总数 8 → 9。
-check("E1 全项目 empty_state 调用点 = 4+2+1+2 = 9",
-      _counts == {"ui.py": 4, "ui_widgets.py": 2,
+# v4.300.0：当前会话保留在侧栏，旧「排除当前后为空」分支删除，9 → 8。
+check("E1 全项目 empty_state 调用点 = 3+2+1+2 = 8",
+      _counts == {"ui.py": 3, "ui_widgets.py": 2,
                   "automation_panel.py": 1, "legion_ui.py": 2},
       _counts)
 # E2：组件化只碰了这 4 个文件，没扩散（ui_widgets 是 v4.216.0 搬家带入）
@@ -341,9 +341,9 @@ _known_ok = {
     "还没有任务",         # automation_panel（区域空，合法）
     "本波还没有成员",     # legion_ui（GroupBox 区域空，合法）
     "暂无待审核技能",     # ui.py 技能审核（区域空，合法）
-    # v4.210.0 新增两处（DESIGN §12.8），都是「区域空」不是回执：
+    # v4.210.0 新增的军团 0 波空态仍是「区域空」不是回执。
+    # v4.300.0：当前会话在侧栏保留，旧「这里是最近对话」伪空态已删除。
     "还没有波次",         # legion_ui 波次区（删光最后一波后，区域空）
-    "这里是最近对话",     # ui.py 欢迎页（有会话但被过滤掉，列表区空）
 }
 _seen = set()
 for f in _all_py:

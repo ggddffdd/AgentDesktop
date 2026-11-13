@@ -413,22 +413,17 @@ check("E8 DESIGN 里记了不接的理由（§12.5）",
 check("E9 DESIGN 记录了 #3 文案分叉这件事",
       "说谎" in _design or "分叉" in _design)
 
-# 接入点数写死：ui.py 剥注释后 = 4 处
-#   1) 搜索无结果·有关键词（本轮新增）
-#   2) 搜索无结果·无关键词（本轮新增，同一if 下的两个分支）
-#   3) 会话空态（v4.206）
-#   4) 技能审核（v4.206）
 # 数**调用点**而不是 import 行；且必须剥掉注释 —— 注释里解释"不接 empty_state"
 # 的那句话也含这个字样，不剥会多数一处（第一版就多数了，红得莫名其妙）。
 _ui_code_for_count = _strip_comments(_ui_src)
 _ui_calls = len(re.findall(r"\bempty_state\(", _ui_code_for_count))
-# v4.210.0：4 → 5（同上，DESIGN §12.8 P2-2）
-# v4.216.0：会话管理器搜索空态×2 随 SessionManagerDialog 迁到 ui_widgets.py，
-# 两文件合计仍写死 5（搬家不是增删）。
-# v4.274.0：合计 6（ui.py 增加聊天页加载失败的空状态）。
+# v4.216.0：会话管理器搜索空态×2 随 SessionManagerDialog 迁到 ui_widgets.py。
+# v4.274.0：ui.py 增加聊天页加载失败的空状态。
+# v4.300.0：合计 6 → 5；当前会话改在侧栏保留并显示选中态，旧「排除当前后为空」
+# 分支失去存在条件。其余搜索×2 + 会话 + 技能审核 + 聊天页加载失败均保留。
 _wg_calls = len(re.findall(r"\bempty_state\(", _strip_comments(_wg_src)))
-check("E10 ui.py+ui_widgets.py 内 empty_state 调用点写死为 6（搜索×2 + 会话 + 技能审核 + 欢迎页 + 聊天页加载失败）",
-      _ui_calls + _wg_calls == 6, f"ui={_ui_calls} ui_widgets={_wg_calls}")
+check("E10 ui.py+ui_widgets.py 内 empty_state 调用点写死为 5（搜索×2 + 会话 + 技能审核 + 聊天页加载失败）",
+      _ui_calls + _wg_calls == 5, f"ui={_ui_calls} ui_widgets={_wg_calls}")
 # E10c：只写死"总数 == 4"的话，**同时删掉一处再加一处**是察觉不到的
 # （净变化为 0）。所以再判一次搜索空态的两个分支各自都在。
 check("E10c 搜索空态两个分支都在（防止一处被删一处被补）",

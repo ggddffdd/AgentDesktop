@@ -3,12 +3,12 @@
 
 四项：
   P2-1 回执残留 → 分类登记表（在 test_receipt_copy_209.py 的 _REGISTRY 里）
-  P2-2 欢迎页文案说谎 → 按"全集是否为空"分叉
+  P2-2 空态文案不说谎 → v4.300 起迁移为侧栏真空/搜索无结果分叉
   P2-3 军团删光最后一波 → 补空态
   P2-4 动态文案进状态栏 → 先压缩
 
 判据分五组（独立运行：python tests/test_p2_210.py）：
-  A P2-2 欢迎页      B P2-3 军团 0 波     C P2-4 动态压缩（行为级）
+  A 侧栏会话空态    B P2-3 军团 0 波     C P2-4 动态压缩（行为级）
   D P2-1 登记表      E 文档与版本
 
 写法约定（前几波踩出来的，别退回去）：
@@ -93,54 +93,53 @@ _design = read("DESIGN.md")
 
 print("=== v4.210.0 BUG 审核 P2 补完验收（DESIGN §12.8 / §13.5）===")
 
-# ------------------------------------------------- A P2-2 欢迎页文案说谎（ui.py）
-print("\n--- A P2-2 欢迎页：有会话却被说成「还没有对话」 ---")
-# A1：前置条件 —— recent 确实过滤了当前会话（没有这条前提，分叉就无从谈起）
-check("A1 recent 的过滤条件里排除了当前激活会话（分叉的前提）",
-      "s.sid != self.store.active_sid" in _ui_s)
-# A2：分叉存在
-check("A2 有按「全集是否为空」分叉的分支", "_has_any_session" in _ui_s)
+# ------------------------------------------------- A P2-2 侧栏会话空态（v4.300 契约迁移）
+print("\n--- A 侧栏会话：保留当前会话、真空与搜索无结果分开 ---")
+# v4.300：最近会话从欢迎页迁到侧栏，当前会话必须保留并显示选中态；
+# 旧「有会话但排除当前后为空」分支已失去存在条件。这里不是删掉 A 组，
+# 而是把原来的「空态不说谎 / 指引真可点」约束迁到新的真实结构上。
+_refresh_recent = (_ui_s.split("def _refresh_recent_on_welcome(", 1)[1]
+                   .split("\n    def ", 1)[0]
+                   if "def _refresh_recent_on_welcome(" in _ui_s else "")
+check("A1 侧栏不再排除当前激活会话（当前项要保留并显示选中态）",
+      "s.sid != self.store.active_sid" not in _refresh_recent
+      and "active = sid == self.store.active_sid" in _refresh_recent)
+check("A2 数据来自真实查询且只滤掉自动化内部会话",
+      "self.store.all_sorted(query=query)" in _refresh_recent
+      and "automation.SESSION_SID_PREFIX" in _refresh_recent)
 
-_blk_filtered = _call_block(_ui_s, "这里是最近对话")
-_blk_true_empty = _call_block(_ui_s, "还没有对话")
-check("A3 「这里是最近对话」这个空态存在（过滤空分支）", bool(_blk_filtered))
-check("A4 过滤空分支**不说**「还没有对话」（那句留给真空分支）",
-      _blk_filtered and "还没有对话" not in _blk_filtered,
-      _blk_filtered[:80])
+_blk_true_empty = _call_block(_refresh_recent, "还没有对话")
+check("A3 真空分支仍挂真实 empty_state", bool(_blk_true_empty))
+check("A4 旧的「排除当前后为空」伪分支没有复活",
+      "这里是最近对话" not in _refresh_recent
+      and "_has_any_session" not in _refresh_recent)
 check("A5 真空分支仍说「还没有对话」并给「新建对话」按钮",
       _blk_true_empty and "还没有对话" in _blk_true_empty
-      and "action=" in _blk_true_empty, _blk_true_empty[:80])
-check("A6 过滤空分支**不给** action 按钮（他已在会话里，再给一个是噪音）",
-      _blk_filtered and "action=" not in _blk_filtered, _blk_filtered[:80])
-check("A7 过滤空分支的指引指向真实存在的「查看全部」",
-      _blk_filtered and "查看全部" in _blk_filtered, _blk_filtered[:80])
-# A8：指引必须**真的可点** —— 光有文字不算（207 C9 同款）。
-# 判据别写成 `clicked.connect`：那个是 QPushButton 的接法。这里「查看全部」是
-# **QLabel**，QLabel 没有 clicked 信号，靠的是**覆写 mousePressEvent**。
-# 第一版判据就是按 clicked.connect 写的，误判成"装饰文字"—— 记下来别再犯。
+      and 'action="新建对话"' in _blk_true_empty, _blk_true_empty[:100])
+check("A6 真空分支的新建动作真实连接到 _new_session",
+      _blk_true_empty and "on_action=self._new_session" in _blk_true_empty,
+      _blk_true_empty[:100])
+check("A7 搜索无结果有独立文案，不冒充「还没有对话」",
+      'QLabel("没有匹配的对话")' in _refresh_recent
+      and "if query:" in _refresh_recent)
+
+# 「全部」必须是真的 QPushButton，不能退回只有 mousePressEvent 的装饰文字。
 _lines = _ui_s.split("\n")
 _va_i = next((i for i, l in enumerate(_lines)
-              if "查看全部" in l and "QLabel" in l), None)
-_va_seg = "\n".join(_lines[_va_i:_va_i + 8]) if _va_i is not None else ""
-check("A8 「查看全部」确有点击处理（QLabel 走 mousePressEvent 覆写）",
-      _va_i is not None and "mousePressEvent" in _va_seg,
-      _va_seg[:80] or "没找到该 QLabel")
-# A8c：光"有 mousePressEvent"不够 —— 覆写成 `lambda e: None` 也有这一行。
-# 必须确认它真的**调到会话管理器**。
-check("A8c 该覆写真实调用了 _open_session_manager（不是空实现）",
-      "_open_session_manager" in _va_seg, _va_seg[:80])
-check("A8b 该 QLabel 设了手型光标（可点是有视觉暗示的，不是隐藏交互）",
-      "PointingHandCursor" in _va_seg, _va_seg[:80])
-# A9：两个分支互斥（都有 return），否则会同时挂两个空态
-_seg = _ui_s[_ui_s.find("_has_any_session"):]
-_seg = _seg[:_seg.find("def ", 200)] if "def " in _seg[200:] else _seg
-check("A9 过滤空分支以 return 收尾（两分支互斥，不会挂两个空态）",
-      bool(re.search(r"_has_any_session[\s\S]{0,600}?return", _ui_s)))
-# A10：守"分叉方向"。写成 `if not _has_any_session:` 的话，两句文案会**对调**，
-# 有会话的人反而看到"还没有对话" —— 比不分叉还糟，而且 A2 查 "_has_any_session
-# 在不在"是抓不到的。必须锁住"哪个文案在 if 分支里"。
-check("A10 「这里是最近对话」确实在 `if _has_any_session:` 分支里（方向锁）",
-      bool(re.search(r"if _has_any_session:[\s\S]{0,400}?这里是最近对话", _ui_s)))
+              if 'all_btn = QPushButton("全部")' in l), None)
+_va_seg = "\n".join(_lines[_va_i:_va_i + 12]) if _va_i is not None else ""
+check("A8 「全部」是真实 QPushButton", _va_i is not None)
+check("A8c 「全部」真实连接 _open_session_manager（不是空实现）",
+      "all_btn.clicked.connect(self._open_session_manager)" in _va_seg,
+      _va_seg[:160] or "没找到全部按钮")
+check("A8b 「全部」设了手型光标（可点有视觉暗示）",
+      "all_btn.setCursor(Qt.PointingHandCursor)" in _va_seg, _va_seg[:120])
+check("A9 空态分支 return 后才进入会话行渲染（互斥，不会同时挂两套内容）",
+      bool(re.search(r"if not sessions:[\s\S]{0,900}?return[\s\S]{0,100}?for s in sessions:",
+                     _refresh_recent)))
+check("A10 搜索词来自侧栏搜索框并传给刷新链",
+      "self.sidebar_session_search.text().strip()" in _refresh_recent
+      and "textChanged.connect(self._filter_sidebar_sessions)" in _ui_s)
 
 # ------------------------------------------------- B P2-3 军团 0 波（legion_ui.py）
 print("\n--- B P2-3 军团删光最后一波后整片空白 ---")

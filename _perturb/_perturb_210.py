@@ -38,43 +38,37 @@ def case_re(name, fname, pattern, new, expect):
 
 
 # ============================================================
-# P2-2 欢迎页分叉（A 组）
+# 侧栏会话空态（A 组，v4.300 契约迁移）
 # ============================================================
 
-# BUG 原状：过滤空分支又回去说「还没有对话」
-case("BUG 原状：过滤空分支改回说「还没有对话」",
+case("侧栏重新排除当前会话（选中项从列表消失）",
      "ui.py",
-     '"这里是最近对话",',
+     "if not str(s.sid).startswith(automation.SESSION_SID_PREFIX)][:3]",
+     "if not str(s.sid).startswith(automation.SESSION_SID_PREFIX)\n"
+     "                    and s.sid != self.store.active_sid][:3]",
+     ["A1"])
+
+case("当前会话选中态被删掉",
+     "ui.py",
+     "active = sid == self.store.active_sid",
+     "active = False",
+     ["A1"])
+
+case("真空态文案被改掉（真实新建入口失去定位）",
+     "ui.py",
      '"还没有对话",',
-     ["A3", "A4", "A6", "A7", "A10"])
+     '"暂无对话",',
+     ["A3", "A5", "A6"])
 
-# 分叉方向反了 —— 有会话的人反而看到"还没有对话"，比不分叉更糟。
-# 只查 "_has_any_session 在不在" 是抓不到的，靠 A10 的方向锁。
-case("分叉方向写反（if not _has_any_session）",
+case("「全部」按钮的点击绑定被删（变装饰）",
      "ui.py",
-     "if _has_any_session:",
-     "if not _has_any_session:",
-     ["A10"])
-
-# 给过滤空分支加回「新建对话」按钮（他已经在会话里了，是噪音）
-case("过滤空分支被加回 action 按钮",
-     "ui.py",
-     'hint="你正在的这个会话不重复列出。点上方「查看全部」管理全部会话。",',
-     'hint="你正在的这个会话不重复列出。点上方「查看全部」管理全部会话。",\n'
-     '                action="新建对话", on_action=self._new_session,',
-     ["A6"])
-
-# 点击处理被改成空实现（有 mousePressEvent 那行，但不干事）—— A8c 守这个
-case("「查看全部」的点击被改成空实现",
-     "ui.py",
-     "view_all.mousePressEvent = lambda e: self._open_session_manager()",
-     "view_all.mousePressEvent = lambda e: None",
+     "all_btn.clicked.connect(self._open_session_manager)",
+     "all_btn.setEnabled(True)",
      ["A8c"])
 
-# 手型光标被去掉（可点但没有任何视觉暗示）
-case("「查看全部」丢了手型光标",
+case("「全部」丢了手型光标",
      "ui.py",
-     "view_all.setCursor(Qt.PointingHandCursor)",
+     "all_btn.setCursor(Qt.PointingHandCursor)",
      "",
      ["A8b"])
 
@@ -135,13 +129,16 @@ case("_set_status 被改成自动压缩（会误伤写死文案）",
 # P2-1 分类登记表（D 组）
 # ============================================================
 
-# 整条登记被删 —— 条目数掉下来（D2 是条数下限，删条目不该无声无息）
-case("登记表被删掉一条（条目数掉到 8）",
-     "tests/test_receipt_copy_209.py",
-     '    ("legion_ui.py", "没有 checkpoint", "改",\n'
-     '     "存档是用户能补的 → 待办语义；原标题还是名词短语，一并改成完整句"),\n',
-     "",
-     ["D2"])
+# 连续删掉两条「改」登记：当前 11 条删到 9，真实跌破 D2 的 >=10 下限。
+# 只删一条仍剩 10 条，本来就不该红；旧用例把期望写错了，不是判据空转。
+case_re("登记表被删掉两条（条目数跌破下限）",
+        "tests/test_receipt_copy_209.py",
+        r'    \("legion_ui\.py", "没有 checkpoint", "改",\r?\n'
+        r'     "存档是用户能补的 → 待办语义；原标题还是名词短语，一并改成完整句"\),\r?\n'
+        r'    \("legion_ui\.py", "角色库里没有「项目经理」角色", "改",\r?\n'
+        r'     "角色是用户能补的（正文已指引去角色库新建）→ 待办语义"\),\r?\n',
+        "",
+        ["D2"])
 
 # 把"留"误标成"改" —— 那条的关键串其实还在源码里，D3 必须抓出来
 case("把「留」误标成「改」（旧文案其实还在）",

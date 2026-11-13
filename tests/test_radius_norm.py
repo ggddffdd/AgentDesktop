@@ -65,7 +65,7 @@ EXEMPT = {
         17: '34px 发送/停止/录音按钮（胶囊 34/2）',
         18: '36px 搜索框（胶囊 36/2）',
         22: '44px 徽章（圆形 44/2）',
-        24: '48px 圆形按钮（圆形 48/2）',
+        # v4.300.0：24px 大胶囊导航已按新设计改为 8px 矩形，不再豁免。
     },
     'chat_web.py': {
         14: '聊天气泡（胶囊）',
@@ -117,7 +117,6 @@ def main():
     # 注意：聊天气泡 14px 在 chat_web.py（Web 渲染），ui.py 里没有 —— 别写错文件
     expect_present = [
         ('ui.py', 17, '34px 发送/停止按钮必须保持 17px 胶囊'),
-        ('ui.py', 24, '48px 圆形按钮必须保持 24px'),
         ('ui.py', 16, '32px 输入卡必须保持 16px 胶囊'),
         ('ui.py', 18, '36px 搜索框必须保持 18px 胶囊'),
         ('ui.py', 13, '26px 缩略图必须保持 13px 圆形'),
@@ -130,6 +129,8 @@ def main():
     for f, v, label in expect_present:
         got = exempt_seen.get(f, {}).get(v, 0)
         check(label, got > 0, extra=f"实际 {got} 处")
+    check("旧 24px 大胶囊导航不得回潮（v4.300 已改 8px 矩形）",
+          "border-radius:24px" not in _read("ui.py"))
 
     # v4.206.0：44px 徽章的真源从 ui.py 搬进了 theme_qss.empty_badge()（DESIGN §12
     # 空状态组件化）。按文件扫不到它了 —— 工厂里写的是 `size // 2` 的计算式，
