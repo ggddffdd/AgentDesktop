@@ -1363,13 +1363,19 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                         and not getattr(_lp_stall, "verified", False)):
                     _v_sig = repr([str(x) for x in _lp_stall.verification
                                    if str(x).startswith("未满足")])
+                # v4.302.0：核验「通过」但最近工具回执没变，同样是空转
+                _np_sig = ("" if _v_sig else agent_text.verified_no_progress_sig(
+                    self.messages, bool(getattr(_lp_stall, "verified", False))))
+                _v_sig = _v_sig or _np_sig
                 if (_v_sig and _v_sig != "[]"
                         and _v_sig == getattr(self, "_last_verify_sig", "")):
                     self._verify_stall_steps = getattr(self, "_verify_stall_steps", 0) + 1
                 else:
                     self._verify_stall_steps = 0
                 self._last_verify_sig = _v_sig
-                if self._verify_stall_steps >= MAX_VERIFY_STALL_STEPS:
+                _stall_limit = (agent_text.MAX_NO_PROGRESS_STEPS if _np_sig
+                                else MAX_VERIFY_STALL_STEPS)
+                if self._verify_stall_steps >= _stall_limit:
                     self._note_exit("verify_stalled")
                     self._emit_status("⏹ 核验一直没有进展，已自动停止空转。")
                     self.stream_commit.emit(
@@ -2044,6 +2050,9 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                     "content": "（系统提示：该工具调用已重复执行且被拦截，请直接给出正文回答，不要再调用相同工具。）",
                 })
             self._guard_blocked = True  # v4.60：通知主循环，这次工具调用被拦截了
+            return
+        # v4.302.0：结果无进展护栏（接线在 AgentExecMixin，判据在 agent_text）
+        if self._guard_no_progress(tool_calls, _IDEMPOTENT_READ):
             return
         # v4.289.4：签名不在这里登记——原实现在**执行前**就 extend，失败的调用
         # 也留表，下一轮同参重试会被当死循环整批拦掉。改为在结算入口

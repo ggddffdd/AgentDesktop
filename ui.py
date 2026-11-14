@@ -8524,6 +8524,12 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         except Exception:
             _at = None
         _tool_intent = self._needs_tool_intent(messages)
+        # v4.302.0：工具意图引起的 required 只在「本轮尚未真调过工具」时生效。
+        # 已有工具回执说明模型已进入执行轨道，再每步 required 就没有收尾出口；
+        # force_required / redo 是主循环明确的强制意图，不受这里影响。
+        _tool_intent_required = (
+            _tool_intent
+            and ui_routing.count_prior_tool_results(messages) == 0)
         # v4.102：消息含图 → 强制走视觉模型通道（复杂/工具意图路径），让模型真正"看图"
         _has_img_call = any(
             isinstance(m.get("content"), list)
@@ -8714,7 +8720,7 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             # 闲聊被 remember 等工具自发调用打断。
             body["tool_choice"] = "none"
             self._last_tool_choice = "none(refuse)"
-        elif (force_required or redo or _tool_intent) and not self._is_reasoning_model(_model, _base_url):
+        elif (force_required or redo or _tool_intent_required) and not self._is_reasoning_model(_model, _base_url):
             # v4.98：工具意图任务强制 required，杜绝弱模型退化成"文字演工具"
             # v4.102 hotfix：仅因含图进入视觉模型时，不强制 required，让模型自由描述图片。
             # v4.102 fix10：思考/推理模式模型（DeepSeek 官方）不支持 required——

@@ -154,6 +154,9 @@ want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         "ui_avatar",
         # v4.301.0：共享工作区骨架、任务页头主操作与导演台收起高度。
         "ui_widgets", "automation_panel", "director_chat",
+        # v4.302.0：重复工具调用修复落在护栏 mixin 与回收站计数里，
+        # 两者都在 import 图上，必须一并验常量表（漏进 want 会整组假红）。
+        "agent_exec_mixin", "system_control_tools",
         ]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
@@ -343,7 +346,9 @@ def main():
                "_filter_sidebar_sessions", "_open_sidebar_session_menu",
                "welcomeQuickBox", "输入你的需求，或拖入文件…", "没有匹配的对话",
                # v4.301.0：七页共享骨架与设置去重复标题。
-               "build_workspace_shell", "workspace_card", "模型与连接"],
+               "build_workspace_shell", "workspace_card", "模型与连接",
+               # v4.302.0：工具意图引起的 required 只在本轮首步生效（旧包缺失）。
+               "_tool_intent_required"],
         # v4.299.0：自定义头像模块的新字面量（旧包无此模块，全为 USE）。
         "ui_avatar": ["AvatarLabel", "avatar_pixmap", "set_custom_avatar",
                       "clear_custom_avatar", "default_avatar_pixmap",
@@ -356,7 +361,9 @@ def main():
         "director_chat": ["对话区默认 80px"],
         # v4.267.0：复杂度 / 工具意图的实现在 ui_routing，ui 上只剩薄包装。
         "ui_routing": ["route_judge", "is_complex_v2", "route_complex_v1",
-                       "_needs_tool_intent", "is_non_action_message"],
+                       "_needs_tool_intent", "is_non_action_message",
+                       # v4.302.0：本轮工具回执计数（旧包常量表缺失）
+                       "count_prior_tool_results"],
                # v4.212.0：原「节点画布收尾轮」色键 canvas_status_text /
                # canvas_final_bg 随画布模块一并移除；版本钉子由上面的行为字面量
                # 与 ③ APP_VERSION 断言承担，不另设替代键。
@@ -390,7 +397,9 @@ def main():
                   "_last_verify_sig", "_last_fail_backend_down",
                   "verify_stalled", "tool_backend_down",
                   "⏹ 核验一直没有进展，已自动停止空转。",
-                  "⏹ 搜索/网页资料源一直连不上，已停止空转。"],
+                  "⏹ 搜索/网页资料源一直连不上，已停止空转。",
+                  # v4.302.0：核验通过但结果不变也计入停滞（旧包缺失）
+                  "_np_sig", "_stall_limit"],
         # v4.227.0：不可信边界的真身搬到这里了（v4.222 写在 agent.py，
         # v4.227 外移成独立模块 —— agent.py 只做 re-export，静态扫描器盯
         # re-export 的 import 图不稳，所以标签字面量钉在真身这个模块上）。
@@ -442,7 +451,14 @@ def main():
                   "tool_result_backend_down", "_BACKEND_DOWN_MARKS",
                   "未找到搜索结果（最后错误：", "境外主题搜索无法获取",
                   "本次调用失败：[UNVERIFIED_OUTCOME]",
-                  "UNEXPECTED_EOF_WHILE_READING", "任务图未完整达成"],
+                  "UNEXPECTED_EOF_WHILE_READING", "任务图未完整达成",
+                  # v4.302.0：结果无进展判据族（全部双向验过旧 exe 缺失）
+                  "outcome_no_progress", "verified_no_progress_sig",
+                  "normalize_tool_outcome", "MAX_NO_PROGRESS_STEPS",
+                  "NO_PROGRESS_WINDOW"],
+        # v4.302.0：护栏接线与回收站计数真进包（旧 exe 常量表均缺失）。
+        "agent_exec_mixin": ["_guard_no_progress"],
+        "system_control_tools": ["desktop.ini", "$I"],
         # v4.225.0：统一意图对象（Intent 值对象 + ROUTE_REGISTRY 注册表
         # + classify 唯一入口 + 路由段自动生成）
         "intent": ["Intent", "classify", "ROUTE_REGISTRY", "_route_hint_text",

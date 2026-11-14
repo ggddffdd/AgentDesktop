@@ -279,6 +279,26 @@
   底边仍可命中；七页横向滚动溢出均为 0。终稿见 `_dev_history/ui_301_small_*.png`，
   导演台修正终稿为 `_dev_history/ui_301_small_director_final.png`。
 
+### 4.7 循环收尾契约（v4.302.0·硬性）
+
+实机事故：2026-11-14 主会话 39 次工具调用尝试、25 次真执行，回执一直是
+「回收站 0 项」，最终 829280/800000 token 预算熔断；同段 87 次模型调用里
+82 次带 `tool_choice=required`。
+
+- **required 只管首步**：`ui_routing.count_prior_tool_results()` 只数最后一条真实
+  用户消息之后的回执；`ui._agent_call()` 的 `_tool_intent_required` 必须等于
+  「有工具意图 且 本轮回执数为 0」。`force_required` / `redo` 是主循环明确强制，
+  不并入这个收敛条件。
+- **证据计数只认真实删除项**：`_count_recycle_items()` 排除 `desktop.ini` 与
+  `$I*` 元数据；不得退回 `len(files)` 一把全算。
+- **判重看结果**：`agent_text.outcome_no_progress()` 归一化证据编号 / 时间戳 / 空白后，
+  比较最近 3 条带 `name` 的真实工具回执；框架注入的无 `name` 拦截提示不计入。
+  白名单 `_IDEMPOTENT_READ` 由 `agent.py` 单一真源传入 mixin，不另抄。
+- **核验通过也要早停**：`verified_no_progress_sig()` 在 `verified=True` 且有回执时
+  给出签名；`MAX_NO_PROGRESS_STEPS=3` 是比核验未过路径（8 步）更短的阈值。
+- **文件红线**：纯判据在 `agent_text.py`，护栏接线在 `agent_exec_mixin.py`，
+  `agent.py` 只留一行调用点，保持 < 2400 行。
+
 ## 5. Layout Principles（间距 / 网格 / 留白）
 
 - **v4.200.0：token 已立**（不再是建议）。空白处的荒罢了三年，现在有真身了。

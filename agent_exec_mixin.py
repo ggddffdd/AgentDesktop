@@ -94,6 +94,31 @@ class AgentExecMixin(object):
         except Exception:
             pass
 
+    def _guard_no_progress(self, tool_calls, idempotent_read):
+        """v4.302.0：连续多次执行同一工具且回执一字未变 → 整批拦截，逼模型收尾。
+
+        旧的「同参数全等」护栏只看工具名+参数，模型改个变量名就绕过去；
+        本护栏只看「最近 N 条真实回执有没有推进」。白名单由 agent.py 传入
+        （`_IDEMPOTENT_READ` 单一真源），不在本文件另抄一份判定，避免漂移。
+        返回 True 表示已拦截、调用方应直接 return。
+        """
+        import agent_text
+        names = {tc.get("function", {}).get("name", "")
+                 for tc in (tool_calls or ()) if isinstance(tc, dict)}
+        if (not names or (names & idempotent_read)
+                or not agent_text.outcome_no_progress(self.messages)):
+            return False
+        self.tool_log.emit({
+            "name": "护栏", "args": "",
+            "result": "连续多次执行同一工具且结果一字未变，已拦截空转，请直接给出正文回答。",
+        })
+        self._fill_missing_tool_receipts(
+            tool_calls,
+            "（系统提示：该工具连续多次返回相同结果、任务没有进展，"
+            "已拦截本批调用，请直接基于已有信息给出正文回答。）")
+        self._guard_blocked = True
+        return True
+
     def _tool_sig_of(self, tool_call):
         """取单个 tool_call 的执行签名（与批内去重、死循环护栏同口径）。"""
         try:

@@ -238,13 +238,17 @@ def part_b():
             order.append(("guard", i))
         elif l.strip() == "elif force_tool:":
             order.append(("force_tool", i))
-        elif l.strip().startswith("elif (force_required or redo or _tool_intent)"):
+        elif l.strip().startswith("elif (force_required or redo or _tool_intent_required)"):
             order.append(("required", i))
     check("分支顺序：guard → force_tool → required",
           [k for k, _ in order] == ["guard", "force_tool", "required"],
           f"实际 {[k for k, _ in order]}")
     check("强制 required 一行仍被保留（真指令路径不受影响）",
           'body["tool_choice"] = "required"' in ui)
+    check("v4.302 工具意图只在尚无工具回执时强制 required（留出收尾出口）",
+          "_tool_intent_required = (" in ui
+          and "ui_routing.count_prior_tool_results(messages) == 0" in ui
+          and "elif (force_required or redo or _tool_intent_required)" in ui)
 
     print("\n-- B4 内部注入消息带 _internal 标记（不被判据误伤） --")
     n_nudge = len(re.findall(r"self\._AGENT_NUDGE,\s*\n\s*\"_internal\": True",

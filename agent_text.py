@@ -897,3 +897,63 @@ def tool_result_backend_down(text):
     if not isinstance(text, str) or not text:
         return False
     return any(k in text for k in _BACKEND_DOWN_MARKS)
+
+
+# ============================================================
+# v4.302.0：结果无进展判据（纯函数，护栏与早停共用同一真源）
+#
+# 起因：2026-11-14 主会话里模型把命令里的 `;` 改成换行、换个变量名，
+# 「工具名+参数全等」护栏 9 次拦截只挡住完全相同的那批，其余 25 次照跑，
+# 回执全是「回收站 0 项」。参数会变，但「这一步有没有推进」不会骗人。
+# 判定放在本文件（v4.216 立的纯判据层），接线在 agent_exec_mixin.py，
+# agent.py 只留一行调用点，守住 < 2400 行拆分红线。
+# ============================================================
+NO_PROGRESS_WINDOW = 3
+MAX_NO_PROGRESS_STEPS = 3
+_EV_TAG = re.compile(r"[\[⟦【]EV#\d+[\]⟧】]")
+_TIMESTAMP = re.compile(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2})?")
+
+
+def normalize_tool_outcome(name, content):
+    """把工具回执归一成可比签名：剥证据编号/时间戳/空白，防「同结果不同包装」漏判。"""
+    s = _EV_TAG.sub("", str(content or ""))
+    s = _TIMESTAMP.sub("<time>", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return (str(name or ""), s[:240])
+
+
+def outcome_no_progress(messages, window=NO_PROGRESS_WINDOW):
+    """最近 window 条真实工具回执是否同一工具、同一结果（= 连续几步毫无进展）。
+
+    只认带 name 的 role=tool 回执：框架塞的「已拦截」提示没有 name，
+    不能算作一次执行，否则护栏会自我计数、把收尾也一并拦掉。
+    """
+    items = []
+    for m in reversed(messages or []):
+        if not isinstance(m, dict) or m.get("role") != "tool":
+            continue
+        nm = m.get("name")
+        if not nm:
+            continue
+        items.append(normalize_tool_outcome(nm, m.get("content")))
+        if len(items) >= window:
+            break
+    return len(items) >= window and len(set(items)) == 1
+
+
+def last_tool_outcome(messages):
+    """最近一条真实工具回执的规范化签名（供核验通过后的空转早停比对）。"""
+    for m in reversed(messages or []):
+        if isinstance(m, dict) and m.get("role") == "tool" and m.get("name"):
+            return normalize_tool_outcome(m.get("name"), m.get("content"))
+    return None
+
+
+def verified_no_progress_sig(messages, verified):
+    """核验「通过」但最近工具回执没变时的停滞签名；未通过/无回执返回空串。"""
+    if not verified:
+        return ""
+    outcome = last_tool_outcome(messages)
+    if outcome is None:
+        return ""
+    return "verified_same:" + repr(outcome)

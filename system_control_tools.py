@@ -1027,7 +1027,17 @@ def _count_recycle_items():
         if not os.path.isdir(base):
             continue
         for _root, _dirs, files in os.walk(base):
-            total += len(files)
+            # v4.302.0：只数真实删除项。回收站目录里长期存在两类系统文件，
+            # 它们不属于「用户删掉的东西」，Clear-RecycleBin 也不会清掉：
+            #   · desktop.ini —— 每个盘回收站目录自带的桌面配置；
+            #   · $I*        —— 与 $R* 内容文件一一对应的元数据（大小/原路径）。
+            # 旧实现用 len(files) 全算，实测清空后仍报「还有 3 项」→ ok=False，
+            # 模型据此反复复检，成为死循环的起点。只排除这两类，其余照数，
+            # 不假设所有删除项都叫 $R*（保留非标准命名的兼容性）。
+            total += sum(
+                1 for f in files
+                if f.lower() != "desktop.ini" and not f.upper().startswith("$I")
+            )
     return total
 
 

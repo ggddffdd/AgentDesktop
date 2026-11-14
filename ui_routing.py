@@ -93,6 +93,31 @@ def _is_complex_v1(messages, routing):
     return total > threshold
 
 
+def count_prior_tool_results(messages):
+    """v4.302.0：最后一条真实用户消息之后已经落地了多少条工具回执。
+
+    `tool_choice=required` 的唯一职责是「首步别用文字演工具」。模型一旦真调过
+    工具，继续每步 required 就堵死了它输出纯文本收尾的出口 —— 实测 2026-11-14
+    主会话 87 次模型调用里 82 次被强制 required，回收站已回执「0 项」后仍连调
+    25 次 run_command，最终撞 80 万 token 预算熔断。
+
+    只数最后一条用户消息**之后**的回执：续跑 / 用户新指令不会误伤；
+    框架注入的 `_internal` 用户消息按 `_needs_tool_intent` 同口径跳过。
+    """
+    n = 0
+    for msg in reversed(messages or []):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "user":
+            if msg.get("_internal"):
+                continue
+            break
+        if role in ("tool", "tool_log"):
+            n += 1
+    return n
+
+
 def _needs_tool_intent(messages, host):
     """v4.98 工具意图检测：用户明显要 Agent 用工具干活（改/写/编辑文件、跑 python、
     搜索、生图生视频、读取分析文件、调用工具/自动化等）。这类任务弱模型（Agnes）极易
