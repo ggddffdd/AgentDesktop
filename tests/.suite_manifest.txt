@@ -149,6 +149,7 @@ test_skill_install_gate_259.py
 test_skill_meta_226.py
 test_software_control_2b.py
 test_split_216.py
+test_startup_grace_303.py
 test_state_consistency_292.py
 test_status_len_2091.py
 test_stop_toast_281.py

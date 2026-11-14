@@ -308,6 +308,14 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             except Exception as e:
                 log.warning("记忆加密解锁失败: %s", e)
         self.store = SessionStore()
+        # v4.303.0：启动宽限期起点；并修正「上次卡死后 active 停在自动化会话」，
+        # 否则首屏就会全量重建那个几百条的巨型会话，一打开就卡。
+        self._automation_grace_started = time.monotonic()
+        _fallback_sid = automation.pick_user_active_sid(
+            self.store.sessions, self.store.active_sid)
+        if _fallback_sid:
+            self.store.switch(_fallback_sid)
+            log.info("启动时活动会话落在自动化专属会话，已切回 %s", _fallback_sid)
         # v4.88：自动化任务（定时提醒 / 定时执行 Agent 任务）
         self.automation_store = automation.AutomationStore()
         self._auto_timer = QTimer(self)
@@ -2846,7 +2854,14 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         try:
             self._reload_automation_if_changed()
             now = datetime.now()
+            _grace = automation.startup_grace_blocks(
+                getattr(self, "_automation_grace_started", None),
+                time.monotonic())
             for t in self.automation_store.list_enabled():
+                # v4.303.0：启动宽限期内只放过提醒类，执行任务稍后再补跑。
+                if (_grace and t.get("action", automation.ACT_REMIND)
+                        == automation.ACT_RUN):
+                    continue
                 if not automation.ready_to_fire(t, now):
                     continue
                 action = t.get("action", automation.ACT_REMIND)
@@ -2981,7 +2996,9 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             self.store.save()
             # v4.297.0：不再主动抢页。任务在专属会话里跑，跨视图 toast 会通知；
             # 用户停在哪个页面就留在哪，想看进度自己点过去。
-            self._render_messages(force_bottom=True)
+            # v4.303.0：这里不再触发渲染。切 active 到几百条的 auto_{id} 后
+            # 立刻全量重建 DOM 是启动期 AppHang 的直接来源；后台渲染统一由
+            # _render_messages 的自动化分支跳过，用户点进去时再按需渲染。
             # v4.215.0：_agent_run 据此应用受限工具集（full_tools=True 除外）
             self._auto_task_active = task
             # 锁必须在 worker 启动前置上，同一次 tick 里的下一个任务才会让路。
@@ -5118,6 +5135,15 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
 
     def _render_messages(self, force_bottom=False, follow_nav=False):
         session = self.store.active()
+        # v4.303.0：后台自动化任务运行期间，任何后台渲染（过程气泡 / 工具卡 /
+        # 流式 delta）都直接跳过 —— 否则每次都会拿 auto_{id} 几百条长证据
+        # 全量重建 DOM，把 WebEngine 渲染进程拖到 AppHang。用户主动点进该
+        # 会话时 follow_nav=True，仍照常渲染，随时可看进度。
+        if (not follow_nav
+                and getattr(self, "_auto_task_active", None) is not None
+                and str(getattr(session, "sid", "") or "").startswith(
+                    automation.SESSION_SID_PREFIX)):
+            return
         # v4.297.0：切页决策抽到 ui_focus.page_after_render。后台渲染（过程气泡 /
         # 工具卡 / 流式 delta / 自动化收尾）一律不抢焦点；只有用户主动动作
         # 显式 follow_nav=True 才按老规矩切页（有内容→对话页 / 空会话→首页）。
@@ -5143,16 +5169,18 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             # v4.120：全量重建只渲染最近 MAX_RENDERED_MSGS 条——长会话（1000+ 条）
             # 一次性塞进 DOM 会把渲染进程撑到 OOM 崩溃（白屏真凶）。增量追加不受限，
             # idx 保持原消息序号（对话内搜索跳转定位不错位）。
-            if len(msgs) > MAX_RENDERED_MSGS:
-                _skipped = len(msgs) - MAX_RENDERED_MSGS
+            _limit = automation.render_limit_for_sid(
+                getattr(session, "sid", ""), MAX_RENDERED_MSGS)
+            if len(msgs) > _limit:
+                _skipped = len(msgs) - _limit
                 parts = [
                     f'<div class="trim-note" data-hidden="{_skipped}" '
                     f'style="text-align:center;color:{THEME["faint"]};'
                     f'font-size:12px;margin:12px 0;">'
                     f'—— 更早的 {_skipped} 条消息已折叠（仅渲染最近 '
-                    f'{MAX_RENDERED_MSGS} 条，保护渲染进程）——</div>'
+                    f'{_limit} 条，保护渲染进程）——</div>'
                 ]
-                parts += self._build_parts(msgs[-MAX_RENDERED_MSGS:],
+                parts += self._build_parts(msgs[-_limit:],
                                            start_idx=_skipped)
             else:
                 parts = self._build_parts(msgs)

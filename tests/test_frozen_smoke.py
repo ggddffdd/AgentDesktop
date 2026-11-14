@@ -243,7 +243,12 @@ def main():
                      "现在后台渲染（默认）一律不切", "已在目标页不重复切",
                      # v4.298.0：空工具表不携带 tool_choice 的发送前护栏
                      "guard_tool_choice"],
-        "automation": ["STOP_REASON_TEXT", "history_for_agent", "stop_reason",
+        "automation": [
+                       # v4.303.0：启动宽限与自动化渲染减负（双向验过旧 exe 缺失）
+                       "STARTUP_GRACE_SEC", "MAX_RENDERED_AUTOMATION_MSGS",
+                       "startup_grace_blocks", "pick_user_active_sid",
+                       "render_limit_for_sid",
+                       "STOP_REASON_TEXT", "history_for_agent", "stop_reason",
                        "token 预算用尽了，这次不算完成",
                        "跑超时了，这次不算完成",
                        "总时长到上限了，这次不算完成",
@@ -303,7 +308,12 @@ def main():
         # 实现在 video-agent 的内核里（core_agnes 只是桥接，所以标记要打在 core.agnes）
         "core.agnes": ["resume_video", "cancel_token", "AgnesCancelled",
                        "is_cancel_error", "check_cancel", "on_submit"],
-        "ui": ["blocks_tool_call", "why_blocked", "_guard_block",
+        "ui": [
+               # v4.303.0：启动归一化、tick 宽限与渲染上限接线真进包
+               "_automation_grace_started", "_fallback_sid",
+               "startup_grace_blocks", "pick_user_active_sid",
+               "render_limit_for_sid",
+               "blocks_tool_call", "why_blocked", "_guard_block",
                # v4.168.1：伪强制注入修复 —— 参数提示按 schema 取 + 工具表校验
                "_tool_param_hint", "_tool_in_list",
                "不要臆造参数", "以最后一条用户消息为准",

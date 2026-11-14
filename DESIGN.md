@@ -299,6 +299,26 @@
 - **文件红线**：纯判据在 `agent_text.py`，护栏接线在 `agent_exec_mixin.py`，
   `agent.py` 只留一行调用点，保持 < 2400 行。
 
+### 4.8 启动期自动化任务契约（v4.303.0·硬性）
+
+2026-11-14 实机 `Application Hang`（AppHangB1）之后定下三条，都是护栏，不是新功能：
+
+1. **启动安静期**：`ChatWindow.__init__` 记录 `time.monotonic()`；
+   `_on_automation_tick` 在 90 秒内只放行 `ACT_REMIND`，`ACT_RUN` 一律跳过。
+   判断走 `automation.startup_grace_blocks()` 纯函数，坏值 / 时钟倒退按
+   「仍在宽限」保守处理，宁可稍后再跑也不抢启动期主线程。
+2. **后台不重建 DOM**：定时执行任务运行期间，`_render_messages` 对
+   `follow_nav=False` 的后台渲染直接返回；用户主动点进该会话
+   （`follow_nav=True`）仍照常渲染。自动化专属会话全量重建上限 40 条，
+   普通会话仍 300 条，落盘历史一条不删，随时可回放。
+3. **active 归一化**：启动时若 `store.active_sid` 落在 `auto_` 前缀会话，
+   按 `created` 倒序切回最近的普通会话，避免上次卡死遗留的状态让首屏
+   再次全量渲染几百条长证据。
+
+三个纯函数集中在 `automation.py`，`ui.py` 只留接线。判据见
+`tests/test_startup_grace_303.py`，扰动见 `_perturb/_perturb_startup_grace_303.py`。
+v4.297 的模型侧薄投喂视图 `history_for_agent()` 保持不变。
+
 ## 5. Layout Principles（间距 / 网格 / 留白）
 
 - **v4.200.0：token 已立**（不再是建议）。空白处的荒罢了三年，现在有真身了。

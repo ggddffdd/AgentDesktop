@@ -256,9 +256,17 @@ check("D6 _flush_render 不偷偷打开 follow_nav", "follow_nav=True" not in _f
 _fire = fn_seg(UI, "_fire_automation_run")
 check("D7 自动化任务启动不再主动 _switch_nav(0) 抢页",
       "self._switch_nav(0)" not in _fire, "fire 里还留着 _switch_nav(0)")
-check("D8 自动化启动的渲染是后台渲染",
-      "self._render_messages(force_bottom=True)" in _fire
-      and "follow_nav=True" not in _fire)
+# v4.303.0：D8 语义升级。旧实现在 fire 里调一次「后台渲染」，但切 active
+# 到几百条的 auto_{id} 后，这一次就是全量重建 DOM 的 AppHang 起点。现在
+# fire 不渲染，后台渲染统一由 _render_messages 开头的自动化分支跳过。
+# 判据保留且更严：两处接线都要在，缺一处就红。
+check("D8 自动化启动不重建巨型会话 DOM（后台渲染由 _render_messages 跳过）",
+      "self._render_messages(force_bottom=True)" not in _fire
+      and "follow_nav=True" not in _fire
+      and "not follow_nav" in _render
+      and 'getattr(self, "_auto_task_active", None) is not None' in _render
+      and "automation.SESSION_SID_PREFIX" in _render
+      and "automation.render_limit_for_sid(" in _render)
 _restore = fn_seg(UI, "_restore_session_after_automation")
 check("D9 自动化收尾切回会话也不抢页",
       "follow_nav=True" not in _restore

@@ -326,10 +326,10 @@ check("E2 tool_choice 四个分支仍在（只加兜底，不删路由）",
       _ac.count('body["tool_choice"]') >= 4, "实际 %d 处" % _ac.count('body["tool_choice"]'))
 check("E3 落盘格式与信号签名不动",
       "def history_for_agent(" in AUTO and "board_update" not in FOCUS)
-check("E4 版本已传导到 v4.302.0",
-      'APP_VERSION = "v4.302.0"' in read("config.py")
-      and 'VERSION = "v4.302.0"' in read("agent_loop.py")
-      and "## v4.302.0" in read("CHANGELOG.md"))
+check("E4 版本已传导到 v4.303.0",
+      'APP_VERSION = "v4.303.0"' in read("config.py")
+      and 'VERSION = "v4.303.0"' in read("agent_loop.py")
+      and "## v4.303.0" in read("CHANGELOG.md"))
 check("E5 早停不用「跳页」解决（上一波成果不回退）",
       "def page_after_render(" in FOCUS
       and 'setCurrentIndex(1)' not in fn_seg(UI, "_render_messages"))

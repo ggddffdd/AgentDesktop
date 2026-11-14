@@ -52,6 +52,63 @@ ACTION_LABELS = {
     ACT_RUN: "执行任务",
 }
 
+# v4.303.0：启动宽限期。构造函数里 QTimer 立刻 start，1 秒后首个 tick 就会
+# 把「今天还没成功跑过」的 daily 任务判为到期并补跑；此时窗口还在初始化
+# （技能扫描 / RAG / WebEngine 延迟创建），Agent 一抢主线程就容易 AppHang。
+# 实测 2026-11-14 16:47:51 启动 → 16:47:52 首个 tick → 16:49:56 Windows
+# Application Hang (AppHangB1)。给 UI 一段安静期，错过点位的任务稍后再跑。
+STARTUP_GRACE_SEC = 90.0
+
+# 自动化专属会话的 DOM 渲染上限。落盘历史一条不删（随时可回放），但全量重建
+# 时只画最近这些条：590/625 条、单条 web_fetch 回执 400+ 行的会话一次塞进
+# WebEngine 会把渲染进程拖死。普通会话仍用 config.MAX_RENDERED_MSGS。
+MAX_RENDERED_AUTOMATION_MSGS = 40
+
+
+def startup_grace_blocks(started_at, now, grace_sec=STARTUP_GRACE_SEC):
+    """程序刚启动的宽限期内是否拦住定时「执行任务」。
+
+    started_at / now 均为 time.monotonic() 读数（秒）。坏值 / 时钟倒退一律
+    True（保守：宁可稍后再跑，也不在启动最脆弱期抢占 UI 主线程）。
+    提醒类任务不走这里，只有 ACT_RUN 受宽限约束。
+    """
+    try:
+        elapsed = float(now) - float(started_at)
+    except (TypeError, ValueError):
+        return True
+    if elapsed < 0:
+        return True
+    return elapsed < float(grace_sec)
+
+
+def pick_user_active_sid(sessions, active_sid, prefix=SESSION_SID_PREFIX):
+    """启动时若 active 停在自动化专属会话，挑一个普通会话切回去。
+
+    上一次任务被系统判定卡死后，sessions.json 的 active 会停在 auto_{id}；
+    下次启动首屏就全量渲染那个几百条的会话，形成「一打开就卡」的循环。
+    返回应切换的普通会话 sid；active 本来就正常或没有普通会话时返回 None
+    （调用方不动 store）。按 created 倒序取最近的一个。
+    """
+    if not str(active_sid or "").startswith(prefix):
+        return None
+    cand = []
+    for sid, s in (sessions or {}).items():
+        if str(sid).startswith(prefix):
+            continue
+        cand.append((str(getattr(s, "created", "") or ""), str(sid)))
+    if not cand:
+        return None
+    cand.sort(reverse=True)
+    return cand[0][1]
+
+
+def render_limit_for_sid(sid, normal_limit, prefix=SESSION_SID_PREFIX):
+    """按会话类型选 DOM 渲染上限：自动化专属会话用更小的值。"""
+    if str(sid or "").startswith(prefix):
+        return min(int(normal_limit), MAX_RENDERED_AUTOMATION_MSGS)
+    return int(normal_limit)
+
+
 
 def new_task(name, action, message, schedule_type, at_time="09:00",
              at_date="", weekday=0, interval_minutes=60, enabled=True,
