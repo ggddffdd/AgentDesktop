@@ -398,12 +398,14 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         self.manager = QNetworkAccessManager()
         self.search_manager = QNetworkAccessManager()
         log.info("程序启动，模型=%s", cfg["model"])
-        # v4.36 MCP 服务器异步初始化（不阻塞 UI 启动）
-        # v4.59：初始化完成后更新状态栏显示 MCP 工具数
+        # v4.306.0 F-07：MCP 初始化已由 main.py 丢到后台线程，主线程绝不自己同步跑。
+        # 这里只做"状态栏更新"：延时轮询等后台线程结束（有界，不阻塞事件循环），
+        # 再读结果展示工具数/跳过提示。首帧 UI 不被 MCP 慢服务器拖住。
         def _init_mcp():
-            # 启动时 main.py 已经试过一次。失败的不要再拉起第二遍。
-            if not getattr(config, "mcp_init_attempted", False):
-                config.init_mcp_clients(self.cfg)
+            try:
+                config.mcp_init_wait(timeout=0.1)
+            except Exception:
+                pass
             hints = list(getattr(config, "mcp_skip_hints", None) or [])
             total_tools = sum(len(c.tools) for c in config.mcp_clients)
             if total_tools:
@@ -413,6 +415,8 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             if hints:
                 self.status_label.setText(hints[0])
         QTimer.singleShot(100, _init_mcp)
+        # 后台线程可能尚未结束，1.5s 后再刷一次状态栏（不阻塞、幂等）。
+        QTimer.singleShot(1500, _init_mcp)
 
         # 注：toast 挂载点在 __init__ **末尾**（见 _mount_toast），
         # 因为它要挂在 main_stack 上 —— 那时 main_stack 才建好。

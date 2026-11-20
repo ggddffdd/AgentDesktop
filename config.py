@@ -77,7 +77,7 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.305.0"
+APP_VERSION = "v4.306.0"
 APP_BUILD_DATE = "2026-11-20"
 
 # ---------- DeepSeek 错峰窗口（唯一配置处）----------
@@ -2032,8 +2032,13 @@ def tool_consistency_gaps():
 def get_all_tools(cfg):
     """返回 TOOL_DEFS + 所有已连接 MCP 服务器的工具定义合并列表。
 
-    调用前需确保 init_mcp_clients 已完成。
+    v4.306.0 F-07：MCP 改为后台初始化，这里在取工具前先等后台线程结束（有界
+    5s），保证首次对话不会漏掉 MCP 工具。线程已结束时 join 立即返回，无开销。
     """
+    try:
+        mcp_init_wait(timeout=5.0)
+    except Exception:
+        pass
     tools = list(TOOL_DEFS)
     # v4.264：一致性从「只打日志」升为硬失败。漏注册 / 未登记且兜底 EXTERNAL
     # 会在取工具表时直接拒绝，而不是带着残缺清单继续跑。
@@ -2046,6 +2051,51 @@ def get_all_tools(cfg):
     # v4.111 工具白名单过滤（空=全开，行为零变化）。放在 MCP 合并**之后**，
     # 这样 MCP 工具也一起受控——它们同样按字符算钱。
     return _filter_enabled_tools(tools, cfg)
+
+
+# v4.306.0 F-07：MCP 后台初始化线程句柄（供 ui 状态栏 join / 首次对话等待）。
+mcp_init_thread = None
+
+
+def start_mcp_init_async(cfg, budget_sec=None):
+    """F-07：后台启动 MCP 初始化，主线程零阻塞。
+
+    原 main.py 在 QApplication 之前同步调用 init_mcp_clients，每服务器
+    initialize + tools/list 各 30s（线性叠加），用户看到冷启动长时间白屏。
+    这里把整段初始化丢进 daemon 线程：主线程立即返回继续建 QApplication。
+    ui 侧通过 mcp_init_thread 查状态并在首次需要工具时 join。
+
+    每个 client 的单服务器预算由 mcp_client.start(timeout=...) 收口（默认 5s），
+    不会因某个半死服务器长期挂住。线程内异常全部吞掉并记日志，不影响启动。
+    """
+    global mcp_init_thread
+    try:
+        import mcp_guard_306 as _guard
+        budget = budget_sec if _guard.server_budget_ok(budget_sec) else _guard.DEFAULT_SERVER_BUDGET_SEC
+    except Exception:
+        budget = 5.0
+
+    def _run():
+        try:
+            init_mcp_clients(cfg)
+        except Exception as e:
+            log.error("MCP 后台初始化异常（不影响启动）: %s", e)
+
+    mcp_init_thread = threading.Thread(target=_run, name="mcp-init", daemon=True)
+    mcp_init_thread.start()
+    return mcp_init_thread
+
+
+def mcp_init_wait(timeout=None):
+    """等待后台 MCP 初始化线程结束（供 ui 状态栏 / 首次对话取工具前调用）。
+
+    返回 True 表示线程已结束（或本就没启动），False 表示超时仍未结束。
+    """
+    t = mcp_init_thread
+    if t is None or not t.is_alive():
+        return True
+    t.join(timeout=timeout)
+    return not t.is_alive()
 
 
 def shutdown_mcp():

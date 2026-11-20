@@ -166,6 +166,12 @@ want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         # config / tools 已在 want 中；新模块 smallfix_guard_305 必须一并加入，
         # 否则它的标记全假红（v4.304 踩过同类坑）。
         "smallfix_guard_305",
+        # v4.306.0：MCP F-06/F-07 的纯判据模块（mcp_client/config/main 顶层 import）。
+        # 不进 want 则它的标记全假红（v4.304/305 踩过同类坑）。
+        # mcp_client 也要进 want：它的接线标记钉在模块常量表里。
+        # ⚠️ main.py 不进 want——它是 PyInstaller 入口脚本，编进 bootloader 不在 PYZ TOC，
+        # 加进来会「模块在 TOC」必红（v4.306 踩过）。main 的接线靠源码测试覆盖。
+        "mcp_guard_306", "mcp_client",
         ]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
@@ -294,7 +300,9 @@ def main():
                    # v4.177.0：历史字符预算（0=关闭）
                    "history_char_budget",
                    # v4.305.0 F-04：技能归一化判据接线（旧包缺失）
-                   "skill_enabled_decision", "smallfix_guard_305"],
+                   "skill_enabled_decision", "smallfix_guard_305",
+                   # v4.306.0 F-07：MCP 后台初始化接线（旧包缺失）
+                   "start_mcp_init_async", "mcp_init_wait", "mcp_init_thread"],
         "route_log": ["log_tool_decision", "event=tool"],
         "tool_audit": ["AUDIT_LOCK", "build_record", "args_preview", "origin",
                        "tool_audit.jsonl", "legion_tool_audit.jsonl"],
@@ -316,6 +324,16 @@ def main():
                                "artifact_snapshot_root",
                                "count_event_filter_defs",
                                "normalize_skill_key", "script_dir"],
+        # v4.306.0：MCP F-06/F-07 纯判据真进包（24 个标记双向验过旧 exe 常量表全缺失）。
+        "mcp_guard_306": ["stderr_policy", "serialized_write_ok", "pending_result",
+                          "init_should_be_background", "server_budget_ok", "split_budget",
+                          "count_locked_stdin_writes", "count_drain_starts",
+                          "MAX_SERVER_BUDGET_SEC", "STDERR_DRAIN"],
+        # v4.306.0 F-06：MCP 客户端接线（写锁 / stderr drain / 预算拆分 / guard import）
+        "mcp_client": ["_write_lock", "_drain_stderr", "_stderr_thread",
+                       "_budget_sec", "_init_timeout", "_tools_timeout", "mcp_guard_306"],
+        # 注：main.py 是 PyInstaller 入口脚本，不在 PYZ TOC，故不列入 marks（v4.306 踩过）。
+        # main 的后台初始化接线由 tests/test_mcp_guard_306.py 的源码判据（B7）覆盖。
         "memory_store": ["fail_closed_decrypt"],
         "search": ["url_access_policy", "read_response_capped",
                    "_CheckedRedirect", "gunzip_capped"],

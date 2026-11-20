@@ -366,6 +366,34 @@ v4.297 的模型侧薄投喂视图 `history_for_agent()` 保持不变。
 `_perturb/_perturb_smallfix_305.py`（9 组）。真实 Qt 冒烟验证了合并后焦点联动与
 搜索快捷键均生效（合并前焦点联动不可用）。
 
+### 4.11 MCP 外部工具可靠性契约（v4.306.0·F-06/F-07 + 隐藏 bug）
+
+承接 §4.10，处理审查报告最后两项 P2，均为缺陷修复、非新功能。判据集中在
+`mcp_guard_306.py`，`mcp_client.py` / `config.py` / `main.py` / `ui.py` 只留接线。
+大哥机器实际启用了 filesystem MCP server（`npx`），本节缺口均真实影响使用。
+
+1. **stderr 必须被排空（F-06a）**：`stderr_policy()` 只允许 `drain` / `devnull`，
+   禁止裸 `subprocess.PIPE` 无人读（写满 4~64KB 管道卡死子进程）。`McpClient._drain_stderr`
+   后台线程按行读空 stderr，只保留尾部 64KB（`stderr_tail_kept` 判上限）。
+2. **stdin 写必须串行（F-06b）**：`serialized_write_ok()` 要求整条 JSON 的
+   `write + flush` 在同一把 `_write_lock` 内。`count_locked_stdin_writes()` 用 AST
+   确认 `_send_request` / `_send_notification` 两处 write 都在锁内（应为 2）——
+   纯字符串搜 `_write_lock` 会被定义/其他引用骗过，故必须 AST 计数。
+3. **结果从 pending 取、不从 event 下标取（隐藏 bug）**：`pending_result()` 返回
+   `entry["result"]`。旧代码 `return event["result"]` 对 `threading.Event` 下标访问，
+   server 一旦正常回包即抛 `TypeError`（实测复现）——MCP 根本连不上。`count_event_subscript_return`
+   用 AST 保证此类写法为 0。
+4. **初始化后台化 + 单服务器短预算（F-07）**：`init_should_be_background()` 要求
+   后台线程且 QApplication 已建。`config.start_mcp_init_async()` 把整段初始化丢进
+   daemon 线程，主线程零阻塞（实测返回 0.007s）；`mcp_init_wait()` 供 UI 状态栏与
+   `get_all_tools()` 在取工具前有界等待（实测慢服务器 2s 场景工具不漏）。
+   `server_budget_ok` / `split_budget` 把单服务器 initialize+tools/list 总预算收口到
+   ≤5s（旧为 30s+30s），杜绝线性叠加导致的启动白屏。
+
+判据见 `tests/test_mcp_guard_306.py`（40 条），扰动见
+`_perturb/_perturb_mcp_guard_306.py`（10 组，改坏必红）。假 MCP 子进程实测了
+「持续写 10 万行 stderr 仍能回包、5 路并发不写乱、正常回包不崩溃、慢服务器不阻塞启动」。
+
 ## 5. Layout Principles（间距 / 网格 / 留白）
 
 - **v4.200.0：token 已立**（不再是建议）。空白处的荒罢了三年，现在有真身了。

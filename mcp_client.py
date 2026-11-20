@@ -12,7 +12,14 @@ import json
 import threading
 import logging
 
+# v4.306.0 F-06/F-07：纯判据接线（stderr 策略 / 写串行化 / pending 结果取回 /
+# 单服务器预算拆分）。新模块须同步进 frozen_smoke 的 want 列表。
+import mcp_guard_306 as _guard
+
 log = logging.getLogger("dsdesktop")
+
+# stderr drain 环形缓冲上限：保留尾部 64KB 供排障，超出截断（防无限占内存）。
+STDERR_TAIL_LIMIT = 64 * 1024
 
 
 def _looks_like_path(text):
@@ -67,11 +74,27 @@ class McpClient:
         self._lock = threading.Lock()
         self._reader_thread = None
         self._running = False
+        # F-06b：stdin 写入专用锁——write+flush 必须在同一把锁内串行化，
+        # 否则 5 路并发 tools/call 会把 JSON-RPC 行交错写乱。
+        self._write_lock = threading.Lock()
+        # F-06a：stderr drain 线程 + 尾部日志环形缓冲。
+        self._stderr_thread = None
+        self._stderr_tail = b""
+        # F-07：单服务器总预算（initialize + tools/list 合计），默认 5s。
+        self._budget_sec = _guard.DEFAULT_SERVER_BUDGET_SEC
+        self._init_timeout, self._tools_timeout = _guard.split_budget(self._budget_sec)
 
-    def start(self):
+    def start(self, timeout=None):
         """启动 MCP 服务器进程，发送 initialize 请求，获取 tools/list。
         返回 True/False 表示是否成功启动。
+
+        v4.306.0 F-07：timeout 为单服务器总预算（秒），由调用方注入；非法/缺省
+        值由 guard 收口到默认 5s，再用 split_budget 拆成 initialize / tools/list
+        两段超时，杜绝旧的 30s+30s=60s 线性叠加。
         """
+        self._budget_sec = (timeout if _guard.server_budget_ok(timeout)
+                            else _guard.DEFAULT_SERVER_BUDGET_SEC)
+        self._init_timeout, self._tools_timeout = _guard.split_budget(self._budget_sec)
         try:
             cmd = [self.command] + self.args
             merged_env = os.environ.copy()
@@ -94,13 +117,17 @@ class McpClient:
         self._running = True
         self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
         self._reader_thread.start()
+        # F-06a：stderr 必须 drain——Node/npx 类服务器日志多，管道写满（4~64KB）
+        # 会卡死子进程，进而无法处理 stdin 请求（MCP 偶发全部超时）。
+        self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
+        self._stderr_thread.start()
 
         # 发送 initialize 请求
         init_result = self._send_request("initialize", {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
             "clientInfo": {"name": "deepseek-desktop", "version": "1.0.0"},
-        })
+        }, timeout=self._init_timeout)
         if init_result is None or "error" in init_result:
             log.error("MCP [%s] initialize 失败: %s", self.name, init_result)
             self.stop()
@@ -110,7 +137,7 @@ class McpClient:
         self._send_notification("notifications/initialized", {})
 
         # 获取 tools/list
-        tools_result = self._send_request("tools/list", {})
+        tools_result = self._send_request("tools/list", {}, timeout=self._tools_timeout)
         if tools_result is None:
             log.error("MCP [%s] tools/list 失败", self.name)
             self.stop()
@@ -180,8 +207,33 @@ class McpClient:
                     self.process.kill()
                 except Exception:
                     pass
+            # F-06a：收尾时 drain 线程读到 EOF 自行退出，这里给一次短 join 防泄漏。
+            if self._stderr_thread is not None:
+                try:
+                    self._stderr_thread.join(timeout=1)
+                except Exception:
+                    pass
             self.process = None
         log.info("MCP [%s] 已关闭", self.name)
+
+    def _drain_stderr(self):
+        """F-06a：后台读空 stderr 管道，防止写满卡死子进程。
+
+        只保留尾部 STDERR_TAIL_LIMIT 字节供排障（环形截断），不无限占内存。
+        按行读并即时截断，npx 高频日志下也不会积压。
+        """
+        proc = self.process
+        try:
+            while self._running and proc is not None and proc.stderr:
+                line = proc.stderr.readline()
+                if not line:
+                    break
+                merged = self._stderr_tail + line
+                if _guard.stderr_tail_kept(len(merged), STDERR_TAIL_LIMIT):
+                    merged = merged[-STDERR_TAIL_LIMIT:]
+                self._stderr_tail = merged
+        except Exception as e:
+            log.debug("MCP [%s] stderr drain 退出: %s", self.name, e)
 
     def _reader_loop(self):
         """后台线程读取 stdout 响应（JSON-RPC 换行分隔）"""
@@ -204,8 +256,15 @@ class McpClient:
         except Exception as e:
             log.debug("MCP [%s] reader 退出: %s", self.name, e)
 
-    def _send_request(self, method, params=None):
-        """发送 JSON-RPC 请求，同步等待响应（超时 30s）"""
+    def _send_request(self, method, params=None, timeout=None):
+        """发送 JSON-RPC 请求，同步等待响应。
+
+        v4.306.0：
+          · F-06b——write+flush 全部在 _write_lock 内串行化，5 路并发不会写乱行；
+          · F-06c——从 pending entry 取 result（旧代码 `event["result"]` 对
+            threading.Event 下标访问，server 正常回包即抛 TypeError，MCP 根本没法用）；
+          · F-07——超时由调用方注入（拆分后的短超时），缺省回退 30s 兼容直调。
+        """
         if not self.process or self.process.poll() is not None:
             return None
         with self._lock:
@@ -218,22 +277,27 @@ class McpClient:
             "params": params or {},
         }
         event = threading.Event()
+        entry = {"event": event, "result": None}
         with self._lock:
-            self._pending[rid] = {"event": event, "result": None}
+            self._pending[rid] = entry
         try:
             line = json.dumps(req, ensure_ascii=False) + "\n"
-            self.process.stdin.write(line.encode("utf-8"))
-            self.process.stdin.flush()
+            # F-06b：整条 JSON 的 write + flush 必须同锁，否则并发交错成半行。
+            with self._write_lock:
+                self.process.stdin.write(line.encode("utf-8"))
+                self.process.stdin.flush()
         except Exception as e:
             log.error("MCP [%s] 发送请求失败: %s", self.name, e)
             with self._lock:
                 self._pending.pop(rid, None)
             return None
-        if not event.wait(30):
+        wait_sec = timeout if isinstance(timeout, (int, float)) and timeout > 0 else 30
+        if not event.wait(wait_sec):
             with self._lock:
                 self._pending.pop(rid, None)
             return None
-        return event["result"]
+        # F-06c：reader 把响应写在 entry["result"]，event 只是唤醒信号。
+        return _guard.pending_result(entry)
 
     def _send_notification(self, method, params=None):
         """发送 JSON-RPC 通知（无需响应）"""
@@ -246,7 +310,9 @@ class McpClient:
         }
         try:
             line = json.dumps(req, ensure_ascii=False) + "\n"
-            self.process.stdin.write(line.encode("utf-8"))
-            self.process.stdin.flush()
+            # F-06b：与 _send_request 共用同一把写锁，串行化整条 JSON。
+            with self._write_lock:
+                self.process.stdin.write(line.encode("utf-8"))
+                self.process.stdin.flush()
         except Exception as e:
             log.error("MCP [%s] 发送通知失败: %s", self.name, e)

@@ -387,9 +387,12 @@ def main():
         log.warning("记忆自愈检查失败（不影响启动）: %s", e)
     perf_baseline.mark("memory_heal")
 
-    # 初始化 MCP 客户端（启动时遍历 mcp_servers 配置）
-    config.init_mcp_clients(cfg)
-    log.info("MCP 初始化完成，已连接 %d 个服务器", len(config.mcp_clients))
+    # v4.306.0 F-07：MCP 初始化改为后台线程，主线程零阻塞、QApplication 先建。
+    # 旧代码在此同步跑 init_mcp_clients，每服务器最多 30s+30s，冷启动白屏。
+    import mcp_guard_306 as _mcp_guard
+    _mcp_budget = _mcp_guard.DEFAULT_SERVER_BUDGET_SEC
+    config.start_mcp_init_async(cfg, budget_sec=_mcp_budget)
+    log.info("MCP 初始化已在后台启动（单服务器预算 %.1fs，不阻塞界面）", _mcp_budget)
     perf_baseline.mark("mcp")
 
     # 初始化 RAG 知识库
