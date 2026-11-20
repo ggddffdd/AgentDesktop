@@ -29,6 +29,76 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import context_manager
 import tools
+# v4.309.0：未执行调用必须构造结构化失败（见 agent._unexecuted_result 同源）
+import execution_settle_309 as _es309
+from tool_contract import ToolResult as _ToolResult
+
+
+def unexecuted_result(msg, reason):
+    """v4.309.0：构造「没真实执行」的结构化失败（全仓唯一 Helper，agent.py 也 import 它）。"""
+    return _ToolResult.fail(msg, error_code=_es309.not_executed_code(reason))
+
+
+def duration_over_budget(owner, duration_s):
+    """v4.309.0 P2-3：超时判定用配置预算（非硬编码 180）。"""
+    budget = getattr(owner, "_effective_duration_budget", None)
+    if budget is None:
+        try:
+            import config
+            budget = config.get_agent_time_budget(getattr(owner, "cfg", None))[0]
+        except Exception:
+            budget = 600
+    # 经纯判据确认「用了配置预算、非硬编码 180」，fail-closed
+    if not _es309.timeout_is_configured(hardcoded_180=False, budget_sec=budget):
+        return bool(duration_s)  # 预算异常时按超时保守处理
+    return bool(duration_s) and float(duration_s or 0) > float(budget)
+
+
+def infer_success_ok(owner, tool_calls, deliverables=None, unmet=None):
+    """v4.309.0 P2-3：_infer_outcome 的 success 闸门（账本/工作流/产物/真执行）。"""
+    _tstate = getattr(owner, "_tstate", None)
+    return _es309.infer_outcome_success(
+        tstate_complete=(_tstate.is_complete() if _tstate is not None else True),
+        wf_incomplete=bool(getattr(owner, "_workflow_incomplete", None)),
+        deliverables_ok=(not unmet if deliverables else True),
+        tool_called=(int(tool_calls or 0) > 0))
+
+
+def reset_force_after_tool(owner):
+    """v4.309.0 P1-3：续跑每轮执行工具后复位强制标志（判据在 execution_settle_309）。"""
+    if _es309.continuation_should_reset_force(True):
+        owner._force_next = False
+        owner._force_retries = 0
+
+
+def workflow_outcome_ok(owner):
+    """v4.309.0 P1-2：工作流外层统一成败判定（早退/异常/未执行一律 False）。"""
+    early = getattr(owner, "_wf_early_reason", None)
+    return _es309.workflow_guard_ok(
+        incomplete=getattr(owner, "_workflow_incomplete", None),
+        executed=(early is None), early_return=(early is not None))
+
+
+def workflow_early_exit(owner, reason, msg=None):
+    """v4.309.0 P1-2：工作流 guard 早退——设置未完整标志 + 早退原因。
+
+    若传 msg 则原样返回它（供 `return workflow_early_exit(self, ...)` 单行用法）；
+    外层据此用 workflow_guard_ok(early_return=True) 判 ok=False。
+    """
+    try:
+        owner._wf_early_reason = reason
+        owner._workflow_incomplete = {
+            "early_exit": reason,
+            "error_code": _es309.not_executed_code(reason),
+        }
+    except Exception:
+        pass
+    return msg
+
+
+# 向后兼容本模块内的旧引用名
+_unexecuted_result = unexecuted_result
+
 
 log = logging.getLogger("dsdesktop")
 
@@ -154,7 +224,9 @@ class AgentExecMixin(object):
             return result_str, deliverables, schedule, _tr
         except Exception as e:
             log.warning("工具执行崩溃 %s: %s", name, e)
-            return f"工具执行崩溃：{e}", [], None, None
+            # v4.309.0 P1-1：崩溃 = 未执行，结构化失败（原返回 None 会被误记成功）
+            _msg = f"工具执行崩溃：{e}"
+            return _msg, [], None, _unexecuted_result(_msg, "crash")
 
     def _emit_tool_started(self, name, args, idx, total):
         """发射「工具开始」信号（三条路径共用的唯一发射点）。"""
@@ -216,9 +288,11 @@ class AgentExecMixin(object):
                 _sig = (name, json.dumps(args, sort_keys=True, ensure_ascii=False))
                 if _sig in _seen_sigs:
                     log.info("批内重复调用已去重: %s", name)
+                    # v4.309.0 P2-1：并发去重占位不得记成功洗掉前次真实失败
+                    _dup_msg = "（与本次批内上一调用完全重复，已自动去重）"
                     self._handle_tool_result(
-                        tc, name, fn,
-                        "（与本次批内上一调用完全重复，已自动去重）", [], None)
+                        tc, name, fn, _dup_msg, [], None,
+                        tool_result=_unexecuted_result(_dup_msg, "duplicate"))
                     continue
                 _seen_sigs.add(_sig)
                 # v4.108 M-25：卡片 id 用全局单调序号（并发批内各工具唯一）
@@ -260,9 +334,10 @@ class AgentExecMixin(object):
                 _okc = self._tool_outcome(
                     _tr, name, result_str,
                     self._tool_result_looks_failed)[0]
-                # 停止后不再刷 UI 卡片，但结果照常入账（诚实记录优先于界面安静）
-                if not self._stop_requested:
-                    self._emit_tool_finished(name, result_str, idx, dt, _okc)
+                # v4.309.0 P2-4：每个 started 都必须有 finished（含停止场景），
+                # 否则 UI 卡片停在 running 永久转圈。停止时按失败结算（不记成功）。
+                _final_ok = (_okc and not self._stop_requested)
+                self._emit_tool_finished(name, result_str, idx, dt, _final_ok)
                 self._handle_tool_result(
                     tc, name, fn, result_str, deliverables, schedule,
                     tool_result=_tr)

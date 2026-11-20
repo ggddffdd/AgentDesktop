@@ -55,10 +55,13 @@ class Task:
         self.result = None               # 执行结果
 
     def is_ready(self, task_map: Dict[str, "Task"]) -> bool:
-        """所有依赖都 completed 才算就绪。"""
+        """所有依赖都 completed 才算就绪；缺失依赖 fail-closed（v4.309 P3-2）。"""
         if self.status != "pending":
             return False
-        return all(task_map[bid].status == "completed" for bid in self.blocked_by if bid in task_map)
+        import execution_settle_309 as _es309
+        if not _es309.is_ready_with_missing_dep(self.blocked_by, task_map):
+            return False  # blocked_by 引用不存在任务 → 不静默放行
+        return all(task_map[bid].status == "completed" for bid in self.blocked_by)
 
     def to_dict(self):
         return {
@@ -243,8 +246,13 @@ class TaskGraph:
         标 skipped 并给 result 说明原因，使终态可观测、调用方不会把下游误判成
         「还没做完」去错误重试/nudge（修复 B 点：原实现把下游永远停在 pending）。
         """
+        # v4.309.0 P2-5：取消(cancelled)的上游同样让下游永不可达，
+        # 必须与 failed 一起传播 skipped，否则下游留 pending → 误报「任务图死锁」。
+        # 注意：incomplete 不在此列（v4.168 既定语义，下游保持 pending 等补做）。
+        import execution_settle_309 as _es309
         failed_ids = {tid for tid, t in self._tasks.items()
-                      if t.status == "failed"}
+                      if t.status in ("failed", "cancelled") and
+                      _es309.should_skip_dependents(t.status)}
         if not failed_ids:
             return
         affected = set()
@@ -319,7 +327,9 @@ class TaskGraph:
             if not ready:
                 # 检查是否全部完成（被取消 / 无产出的都算"已终态"，不再等待）
                 all_done = all(t.status in ("completed", "cancelled", "incomplete", "skipped", "failed") for t in self._tasks.values())
-                has_failed = any(t.status == "failed"
+                # v4.309.0 P2-5：cancelled 与 failed 同为「下游不可达」终态，
+                # 也要触发 skipped 传播，避免下游留 pending 误报死锁。
+                has_failed = any(t.status in ("failed", "cancelled")
                                 for t in self._tasks.values())
                 has_incomplete = any(t.status == "incomplete"
                                     for t in self._tasks.values())

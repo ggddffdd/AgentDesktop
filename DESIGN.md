@@ -437,6 +437,33 @@ SSRF 绕过全部被拒、download 本地文件读取被拒、公网域名与 pe
 `_perturb/_perturb_security_307.py`（11 组，新增边车名单/接线/测试隔离 3 组，改坏必红）。
 冻结包新增 7 个标记（`db_sidecar_protected` 等）均双向验过旧 exe 常量表全缺失。
 
+### 4.14 执行后结算链路契约（v4.309.0·第三方只读审查 P1/P2/P3）
+
+第三方对工具调用链路做只读审查，结论：权限闸门无「拒绝后仍执行」绕过，
+全部问题集中在**执行后结算层**——决策正确的调用，结算时却被记成成功。
+本版全量整改，判据集中在纯函数模块 `execution_settle_309.py`，业务模块只接线。
+
+- **结构化非成功是唯一口径**：拒绝/取消/停止/崩溃/去重统一构造
+  `ToolResult.fail(error_code=DENIED/CANCELLED/STOPPED/CRASH/DUPLICATE_SKIPPED)`。
+  既有 `tool_contract.tool_outcome` 单一真源据此判 `ok=False`，证据/账本/
+  签名/UI/续跑五处消费自动一致（不再靠结果文案猜成败）。`should_register_sig`
+  为签名登记唯一闸门：必须真走过 exec_tool + ok + 非未执行码。
+- **账本检查点保真**：`TaskState.checkpoint_state/restore_state` 全字段序列化，
+  检查点每步同步；续跑据此恢复，不再重建丢失已用/已败工具（P2-2）。
+- **工作流双层**：`_wf_early` 让 guard 早退（缺引擎/拒绝/取消/异常）设未完成；
+  `workflow_outcome_ok` 判外层 ok；`node_should_incomplete` 让子代理工具失败
+  传播 INCOMPLETE_FLAG，`_finalize_workflow` 按节点终态如实上报。
+- **续跑自锁**：`reset_force_after_tool` 每轮复位 force；token 熔断 `_mark_resumable`。
+- **结局与收尾**：`infer_outcome_success` 四条件「且」判定 success；超时用
+  `duration_over_budget`（配置预算，非硬编码 180）；`should_skip_dependents`
+  传播取消下游；`is_ready_with_missing_dep` 对缺失依赖 fail-closed；停止时
+  finished 事件必发（卡片不成对会永久转圈）。
+
+拆分红线（`agent.py < 2400`）不抬阈值：新增接线一律外移到 agent_exec_mixin /
+agent_task_mixin / execution_settle_309。判据 `tests/test_execution_settle_309.py`
+三层（A 纯函数 47 / B 源码接线 / C 内联桩），扰动 8 组改坏必红，
+冻结标记 18 个均双向验过旧 exe 常量表全缺失。
+
 ## 5. Layout Principles（间距 / 网格 / 留白）
 
 - **v4.200.0：token 已立**（不再是建议）。空白处的荒罢了三年，现在有真身了。

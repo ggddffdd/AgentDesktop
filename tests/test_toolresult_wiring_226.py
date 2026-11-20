@@ -283,11 +283,13 @@ for _fn in (_serial, _conc):
             for _kw in _n.keywords:
                 if _kw.arg == "ok":
                     _arg = _kw.value
-        if isinstance(_arg, ast.Name) and _arg.id == "_okc":
+        # v4.309.0 P2-4：并发路径停止时用 _final_ok = (_okc and not stop)，
+        # 仍派生自 _okc（不是凭空硬编码 success），是「卡片停止也闭合」的修复。
+        if isinstance(_arg, ast.Name) and _arg.id in ("_okc", "_final_ok"):
             _okc_args += 1
         else:
             _okc_other += 1
-check("B4 两处 tool_finished 的 success 都取自 _okc",
+check("B4 两处 tool_finished 的 success 都派生自 _okc(_okc/_final_ok)",
       _okc_args == 2 and _okc_other == 0,
       "okc=%d 仍用其他表达式=%d" % (_okc_args, _okc_other))
 

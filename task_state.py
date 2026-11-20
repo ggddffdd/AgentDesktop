@@ -39,7 +39,7 @@ import os
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.308.0"
+VERSION = "v4.309.0"
 
 # ============================================================
 # 会产出实物的工具（按工具名 → 产物是否应当落盘到磁盘）
@@ -549,6 +549,43 @@ class TaskState(object):
             "status": _ST_FAILED if self.failed_tools else (
                 _ST_PENDING if self.pending() else _ST_OK),
         }
+
+    # v4.309.0 P2-2：断点续跑账本保真（to_dict 是 trace 简版，不能拿来恢复）
+    def checkpoint_state(self):
+        """序列化全部账本字段供检查点持久化。"""
+        return {
+            "goal": self.goal,
+            "required_tools": list(self.required_tools),
+            "used_tools": list(self.used_tools),
+            "failed_tools": list(self.failed_tools),
+            "succeeded_tools": list(self.succeeded_tools),
+            "artifacts": [list(a) for a in self.artifacts],
+            "current_step": int(self.current_step),
+            "nudge_injected": bool(self.nudge_injected),
+            "steps": int(self.steps),
+            "workflow_incomplete": self.workflow_incomplete,
+            "expect_save": bool(self.expect_save),
+        }
+
+    @classmethod
+    def restore_state(cls, data):
+        """从检查点数据重建账本；坏数据返回 None 让调用方回退重建。"""
+        if not isinstance(data, dict):
+            return None
+        try:
+            obj = cls(data.get("goal") or "", data.get("required_tools") or (),
+                      expect_save=data.get("expect_save", False))
+            obj.used_tools = list(data.get("used_tools") or [])
+            obj.failed_tools = list(data.get("failed_tools") or [])
+            obj.succeeded_tools = list(data.get("succeeded_tools") or [])
+            obj.artifacts = [tuple(a) for a in (data.get("artifacts") or [])]
+            obj.current_step = int(data.get("current_step") or 0)
+            obj.nudge_injected = bool(data.get("nudge_injected"))
+            obj.steps = int(data.get("steps") or 0)
+            obj.workflow_incomplete = data.get("workflow_incomplete")
+            return obj
+        except Exception:
+            return None
 
 
 __all__ = ["VERSION", "TaskState", "required_from_text",

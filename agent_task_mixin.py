@@ -37,7 +37,7 @@ import tool_contract  # v4.258.0（P1-6）：成败判定归一到单一真源�
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.308.0"
+VERSION = "v4.309.0"
 
 
 class AgentTaskMixin(object):
@@ -76,6 +76,25 @@ class AgentTaskMixin(object):
         except Exception:
             pass
         return ""
+
+    # --------------------------------------------------------
+    # 0) 账本检查点序列化/恢复（v4.309.0 P2-2，从 agent.py 外移守拆分红线）
+    # --------------------------------------------------------
+    def _tstate_checkpoint(self):
+        """返回可写进检查点的账本快照（无账本返回 None）。"""
+        _t = getattr(self, "_tstate", None)
+        return _t.checkpoint_state() if _t is not None else None
+
+    def _tstate_restore_checkpoint(self, cp):
+        """从检查点恢复账本，替代 run() 开头的重建。恢复失败保留重建结果。"""
+        try:
+            import task_state as _tsmod
+            _ts = _tsmod.TaskState.restore_state(
+                cp.get("tstate") if isinstance(cp, dict) else None)
+            if _ts is not None:
+                self._tstate = _ts
+        except Exception:
+            pass
 
     # --------------------------------------------------------
     # 1) 建账本

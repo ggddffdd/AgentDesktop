@@ -59,12 +59,13 @@ import os
 import task_state  # v4.226：原代码在 agent.py 内可见，本文件须显式 import
 import tool_contract  # v4.258.0（P1-6）：成败判定的单一真源（整模块导入，
 #                        便于判据打补丁验证"两个入口都真走同一份"）
+import execution_settle_309 as _es309  # v4.309.0：签名登记唯一口径
 from config import TOOL_RESULT_LIMIT
 from token_compressor import compress
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.308.0"
+VERSION = "v4.309.0"
 
 
 def _wrap_tool_content_local(name, content, evidence_id=None):
@@ -274,7 +275,9 @@ class AgentResultMixin(object):
         # v4.289.4（2026-10-27 核实修复）：只登记**成功**执行的签名。
         # 原实现在执行前登记，失败调用也留表 → 下一轮同参重试被当死循环拦掉。
         # 传了 tool_result 才代表真的走过 exec_tool（占位/去重/取消不登记）。
-        if tool_result is not None and _ok:
+        if _es309.should_register_sig(
+                _ok, getattr(tool_result, "error_code", None),
+                has_tool_result=(tool_result is not None)):
             try:
                 _raw = fn.get("arguments", "") if isinstance(fn, dict) else ""
                 _parsed = json.loads(_raw) if isinstance(_raw, str) and _raw else {}

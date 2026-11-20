@@ -144,8 +144,11 @@ def part_e():
     check("状态机新增 skipped 终态", '"skipped"' in src)
     check("all_done 把 skipped 当终态",
           '"completed", "cancelled", "incomplete", "skipped"' in src)
-    check("失败分支用精确 failed 判定（不误伤 incomplete）",
-          't.status == "failed"' in src)
+    # v4.309.0：失败分支扩展到 failed+cancelled（取消下游也要传播 skipped），
+    # 但仍不含 incomplete（v4.168 既定语义，见 P2-5）。改判据不删判据。
+    check("失败分支用精确 failed/cancelled 判定（不误伤 incomplete）",
+          't.status in ("failed", "cancelled")' in src and
+          't.status in ("completed", "cancelled", "incomplete", "skipped"' in src)
     check("有新方法标记失败下游 skipped",
           "_mark_dependents_of_failed_skipped" in src)
     try:

@@ -169,6 +169,8 @@ def part_d_run_workflow_gate():
         _AG = None
     ns = {
         "FORCE_CONFIRM_RULES": tuple(getattr(_AG, "FORCE_CONFIRM_RULES", ()) or ()),
+        # v4.309.0：guard 早退经 _wf_early 标未完成（抽源码 exec 时需注入真模块别名）
+        "_wf_early": getattr(_AG, "_wf_early", None),
     }
     exec(ast.get_source_segment(src, fn), ns)
 

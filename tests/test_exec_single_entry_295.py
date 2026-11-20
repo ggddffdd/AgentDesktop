@@ -167,8 +167,12 @@ try:
 
     tools.exec_tool = _boom
     rs2, dl2, sc2, tr2 = w._invoke_tool(MW(), _SBX, "web_search", {"query": "x"}, None)
-    check("F2 异常归一：文案带原因、tool_result 为 None（下游退回文案判据）",
-          "工具执行崩溃" in rs2 and "boom-295" in rs2 and tr2 is None, rs2)
+    # v4.309.0：崩溃改为结构化失败（ToolResult.fail/CRASH），不再传 None 退回文案
+    # 判据（原 tr2 is None 是 v4.295 旧口径，会让崩溃被误记成功，见 P1-1）。
+    check("F2 异常归一：文案带原因 + 结构化失败(CRASH)",
+          "工具执行崩溃" in rs2 and "boom-295" in rs2 and
+          getattr(tr2, "ok", None) is False and
+          getattr(tr2, "error_code", None) == "CRASH", rs2)
 
     # should_stop 必须透传（避免停止后工具继续跑）
     _seen = {}

@@ -39,6 +39,9 @@ from cancel_token import CancellationToken  # v4.289.2：主工作流也支持�
 from token_compressor import compress # v4.60 Token 压缩
 from risk import command_danger_level  # ①-B 高危命令护栏：确认文案标记
 from tool_contract import compute_impact_scope  # v4.220：确认弹窗影响范围（P1#5）
+# v4.309.0：未执行分支的结构化失败 Helper 外移在 agent_exec_mixin（守住拆分红线）
+import execution_settle_309 as _es309  # v4.309：结算判据（ledger/tstate 恢复）
+from agent_exec_mixin import unexecuted_result as _unexecuted_result, workflow_early_exit as _wf_early, workflow_outcome_ok as _wf_outcome_ok, reset_force_after_tool as _reset_force_after_tool, infer_success_ok as _infer_success_ok, duration_over_budget as _duration_over_budget
 
 MAX_FORCE_RETRIES = 3  # v4.234（A 修复）：承诺/空回兜底强制上限（原仅在主循环方法内局部定义，模块级补一份供 _promise_nudge_should_fire 等类方法共用）
 
@@ -273,6 +276,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
         try:
             state = tg.run({"task": task, "query": task}, token=_wf_token)
         except Exception as e:
+            _wf_early(self, "crash", f"任务图执行失败：{e}")  # v4.309 P1-2：异常标未完整
             self._emit_status(f"任务图执行失败: {e}")
             return f"任务图执行失败：{e}"
         finally:
@@ -834,9 +838,10 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
         self._exec_ledger = list(cp.get("exec_ledger", []))
         self._resume_done_hashes = {
             e.get("args_hash") for e in self._exec_ledger
-            if e.get("side_effect_status") == "done"
+            if _es309.ledger_done_hash_ok(e.get("side_effect_status"))
             and e.get("name") in _NON_IDEMPOTENT_TOOLS
         }
+        self._tstate_restore_checkpoint(cp)  # v4.309 P2-2：恢复账本（外移守红线）
         return cp
 
     def run(self):
@@ -884,7 +889,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                 getattr(mw, "cfg", None))
         except Exception:
             MAX_DURATION, _TOTAL_BUDGET = 600, 1800
-        _round_t0 = _t0
+        self._effective_duration_budget = MAX_DURATION; _round_t0 = _t0
         MAX_FAIL_STEPS = 3     # v4.66：连续工具全失败步上限，超出则早停防死循环
         # v4.298.0：核验结论「未满足项」连续 N 步一字未变 = 补做毫无进展。
         # 2026-11-12 实机：自动化任务核验未过硬跑 20 步 → 自动续跑 20 步 →
@@ -983,6 +988,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                     "task": self._goal_hint()[:200],
                     "created": datetime.datetime.now().isoformat(timespec="seconds"),
                     "exec_ledger": list(getattr(self, "_exec_ledger", [])),
+                    "tstate": self._tstate_checkpoint(),  # v4.309 P2-2：账本保真
                 })
                 task_resume.save_checkpoint(mw.cfg, _checkpoint)
             except Exception:
@@ -1549,6 +1555,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                     # v4.102 fix12：续跑是烧 token 重灾区，同样累加工具名并做预算熔断
                     self._collect_step_tools(resp)
                     if not self._tick_token_budget(resp):
+                        self._mark_resumable("token_budget")  # v4.309 P1-3：保留断点可续
                         break
                     content = resp.get("content") or ""
                     asst = {"role": "assistant", "content": content}
@@ -1560,6 +1567,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                     if resp.get("tool_calls"):
                         self._any_tool_executed = True
                         self._idle_steps = 0  # v4.60：调了工具 → 清空空步计数
+                        _reset_force_after_tool(self)  # v4.309 P1-3：复位 force 防自锁
                         if content:
                             self.stream_commit.emit(content)
                         self._guard_blocked = False
@@ -1680,9 +1688,11 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
             _sig = (name, json.dumps(args, sort_keys=True, ensure_ascii=False))
             if _sig in _seen_sigs:
                 log.info("批内重复调用已去重: %s", name)
-                self._handle_tool_result(tc, name, fn,
-                                         "（与本次批内上一调用完全重复，已自动去重）",
-                                         [], None)
+                # v4.309.0 P2-1：去重占位不得记成功洗掉前次真实失败。
+                _dup_msg = "（与本次批内上一调用完全重复，已自动去重）"
+                self._handle_tool_result(
+                    tc, name, fn, _dup_msg, [], None,
+                    tool_result=_unexecuted_result(_dup_msg, "duplicate"))
                 continue
             _seen_sigs.add(_sig)
             # v4.108 M-25：卡片 id 用全局单调序号；started/finished 同值配对
@@ -1693,7 +1703,10 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                 result_str = "⏹ 已停止（用户请求）"
                 deliverables = []
                 schedule = None
-                self._handle_tool_result(tc, name, fn, result_str, deliverables, schedule)
+                # v4.309.0 P1-1：停止后未执行，结构化失败（不进 succeeded_tools/ledger done）
+                self._handle_tool_result(
+                    tc, name, fn, result_str, deliverables, schedule,
+                    tool_result=_unexecuted_result(result_str, "stopped"))
                 continue
             self._emit_status(f"执行工具：{name}")
 
@@ -1726,6 +1739,8 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                 result_str = dec.reason
                 deliverables = []
                 schedule = None
+                # v4.309.0 P1-1：权限拒绝 = 未执行，结构化失败（不再靠文案猜成败）
+                _tr = _unexecuted_result(result_str, "denied")
             elif dec.needs_user:
                 # 危险/外部操作 → 弹确认框
                 # v4.169.0 / v4.264：硬确认档与来源闸要 force —— 必须真的问一次，
@@ -1737,6 +1752,8 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                     result_str = "用户取消了该操作"
                     deliverables = []
                     schedule = None
+                    # v4.309.0 P1-1：用户取消 = 未执行，结构化失败
+                    _tr = _unexecuted_result(result_str, "cancelled")
                 else:
                     # 用户确认：记一笔「该工具 + 该参数」的信任，避免同轮反复弹。
                     # v4.169.0（P0-5）：必须带上 args —— 只记工具名会让
@@ -1853,22 +1870,21 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
         # 子代理任务图（内含搜索/写文件）。这里显式拒绝，与 decide() 异常同口径。
         if engine is None:
             log.warning("run_workflow 缺权限引擎，按无授权拒绝")
-            return ("（子代理工作流未执行：权限引擎未启用，"
-                    "无法完成授权判定，按保守策略拒绝）")
+            return _wf_early(self, "denied", "（子代理工作流未执行：权限引擎未启用，无法完成授权判定，按保守策略拒绝）")
         try:
             dec = engine.decide(
                 "run_workflow", args or {},
                 explicit_intent=getattr(self, "explicit_intent", True),
                 task_risk=(getattr(self, "_task_risk_ctx", None) or (lambda: None))())
         except Exception as e:
-            return f"（子代理工作流未执行：权限判定异常 {e}）"
+            return _wf_early(self, "crash", f"（子代理工作流未执行：权限判定异常 {e}）")
         if not dec.allowed:
-            return f"（子代理工作流未执行：{dec.reason}）"
+            return _wf_early(self, "denied", f"（子代理工作流未执行：{dec.reason}）")
         if dec.needs_user:
             title, detail = self._build_confirm_detail("run_workflow", args or {})
             if not self._maybe_confirm(title, detail,
                                        force=(dec.rule in FORCE_CONFIRM_RULES)):
-                return "（你取消了子代理工作流）"
+                return _wf_early(self, "cancelled", "（你取消了子代理工作流）")
             try:
                 engine.trust_tool("run_workflow", args or {})
             except Exception:
@@ -1943,8 +1959,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                 })
                 self._fill_missing_tool_receipts(
                     [tc for tc in tool_calls if tc is not _wf_tc],
-                    "（系统提示：该调用已被同批的 run_workflow 子代理工作流取代，"
-                    "无需单独执行。）")
+                    "（系统提示：该调用已被同批的 run_workflow 子代理工作流取代，未执行。）")
                 self._guard_blocked = True
                 return
             self._emit_status(f"🔄 触发子代理工作流：{_wf_type}")
@@ -1955,9 +1970,9 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
             _t0 = time.time()
             # v4.289.4：先清上一轮残留，再按本轮任务图终态判成败。
             self._workflow_incomplete = None
+            self._wf_early_reason = None  # v4.309 P1-2：早退信号（guard 未执行即失败）
             _out = self._run_workflow_guarded(_wf_type, _task, mw, _args)
-            _wf_incomplete = getattr(self, "_workflow_incomplete", None)
-            _wf_ok = not _wf_incomplete
+            _wf_ok = _wf_outcome_ok(self)  # v4.309 P1-2：早退/异常/未执行一律 False
             if _out:
                 _wf_text = _out
             elif _wf_ok:
@@ -1986,7 +2001,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                 self.messages.append({
                     "role": "tool",
                     "tool_call_id": tc.get("id", ""),
-                    "content": "（系统提示：该调用已被同批的 run_workflow 子代理工作流取代，无需单独执行。）",
+                    "content": "（系统提示：该调用已被同批的 run_workflow 子代理工作流取代，**未执行**。）",
                 })
             return
         # v4.100：remember 会话级节流——闲聊或误操作下模型可能反复写记忆刷屏，
@@ -2175,6 +2190,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                 "task": self._goal_hint()[:200],
                 "messages": recent,
                 "exec_ledger": getattr(self, "_exec_ledger", []),
+                "tstate": self._tstate_checkpoint(),  # v4.309 P2-2：每步同步账本
             })
         except Exception:
             pass
@@ -2334,7 +2350,7 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
         # ③ 步数 / 时间耗尽
         if max_steps and steps and steps >= max_steps:
             return "max_steps"
-        if duration_s and duration_s > 180:
+        if _duration_over_budget(self, duration_s):  # v4.309 P2-3：配置预算非硬编码
             return "timeout"
         # ④ 【本批新增】真·非成功结局——这些都是原先被兜底成 success 的
         if _fake:
@@ -2359,7 +2375,8 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
             _unmet = [d for d in _dlv if not _deliverable_satisfied(d)]
             if _unmet:
                 return "partial"
-
+        if not _infer_success_ok(self, _tool_calls, _dlv, _unmet if _dlv else None):  # v4.309 P2-3
+            return "partial"
         return "success"
 
     @classmethod

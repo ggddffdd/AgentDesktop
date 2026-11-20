@@ -137,9 +137,10 @@ def run_all(AG):
     got = w._infer_outcome(steps=12, duration_s=20, max_steps=12)
     check("A9 步数耗尽 → max_steps", got == "max_steps", got)
 
-    w = _make_worker(tool_calls=3)
+    # v4.309.0 P2-3：超时阈值改为可配置预算（桩显式设 180，保持原测试意图）
+    w = _make_worker(tool_calls=3, _effective_duration_budget=180)
     got = w._infer_outcome(steps=2, duration_s=200, max_steps=12)
-    check("A10 超时（>180s）→ timeout", got == "timeout", got)
+    check("A10 超时（超配置预算）→ timeout", got == "timeout", got)
 
     w = _make_worker(tool_fail=1, tool_calls=0)
     got = w._infer_outcome(steps=2, duration_s=20, max_steps=12)

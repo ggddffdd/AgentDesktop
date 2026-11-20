@@ -28,6 +28,7 @@ import logging
 from typing import Set, Optional
 
 from task_graph import INCOMPLETE_FLAG
+import execution_settle_309 as _es309  # v4.309.0 P1-2：节点工具失败传播
 
 log = logging.getLogger("dsdesktop")
 
@@ -159,6 +160,8 @@ class AgentNode:
         # Agent 工具循环
         output = ""
         incomplete = False   # v4.166.0：跑满轮次而无正文时置位
+        _tc_total = 0        # v4.309.0 P1-2：本节点工具调用总数/失败数
+        _tc_failed = 0
         # v4.125 M-08：角色级模型——角色卡「模型」字段填了档位名则锁定该档位。
         _model_ov = (self.model_cfg or {}).get("profile", "")
         # v4.167.0：取消令牌（由 legion_worker._wrap 挂上；主对话链为 None → 行为不变）
@@ -188,6 +191,7 @@ class AgentNode:
                 asst = {"role": "assistant", "content": content, "tool_calls": tool_calls}
                 messages.append(asst)
                 for tc in tool_calls:
+                    _tc_total += 1  # v4.309.0 P1-2：统计本轮工具调用
                     # v4.167.0（审查 §3）：工具调用前再查一次令牌 ——
                     # 已开始的任务"不再进入下一次工具调用"，不再为停止后的动作付费。
                     if _token is not None:
@@ -221,6 +225,7 @@ class AgentNode:
                         except Exception as _pe:
                             _blocked = f"权限闸门检查异常，按保守策略拒绝（{_pe}）"
                     if _blocked:
+                        _tc_failed += 1  # v4.309.0 P1-2：权限拒绝=工具失败
                         result = (f"⛔ 权限闸门拒绝执行 {t_name}：{_blocked}"
                                   "（若这是本任务必需的能力，请让大哥在授权弹窗放行本波）")
                         try:
@@ -235,6 +240,7 @@ class AgentNode:
                                                      perm_ctx=(_dec if _perm is not None
                                                                else _AllowDecision()))
                         except Exception as _te:
+                            _tc_failed += 1  # v4.309.0 P1-2：执行异常=工具失败
                             result = f"工具执行异常：{_te}"
                     # 截断过长结果
                     result = str(result)
@@ -274,6 +280,12 @@ class AgentNode:
         # 更新 state
         state = dict(state)
         state[self.name + "_output"] = output
+        # v4.309.0 P1-2：有工具调用但存在失败 → 即使模型补了正文也算未完成，
+        # 杜绝「write_file 抛异常、模型说『报告已完成』→ 节点标 completed」假成功。
+        if _es309.node_should_incomplete(
+                tool_failed=_tc_failed, tool_called=(_tc_total > 0),
+                has_text=bool(output.strip())):
+            incomplete = True
         if incomplete:
             # v4.166.0：显式标记，供 PM / 报告区分「真产出」与「只跑了工具」。
             # v4.289.2：同时写框架保留键，否则主工作流直接注册 AgentNode.run

@@ -175,6 +175,9 @@ want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         # v4.307.0：第三方验收修复的纯判据模块（search/tools/memory_store/p1_guard/config
         # 顶层 import）。不进 want 则标记全假红（v4.304/305/306 踩过同类坑）。
         "security_guard_307",
+        # v4.309.0：执行结算纯判据模块（agent/exec_mixin/node/task_graph/
+        # result_mixin 顶层 import，漏进 want 则 marks 全假红）。
+        "execution_settle_309",
         ]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
@@ -347,6 +350,12 @@ def main():
                                "db_sidecar_protected", "test_db_isolation_ok",
                                "_DB_SIDECAR_SUFFIXES", "_PROTECTED_DB_NAMES",
                                "-wal", "-shm", "-journal"],
+        # v4.309.0：执行结算链路纯判据 + 接线标记（18 个标记双向验过旧 exe 常量表全缺失）。
+        "execution_settle_309": ["workflow_guard_ok", "node_should_incomplete",
+                                 "should_settle_fail", "infer_outcome_success",
+                                 "should_skip_dependents", "is_ready_with_missing_dep",
+                                 "continuation_should_reset_force", "timeout_is_configured",
+                                 "not_executed_code", "should_register_sig"],
         # 注：main.py 是 PyInstaller 入口脚本，不在 PYZ TOC，故不列入 marks（v4.306 踩过）。
         # main 的后台初始化接线由 tests/test_mcp_guard_306.py 的源码判据（B7）覆盖。
         "memory_store": ["fail_closed_decrypt", "plain_db_decision"],
@@ -531,7 +540,11 @@ def main():
                   "normalize_tool_outcome", "MAX_NO_PROGRESS_STEPS",
                   "NO_PROGRESS_WINDOW"],
         # v4.302.0：护栏接线与回收站计数真进包（旧 exe 常量表均缺失）。
-        "agent_exec_mixin": ["_guard_no_progress"],
+        "agent_exec_mixin": ["_guard_no_progress",
+                             # v4.309.0：未执行结构化失败 + 续跑/工作流/结局接线
+                             "unexecuted_result", "workflow_outcome_ok",
+                             "reset_force_after_tool", "infer_success_ok",
+                             "duration_over_budget"],
         "system_control_tools": ["desktop.ini", "$I"],
         # v4.225.0：统一意图对象（Intent 值对象 + ROUTE_REGISTRY 注册表
         # + classify 唯一入口 + 路由段自动生成）
@@ -542,13 +555,17 @@ def main():
         "task_state": ["TaskState", "required_from_text", "record_tool",
                   "missing_tools", "missing_artifacts", "is_complete",
                   "should_nudge", "nudge_instruction", "mark_nudged",
-                  "note_artifact", "任务未完成检查"],
+                  "note_artifact", "任务未完成检查",
+                  # v4.309.0：账本检查点保真（续跑不再重建丢失已用/已败工具）
+                  "checkpoint_state", "restore_state"],
         # v4.225：账本接线 mixin（记账/闸门/步号，从 agent.py 抽出）
         "agent_task_mixin": ["AgentTaskMixin", "_tstate_init", "_tstate_record",
                   "_tstate_step", "_tstate_resume_step",
                   "_tstate_resume_reset_nudge", "_tstate_nudge_now",
                   "_tstate_trace_nudge", "_last_user_text",
-                  "任务要求未完成"],
+                  "任务要求未完成",
+                  # v4.309.0：账本检查点序列化/恢复 helper
+                  "_tstate_checkpoint", "_tstate_restore_checkpoint"],
         # v4.226.0：四阶段循环判定层（PLAN/EXECUTE/VERIFY/SUMMARIZE + 末阶段饱和
         # 不回退 + is_verified 真伪判据）
         "agent_loop": ["PHASE_ORDER", "next_phase", "LoopState",

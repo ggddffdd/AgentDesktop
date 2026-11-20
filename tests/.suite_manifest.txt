@@ -49,6 +49,7 @@ test_exec_retry_289.py
 test_exec_single_entry_295.py
 test_exec_state_294.py
 test_exec_tool_gate_219.py
+test_execution_settle_309.py
 test_fail_log_tts_257.py
 test_focus_chrome_264.py
 test_frozen_smoke.py
