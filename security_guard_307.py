@@ -159,15 +159,37 @@ def plain_db_decision(enc_exists, plain_exists, cipher_ok):
 
 
 # ==================== F-03/F-09 路径与原子写 ====================
+# v4.308 F-03 残余：SQLite 边车文件（-wal/-shm/-journal）。验收指出这些文件
+# is_protected_runtime_path() 仍返回 False，write_file 可写入污染 WAL/SHM，
+# 影响 SQLite 恢复或造成记忆库异常。只对项目自身运行时库补边车后缀，放行普通库。
+_PROTECTED_DB_NAMES = frozenset({"memory.db", "memory.db.enc", "agent_log.db",
+                                 "structured_log.db", "task_state.db"})
+_DB_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+
+
+def db_sidecar_protected(name):
+    """v4.308：文件名是否为「受保护运行时库的 SQLite 边车文件」。
+
+    精确匹配 `受保护库名 + -wal/-shm/-journal`，不对普通 *.db 的边车误伤
+    （notes.db-wal 放行）。验收 F-03 残余缺口：主库挡住了但边车仍可写。
+    """
+    n = str(name or "").strip().lower().replace("\\", "/").rsplit("/", 1)[-1]
+    for _base in _PROTECTED_DB_NAMES:
+        for _sfx in _DB_SIDECAR_SUFFIXES:
+            if n == _base + _sfx:
+                return True
+    return False
+
+
 def protected_db_name(name):
     """文件名是否为「受保护运行时数据库」——精确名单，不再 *.db 一刀切。
 
     验收报告残留：`*.db` 全局拦截导致普通用户数据库也无法 write_file 创建。
     这里只保护项目自身的运行时库，用户自己的 data.db 等应放行。
+    v4.308：连边车一起保护（memory.db-wal 等），但普通库边车仍放行。
     """
     n = str(name or "").strip().lower().replace("\\", "/").rsplit("/", 1)[-1]
-    return n in {"memory.db", "memory.db.enc", "agent_log.db",
-                 "structured_log.db", "task_state.db"}
+    return n in _PROTECTED_DB_NAMES or db_sidecar_protected(n)
 
 
 def atomic_write_ok(uses_tmp_and_replace):
@@ -235,6 +257,37 @@ def count_legacy_workspace_snapshot(module_src):
                 if isinstance(arg, ast.Name) and arg.id == "WORKSPACE_DIR":
                     n += 1
     return n
+
+
+def test_db_isolation_ok(module_src):
+    """测试源码是否整体隔离记忆库：main 内 >=2 处 _configure 且无裸 MEMORY_PATH 赋值。
+
+    v4.308：验收实测 dataloss 测试只改 MEMORY_PATH，append_memory 的 _db_append
+    写回真实用户目录 memory.db。整体 _configure 才会连 MEMORY_DB_PATH 一起重定向。
+    AST 级（不被注释里的字面量骗过），且要求两处都在（改坏任意一处即红）。
+    """
+    try:
+        tree = ast.parse(module_src)
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "main":
+            cfg = 0
+            bare = 0
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) \
+                        and sub.func.attr == "_configure":
+                    cfg += 1
+                targets = []
+                if isinstance(sub, ast.Assign):
+                    targets = sub.targets
+                elif isinstance(sub, ast.AnnAssign):
+                    targets = [sub.target]
+                for t in targets:
+                    if isinstance(t, ast.Attribute) and t.attr == "MEMORY_PATH":
+                        bare += 1
+            return cfg >= 2 and bare == 0
+    return False
 
 
 def function_has_call(module_src, func_name, call_name):

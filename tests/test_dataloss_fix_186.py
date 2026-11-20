@@ -32,7 +32,10 @@ def main():
     tmp = tempfile.mkdtemp(prefix="ms_probe_")
     try:
         mem_path = os.path.join(tmp, "memory.md")
-        ms.MEMORY_PATH = mem_path          # 指向临时文件，不碰真实数据
+        # v4.308：必须整体 _configure 重定向（含 MEMORY_DB_PATH/salt），
+        # 只改 MEMORY_PATH 会让 append_memory 的 _db_append 写回真实用户目录的
+        # memory.db（第三方验收实测污染：临时留证目录里全是"新记忆条目B/C"）。
+        ms._configure(tmp)
         with open(mem_path, "w", encoding="utf-8") as f:
             f.write("## 2026-09-01 10:00\n旧记忆条目A\n")
         r1 = ms.append_memory("新记忆条目B")
@@ -53,7 +56,7 @@ def main():
         tmp2 = tempfile.mkdtemp(prefix="ms_probe2_")
         try:
             mem_path2 = os.path.join(tmp2, "memory.md")
-            ms.MEMORY_PATH = mem_path2
+            ms._configure(tmp2)            # v4.308：同样整体隔离，含 memory.db
             # 预置一份"磁盘上有内容但读不到"的状态：直接写文件绕过写路径
             with open(mem_path2, "w", encoding="utf-8") as f:
                 f.write("## 2026-09-01 10:00\n磁盘上真实存在的旧记忆\n")

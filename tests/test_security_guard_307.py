@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v4.307.0：第三方验收「不通过」项回归判据。
+"""v4.307.0 + v4.308.0：第三方验收「不通过」项 + 验收残余项回归判据。
 
 三层：
   A 纯函数层——security_guard_307 决策逻辑（确定性、无真实网络）；
@@ -76,6 +76,7 @@ MEM_SRC = read_src("memory_store.py")
 TOOLS_SRC = read_src("tools.py")
 CONFIG_SRC = read_src("config.py")
 GUARD304_SRC = read_src("p1_guard_304.py")
+GUARD307_SRC = read_src("security_guard_307.py")
 
 
 def _resolver(mapping):
@@ -126,6 +127,16 @@ def part_a():
     check("A27 memory.db 拦截", probe(G, "protected_db_name", "memory.db") is True)
     check("A28 普通 data.db 放行", probe(G, "protected_db_name", "my_notes.db") is False)
     check("A29 config 前缀路径取 basename", probe(G, "protected_db_name", "D:/x/memory.db") is True)
+    # v4.308 F-03 残余：SQLite 边车文件
+    check("A35 memory.db-wal 拦截", probe(G, "protected_db_name", "memory.db-wal") is True)
+    check("A36 memory.db-shm 拦截", probe(G, "protected_db_name", "memory.db-shm") is True)
+    check("A37 memory.db-journal 拦截", probe(G, "protected_db_name", "memory.db-journal") is True)
+    check("A38 agent_log.db-wal 拦截", probe(G, "protected_db_name", "agent_log.db-wal") is True)
+    check("A39 task_state.db-shm 拦截", probe(G, "protected_db_name", "task_state.db-shm") is True)
+    check("A40 普通库边车放行(notes.db-wal)", probe(G, "protected_db_name", "notes.db-wal") is False)
+    check("A41 边车纯函数-wal", probe(G, "db_sidecar_protected", "memory.db-wal") is True)
+    check("A42 边车纯函数-普通库不放行", probe(G, "db_sidecar_protected", "data.db-wal") is False)
+    check("A43 边车纯函数-后缀白名单外", probe(G, "db_sidecar_protected", "memory.db.bak") is False)
     check("A30 原子写判据 True", probe(G, "atomic_write_ok", True) is True)
     check("A31 原子写判据 False", probe(G, "atomic_write_ok", False) is False)
     check("A32 技能 fail-closed", probe(G, "skill_gate_fail_closed", True) is True)
@@ -163,6 +174,17 @@ def part_b():
     check("B14 config budget 真正传给 init(死参数修复)",
           "init_mcp_clients(cfg, budget" in CONFIG_SRC and
           "client.start(timeout=" in CONFIG_SRC)
+
+    # v4.308 F-03 残余：边车后缀名单 + protected_db_name 接线（AST 级，防注释假绿）
+    check("B15 边车后缀名单存在",
+          '\"-wal\"' in GUARD307_SRC and '\"-shm\"' in GUARD307_SRC and '\"-journal\"' in GUARD307_SRC)
+    check("B16 protected_db_name 接线 db_sidecar_protected",
+          probe(G, "function_has_call", GUARD307_SRC, "protected_db_name", "db_sidecar_protected"))
+    check("B17 is_protected_runtime_path 仍经 protected_db_name(边车自动覆盖)",
+          "protected_db_name(name)" in GUARD304_SRC)
+    # v4.308 测试隔离：dataloss 测试用 _configure 整体重定向（含 MEMORY_DB_PATH）
+    check("B18 dataloss 测试整体 _configure 隔离 memory.db(AST两处/无裸赋值)",
+          probe(G, "test_db_isolation_ok", read_src("tests/test_dataloss_fix_186.py")) is True)
 
 
 # ============ C 真实运行层 ============

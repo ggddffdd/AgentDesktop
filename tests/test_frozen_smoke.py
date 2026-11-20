@@ -341,7 +341,12 @@ def main():
         "security_guard_307": ["normalize_host", "resolve_and_check", "peer_ip_ok",
                                "download_url_allowed", "plain_db_decision",
                                "protected_db_name", "atomic_write_ok",
-                               "skill_gate_fail_closed", "snapshot_root_ok", "budget_wired"],
+                               "skill_gate_fail_closed", "snapshot_root_ok", "budget_wired",
+                               # v4.308 F-03 残余：SQLite 边车保护 + 测试隔离纯判据
+                               # （7 个标记双向验过旧 exe 常量表全缺失）
+                               "db_sidecar_protected", "test_db_isolation_ok",
+                               "_DB_SIDECAR_SUFFIXES", "_PROTECTED_DB_NAMES",
+                               "-wal", "-shm", "-journal"],
         # 注：main.py 是 PyInstaller 入口脚本，不在 PYZ TOC，故不列入 marks（v4.306 踩过）。
         # main 的后台初始化接线由 tests/test_mcp_guard_306.py 的源码判据（B7）覆盖。
         "memory_store": ["fail_closed_decrypt", "plain_db_decision"],

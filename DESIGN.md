@@ -416,6 +416,27 @@ v4.297 的模型侧薄投喂视图 `history_for_agent()` 保持不变。
 `_perturb/_perturb_security_307.py`（8 组，改坏必红）。真实本机 HTTP 服务实测了
 SSRF 绕过全部被拒、download 本地文件读取被拒、公网域名与 peer 复核不误伤。
 
+### 4.13 边车文件保护与测试隔离契约（v4.308.0·验收残余 P2）
+
+承接 §4.12，第三方验收判「通过」但留两项非阻断残余，本版一并闭合。均为防御加固
+与测试卫生、非新功能；判据仍在 `security_guard_307.py`。
+
+- **F-03 残余——SQLite 边车文件**：v4.307 只保护主库精确名单（`memory.db` 等），
+  `memory.db-wal/-shm/-journal`、`agent_log.db-wal`、`task_state.db-shm` 仍返回
+  False，`write_file` 可写入污染 WAL/SHM 影响 SQLite 恢复。`db_sidecar_protected`
+  精确匹配「受保护库名 + 三种边车后缀」，`protected_db_name` 接线；普通库
+  `notes.db-wal` 继续放行（不做 `*.db-wal` 一刀切）。经已有的
+  `is_protected_runtime_path` 接线自动覆盖，业务模块零改动。
+- **测试隔离——`memory.db` 污染真实目录**：验收发现既有 `test_dataloss_fix_186.py`
+  只改 `MEMORY_PATH`，而 `append_memory` 的双写会经 `MEMORY_DB_PATH` 落回真实
+  用户目录（留证库里全是「新记忆条目B/C」测试行）。改该测试用 `memory_store._configure`
+  整体重定向（含 db/salt 路径）。判据 `test_db_isolation_ok` 为 AST 级：要求 main 内
+  ≥2 处 `_configure` 且无裸 `MEMORY_PATH` 赋值，改坏任意一处即红。
+
+判据见 `tests/test_security_guard_307.py`（70 条，A 层 +9 / B 层 +4），扰动见
+`_perturb/_perturb_security_307.py`（11 组，新增边车名单/接线/测试隔离 3 组，改坏必红）。
+冻结包新增 7 个标记（`db_sidecar_protected` 等）均双向验过旧 exe 常量表全缺失。
+
 ## 5. Layout Principles（间距 / 网格 / 留白）
 
 - **v4.200.0：token 已立**（不再是建议）。空白处的荒罢了三年，现在有真身了。

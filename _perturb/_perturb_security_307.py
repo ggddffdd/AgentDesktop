@@ -58,6 +58,18 @@ CASES = [
     ("config.py", "budget 死参数",
      ["            init_mcp_clients(cfg, budget=budget)"],
      "            init_mcp_clients(cfg)  # 扰动：budget 不传", "B14", CR),
+    # v4.308 F-03 残余: 边车名单去掉 -wal → A35 红（memory.db-wal 不再拦截）
+    ("security_guard_307.py", "边车名单删 -wal",
+     ['_DB_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")'],
+     '_DB_SIDECAR_SUFFIXES = ("-shm", "-journal")  # 扰动：漏掉 wal', "A35", LF),
+    # v4.308 F-03 残余: protected_db_name 不接线边车 → A35 红
+    ("security_guard_307.py", "主库判定不接边车",
+     ["    return n in _PROTECTED_DB_NAMES or db_sidecar_protected(n)"],
+     "    return n in _PROTECTED_DB_NAMES  # 扰动：边车不拦", "A35", LF),
+    # v4.308 测试隔离: _configure 退回单改 MEMORY_PATH → B18 红
+    ("tests/test_dataloss_fix_186.py", "测试隔离退回裸改路径",
+     ["        ms._configure(tmp)"],
+     "        ms.MEMORY_PATH = mem_path  # 扰动：只改一处，db 漏隔离", "B18", LF),
     # 纯函数: atomic_write_ok 恒真 → A31 红（False 应判假）
     ("security_guard_307.py", "原子写判据恒真",
      ["def atomic_write_ok(uses_tmp_and_replace):",
