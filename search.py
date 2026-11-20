@@ -413,12 +413,19 @@ def format_context(results):
 
 
 def http_get(url, timeout=10):
-    """同步 HTTP GET，返回解码后的文本。"""
-    import gzip
+    """同步 HTTP GET，返回解码后的文本。
+
+    v4.304 F-02：只允许 http/https；拒绝本机/内网地址（含重定向逐跳复检）；
+    响应与解压后体积双重上限，防超大响应与 gzip bomb。
+    """
+    import p1_guard_304 as _g304
+    ok, reason = _g304.url_access_policy(url)
+    if not ok:
+        raise ValueError("web_fetch 拒绝：%s" % reason)
+
     req = urllib.request.Request(
         url,
         headers={
-            # 必须用完整 Chrome UA，否则搜狗会 403（精简 UA 被当爬虫拦截）
             "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
             "Accept-Language": "zh-CN,zh;q=0.9",
@@ -426,13 +433,26 @@ def http_get(url, timeout=10):
                        "image/avif,image/webp,*/*;q=0.8"),
         },
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = resp.read()
+
+    class _CheckedRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            _ok, _why = _g304.url_access_policy(newurl)
+            if not _ok:
+                raise ValueError("web_fetch 拒绝重定向：%s" % _why)
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    opener = urllib.request.build_opener(_CheckedRedirect)
+    with opener.open(req, timeout=timeout) as resp:
+        data, truncated = _g304.read_response_capped(resp)
         enc = resp.headers.get("Content-Encoding", "")
         if "gzip" in enc:
-            data = gzip.decompress(data)
+            data, gz_trunc = _g304.gunzip_capped(data)
+            truncated = truncated or gz_trunc
         charset = resp.headers.get_content_charset() or "utf-8"
-        return data.decode(charset, "ignore")
+        text = data.decode(charset, "ignore")
+        if truncated:
+            text += "\n\n[web_fetch: 响应超出大小上限，已截断]"
+        return text
 
 
 def download_bytes(url, timeout=120):

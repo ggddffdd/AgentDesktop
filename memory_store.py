@@ -488,18 +488,24 @@ def _with_db(fn):
     if _cipher is not None:
         ep = MEMORY_DB_PATH + ".enc"
         if os.path.exists(ep) and not os.path.exists(MEMORY_DB_PATH):
+            # v4.304 F-01：解密失败必须 fail-closed——原实现只 warning 后继续，
+            # 空库被 fn 建表后加密回写覆盖原 .enc，长期记忆不可逆丢失。
+            import p1_guard_304 as _g304
             try:
-                open(MEMORY_DB_PATH, "wb").write(_cipher.decrypt(open(ep, "rb").read()))
+                _plain = _g304.fail_closed_decrypt(_cipher, open(ep, "rb").read())
+                open(MEMORY_DB_PATH, "wb").write(_plain)
             except Exception as e:
-                log.warning("记忆DB解密失败: %s", e)
+                raise RuntimeError("记忆库解密失败，已保留原加密文件（未改动）：%s" % e) from e
+    conn = None  # v4.304 F-01：connect 失败时 finally 直接 close 会抛 UnboundLocalError
     try:
         conn = sqlite3.connect(MEMORY_DB_PATH)
         return fn(conn)
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
         if _cipher is not None and os.path.exists(MEMORY_DB_PATH):
             try:
                 ep = MEMORY_DB_PATH + ".enc"

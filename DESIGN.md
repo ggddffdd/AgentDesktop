@@ -319,6 +319,28 @@
 `tests/test_startup_grace_303.py`，扰动见 `_perturb/_perturb_startup_grace_303.py`。
 v4.297 的模型侧薄投喂视图 `history_for_agent()` 保持不变。
 
+### 4.9 三条安全边界契约（v4.304.0·硬性）
+
+2026-11-20 第三方只读代码审查核实后定下三条 fail-closed 护栏，均为加固、非新功能。
+判据集中在独立纯函数模块 `p1_guard_304.py`，`memory_store.py` / `search.py` / `tools.py`
+只留接线，任何一处判据失效都有对应扰动用例证明会翻红。
+
+1. **加密记忆解密失败即中止**：`_with_db` 解密 `.enc` 后必须校验 SQLite 头，
+   失败直接抛错，不连接、不建表、不回写——原加密文件字节不变。附带把 `conn`
+   提到 try 外初始化，避免 connect 失败时 finally 抛 `UnboundLocalError` 掩盖原始错误。
+2. **网页抓取只走公网 http/https**：`http_get` 先过 `url_access_policy()`
+   （禁止 file:// 与回环/私网/链路本地/保留地址），重定向逐跳复检；
+   `read_response_capped()` / `gunzip_capped()` 限制原文 10 MB、解压 20 MB，
+   防超大响应与 gzip bomb。搜索引擎内部调用的目标均为公网 URL，不受影响。
+3. **运行时文件只读保护 + 精确敏感规则**：`write_file` 用 basename 精确名单
+   拒绝 config.json / sessions.json / *.db / 记忆与自动化任务文件；
+   `_is_sensitive_file` 从子串黑名单改为「路径组件 + 扩展名 + 精确文件名」，
+   消除 secretary_plan.md 误伤，补上 id_ed25519、*.pem、config.json.bak 等漏判。
+
+判据见 `tests/test_p1_guard_304.py`（61 条），扰动见
+`_perturb/_perturb_p1_guard_304.py`（9 组）。报告 F-04 技能归一化问题属实但
+被 `is_skill_enabled` 的 try/except 兜住、不会崩溃，留待后续随技能模块一并修正。
+
 ## 5. Layout Principles（间距 / 网格 / 留白）
 
 - **v4.200.0：token 已立**（不再是建议）。空白处的荒罢了三年，现在有真身了。

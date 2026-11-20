@@ -1542,16 +1542,10 @@ def _is_sensitive_file(path):
     v4.108.1：清理 v4.100 开源脱敏时留在本机源码里的 AgentDesktop 残串——
     该残串匹配不到真实路径，拦截实际由下方 endswith("config.json") 兜底，故行为未变。
     """
-    if not path:
-        return False
-    p = str(path).lower().replace("\\", "/")
-    for marker in (".env", "id_rsa", "id_dsa", "credentials", "credential",
-                   "secret", "api_key", "apikey", "access_token", "passwd"):
-        if marker in p:
-            return True
-    if p.rstrip("/").endswith("config.json"):
-        return True
-    return False
+    # v4.304 F-09：子串黑名单会误伤 secretary_plan.md、漏掉 id_ed25519/*.pem/
+    # config.json.bak/sessions.json。改为路径组件 + 扩展名 + 精确文件名规则。
+    import p1_guard_304 as _g304
+    return _g304.is_sensitive_path(path)
 
 
 # v4.256.0（P1-2）：run_command 是敏感文件的**旁路**。
@@ -2001,6 +1995,12 @@ def tool_write_file(app_dir, path, content):
     p = os.path.abspath(os.path.join(WORKSPACE_DIR, path))
     if _within_roots(p, roots) is None:
         return f"拒绝：只能写入工作区目录内（{WORKSPACE_DIR}）"
+    # v4.304 F-03：WORKSPACE_DIR 与 USER_DATA_DIR 默认同为 ~/Documents/小臭玩AI，
+    # config.json / sessions.json / *.db 都在其中——只判目录不判文件名，
+    # 模型一次误写即可清空全部 API Key 与会话。
+    import p1_guard_304 as _g304
+    if _g304.is_protected_runtime_path(p, WORKSPACE_DIR):
+        return "拒绝：目标是运行时受保护文件（配置/会话/记忆/任务/数据库），禁止写入。"
     try:
         d = os.path.dirname(p)
         if d:

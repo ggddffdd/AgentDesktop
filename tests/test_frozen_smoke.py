@@ -157,6 +157,11 @@ want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         # v4.302.0：重复工具调用修复落在护栏 mixin 与回收站计数里，
         # 两者都在 import 图上，必须一并验常量表（漏进 want 会整组假红）。
         "agent_exec_mixin", "system_control_tools",
+        # v4.304.0：三条 P1 护栏的纯判据模块（memory_store/search/tools 顶层 import，
+        # 漏包会直接崩）。必须加进 want，否则 info.get()={} → marks 全假红。
+        # memory_store / search 也要进 want：它们的接线标记钉在各自模块常量表里，
+        # 不进 want 则 present=None → 这些标记全部假红（首版打包后踩过）。
+        "p1_guard_304", "memory_store", "search",
         ]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
@@ -289,7 +294,18 @@ def main():
                        "tool_audit.jsonl", "legion_tool_audit.jsonl"],
         "tools": ["is_skill_enabled", "__getattr__", "TOOL_TIER",
                   # v4.223.0：exec_tool 统一参数校验接入 + 契约化归一传 name
-                  "validate_for_tool", "参数校验未通过", "from_legacy"],
+                  "validate_for_tool", "参数校验未通过", "from_legacy",
+                  # v4.304.0：受保护运行时文件 + 敏感路径判据接线（旧包确实缺失）
+                  "is_protected_runtime_path", "is_sensitive_path"],
+        # v4.304.0：三条 P1 护栏的纯判据真进包（双向验过旧 exe 常量表缺失）
+        "p1_guard_304": ["fail_closed_decrypt", "url_access_policy",
+                         "is_protected_runtime_path", "is_sensitive_path",
+                         "PROTECTED_RUNTIME_NAMES", "db_plain_is_valid",
+                         "read_response_capped", "gunzip_capped",
+                         "is_blocked_host", "MAX_FETCH_BYTES"],
+        "memory_store": ["fail_closed_decrypt"],
+        "search": ["url_access_policy", "read_response_capped",
+                   "_CheckedRedirect", "gunzip_capped"],
         "legion_permissions": ["grant_wave", "LegionPermissionAdapter"],
         "task_graph": ["incomplete", "__incomplete__"],
         "vision_qc": ["qc_skipped_no_key", "qc_pass", "encode_image_for_qc",
