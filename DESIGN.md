@@ -464,6 +464,34 @@ agent_task_mixin / execution_settle_309。判据 `tests/test_execution_settle_30
 三层（A 纯函数 47 / B 源码接线 / C 内联桩），扰动 8 组改坏必红，
 冻结标记 18 个均双向验过旧 exe 常量表全缺失。
 
+### 4.15 执行结算链路收尾（v4.310.0·第三方复验「不通过 · 差 2 P2 + 3 P3」补完）
+
+v4.309.0 落地后第三方以真实路径桩复验，判「不通过」，指出判据未覆盖的
+4 个未闭合点（2 项 P2 阻断 + 2 项 P3 非阻断）。本版逐点补完，判据升级为
+79 条（B 层加 B20-B23 四条接线判据），扰动扩到 12 组改坏必红：
+
+- **P2-1 未知工作流类型**：`_run_workflow` 的 `else`（非 research_write /
+  multi_search）此前只 `_emit_status` 后 `return ""`，外层 `workflow_guard_ok`
+  因早退信号为空判 `ok=True` → 假成功。现 `return _wf_early(self, "unexecuted", ...)`，
+  与缺引擎/拒绝/取消/异常四分支同口径；`"unexecuted"` 归一到 `NOT_EXECUTED`。
+  设计意图本已声明（guard docstring 列「未知类型」为早退），只是此前未接线。
+- **P2-2 续跑收尾闸门**：续跑「说做完了」的 `break` 此前没有主循环的
+  `_tstate_nudge_now`（账本未达标不再补轮）+ `_loop_summary`（账本小结）两道。
+  而续跑入口已调 `_tstate_resume_reset_nudge` 放开 nudge 闸——复位动作接了、
+  闸门调用没接，纯死意图。现新增 `_tstate_resume_finish`（task_mixin）镜像
+  主循环两道；`should_nudge` 兜底「一轮最多补一次」，不会死循环。
+- **P3-1 并发 worker 异常**：`future.result()` 异常时 `_tr=None`，`_tool_outcome`
+  退回文案判据，而 `_TOOL_FAIL_MARKS` 无「异常」→ 判成功并登记成功签名。
+  现构造 `_unexecuted_result(str(e), "crash")`，与崩溃分支同口径。
+- **P3-2 串行决策异常卡片转圈**：`engine.decide` 抛异常时卡片已发 `started`、
+  缺 `finished` → UI 永久 running。现 `_emit_tool_started/_finished` 维护
+  「已开始未结束」卡片序号集，`_safe_exec_tool_calls` 异常兜底经
+  `_close_open_tool_cards` 逐张补发失败收尾。
+
+拆分红线保持 `agent.py < 2400`（本版 2396），P2-2 的闸门与小结外移为
+`_tstate_resume_finish`，不抬阈值。P3-3（AgentNode 全失败才 incomplete 的
+取舍）保持 fail-closed，未改语义。
+
 ## 5. Layout Principles（间距 / 网格 / 留白）
 
 - **v4.200.0：token 已立**（不再是建议）。空白处的荒罢了三年，现在有真身了。

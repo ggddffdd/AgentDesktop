@@ -256,7 +256,8 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
 
         else:
             self._emit_status(f"未知工作流: {workflow_type}")
-            return ""
+            # v4.310.0 P2-1：未知类型此前只 emit 后 return ""，guard 判 ok=True 假成功；改 _wf_early 与四分支同口径
+            return _wf_early(self, "unexecuted", f"（未知工作流类型 {workflow_type}，未执行）")
 
         self._emit_status(f"🔄 任务图启动：{workflow_type}")
         # 打印任务清单
@@ -1517,21 +1518,16 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                     # 完全没有超时检查，模型卡住时能一直耗下去（只有步数在拦）。
                     _total_elapsed = time.time() - _t0
                     if _total_elapsed > _TOTAL_BUDGET:
-                        self._emit_status(
-                            f"⏰ 任务总时长达到上限（{int(_total_elapsed)}s），已自动停止。")
-                        self.stream_commit.emit(
-                            f"\n\n⏰ 任务总时长达到上限（{int(_total_elapsed)}秒），已自动停止。")
-                        self._stop_toast(
-                            f"任务总时长达到上限（{int(_total_elapsed)}秒），已自动停止。", "warn")
+                        self._emit_status(f"⏰ 任务总时长达到上限（{int(_total_elapsed)}s），已自动停止。")
+                        self.stream_commit.emit(f"\n\n⏰ 任务总时长达到上限（{int(_total_elapsed)}秒），已自动停止。")
+                        self._stop_toast(f"任务总时长达到上限（{int(_total_elapsed)}秒），已自动停止。", "warn")
                         self._mark_resumable("total_budget")
                         break
                     if time.time() - _round_t0 > MAX_DURATION:
                         _el = int(time.time() - _round_t0)
                         self._emit_status(f"⏰ 续跑轮超时（{_el}s），已自动停止。")
-                        self.stream_commit.emit(
-                            f"\n\n⏰ 续跑轮执行超时（{_el}秒），已自动停止。")
-                        self._stop_toast(
-                            f"续跑轮执行超时（{_el}秒），已自动停止。", "warn")
+                        self.stream_commit.emit(f"\n\n⏰ 续跑轮执行超时（{_el}秒），已自动停止。")
+                        self._stop_toast(f"续跑轮执行超时（{_el}秒），已自动停止。", "warn")
                         self._mark_resumable("timeout")
                         break
                     self._emit_status(f"Agent 续跑（第 {rstep} 步）…")
@@ -1604,6 +1600,8 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                             self.messages.append({"role": "user", "content": self._AGENT_NUDGE,
                                                   "_internal": True})
                             continue
+                        # v4.310.0 P2-2：续跑「说做完了」的 break 也过收尾闸门+账本小结（此前只有主循环有）
+                        if self._tstate_resume_finish(rstep, self._max_resume_steps, _tracer, agent_loop): continue
                         break
                 else:
                     # 续跑轮也耗尽：递归再续一轮（受 _resume_budget 限制）

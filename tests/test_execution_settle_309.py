@@ -73,6 +73,7 @@ EXEC_SRC = read_src("agent_exec_mixin.py")
 TASK_SRC = read_src("agent_task_mixin.py")
 GRAPH_SRC = read_src("task_graph.py")
 NODE_SRC = read_src("agent_node.py")
+G_SRC = read_src("execution_settle_309.py")  # v4.310.0 B20：unexecuted 归一登记
 
 
 # ============ A 纯函数层 ============
@@ -196,6 +197,24 @@ def part_b():
           "_final_ok = (_okc and not self._stop_requested)" in EXEC_SRC)
     check("B19 兄弟调用文案诚实标未执行",
           "**未执行**" in AGENT_SRC and "无需单独执行" not in AGENT_SRC)
+
+    # v4.310.0（第三方复核 P2-1/P2-2/P3-1/P3-2 四项收尾）
+    check("B20 P2-1 未知工作流类型经 _wf_early 标失败(非 return '')",
+          '_wf_early(self, "unexecuted"' in AGENT_SRC and
+          '"unexecuted": "NOT_EXECUTED"' in G_SRC)
+    check("B21 P2-2 续跑 break 过收尾闸门+账本小结(主循环之外唯一接线)",
+          "_tstate_resume_finish(" in AGENT_SRC and
+          "def _tstate_resume_finish" in TASK_SRC and
+          "self._tstate_nudge_now(task_state, step, max_steps)" in TASK_SRC and
+          "self._loop_summary(agent_loop_mod)" in TASK_SRC)
+    check("B22 P3-1 并发 future 异常构造结构化失败(crash)",
+          '_unexecuted_result(str(e), "crash")' in EXEC_SRC and
+          '"crash"' in EXEC_SRC)
+    check("B23 P3-2 异常兜底补发 finished 关闭开放卡片",
+          probe(G, "function_has_call", EXEC_SRC, "_safe_exec_tool_calls",
+                "_close_open_tool_cards") and
+          "_tool_open_cards" in EXEC_SRC and
+          probe(G, "function_has_call", EXEC_SRC, "_emit_tool_started", "add"))
 
 
 # ============ C 内联桩层（不碰真实用户数据） ============

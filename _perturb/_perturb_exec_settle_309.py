@@ -51,6 +51,24 @@ CASES = [
     ("task_graph.py", "缺失依赖放行",
      ["        if not _es309.is_ready_with_missing_dep(self.blocked_by, task_map):"],
      "        if False:  # 扰动：不校验缺失依赖", "B17", LF),
+    # v4.310.0（第三方复核 P2-1/P2-2/P3-1/P3-2）
+    # P2-1: 未知工作流类型恢复 return "" → B20 红
+    ("agent.py", "未知类型不标失败",
+     ['            return _wf_early(self, "unexecuted", f"（未知工作流类型 {workflow_type}，未执行）")'],
+     '            return ""  # 扰动：未知类型不标失败', "B20", CR),
+    # P2-2: 续跑不补收尾闸门 → B21 红
+    ("agent.py", "续跑不补闸门",
+     ['                        if self._tstate_resume_finish(rstep, self._max_resume_steps, _tracer, agent_loop): continue'],
+     '                        pass  # 扰动：续跑不补闸门', "B21", CR),
+    # P3-1: 并发异常恢复 _tr=None → B22 红
+    ("agent_exec_mixin.py", "并发异常不标失败",
+     ['                    _tr = _unexecuted_result(str(e), "crash")'],
+     '                    _tr = None  # 扰动：并发异常不标失败', "B22", CR),
+    # P3-2: 异常兜底不补发 finished → B23 红
+    ("agent_exec_mixin.py", "异常不补finished",
+     ['            self._close_open_tool_cards(',
+      '                "（系统提示：该工具调用执行异常，未取得结果。）")'],
+     '            pass  # 扰动：不补发finished', "B23", CR),
 ]
 
 

@@ -34,10 +34,11 @@ import json
 import logging
 import automation  # v4.284.0：_sync_to_session 回写主会话
 import tool_contract  # v4.258.0（P1-6）：成败判定归一到单一真源（整模块导入）
+import task_state  # v4.310.0 P2-2：续跑收尾闸门（_tstate_nudge_now 的同名形参）
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.309.0"
+VERSION = "v4.310.0"
 
 
 class AgentTaskMixin(object):
@@ -192,6 +193,27 @@ class AgentTaskMixin(object):
         一轮，不会变成无限补做循环。
         """
         self._tstate_nudged = False
+
+    def _tstate_resume_finish(self, step, max_steps, tracer, agent_loop_mod):
+        """v4.310.0 P2-2：续跑轮收尾闸门（镜像主循环 1471/1479 两道）。
+
+        续跑「模型说做完了」的 break 此前**只有** break，没有：
+          · 收尾闸门 `_tstate_nudge_now` —— 账本（子目标/产物）没达标就不再补轮；
+          · 账本小结 `_loop_summary` —— 没有按事实出小结，结局失真修的是主循环。
+        而续跑入口已调 `_tstate_resume_reset_nudge` 放开 nudge 闸，本闸门正好
+        接上（一轮最多补一次，`should_nudge` 兜底防死循环）。
+
+        返回 True = 已注入补做指令，调用方应 continue（再给模型一轮）；
+        返回 False = 不介入，调用方按旧路径 break。
+        """
+        try:
+            if self._tstate_nudge_now(task_state, step, max_steps):
+                self._tstate_trace_nudge(step, tracer)
+                return True
+            self._loop_summary(agent_loop_mod)
+        except Exception as e:
+            log.warning("续跑轮收尾闸门异常（已忽略）: %s", e)
+        return False
 
     # --------------------------------------------------------
     # 4) 收尾闸门

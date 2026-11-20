@@ -48,6 +48,7 @@ _REASON_TO_CODE = {
     "duplicate": "DUPLICATE_SKIPPED", "去重": "DUPLICATE_SKIPPED",
     "重复": "DUPLICATE_SKIPPED", "批内去重": "DUPLICATE_SKIPPED",
     "not_executed": "NOT_EXECUTED", "未执行": "NOT_EXECUTED",
+    "unexecuted": "NOT_EXECUTED",  # v4.310.0 P2-1：未知工作流类型（早退）
 }
 
 

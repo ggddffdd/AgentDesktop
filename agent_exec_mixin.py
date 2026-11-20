@@ -144,6 +144,10 @@ class AgentExecMixin(object):
             log.error("工具批次执行异常（已兜底，防会话带毒）: %s", e)
             self._fill_missing_tool_receipts(
                 tool_calls, "（系统提示：该工具调用执行异常，未取得结果。）")
+            # v4.310.0 P3-2：补回执只解决「下轮 API 400」，不解决 UI 卡片转圈 ——
+            # 已 started 未 finished 的卡片必须补发失败收尾，否则永久 running。
+            self._close_open_tool_cards(
+                "（系统提示：该工具调用执行异常，未取得结果。）")
 
     def _remember_tool_sig(self, name, args):
         """登记「已成功执行」的调用签名，供死循环护栏判定。
@@ -231,6 +235,14 @@ class AgentExecMixin(object):
     def _emit_tool_started(self, name, args, idx, total):
         """发射「工具开始」信号（三条路径共用的唯一发射点）。"""
         try:
+            # v4.310.0 P3-2：维护「已开始未结束」卡片序号集，供异常兜底补发 finished
+            # （串行 decide 抛异常时卡片停在 running，_fill_missing_tool_receipts 只补
+            # 回执不补 finished → 永久转圈；此处登记，_close_open_tool_cards 收尾）。
+            _open = getattr(self, "_tool_open_cards", None)
+            if _open is None:
+                _open = set()
+                self._tool_open_cards = _open
+            _open.add(idx)
             self.tool_started.emit({
                 "name": name, "args": args, "index": idx, "total": total,
             })
@@ -243,6 +255,9 @@ class AgentExecMixin(object):
         成败取 `_tool_outcome` 的结论（ToolResult.ok 优先），不看文案前缀。
         """
         try:
+            _open = getattr(self, "_tool_open_cards", None)
+            if _open is not None:
+                _open.discard(idx)
             self.tool_finished.emit({
                 "name": name,
                 "result_preview": str(result_str)[:200],
@@ -252,6 +267,22 @@ class AgentExecMixin(object):
             })
         except Exception:
             pass
+
+    def _close_open_tool_cards(self, result_str):
+        """v4.310.0 P3-2：给还没收到 finished 的卡片补发失败收尾。
+
+        异常兜底时调用：started 已发、finished 未发的卡片若一直不补，
+        UI 卡片停在 running 永久转圈。逐张按失败结算（ok=False）。
+        """
+        try:
+            _open = getattr(self, "_tool_open_cards", None)
+            if not _open:
+                return
+            for _idx in list(_open):
+                self._emit_tool_finished(
+                    "（工具异常）", result_str, _idx, 0, False)
+        except Exception as e:
+            log.warning("补发工具 finished 失败（已忽略）: %s", e)
 
     def _run_concurrent(self, tool_calls, mw, APP_DIR):
         """并发执行工具调用（`tool_calls` 是 `[(tool_call, decision), ...]`）。
@@ -328,7 +359,10 @@ class AgentExecMixin(object):
                     result_str = f"工具执行异常：{e}"
                     deliverables = []
                     schedule = None
-                    _tr = None
+                    # v4.310.0 P3-1：此前 _tr=None，_tool_outcome 退回文案判据，
+                    # 而 _TOOL_FAIL_MARKS 无「异常」→ 判成功 → 连带登记成功签名。
+                    # 改结构化失败（CRASH），与串行/崩溃分支同口径。
+                    _tr = _unexecuted_result(str(e), "crash")
 
                 dt = int((time.time() - t0) * 1000)
                 _okc = self._tool_outcome(

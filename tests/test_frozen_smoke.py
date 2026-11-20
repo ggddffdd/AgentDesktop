@@ -544,7 +544,9 @@ def main():
                              # v4.309.0：未执行结构化失败 + 续跑/工作流/结局接线
                              "unexecuted_result", "workflow_outcome_ok",
                              "reset_force_after_tool", "infer_success_ok",
-                             "duration_over_budget"],
+                             "duration_over_budget",
+                             # v4.310.0：异常兜底补发 finished（卡片不再永久转圈）
+                             "_close_open_tool_cards"],
         "system_control_tools": ["desktop.ini", "$I"],
         # v4.225.0：统一意图对象（Intent 值对象 + ROUTE_REGISTRY 注册表
         # + classify 唯一入口 + 路由段自动生成）
@@ -565,7 +567,9 @@ def main():
                   "_tstate_trace_nudge", "_last_user_text",
                   "任务要求未完成",
                   # v4.309.0：账本检查点序列化/恢复 helper
-                  "_tstate_checkpoint", "_tstate_restore_checkpoint"],
+                  "_tstate_checkpoint", "_tstate_restore_checkpoint",
+                  # v4.310.0：续跑收尾闸门（镜像主循环 nudge + 小结）
+                  "_tstate_resume_finish"],
         # v4.226.0：四阶段循环判定层（PLAN/EXECUTE/VERIFY/SUMMARIZE + 末阶段饱和
         # 不回退 + is_verified 真伪判据）
         "agent_loop": ["PHASE_ORDER", "next_phase", "LoopState",
