@@ -5,11 +5,48 @@ import re
 import html as html_mod
 import json
 import logging
+import socket
 import urllib.parse
 import urllib.request
 import urllib.error
 
 log = logging.getLogger("dsdesktop")
+
+
+def _dns_resolver(host, port):
+    """默认 DNS 解析器（注入给 security_guard_307，保持判据层无真实 I/O）。"""
+    return socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+
+
+def _check_url_authorized(url, purpose="web_fetch"):
+    """F-02 统一准入：字面策略 + DNS 解析落地地址校验。
+
+    两道关：① p1_guard_304 的 scheme/字面地址（含规范化后的 localhost.）；
+    ② security_guard_307.resolve_and_check 解析全部 A/AAAA，任一内网即拒。
+    返回 (是否放行, 主机名, 原因)。fail-closed：任一判据异常一律拒绝。
+    """
+    import p1_guard_304 as _g304
+    import security_guard_307 as _g307
+    ok, reason = _g304.url_access_policy(url)
+    if not ok:
+        return False, None, "%s 拒绝：%s" % (purpose, reason)
+    try:
+        host = urllib.parse.urlsplit(url).hostname
+    except Exception:
+        return False, None, "%s 拒绝：主机名解析失败" % purpose
+    port = 443 if (urllib.parse.urlsplit(url).scheme or "").lower() == "https" else 80
+    safe, _ips, why = _g307.resolve_and_check(host, port, _dns_resolver)
+    if not safe:
+        return False, host, "%s 拒绝：%s" % (purpose, why)
+    return True, host, ""
+
+
+def _peer_ip_of(resp):
+    """取 HTTP 响应连接的对端 IP（用于防 DNS rebinding 的连接后复核）。取不到返回 None。"""
+    try:
+        return resp.fp.raw._sock.getpeername()[0]
+    except Exception:
+        return None
 
 
 def _is_english_query(query):
@@ -415,13 +452,16 @@ def format_context(results):
 def http_get(url, timeout=10):
     """同步 HTTP GET，返回解码后的文本。
 
-    v4.304 F-02：只允许 http/https；拒绝本机/内网地址（含重定向逐跳复检）；
+    v4.304 F-02 + v4.307：只允许 http/https；拒绝本机/内网地址——字面策略 +
+    DNS 解析全部 A/AAAA 任一内网即拒（挡 localhost. / localtest.me / nip.io 绕过），
+    连接后复核 peer IP 防 DNS rebinding；重定向逐跳复检同一套规则；
     响应与解压后体积双重上限，防超大响应与 gzip bomb。
     """
     import p1_guard_304 as _g304
-    ok, reason = _g304.url_access_policy(url)
+    import security_guard_307 as _g307
+    ok, _host, reason = _check_url_authorized(url, "web_fetch")
     if not ok:
-        raise ValueError("web_fetch 拒绝：%s" % reason)
+        raise ValueError(reason)
 
     req = urllib.request.Request(
         url,
@@ -436,13 +476,17 @@ def http_get(url, timeout=10):
 
     class _CheckedRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
-            _ok, _why = _g304.url_access_policy(newurl)
+            _ok, _host, _why = _check_url_authorized(newurl, "web_fetch 重定向")
             if not _ok:
-                raise ValueError("web_fetch 拒绝重定向：%s" % _why)
+                raise ValueError(_why)
             return super().redirect_request(req, fp, code, msg, headers, newurl)
 
     opener = urllib.request.build_opener(_CheckedRedirect)
     with opener.open(req, timeout=timeout) as resp:
+        # 连接后复核实际对端 IP：DNS 解析时是公网、连接时被 rebinding 到内网 → 拒。
+        peer = _peer_ip_of(resp)
+        if not _g307.peer_ip_ok(peer):
+            raise ValueError("web_fetch 拒绝：连接对端地址未通过复核（%r）" % peer)
         data, truncated = _g304.read_response_capped(resp)
         enc = resp.headers.get("Content-Encoding", "")
         if "gzip" in enc:
@@ -456,10 +500,34 @@ def http_get(url, timeout=10):
 
 
 def download_bytes(url, timeout=120):
-    """下载二进制（如图片）返回原始字节。"""
+    """下载二进制（如图片）返回原始字节。
+
+    v4.307 F-02：原实现是裸 urlopen，连 file:///本地文件 都能读（比 SSRF 更严重的
+    本地文件读取）。现接入与 http_get 同一套 scheme 白名单 + DNS 解析拦截 + 连接后
+    peer 复核 + 10MB 原文上限；重定向逐跳复检。
+    """
+    import p1_guard_304 as _g304
+    import security_guard_307 as _g307
+    ok, _host, reason = _check_url_authorized(url, "download")
+    if not ok:
+        raise ValueError(reason)
+
     req = urllib.request.Request(
         url,
         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+
+    class _CheckedRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            _ok, _host, _why = _check_url_authorized(newurl, "download 重定向")
+            if not _ok:
+                raise ValueError(_why)
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    opener = urllib.request.build_opener(_CheckedRedirect)
+    with opener.open(req, timeout=timeout) as resp:
+        peer = _peer_ip_of(resp)
+        if not _g307.peer_ip_ok(peer):
+            raise ValueError("download 拒绝：连接对端地址未通过复核（%r）" % peer)
+        data, _truncated = _g304.read_response_capped(resp)
+        return data

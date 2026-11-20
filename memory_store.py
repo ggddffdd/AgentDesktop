@@ -487,15 +487,31 @@ def _with_db(fn):
     """
     if _cipher is not None:
         ep = MEMORY_DB_PATH + ".enc"
-        if os.path.exists(ep) and not os.path.exists(MEMORY_DB_PATH):
-            # v4.304 F-01：解密失败必须 fail-closed——原实现只 warning 后继续，
-            # 空库被 fn 建表后加密回写覆盖原 .enc，长期记忆不可逆丢失。
+        enc_exists = os.path.exists(ep)
+        plain_exists = os.path.exists(MEMORY_DB_PATH)
+        if enc_exists:
+            # v4.307 F-01 残留路径：崩溃遗留明文 memory.db + .enc 并存时，
+            # 原逻辑跳过解密、直接用明文执行 fn，再用「当前口令」重加密覆盖 .enc——
+            # 若当前口令是错的，正确口令将永久读不出。必须先验证 .enc 能否用当前
+            # 口令解密；验证失败一律 fail-closed，明文与 .enc 都不动。
             import p1_guard_304 as _g304
+            import security_guard_307 as _g307
+            decision = _g307.plain_db_decision(enc_exists, plain_exists, False)
             try:
                 _plain = _g304.fail_closed_decrypt(_cipher, open(ep, "rb").read())
-                open(MEMORY_DB_PATH, "wb").write(_plain)
+                decision = _g307.plain_db_decision(enc_exists, plain_exists, True)
             except Exception as e:
+                if decision == "deny":
+                    raise RuntimeError(
+                        "记忆库口令校验失败（检测到明文残留，已拒绝写入并保留原加密文件）：%s" % e
+                    ) from e
                 raise RuntimeError("记忆库解密失败，已保留原加密文件（未改动）：%s" % e) from e
+            if decision == "allow" and plain_exists:
+                # 口令正确但存在遗留明文：以 .enc 解密出的真数据覆盖明文，杜绝
+                # 「遗留的旧明文」被当成最新数据执行、再写回覆盖 .enc。
+                open(MEMORY_DB_PATH, "wb").write(_plain)
+            elif decision == "decrypt":
+                open(MEMORY_DB_PATH, "wb").write(_plain)
     conn = None  # v4.304 F-01：connect 失败时 finally 直接 close 会抛 UnboundLocalError
     try:
         conn = sqlite3.connect(MEMORY_DB_PATH)

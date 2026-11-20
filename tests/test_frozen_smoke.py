@@ -172,6 +172,9 @@ want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         # ⚠️ main.py 不进 want——它是 PyInstaller 入口脚本，编进 bootloader 不在 PYZ TOC，
         # 加进来会「模块在 TOC」必红（v4.306 踩过）。main 的接线靠源码测试覆盖。
         "mcp_guard_306", "mcp_client",
+        # v4.307.0：第三方验收修复的纯判据模块（search/tools/memory_store/p1_guard/config
+        # 顶层 import）。不进 want 则标记全假红（v4.304/305/306 踩过同类坑）。
+        "security_guard_307",
         ]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
@@ -318,7 +321,9 @@ def main():
                          "is_protected_runtime_path", "is_sensitive_path",
                          "PROTECTED_RUNTIME_NAMES", "db_plain_is_valid",
                          "read_response_capped", "gunzip_capped",
-                         "is_blocked_host", "MAX_FETCH_BYTES"],
+                         "is_blocked_host", "MAX_FETCH_BYTES",
+                         # v4.307 F-03：受保护库改精确名单（旧包无此调用）
+                         "protected_db_name"],
         # v4.305.0：第二批小改的纯判据真进包（双向验过旧 exe 常量表全缺失）
         "smallfix_guard_305": ["skill_enabled_decision",
                                "artifact_snapshot_root",
@@ -332,11 +337,18 @@ def main():
         # v4.306.0 F-06：MCP 客户端接线（写锁 / stderr drain / 预算拆分 / guard import）
         "mcp_client": ["_write_lock", "_drain_stderr", "_stderr_thread",
                        "_budget_sec", "_init_timeout", "_tools_timeout", "mcp_guard_306"],
+        # v4.307.0：第三方验收修复判据 + 接线标记（15 个标记双向验过旧 exe 常量表全缺失）。
+        "security_guard_307": ["normalize_host", "resolve_and_check", "peer_ip_ok",
+                               "download_url_allowed", "plain_db_decision",
+                               "protected_db_name", "atomic_write_ok",
+                               "skill_gate_fail_closed", "snapshot_root_ok", "budget_wired"],
         # 注：main.py 是 PyInstaller 入口脚本，不在 PYZ TOC，故不列入 marks（v4.306 踩过）。
         # main 的后台初始化接线由 tests/test_mcp_guard_306.py 的源码判据（B7）覆盖。
-        "memory_store": ["fail_closed_decrypt"],
+        "memory_store": ["fail_closed_decrypt", "plain_db_decision"],
         "search": ["url_access_policy", "read_response_capped",
-                   "_CheckedRedirect", "gunzip_capped"],
+                   "_CheckedRedirect", "gunzip_capped",
+                   # v4.307 F-02：DNS 解析 + 统一准入 + peer 复核接线
+                   "_dns_resolver", "_check_url_authorized", "_peer_ip_of"],
         "legion_permissions": ["grant_wave", "LegionPermissionAdapter"],
         "task_graph": ["incomplete", "__incomplete__"],
         "vision_qc": ["qc_skipped_no_key", "qc_pass", "encode_image_for_qc",

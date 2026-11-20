@@ -72,8 +72,16 @@ def fail_closed_decrypt(cipher, enc_bytes):
 
 # ==================== F-02 ====================
 def is_blocked_host(host):
-    """主机是否为回环/私有/链路本地/保留/组播地址，或本机专用域名。DNS 名（非 IP）不在此拦。"""
-    h = (host or "").strip().strip("[]").lower()
+    """主机是否为回环/私有/链路本地/保留/组播地址，或本机专用域名。DNS 名（非 IP）不在此拦。
+
+    v4.307 F-02：先 normalize（复用 security_guard_307.normalize_host：去方括号、
+    去尾部点 `localhost.`、小写）。DNS 解析落地内网由接线层（search.http_get）兜底。
+    """
+    try:
+        import security_guard_307 as _g307
+        h = _g307.normalize_host(host)
+    except Exception:
+        h = (host or "").strip().strip("[]").rstrip(".").strip().lower()
     if not h:
         return True
     if h == "localhost" or any(h.endswith(s) for s in _BLOCKED_HOST_SUFFIXES):
@@ -151,8 +159,14 @@ def is_protected_runtime_path(path, workspace_dir):
         return True
     if any(name.startswith(pre) for pre in PROTECTED_RUNTIME_PREFIXES):
         return True
-    if name.endswith(".db") or name.endswith(".db-wal") or name.endswith(".db-shm"):
-        return True
+    # v4.307 F-03/F-09：不再 *.db 一刀切（普通用户数据库也无法 write_file 创建）。
+    # 受保护运行时库改精确名单（见 PROTECTED_RUNTIME_NAMES）+ security_guard_307。
+    try:
+        import security_guard_307 as _g307
+        if _g307.protected_db_name(name):
+            return True
+    except Exception:
+        pass
     parts = _parts(path)
     if any(seg in PROTECTED_RUNTIME_DIRS for seg in parts):
         return True

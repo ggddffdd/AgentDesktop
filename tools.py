@@ -2005,8 +2005,21 @@ def tool_write_file(app_dir, path, content):
         d = os.path.dirname(p)
         if d:
             os.makedirs(d, exist_ok=True)
-        with open(p, "w", encoding="utf-8") as f:
-            f.write(content)
+        # v4.307 F-03：临时文件 + os.replace 原子替换——直接 open(p,"w") 写到一半
+        # 崩溃/断电会留下半截文件，破坏运行时配置。同目录写 tmp 保证同盘原子替换。
+        import uuid as _uuid
+        tmp = p + ".tmp.%s" % _uuid.uuid4().hex[:8]
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.replace(tmp, p)
+        except Exception:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except Exception:
+                    pass
+            raise
         return f"已写入 {len(content)} 字符到 {p}"
     except Exception as e:
         return f"写入失败：{e}"
@@ -2669,13 +2682,16 @@ def _tool_run_python_legacy(app_dir, code):
             f.write(code)
     except Exception as e:
         return f"写临时文件失败：{e}", []
-    before = snapshot_workspace(WORKSPACE_DIR)
+    # v4.307 F-05：快照根必须跟随实际 run_cwd（含 fallback），不再直接传
+    # WORKSPACE_DIR——否则 fallback 到 app_dir 时快照根错、且会扫整个数据根。
+    _ws2 = WORKSPACE_DIR
     try:
-        _ws2 = WORKSPACE_DIR
-        try:
-            os.makedirs(_ws2, exist_ok=True)
-        except Exception:
-            _ws2 = app_dir
+        os.makedirs(_ws2, exist_ok=True)
+    except Exception:
+        _ws2 = app_dir
+    snap_root = _ws2
+    before = snapshot_workspace(snap_root)
+    try:
         # v4.184.0：同主路径，注入 PYTHONIOENCODING=utf-8 根治中文 GBK 崩。
         _py_env = dict(os.environ)
         _py_env["PYTHONIOENCODING"] = "utf-8"
@@ -2694,7 +2710,7 @@ def _tool_run_python_legacy(app_dir, code):
             out = raw.decode("gbk")
         except Exception:
             out = raw.decode("utf-8", "ignore")
-    after = snapshot_workspace(WORKSPACE_DIR)
+    after = snapshot_workspace(snap_root)
     py_deliverables = []
     for nf in sorted(after - before):
         if nf == frel:
@@ -3604,8 +3620,13 @@ def tool_use_skill(cfg, app_dir, skill_name):
             _log_skill_hit(skill_name, ok=False)
             return (f"技能「{skill_name}」当前处于**禁用**状态，无法加载。"
                     f"如需使用，请先在技能管理里启用它。")
-    except Exception:
-        pass   # 配置读取异常时不拦（不因配置问题把功能整个关掉）
+    except Exception as e:
+        # v4.307 F-04：配置读取异常改 fail-closed——原 pass 会在启用状态读不到时
+        # 静默放行被禁用/未登记技能。配置异常应拒绝加载并如实告知，不静默降级。
+        import security_guard_307 as _g307
+        if _g307.skill_gate_fail_closed(True):
+            _log_skill_hit(skill_name, ok=False)
+            return f"技能「{skill_name}」无法校验启用状态（配置读取异常），已拒绝加载：{e}"
 
     # 解析要扫描的技能目录（与 config.get_skill_scan_dirs 保持一致）
     try:

@@ -77,7 +77,7 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.306.0"
+APP_VERSION = "v4.307.0"
 APP_BUILD_DATE = "2026-11-20"
 
 # ---------- DeepSeek 错峰窗口（唯一配置处）----------
@@ -1950,10 +1950,12 @@ mcp_clients = []
 mcp_init_attempted = False
 mcp_skip_hints = []
 
-def init_mcp_clients(cfg, force=False):
+def init_mcp_clients(cfg, force=False, budget=None):
     """遍历 cfg["mcp_servers"]，为每个 enabled: true 的服务器创建 McpClient 并启动。
     收集所有 MCP 工具定义存入每个 client.tools。
 
+    v4.307 F-07：budget 为单服务器总预算（秒），透传给 client.start(timeout=)，
+    修掉 v4.306 里 start_mcp_init_async 算了 budget 却没传下去的死参数。
     命令不存在或目录已经没了：跳过，并留一句人话。不重复尝试。
     """
     from mcp_client import McpClient, preflight
@@ -1990,7 +1992,7 @@ def init_mcp_clients(cfg, force=False):
             env=srv.get("env"),
             cwd=srv.get("cwd"),
         )
-        if client.start():
+        if client.start(timeout=budget):
             mcp_clients.append(client)
             log.info("外部工具 [%s] 已接上，提供 %d 个能力", name, len(client.tools))
         else:
@@ -2077,7 +2079,7 @@ def start_mcp_init_async(cfg, budget_sec=None):
 
     def _run():
         try:
-            init_mcp_clients(cfg)
+            init_mcp_clients(cfg, budget=budget)
         except Exception as e:
             log.error("MCP 后台初始化异常（不影响启动）: %s", e)
 

@@ -141,6 +141,7 @@ test_screenshot_delegate_260.py
 test_screenshot_path_fence_218.py
 test_security_align_264.py
 test_security_correctness_291.py
+test_security_guard_307.py
 test_sensitive_mask_220.py
 test_session_goal_automation.py
 test_session_isolation_290.py

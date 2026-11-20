@@ -394,6 +394,28 @@ v4.297 的模型侧薄投喂视图 `history_for_agent()` 保持不变。
 `_perturb/_perturb_mcp_guard_306.py`（10 组，改坏必红）。假 MCP 子进程实测了
 「持续写 10 万行 stderr 仍能回包、5 路并发不写乱、正常回包不崩溃、慢服务器不阻塞启动」。
 
+### 4.12 网络与文件安全边界契约（v4.307.0·第三方验收不通过项）
+
+第三方验收对 v4.306.0 判「不通过」，核心阻断项 F-02 经我方实测复现属实（且比报告
+更严重：`download_bytes` 裸 `urlopen` 可读本地文件）。本版全部修复，判据集中在
+`security_guard_307.py`（纯函数 + 注入式 resolver，无真实网络 I/O），业务模块只接线。
+
+- **F-02 双层准入**：① 字面层（scheme 白名单 + 主机名规范化去尾随点，`p1_guard_304`）；
+  ② DNS 层 `resolve_and_check` 解析全部 A/AAAA，任一回环/私有/链路本地即拒；
+  ③ 连接后 `peer_ip_ok` 复核对端 IP 防 DNS rebinding。遇解析失败/无结果一律
+  fail-closed。`web_fetch`、`download_bytes`、重定向逐跳统一走同一套；响应 10MB /
+  解压 20MB 上限。`localhost.`/`localtest.me`/`127.0.0.1.nip.io` 均解析到回环被实测拦下。
+- **F-01 明文库口令窗口**：`_with_db` 在 `.enc` 与明文并存时先验证 `.enc` 能否用当前
+  口令解密（`plain_db_decision`），失败 fail-closed 保留两文件，杜绝错误口令重加密。
+- **F-03/F-09**：受保护数据库改精确名单（用户普通 `.db` 放行）；`write_file` 临时文件 +
+  `os.replace` 原子写。
+- **F-04/F-05/F-07**：技能配置异常 fail-closed；legacy 快照根跟随实际 cwd；MCP 预算
+  `budget_sec` 真正透传。
+
+判据见 `tests/test_security_guard_307.py`（57 条），扰动见
+`_perturb/_perturb_security_307.py`（8 组，改坏必红）。真实本机 HTTP 服务实测了
+SSRF 绕过全部被拒、download 本地文件读取被拒、公网域名与 peer 复核不误伤。
+
 ## 5. Layout Principles（间距 / 网格 / 留白）
 
 - **v4.200.0：token 已立**（不再是建议）。空白处的荒罢了三年，现在有真身了。
