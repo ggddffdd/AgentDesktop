@@ -2573,6 +2573,10 @@ def tool_run_python(app_dir, code, cfg=None, progress=None,
     # FileNotFoundError、glob incoming/ 返回空——小臭误甩锅全角冒号。
     # 产物仍落 ws（隔离），仅执行根统一为 WORKSPACE_DIR。
     run_cwd = WORKSPACE_DIR
+    # v4.305.0 F-05：产物快照根必须与执行 cwd 同根（纯判据 artifact_snapshot_root）。
+    # 旧代码脚本落 ws、cwd=WORKSPACE_DIR、快照却用 ws，相对路径产物落在 cwd 抓不到。
+    from smallfix_guard_305 import artifact_snapshot_root
+    snap_root = artifact_snapshot_root(run_cwd, ws)
     # 审计修复 E8：秒级文件名在同秒并发（首次确认后 trust_tool → _run_concurrent
     # 可并行两个 run_python）时互相覆盖，先完成者 finally 删脚本会删掉对方正在
     # 执行的文件 → "can't open file"。加毫秒+随机后缀（同 _save_gen_image v4.120 做法）。
@@ -2586,7 +2590,7 @@ def tool_run_python(app_dir, code, cfg=None, progress=None,
     except Exception as e:
         return f"写临时文件失败：{e}", []
 
-    before = snapshot_workspace(ws)
+    before = snapshot_workspace(snap_root)
     try:
         # v4.184.0：注入 PYTHONIOENCODING=utf-8，避免子进程在 GBK 控制台下
         # print 中文抛 UnicodeEncodeError（与 browser_control_tools/release_check 同款范式）。
@@ -2634,10 +2638,10 @@ def tool_run_python(app_dir, code, cfg=None, progress=None,
         except Exception:
             pass
 
-    after = snapshot_workspace(ws)
+    after = snapshot_workspace(snap_root)
     deliverables = []
     for nf in sorted(after - before):
-        full = os.path.join(ws, nf)
+        full = os.path.join(snap_root, nf)
         deliverables.append((full, classify_kind(nf), os.path.basename(nf)))
 
     return out, deliverables

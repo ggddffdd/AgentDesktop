@@ -341,6 +341,31 @@ v4.297 的模型侧薄投喂视图 `history_for_agent()` 保持不变。
 `_perturb/_perturb_p1_guard_304.py`（9 组）。报告 F-04 技能归一化问题属实但
 被 `is_skill_enabled` 的 try/except 兜住、不会崩溃，留待后续随技能模块一并修正。
 
+### 4.10 第二批小改契约（v4.305.0·可复现缺陷）
+
+承接 §4.9，处理同一份审查报告里三个确定性可复现的 P2，均为缺陷修复、非新功能。
+判据集中在 `smallfix_guard_305.py`，`config.py` / `tools.py` / `ui.py` 只留接线。
+
+1. **技能名归一化口径唯一（F-04）**：`skill_enabled_decision()` 以注入的
+   `normalize_skill_name` 为唯一归一化口径，顺序为「全禁用 → 空名 → 白名单空全放行 →
+   归一化后比对」，不吞异常。旧代码把 import 藏在函数内部、`is_skill_enabled`
+   用 `try/except` 回退 `.strip()`，归一化静默失效（清单显示启用却加载不了）；
+   现去掉吞错分支，带 emoji / 大小写 / 首尾空格的名字在白名单两侧都归一化后比对。
+2. **产物快照根与执行 cwd 同根（F-05）**：`artifact_snapshot_root(run_cwd, script_dir)`
+   恒返回 `run_cwd`。旧 `tool_run_python` 把脚本写在 `USER_DATA_DIR/workspace`、
+   子进程 `cwd=WORKSPACE_DIR`、快照却扫脚本目录，导致模型用相对路径生成的产物
+   落在 cwd 而快照抓不到（交付物漏报）。现 before/after 快照与交付物拼接路径
+   统一用 `snap_root=run_cwd`，与 legacy 路径既有口径一致（快照全目录约 0.1 s，
+   无性能回退）。脚本临时文件在 after 快照前已删除，不会混入差集。
+3. **同类单一事件过滤器（F-08）**：`count_event_filter_defs()` 用 AST 统计指定类里
+   `eventFilter` 定义数，正常应为 1。旧 `ChatWindow` 有两个同名方法（约 1336 与 4776 行），
+   Python 后者静默覆盖前者，使输入框聚焦高亮成为死代码。现合并为唯一一个，
+   同时处理 input_box 的 FocusIn/FocusOut 与 search_box 的 Enter/Shift+Enter/Esc。
+
+判据见 `tests/test_smallfix_305.py`（35 条），扰动见
+`_perturb/_perturb_smallfix_305.py`（9 组）。真实 Qt 冒烟验证了合并后焦点联动与
+搜索快捷键均生效（合并前焦点联动不可用）。
+
 ## 5. Layout Principles（间距 / 网格 / 留白）
 
 - **v4.200.0：token 已立**（不再是建议）。空白处的荒罢了三年，现在有真身了。

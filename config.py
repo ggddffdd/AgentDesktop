@@ -77,7 +77,7 @@ def is_under_app_dir(path):
 PRODUCTS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "小臭玩AI", "产物")
 
 # ---------- 版本 ----------
-APP_VERSION = "v4.304.0"
+APP_VERSION = "v4.305.0"
 APP_BUILD_DATE = "2026-11-20"
 
 # ---------- DeepSeek 错峰窗口（唯一配置处）----------
@@ -1467,22 +1467,12 @@ def is_skill_enabled(name):
     为什么需要它：`tool_use_skill` 原来只按名字扫目录找技能，**不查启用状态** ——
     模型记住或猜出一个已被禁用技能的名字，照样能加载进来。
     """
-    try:
-        n = normalize_skill_name(name or "")
-    except Exception:
-        n = (name or "").strip()
-    if not n:
-        return False
-    if skills_disabled_all():
-        return False
-    enabled = _load_enabled_skills()
-    if not enabled:
-        return True
-    try:
-        keep = {normalize_skill_name(x) for x in enabled}
-    except Exception:
-        keep = set(enabled)
-    return n in keep
+    # v4.305.0 F-04：归一化口径收到纯判据里，去掉吞掉 NameError 的 try/except
+    # ——旧代码 import 缺失时回退 strip，导致带 emoji/大小写/空格的技能名静默失配。
+    from skill_loader import normalize_skill_name as _norm
+    from smallfix_guard_305 import skill_enabled_decision
+    return skill_enabled_decision(
+        name, _load_enabled_skills(), skills_disabled_all(), _norm)
 
 
 def _load_enabled_tools():

@@ -162,6 +162,10 @@ want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         # memory_store / search 也要进 want：它们的接线标记钉在各自模块常量表里，
         # 不进 want 则 present=None → 这些标记全部假红（首版打包后踩过）。
         "p1_guard_304", "memory_store", "search",
+        # v4.305.0：第二批小改的纯判据模块（config/tools 顶层 import）。
+        # config / tools 已在 want 中；新模块 smallfix_guard_305 必须一并加入，
+        # 否则它的标记全假红（v4.304 踩过同类坑）。
+        "smallfix_guard_305",
         ]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
@@ -288,7 +292,9 @@ def main():
                    # v4.174.0：视觉模型追加识别清单（词表在 ui，这里只放可配置清单）
                    "VISION_MODEL_EXTRA_HINTS",
                    # v4.177.0：历史字符预算（0=关闭）
-                   "history_char_budget"],
+                   "history_char_budget",
+                   # v4.305.0 F-04：技能归一化判据接线（旧包缺失）
+                   "skill_enabled_decision", "smallfix_guard_305"],
         "route_log": ["log_tool_decision", "event=tool"],
         "tool_audit": ["AUDIT_LOCK", "build_record", "args_preview", "origin",
                        "tool_audit.jsonl", "legion_tool_audit.jsonl"],
@@ -296,13 +302,20 @@ def main():
                   # v4.223.0：exec_tool 统一参数校验接入 + 契约化归一传 name
                   "validate_for_tool", "参数校验未通过", "from_legacy",
                   # v4.304.0：受保护运行时文件 + 敏感路径判据接线（旧包确实缺失）
-                  "is_protected_runtime_path", "is_sensitive_path"],
+                  "is_protected_runtime_path", "is_sensitive_path",
+                  # v4.305.0 F-05：产物快照根判据接线（旧包确实缺失）
+                  "artifact_snapshot_root", "snap_root"],
         # v4.304.0：三条 P1 护栏的纯判据真进包（双向验过旧 exe 常量表缺失）
         "p1_guard_304": ["fail_closed_decrypt", "url_access_policy",
                          "is_protected_runtime_path", "is_sensitive_path",
                          "PROTECTED_RUNTIME_NAMES", "db_plain_is_valid",
                          "read_response_capped", "gunzip_capped",
                          "is_blocked_host", "MAX_FETCH_BYTES"],
+        # v4.305.0：第二批小改的纯判据真进包（双向验过旧 exe 常量表全缺失）
+        "smallfix_guard_305": ["skill_enabled_decision",
+                               "artifact_snapshot_root",
+                               "count_event_filter_defs",
+                               "normalize_skill_key", "script_dir"],
         "memory_store": ["fail_closed_decrypt"],
         "search": ["url_access_policy", "read_response_capped",
                    "_CheckedRedirect", "gunzip_capped"],

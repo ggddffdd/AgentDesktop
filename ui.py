@@ -1334,9 +1334,13 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
         return input_area
 
     def eventFilter(self, obj, event):
-        """输入框焦点联动：聚焦时输入卡边框变主色（替代 QSS 不支持的 :focus-within）。"""
+        """v4.305.0 F-08：唯一的事件过滤器——合并输入框焦点联动 + 搜索框快捷键。
+
+        旧代码此处与类尾各有一个 eventFilter，后者静默覆盖前者，导致输入框
+        聚焦时边框不变色（焦点联动死代码）。现两段逻辑合一，同类仅此一个定义。
+        """
+        from PySide6.QtCore import QEvent
         if getattr(self, "_input_frame", None) is not None and obj is getattr(self, "input_box", None):
-            from PySide6.QtCore import QEvent
             if event.type() == QEvent.FocusIn:
                 self._input_frame.setStyleSheet(
                     f"QFrame#inputCard{{background:{THEME['surface']};"
@@ -1345,6 +1349,16 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
                 self._input_frame.setStyleSheet(
                     f"QFrame#inputCard{{background:{THEME['surface']};"
                     f"border:1.5px solid {THEME['border']};border-radius:16px;padding:4px 8px;margin:0;}}")
+        # v4.75 搜索框：Enter=搜索/下一处，Shift+Enter=上一处，Esc=清除
+        if obj is getattr(self, "search_box", None) and event.type() == QEvent.KeyPress:
+            key = event.key()
+            if key in (Qt.Key_Return, Qt.Key_Enter):
+                self._search_nav(1 if not (event.modifiers() & Qt.ShiftModifier) else -1)
+                return True
+            if key == Qt.Key_Escape:
+                self.search_box.clear()
+                self._search_in_chat()
+                return True
         return super().eventFilter(obj, event)
 
     # ============ 实时语音（移植自数字分身）============
@@ -4772,20 +4786,6 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
             self._search_in_chat()
             return
         self._jump_to_match(self._search_pos + delta)
-
-    def eventFilter(self, obj, ev):
-        """v4.75：搜索框 Enter=搜索/下一处，Shift+Enter=上一处，Esc=清除。"""
-        from PySide6.QtCore import QEvent
-        if obj is getattr(self, "search_box", None) and ev.type() == QEvent.KeyPress:
-            key = ev.key()
-            if key in (Qt.Key_Return, Qt.Key_Enter):
-                self._search_nav(1 if not (ev.modifiers() & Qt.ShiftModifier) else -1)
-                return True
-            if key == Qt.Key_Escape:
-                self.search_box.clear()
-                self._search_in_chat()
-                return True
-        return super().eventFilter(obj, ev)
 
     def _save_enc_passphrase(self):
         """v4.75：设置/修改/关闭记忆加密口令，并迁移已有记忆。"""
