@@ -7,7 +7,7 @@
 import logging
 import re
 
-VERSION = "v4.310.0"
+VERSION = "v4.311.0"
 
 _log = logging.getLogger("legion")
 

@@ -205,7 +205,7 @@ def part_b():
     check("B21 P2-2 续跑 break 过收尾闸门+账本小结(主循环之外唯一接线)",
           "_tstate_resume_finish(" in AGENT_SRC and
           "def _tstate_resume_finish" in TASK_SRC and
-          "self._tstate_nudge_now(task_state, step, max_steps)" in TASK_SRC and
+          "_tstate_nudge_now(" in TASK_SRC and
           "self._loop_summary(agent_loop_mod)" in TASK_SRC)
     check("B22 P3-1 并发 future 异常构造结构化失败(crash)",
           '_unexecuted_result(str(e), "crash")' in EXEC_SRC and
@@ -214,7 +214,16 @@ def part_b():
           probe(G, "function_has_call", EXEC_SRC, "_safe_exec_tool_calls",
                 "_close_open_tool_cards") and
           "_tool_open_cards" in EXEC_SRC and
-          probe(G, "function_has_call", EXEC_SRC, "_emit_tool_started", "add"))
+          "_open[idx] = name" in EXEC_SRC)
+    # v4.311.0（第三方复验 P3-2 未生效）：补发必须用**原名**（{idx:name}），
+    # 否则 UI rec["name"]==name 不匹配 → 新建卡、原卡照旧 running（v4.310 用假名踩坑）。
+    check("B23b P3-2 补发用登记原名({idx:name} 而非硬编码)",
+          "_open[idx] = name" in EXEC_SRC and
+          "for _idx, _nm in list(_open.items()):" in EXEC_SRC and
+          "_emit_tool_finished(_nm, result_str, _idx, 0, False)" in EXEC_SRC)
+    # v4.311.0：续跑收尾闸门给 _tstate_nudge_now 传账本对象而非模块形参（防以后踩空）
+    check("B24 续跑收尾闸门传 _tstate 账本对象(非模块形参)",
+          "self._tstate_nudge_now(self._tstate, step, max_steps)" in TASK_SRC)
 
 
 # ============ C 内联桩层（不碰真实用户数据） ============

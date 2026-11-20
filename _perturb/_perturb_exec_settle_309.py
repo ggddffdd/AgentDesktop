@@ -69,6 +69,14 @@ CASES = [
      ['            self._close_open_tool_cards(',
       '                "（系统提示：该工具调用执行异常，未取得结果。）")'],
      '            pass  # 扰动：不补发finished', "B23", CR),
+    # v4.311.0（第三方复验）：补发用假名 → B23b 红
+    ("agent_exec_mixin.py", "补发用假名",
+     ['                self._emit_tool_finished(_nm, result_str, _idx, 0, False)'],
+     '                self._emit_tool_finished("（工具异常）", result_str, _idx, 0, False)  # 扰动：假名', "B23b", CR),
+    # v4.311.0：续跑收尾闸门传模块形参 → B24 红
+    ("agent_task_mixin.py", "续跑闸门传模块",
+     ['            if self._tstate_nudge_now(self._tstate, step, max_steps):'],
+     '            if self._tstate_nudge_now(task_state, step, max_steps):  # 扰动：传模块', "B24", CR),
 ]
 
 

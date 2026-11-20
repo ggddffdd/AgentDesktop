@@ -34,11 +34,10 @@ import json
 import logging
 import automation  # v4.284.0：_sync_to_session 回写主会话
 import tool_contract  # v4.258.0（P1-6）：成败判定归一到单一真源（整模块导入）
-import task_state  # v4.310.0 P2-2：续跑收尾闸门（_tstate_nudge_now 的同名形参）
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.310.0"
+VERSION = "v4.311.0"
 
 
 class AgentTaskMixin(object):
@@ -207,7 +206,9 @@ class AgentTaskMixin(object):
         返回 False = 不介入，调用方按旧路径 break。
         """
         try:
-            if self._tstate_nudge_now(task_state, step, max_steps):
+            # v4.311.0：传账本对象而非模块形参（_tstate_nudge_now 内部用 self._tstate，
+            # 但首参应给账本对象，避免以后有人用该形参时踩空）。
+            if self._tstate_nudge_now(self._tstate, step, max_steps):
                 self._tstate_trace_nudge(step, tracer)
                 return True
             self._loop_summary(agent_loop_mod)

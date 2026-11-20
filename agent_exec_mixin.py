@@ -240,9 +240,12 @@ class AgentExecMixin(object):
             # 回执不补 finished → 永久转圈；此处登记，_close_open_tool_cards 收尾）。
             _open = getattr(self, "_tool_open_cards", None)
             if _open is None:
-                _open = set()
+                _open = {}
                 self._tool_open_cards = _open
-            _open.add(idx)
+            # v4.311.0：记 {idx: 原名}——收尾补发时必须用原名，UI 侧
+            # _on_tool_finished 按 rec["name"]==name 才原位替换；用假名会新建卡、
+            # 原卡照旧 running（v4.310.0 用 "（工具异常）" 踩过此坑）。
+            _open[idx] = name
             self.tool_started.emit({
                 "name": name, "args": args, "index": idx, "total": total,
             })
@@ -257,7 +260,7 @@ class AgentExecMixin(object):
         try:
             _open = getattr(self, "_tool_open_cards", None)
             if _open is not None:
-                _open.discard(idx)
+                _open.pop(idx, None)
             self.tool_finished.emit({
                 "name": name,
                 "result_preview": str(result_str)[:200],
@@ -278,9 +281,10 @@ class AgentExecMixin(object):
             _open = getattr(self, "_tool_open_cards", None)
             if not _open:
                 return
-            for _idx in list(_open):
-                self._emit_tool_finished(
-                    "（工具异常）", result_str, _idx, 0, False)
+            # v4.311.0：按登记的**原名**补发，UI 才能原位替换（v4.310.0 用
+            # "（工具异常）" 作 name，rec["name"]==name 不匹配 → 新建卡、原卡转圈）。
+            for _idx, _nm in list(_open.items()):
+                self._emit_tool_finished(_nm, result_str, _idx, 0, False)
         except Exception as e:
             log.warning("补发工具 finished 失败（已忽略）: %s", e)
 

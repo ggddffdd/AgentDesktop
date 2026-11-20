@@ -492,6 +492,22 @@ v4.309.0 落地后第三方以真实路径桩复验，判「不通过」，指�
 `_tstate_resume_finish`，不抬阈值。P3-3（AgentNode 全失败才 incomplete 的
 取舍）保持 fail-closed，未改语义。
 
+### 4.16 异常兜底收卡（v4.311.0·第三方复验「只剩卡片收尾未生效」补完）
+
+第三方对 v4.310.0 复验判「只剩 1 项：卡片收尾修复未生效」。事件确实发了，
+但补发 `finished` 时把卡片名写死为 `（工具异常）`；UI `_on_tool_finished`
+要求 `rec["name"] == name` 才原位替换（`ui_agent_events_mixin.py:28`），名字
+不等 → 走 else 分支新建一张 done 卡（`ui_seq+1`）、原 `live-tool` 仍是
+running。本版：
+
+- **`_tool_open_cards` 由 `set` 改 `{idx: name}`**：`_emit_tool_started` 记
+  `_open[idx] = name`，`_close_open_tool_cards` 按登记原名
+  `_emit_tool_finished(_nm, ...)` 补发 → UI 原位替换匹配，不再新建假卡。
+- **判据补强**：B23b（`{idx:name}` + 原名补发，对 v4.310.0 旧源码必红）、
+  B24（续跑闸门传 `self._tstate` 而非模块形参）；扰动扩到 14 组改坏必红。
+- 行为级 harness：`_close_open_tool_cards({1:"run_python",5:"web_search"})`
+  补发带原名、`ok=False`、集合清空。
+
 ## 5. Layout Principles（间距 / 网格 / 留白）
 
 - **v4.200.0：token 已立**（不再是建议）。空白处的荒罢了三年，现在有真身了。
