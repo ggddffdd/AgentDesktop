@@ -114,6 +114,30 @@ def part_a():
     check("A18 peer 公网放", probe(G, "peer_ip_ok", "8.8.8.8") is True)
     check("A19 peer None 拒", probe(G, "peer_ip_ok", None) is False)
 
+    # v4.313.0 系统代理误伤修复：peer 为回环/私网时，仅当恰好等于本机代理出口才放行
+    check("A19b 回环 peer 命中代理白名单→放行",
+          probe(G, "peer_ip_ok", "127.0.0.1", {"127.0.0.1"}) is True)
+    check("A19c 回环 peer 不在白名单→仍拒",
+          probe(G, "peer_ip_ok", "127.0.0.1", {"127.0.0.2"}) is False)
+    check("A19d 回环 peer 无白名单→仍拒(向后兼容)",
+          probe(G, "peer_ip_ok", "127.0.0.1") is False)
+    check("A19e 白名单里别的私网地址不误放行",
+          probe(G, "peer_ip_ok", "192.168.1.1", {"127.0.0.1"}) is False)
+    check("A19f 公网 peer 无需白名单",
+          probe(G, "peer_ip_ok", "8.8.8.8", {"127.0.0.1"}) is True)
+    check("A19g IPv6 代理地址方括号归一比对",
+          probe(G, "peer_ip_ok", "::1", {"[::1]"}) is True)
+
+    # v4.313.0 代理表提取纯函数
+    check("A19h 代理表提取 host", probe(G, "configured_proxy_hosts",
+          {"http": "http://127.0.0.1:7890"}) == {"127.0.0.1"})
+    check("A19i 代理表剥离凭据与路径", probe(G, "configured_proxy_hosts",
+          {"https": "http://user:pw@10.0.0.1:1080/x"}) == {"10.0.0.1"})
+    check("A19j no_proxy 不算出口地址", probe(G, "configured_proxy_hosts",
+          {"http": "http://127.0.0.1:7890", "no": "localhost"}) == {"127.0.0.1"})
+    check("A19k 空代理表→空集", probe(G, "configured_proxy_hosts", {}) == set())
+    check("A19l 脏代理表 fail-soft", probe(G, "configured_proxy_hosts", {"http": ""}) == set())
+
     check("A20 download file:// 拒", probe(G, "download_url_allowed", "file:///etc/passwd", _resolver({}))[0] is False)
     check("A21 download 内网域名拒", probe(G, "download_url_allowed", "http://x.nip.io/a",
                                          _resolver({"x.nip.io": ["127.0.0.1"]}))[0] is False)
@@ -185,6 +209,18 @@ def part_b():
     # v4.308 测试隔离：dataloss 测试用 _configure 整体重定向（含 MEMORY_DB_PATH）
     check("B18 dataloss 测试整体 _configure 隔离 memory.db(AST两处/无裸赋值)",
           probe(G, "test_db_isolation_ok", read_src("tests/test_dataloss_fix_186.py")) is True)
+
+    # v4.313.0 系统代理误伤修复：peer 复核必须拿到本机代理出口白名单，否则走系统代理必被误拒
+    check("B19 http_get/download 两处 peer 复核都传代理出口白名单",
+          SEARCH_SRC.count("peer_ip_ok(peer, _proxy_exit_hosts())") == 2)
+    check("B20 search 有 _proxy_exit_hosts 且取 urllib 同源代理表",
+          "def _proxy_exit_hosts(" in SEARCH_SRC and
+          "urllib.request.getproxies()" in SEARCH_SRC and
+          "configured_proxy_hosts" in SEARCH_SRC)
+    check("B21 guard307 peer_ip_ok 支持白名单且做了归一比对",
+          "def peer_ip_ok(peer_ip, proxy_hosts" in GUARD307_SRC and
+          "def configured_proxy_hosts(" in GUARD307_SRC and
+          "normalize_host(peer_ip)" in GUARD307_SRC)
 
 
 # ============ C 真实运行层 ============

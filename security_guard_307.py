@@ -104,15 +104,45 @@ def resolve_and_check(host, port, resolver):
     return True, ips, ""
 
 
-def peer_ip_ok(peer_ip):
-    """连接建立后对端 IP 复核：必须是公网地址。
+def configured_proxy_hosts(proxies):
+    """从 urllib 代理表提取本机实际生效的代理出口地址集合（host 文本）。
+
+    proxies 形如 {"http": "http://127.0.0.1:7890", "https": "http://user:pw@host:1080"}；
+    用 urlsplit 取 hostname（自动剥离 scheme / 凭据 / 端口 / 路径），再走 normalize_host
+    统一 IPv6 方括号与大小写。取不到一律空集（fail-closed 由调用方 peer_ip_ok 保证）。
+    """
+    hosts = set()
+    for _scheme, val in (proxies or {}).items():
+        if str(_scheme).strip().lower() == "no":
+            continue  # no_proxy 不是出口地址
+        try:
+            h = urllib.parse.urlsplit(str(val or "")).hostname or ""
+        except ValueError:
+            h = ""
+        h = normalize_host(h)
+        if h:
+            hosts.add(h)
+    return hosts
+
+
+def peer_ip_ok(peer_ip, proxy_hosts=()):
+    """连接建立后对端 IP 复核：必须是公网地址，或恰好是本机配置的代理出口。
 
     防 DNS rebinding：解析时是公网 IP、连接时 DNS 已改指向内网，靠这一步挡住。
     取不到 peer IP（None / 异常）时返回 False（fail-closed）。
+
+    v4.313.0（系统代理误伤修复）：Windows 上 urllib 按注册表系统代理（ProxyServer，
+    如 Clash 127.0.0.1:7890）自动走本地代理。此时 getpeername() 返回的是**代理进程
+    地址**而非目标主机地址——peer 与目标 host 毫无关系，host 的安全性已在
+    resolve_and_check 用真实 DNS 校验过。故 peer 落回环/私网时，仅当它**恰好等于**
+    本机配置的代理出口地址才放行（用户自配的本地可信出口）；否则仍按公网要求
+    fail-closed，防 rebinding 的语义完全不变。
     """
     if peer_ip is None:
         return False
-    return not ip_is_forbidden(peer_ip)
+    if not ip_is_forbidden(peer_ip):
+        return True
+    return normalize_host(peer_ip) in {normalize_host(h) for h in (proxy_hosts or ())}
 
 
 def download_url_allowed(url, resolver, port=443):

@@ -49,6 +49,22 @@ def _peer_ip_of(resp):
         return None
 
 
+def _proxy_exit_hosts():
+    """本机实际生效的代理出口地址集合（v4.313.0）。
+
+    urllib 在 Windows 上会自动采用注册表系统代理（ProxyServer，如 Clash 的
+    127.0.0.1:7890）。此时 getpeername() 返回的是**代理进程地址**而非目标主机
+    地址——把它当「连接落到内网」来拒，会把整条搜索链误伤成全灭。这里用
+    urllib.request.getproxies()（与 urllib 同源：环境变量 + Windows 注册表）取
+    出口地址，交给 peer_ip_ok 做精确比对放行。
+    """
+    import security_guard_307 as _g307
+    try:
+        return _g307.configured_proxy_hosts(urllib.request.getproxies())
+    except Exception:
+        return frozenset()
+
+
 def _is_english_query(query):
     """判定 query 是否为英文（v4.124.4）：纯英文/数字/标点的查询走英文优先链。
 
@@ -484,8 +500,9 @@ def http_get(url, timeout=10):
     opener = urllib.request.build_opener(_CheckedRedirect)
     with opener.open(req, timeout=timeout) as resp:
         # 连接后复核实际对端 IP：DNS 解析时是公网、连接时被 rebinding 到内网 → 拒。
+        # v4.313.0：传入本机代理出口地址，避免「走系统代理」被误判成 SSRF。
         peer = _peer_ip_of(resp)
-        if not _g307.peer_ip_ok(peer):
+        if not _g307.peer_ip_ok(peer, _proxy_exit_hosts()):
             raise ValueError("web_fetch 拒绝：连接对端地址未通过复核（%r）" % peer)
         data, truncated = _g304.read_response_capped(resp)
         enc = resp.headers.get("Content-Encoding", "")
@@ -527,7 +544,7 @@ def download_bytes(url, timeout=120):
     opener = urllib.request.build_opener(_CheckedRedirect)
     with opener.open(req, timeout=timeout) as resp:
         peer = _peer_ip_of(resp)
-        if not _g307.peer_ip_ok(peer):
+        if not _g307.peer_ip_ok(peer, _proxy_exit_hosts()):
             raise ValueError("download 拒绝：连接对端地址未通过复核（%r）" % peer)
         data, _truncated = _g304.read_response_capped(resp)
         return data

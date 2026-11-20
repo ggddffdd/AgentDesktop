@@ -522,6 +522,38 @@ INCOMPLETE。第三方复验指出其副作用：**「失败一次后换法成�
 - 判据：A23 反转（失败+有正文 → 完整）、新增 A23b（失败+无正文 → 不完整）；
   扰动加 2 组改坏必红（恢复旧 fail-closed → A23 红；反向误写 → A23b 红）。
 
+### 4.18 连接后复核须感知系统代理（v4.313.0·F-02 的代理误伤修复·硬性）
+
+v4.307.0 为防 DNS rebinding 加了「连接后复核对端 IP」：`http_get` /
+`download_bytes` 取 `getpeername()`，不是公网地址就拒。这条判据**假设直连**。
+Windows 上 `urllib` 会自动采用注册表系统代理（`ProxyServer`，如 Clash 的
+`127.0.0.1:7890`）——此时 `getpeername()` 返回的是**代理进程地址**而非目标
+主机地址，peer 与目标 host 毫无关系。后果实测：bing / baidu / sogou /
+duckduckgo / wikipedia 等 7 个搜索后端被同一句
+`web_fetch 拒绝：连接对端地址未通过复核（'127.0.0.1'）` 全灭，模型只能降级
+浏览器兜底（CDP 又 ECONNREFUSED）→ 定时任务连续失败。
+
+本版把复核改为**代理感知**：
+
+- 新增纯函数 `configured_proxy_hosts(proxies)`：从 `urllib.request.getproxies()`
+  （与 urllib 同源：环境变量 + Windows 注册表）用 `urlsplit` 取 hostname，
+  自动剥离 scheme / 凭据 / 端口 / 路径，再走 `normalize_host` 统一 IPv6 方括号。
+  `no_proxy` 不是出口地址，跳过；取不到一律空集。
+- `peer_ip_ok(peer_ip, proxy_hosts=())` 增第二参：peer 是公网 → 放行；peer 落
+  回环/私网 → **仅当它恰好等于本机配置的代理出口地址**才放行（用户自配的本地
+  可信出口）；否则仍按公网要求 fail-closed。第二参默认空集，向后兼容。
+- `search.py` 新增 `_proxy_exit_hosts()`（异常一律空集），`http_get` 与
+  `download_bytes` 两处接线都传它。
+
+**防线不削弱**：host 级安全性仍在 `resolve_and_check` 用真实 DNS 校验（file://
+由 scheme 白名单挡、目标 host 是内网由 `host_name_is_forbidden` 挡），代理出口
+放行只豁免「peer 与目标 host 无关」这一层；peer 不等于任何代理地址的内网地址
+仍被拒，DNS rebinding 语义完全不变。
+
+判据：A19b-A19l（11 条纯函数）+ B19-B21（3 条接线），旧源码下 13 条全红；
+扰动加 3 组改坏必红（丢白名单放行 → A19b 红；接线丢白名单 → B19 红；
+代理表取错来源 → B20 红），全套 14 组。
+
 ## 5. Layout Principles（间距 / 网格 / 留白）
 
 - **v4.200.0：token 已立**（不再是建议）。空白处的荒罢了三年，现在有真身了。

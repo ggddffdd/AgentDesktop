@@ -32,9 +32,23 @@ CASES = [
     # F-02: http_get 去掉 peer 复核 → B5 红
     ("search.py", "去掉 peer 复核",
      ["        peer = _peer_ip_of(resp)",
-      "        if not _g307.peer_ip_ok(peer):",
+      "        if not _g307.peer_ip_ok(peer, _proxy_exit_hosts()):",
       "            raise ValueError(\"web_fetch 拒绝：连接对端地址未通过复核（%r）\" % peer)"],
      "        peer = None  # 扰动：跳过 peer 复核", "B5", CR),
+    # v4.313.0: peer 复核丢掉代理出口白名单放行 → A19b 红（走系统代理必被误拒）
+    ("security_guard_307.py", "peer 复核丢掉代理白名单",
+     ["    return normalize_host(peer_ip) in {normalize_host(h) for h in (proxy_hosts or ())}"],
+     "    return False  # 扰动：代理出口不放行", "A19b", LF),
+    # v4.313.0: search 接线丢掉代理白名单 → B19 红
+    ("search.py", "接线丢掉代理白名单",
+     ["        if not _g307.peer_ip_ok(peer, _proxy_exit_hosts()):",
+      "            raise ValueError(\"web_fetch 拒绝：连接对端地址未通过复核（%r）\" % peer)"],
+     "        if not _g307.peer_ip_ok(peer):  # 扰动：不传白名单\n"
+     + CR + "            raise ValueError(\"web_fetch 拒绝：连接对端地址未通过复核（%r）\" % peer)", "B19", CR),
+    # v4.313.0: _proxy_exit_hosts 不再取 urllib 同源代理表 → B20 红
+    ("search.py", "代理出口取错来源",
+     ["        return _g307.configured_proxy_hosts(urllib.request.getproxies())"],
+     "        return set()  # 扰动：取不到代理表", "B20", CR),
     # F-01: 明文+enc 错口令不 fail-closed → B8 红（两处 plain_db_decision 调用都拿掉）
     ("memory_store.py", "明文库去掉口令校验",
      ["            decision = _g307.plain_db_decision(enc_exists, plain_exists, False)",

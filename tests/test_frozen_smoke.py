@@ -349,7 +349,10 @@ def main():
                                # （7 个标记双向验过旧 exe 常量表全缺失）
                                "db_sidecar_protected", "test_db_isolation_ok",
                                "_DB_SIDECAR_SUFFIXES", "_PROTECTED_DB_NAMES",
-                               "-wal", "-shm", "-journal"],
+                               "-wal", "-shm", "-journal",
+                               # v4.313.0 系统代理误伤修复：代理表提取纯函数
+                               # （验过旧 exe 常量表缺失 = OLD_MISS）
+                               "configured_proxy_hosts"],
         # v4.309.0：执行结算链路纯判据 + 接线标记（18 个标记双向验过旧 exe 常量表全缺失）。
         "execution_settle_309": ["workflow_guard_ok", "node_should_incomplete",
                                  "should_settle_fail", "infer_outcome_success",
@@ -362,7 +365,9 @@ def main():
         "search": ["url_access_policy", "read_response_capped",
                    "_CheckedRedirect", "gunzip_capped",
                    # v4.307 F-02：DNS 解析 + 统一准入 + peer 复核接线
-                   "_dns_resolver", "_check_url_authorized", "_peer_ip_of"],
+                   "_dns_resolver", "_check_url_authorized", "_peer_ip_of",
+                   # v4.313.0：peer 复核取本机代理出口（系统代理误伤修复）
+                   "_proxy_exit_hosts"],
         "legion_permissions": ["grant_wave", "LegionPermissionAdapter"],
         "task_graph": ["incomplete", "__incomplete__"],
         "vision_qc": ["qc_skipped_no_key", "qc_pass", "encode_image_for_qc",
