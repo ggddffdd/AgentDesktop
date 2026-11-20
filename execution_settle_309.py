@@ -129,15 +129,19 @@ def node_should_incomplete(tool_failed=0, tool_called=False, has_text=False,
     """AgentNode 是否应标记 INCOMPLETE_FLAG。
 
     报告核心场景：本轮有工具调用且**全部失败**，模型却补了正文就 break，
-    TaskGraph 只看 status 标 completed。这里要求：
+    TaskGraph 只看 status 标 completed。
+    v4.311.0 之前：只要有工具失败（哪怕模型补了正文）就标 incomplete（fail-closed），
+    会让「失败一次后换法成功并交付」的节点误标未完整。
+    v4.312.0 调整：以「是否真正交付正文」为核心——模型交付了非空正文
+    （换法成功并交付）即认完整；无正文交付才判 incomplete。保留三条防线：
     - 模型调用本身失败 → incomplete；
-    - 有工具调用且失败数 > 0 → incomplete（即使 has_text）；
+    - 有工具调用且失败数 > 0 且无正文 → incomplete；
     - 无任何工具调用且无正文 → incomplete。
     单纯「有正文且工具都成功」不算 incomplete。
     """
     if model_call_failed:
         return True
-    if tool_called and int(tool_failed or 0) > 0:
+    if tool_called and int(tool_failed or 0) > 0 and not has_text:
         return True
     if not tool_called and not has_text:
         return True

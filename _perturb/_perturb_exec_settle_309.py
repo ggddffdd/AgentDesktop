@@ -77,6 +77,14 @@ CASES = [
     ("agent_task_mixin.py", "续跑闸门传模块",
      ['            if self._tstate_nudge_now(self._tstate, step, max_steps):'],
      '            if self._tstate_nudge_now(task_state, step, max_steps):  # 扰动：传模块', "B24", CR),
+    # v4.312.0（P3-3 优化）：有正文仍判 incomplete → A23 红
+    ("execution_settle_309.py", "有正文仍incomplete",
+     ['    if tool_called and int(tool_failed or 0) > 0 and not has_text:'],
+     '    if tool_called and int(tool_failed or 0) > 0:  # 扰动：恢复旧fail-closed', "A23", LF),
+    # v4.312.0：无正文不判 incomplete（误写反向）→ A23b 红
+    ("execution_settle_309.py", "无正文不判incomplete",
+     ['    if tool_called and int(tool_failed or 0) > 0 and not has_text:'],
+     '    if tool_called and int(tool_failed or 0) > 0 and has_text:  # 扰动：反向误写', "A23b", LF),
 ]
 
 
