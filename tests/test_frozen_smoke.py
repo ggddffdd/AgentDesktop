@@ -361,7 +361,12 @@ def main():
                                  "not_executed_code", "should_register_sig"],
         # 注：main.py 是 PyInstaller 入口脚本，不在 PYZ TOC，故不列入 marks（v4.306 踩过）。
         # main 的后台初始化接线由 tests/test_mcp_guard_306.py 的源码判据（B7）覆盖。
-        "memory_store": ["fail_closed_decrypt", "plain_db_decision"],
+        "memory_store": ["fail_closed_decrypt", "plain_db_decision",
+                      # v4.314.0 memory.db 缺表自愈（2026-11-20 实测事故修复）：
+                      # _with_db 单点查 sqlite_master，缺 memories 表即重建。
+                      # 已验旧 exe(v4.313.0) 常量表缺失 = OLD_MISS（对照项
+                      # SELECT COUNT(*) FROM memories 在旧包存在，证明探测有效）。
+                      "SELECT 1 FROM sqlite_master WHERE name='memories' LIMIT 1"],
         "search": ["url_access_policy", "read_response_capped",
                    "_CheckedRedirect", "gunzip_capped",
                    # v4.307 F-02：DNS 解析 + 统一准入 + peer 复核接线

@@ -515,6 +515,20 @@ def _with_db(fn):
     conn = None  # v4.304 F-01：connect 失败时 finally 直接 close 会抛 UnboundLocalError
     try:
         conn = sqlite3.connect(MEMORY_DB_PATH)
+        # v4.314.0：表存在性自愈（memory.db 缺表永久失效的根因修复）。
+        #
+        # 实测事故（2026-11-20）：memory.db 变成 0 字节空库（无 SQLite header、
+        # 无 memories 表），此后每次 search_memory 都崩「no such table: memories」。
+        # 旧逻辑里只有 _ensure_db() 会建表，而 search_memory 走的 _sync_md_to_db 自身
+        # 不建表 → 缺表时永远无法自愈，搜索层静默失效。
+        #
+        # 修法下沉到 _with_db 单点：所有 DB 路径（_sync_md_to_db / _db_append /
+        # _db_replace_by_topic / _fts）都在这里过一遍。查 sqlite_master 是内存操作
+        # （微秒级，不读磁盘页），不违背 _DB_READY 的省开销设计；缺表即就地重建。
+        if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='memories' LIMIT 1"
+        ).fetchone():
+            _create_tables(conn)
         return fn(conn)
     finally:
         if conn is not None:

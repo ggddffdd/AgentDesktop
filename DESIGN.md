@@ -554,6 +554,44 @@ duckduckgo / wikipedia 等 7 个搜索后端被同一句
 扰动加 3 组改坏必红（丢白名单放行 → A19b 红；接线丢白名单 → B19 红；
 代理表取错来源 → B20 红），全套 14 组。
 
+### 4.19 memory.db 缺表必须自愈（v4.314.0·记忆搜索层静默失效修复·硬性）
+
+`memory.md` 是长期记忆的**唯一主源**，`memory.db` 只是它的 SQLite/FTS5 搜索索引。
+但索引层一旦缺表，旧代码会让整条搜索链**静默失效**——事故现场
+（2026-11-20 22:46:21，大哥桌面 `debug.log`）：
+
+    memory_store 同步SQLite失败: no such table: memories
+    memory_store FTS5 搜索失败: no such table: memories_fts
+
+`memory.db` 是 **0 字节空库**（无 SQLite header、无 `memories` 表）。调用链
+`search_memory()` → `_sync_md_to_db()` → `SELECT COUNT(*) FROM memories`
+直接崩；异常被 catch 成一行 `WARNING`，用户看到的是「搜索没有结果」，
+而主源里 200 条真实记忆完好无损。**这种失效最危险：不报错，只是悄悄没用。**
+
+根因不是「库被清空」，而是**没有任何路径负责在缺表时重建表**：旧代码里只有
+`_ensure_db()` 会调 `_create_tables`，而 `_sync_md_to_db`（搜索主路径）自身
+不建表、也没人兜底 → 缺表即永久不自愈。
+
+本版把自愈**下沉到 `_with_db` 单点**（所有 DB 访问都经过它）：
+
+- 打开连接后查一次 `sqlite_master` 是否存在 `memories` 表，缺则就地
+  `_create_tables(conn)` 重建主表 + FTS 虚拟表 + 双向触发器。
+- 查 `sqlite_master` 是**内存操作**（不读数据页），微秒级，不违背
+  `_DB_READY` 的省开销设计；也不新增调用点，天然覆盖 `_sync_md_to_db` /
+  `_db_append` / `_db_replace_by_topic` / FTS 查询四条路径。
+- **幂等**：表已存在则跳过，健康库的条数不缩水、文件不被清空、旧记忆仍可检索。
+  加密模式下同样生效（建表发生在明文工作副本上，随后照常加密回写）。
+- **主源优先**：`memory.db` 丢了不丢数据——`_sync_md_to_db` 本就会从
+  `memory.md` 把条目重新灌进索引。所以「重建索引」是安全动作，「删库」才是。
+
+判据：A 层 19 条跑真实事故场景（0 字节空库 + 主源有条目 → 索引必须从主源重建；
+直测 SQLite 索引层而非搜索命中数，否则 `search_memory` 的中文子串兜底会把
+「FTS 崩了」伪装成「命中了」造成假绿），B 层 6 条钉源码契约（自愈检查必须真在
+`sqlite3.connect` 之后、`fn(conn)` 之前，防止有人只在 `_sync_md_to_db` 里局部
+补 `_ensure_db()` 让判据看起来过了）。旧源码下 9 条全红；扰动 4 组改坏必红
+（删自愈块 → A3 红；建表变空操作 → A5 红；加密模式绕过 → A17 红；建表挪到
+`return` 之后不可达 → A4 红）。
+
 ## 5. Layout Principles（间距 / 网格 / 留白）
 
 - **v4.200.0：token 已立**（不再是建议）。空白处的荒罢了三年，现在有真身了。

@@ -9,6 +9,14 @@
 
 
 
+## v4.314.0 — 2026-11-21
+
+- **长期记忆搜索层「静默失效」的自愈修复**。实测事故（大哥桌面 `debug.log` 2026-11-20 22:46:21）：`~/Documents/小臭玩AI/memory.db` 变成 **0 字节空库**（无 SQLite header、无 `memories` 表），此后每次 `search_memory` 都崩 `no such table: memories`。关键危害在于**不崩给用户看**——异常被 catch 成一行 `WARNING memory_store 同步SQLite失败`，记忆检索直接静默失效，主源 `memory.md` 里 200 条真实记忆完好却再也搜不到。本版：
+  - **根因是缺表时永不重建**：`search_memory()` → `_sync_md_to_db()` → `SELECT COUNT(*) FROM memories` 直接崩，而旧代码里只有 `_ensure_db()` 会建表、`_sync_md_to_db` 自身不建表，也没有任何路径在缺表时兜底 → 缺表即永久不自愈。
+  - **修法（做减法，单点收敛）**：把表存在性自愈下沉到 `_with_db` 一处——每次打开库后查一次 `sqlite_master`，缺 `memories` 表即就地 `_create_tables()`。所有 DB 路径（`_sync_md_to_db` / `_db_append` / `_db_replace_by_topic` / FTS 查询）自动覆盖，不用逐处补检查。查 `sqlite_master` 是内存操作（微秒级），不违背 `_DB_READY` 的省开销设计。
+  - **幂等不误伤**：表已存在时跳过建表，健康库条数不缩水、文件不被清空、旧记忆仍可检索；加密模式下同样生效。
+  - 附带清理：`memory.md`（200 条真实记忆）本就是主源、未受损，`memory.db` 只是搜索索引，可从主源重建；同时把被回归测试写入真实 `backups/` 的 61 项测试快照隔离出去，避免污染记忆自愈链路。
+
 ## v4.313.0 — 2026-11-20
 
 - **搜索/网页抓取在「系统代理」环境下全灭的误伤修复**。实测根因：v4.307.0 为防 DNS rebinding 加的「连接后复核实际对端 IP」，在 Windows 上会被系统代理误伤——`urllib` 会自动采用注册表系统代理（`ProxyServer`，如 Clash 的 `127.0.0.1:7890`），此时 `getpeername()` 返回的是**代理进程地址**而不是目标主机地址，于是回环一律拒。实际后果是 bing / baidu / sogou / duckduckgo / wikipedia 等 7 个搜索后端被同一句 `web_fetch 拒绝：连接对端地址未通过复核（'127.0.0.1'）` 全部拒绝，模型只能降级到浏览器兜底（CDP 又连不上）→ 定时任务连续失败。本版：
