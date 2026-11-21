@@ -535,9 +535,14 @@ def _h_run_command(cfg, app_dir, args, progress=None, stop_event=None, should_st
 
 @register_tool("run_python", dangerous=True)
 def _h_run_python(cfg, app_dir, args, progress=None, stop_event=None, should_stop=None):
-    r, d = tool_run_python(app_dir, args.get("code", ""), cfg=cfg,
-                           progress=progress, stop_event=stop_event, should_stop=should_stop)
-    return (r, d, None)
+    # v4.321.0：显式拿结构性 ok（是否走失败分支 + 子进程退出码），直接构造
+    # ToolResult，绕开 ToolResult.from_legacy 的 _infer_ok 文案猜测。
+    # 脚本正文里出现「失败/错误」（如排查报告、ERROR 日志）不再被误判调用失败。
+    r, d, _ok = tool_run_python(app_dir, args.get("code", ""), cfg=cfg,
+                                progress=progress, stop_event=stop_event,
+                                should_stop=should_stop, with_ok=True)
+    return ToolResult(ok=bool(_ok), msg=r, deliverables=list(d or []),
+                      verified=True, error_code=None if _ok else "RUN_FAILED")
 
 def _asset_register_deliverable(res, prompt, kind):
     """v4.125 ④：工具产出（图/视频）自动登记进资产库，军团可复用。
@@ -2545,7 +2550,7 @@ def python_runtime_status(cfg=None, refresh=False):
 
 
 def tool_run_python(app_dir, code, cfg=None, progress=None,
-                    stop_event=None, should_stop=None):
+                    stop_event=None, should_stop=None, with_ok=False):
     """代码解释器：用真实 Python 解释器在独立工作区执行代码，可 import 任意已装库。
 
     历史：v4.50.1 前用 RestrictedPython 沙箱，刻意剔除 __import__ 且模块白名单极小，
@@ -2554,10 +2559,17 @@ def tool_run_python(app_dir, code, cfg=None, progress=None,
     危险操作仍由权限引擎在执行前弹确认，安全边界不变。
 
     产物落在用户数据目录 workspace，避免污染 app 目录；上报绝对路径便于交付物打开。
-    返回 (output_str, [(abs_path, kind, name), ...])。
+    默认返回 (output_str, [(abs_path, kind, name), ...])。
+    v4.321.0：with_ok=True 时返回 (output_str, deliverables, ok)，ok 为**结构性真实
+    信号**（是否走了失败分支 + 子进程退出码），供 handler 显式构造 ToolResult，
+    根治「脚本正常完成、正文里提到失败/错误却被 _infer_ok 误判 ok=False」。
+    默认参数保证所有既有调用方/测试零影响；绝不对正文做中文文案匹配。
     """
+    def _ret(msg, dels, ok):
+        return (msg, dels, ok) if with_ok else (msg, dels)
+
     if not code or not code.strip():
-        return "未提供代码", []
+        return _ret("未提供代码", [], False)
 
     # P0（v4.186.0 审查 P0-1）：③-A 系统级毁灭硬拦截补齐到 run_python。
     # 原 `_dangerous_command_check` 只在 run_command 调用——会话信任后模型
@@ -2567,13 +2579,13 @@ def tool_run_python(app_dir, code, cfg=None, progress=None,
     # 设计意图不变：本闸为 deny（确认也绕不过），正常开发命令不误伤。
     _deny = _dangerous_command_check(code)
     if _deny:
-        return _deny, []
+        return _ret(_deny, [], False)
 
     exe = _resolve_python_exe(cfg)
     if not exe:
         st = python_runtime_status(cfg)
-        return (f"代码执行不可用：{st['reason']}。"
-                "可在「设置」里指定 Python 解释器路径后重试，或安装 Python 并加入 PATH。", [])
+        return _ret((f"代码执行不可用：{st['reason']}。"
+                     "可在「设置」里指定 Python 解释器路径后重试，或安装 Python 并加入 PATH。"), [], False)
 
     # 独立工作区：产物默认落这里，不污染 app 目录
     # v4.108.1：v4.100 脱敏残留把 USER_DATA_DIR 写成了 AgentDesktop/workspace，
@@ -2601,7 +2613,7 @@ def tool_run_python(app_dir, code, cfg=None, progress=None,
         with open(fpath, "w", encoding="utf-8") as f:
             f.write(code)
     except Exception as e:
-        return f"写临时文件失败：{e}", []
+        return _ret(f"写临时文件失败：{e}", [], False)
 
     before = snapshot_workspace(snap_root)
     try:
@@ -2616,7 +2628,7 @@ def tool_run_python(app_dir, code, cfg=None, progress=None,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 creationflags=_NO_WINDOW, env=_py_env)
     except Exception as e:
-        return f"执行失败：{e}", []
+        return _ret(f"执行失败：{e}", [], False)
 
     try:
         stdout, stderr, _outcome = _stream_collect(
@@ -2624,14 +2636,14 @@ def tool_run_python(app_dir, code, cfg=None, progress=None,
             should_stop=should_stop, stop_event=stop_event)
         if _outcome == "timeout":
             _kill_proc_tree(proc)
-            return "代码执行超时（>120s），已连同其子进程一并终止。可把任务拆小或分步执行。", []
+            return _ret("代码执行超时（>120s），已连同其子进程一并终止。可把任务拆小或分步执行。", [], False)
         if _outcome == "stopped":
             _kill_proc_tree(proc)
             try:
                 proc.communicate(timeout=5)
             except Exception:
                 pass
-            return "⏹ 已停止（用户请求）", []
+            return _ret("⏹ 已停止（用户请求）", [], False)
         raw = (stdout or b"") + (stderr or b"")
         # ②-A.1：先按硬上限做防御性截断解码
         out, _trunc, _approx = _hard_truncate_decode(raw)
@@ -2644,7 +2656,7 @@ def tool_run_python(app_dir, code, cfg=None, progress=None,
         # 会乱甩锅全角冒号或谎称读到了文件。相对路径不会被 _mask_sensitive 误脱敏。
         out = _preserve_traceback_tail(raw, out)
     except Exception as e:
-        return f"执行失败：{e}", []
+        return _ret(f"执行失败：{e}", [], False)
     finally:
         try:
             os.remove(fpath)
@@ -2657,7 +2669,12 @@ def tool_run_python(app_dir, code, cfg=None, progress=None,
         full = os.path.join(snap_root, nf)
         deliverables.append((full, classify_kind(nf), os.path.basename(nf)))
 
-    return out, deliverables
+    # v4.321.0：结构性成功信号——走到这里说明既没超时/停止也没异常；
+    # 再核对子进程退出码：0=脚本正常完成，非 0=脚本自身抛异常/退出失败。
+    # 全程不看 out 里有没有「失败/错误」字样（那是脚本输出，与调用成败无关）。
+    _rc = proc.returncode if proc.returncode is not None else proc.poll()
+    _ok = (_rc == 0)
+    return _ret(out, deliverables, _ok)
 
 
 # 保留旧函数供内部兼容
