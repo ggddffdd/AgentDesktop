@@ -9,6 +9,14 @@
 
 
 
+## v4.319.0 — 2026-11-21
+
+- **记忆层改造·第一批（低风险三项）**，依据《小臭记忆层改造工单 2026-11-21》，按函数名实地核查当前代码后落地（工单基于 v4.107 旧快照）。
+  - **P1-1 RAG chunk 溯源四件套**：chunk schema 由 `{id,source,text,embedding}` 扩为带 `type/entity_id/indexed_at/source_mtime` 四字段；`_load_index` 加载旧索引时经纯函数 `normalize_chunk` 自动补默认值（不改已有 id/embedding），裸 chunks 向后兼容；新写入条目四字段齐全且非空。`list_indexed` 行为不变。
+  - **P3-1 changelog 由代码维护**：新增独立落盘 `memory_changelog.jsonl`（不动 memory.md 字节结构，为后续 P3-2 缓存前缀稳定留路），`{ts,op,target_id,summary}` 保留最近 50 条；add/覆盖/merge 变更点由内部函数追加，Agent 无写接口（仅只读 `get_changelog()`/`changelog_count()`）；`memory_stats()` 保持 2 元组不解包兼容，计数走独立函数。
+  - **P2-2 合并代替硬裁**：`_trim_oldest` 超限时不物理删除最老条目，改为把最旧 N 条合并成一条带日期区间的摘要条目（保留来源/实体溯源），原条目追加归档到 `memory_merge_archive.jsonl`；召回可命中合并条目。
+  - 验证：三项判据合计 45 条全绿、旧源码先红、扰动 5 组改坏必红；实测未污染真实记忆目录（测试全在临时目录隔离）。
+
 ## v4.318.0 — 2026-11-21
 
 - **纯查询工具完整返回却被判「调用失败」的误报修复**。现场（2026-11-21 大哥自检 EV#2347）：`sys_info`/`log_query` 明明把 4886/1352 字符完整返回，日志却记 `ok=False` + `UNVERIFIED_OUTCOME`，前端给每条结果盖「本次调用失败」戳——排查其他问题时被这层假故障噪声带偏。根因：这两个工具没登记 outcome 契约，结果归一走 `_infer_ok` 兜底的中文子串判定（`"失败" not in s and "错误" not in s`），而查询正文里本就常含这两字（能力清单的失败提示、日志正文的 ERROR 记录）。本版给 `sys_info`/`log_query` 登记基于**结构性真实信号**的 outcome 契约（能进到契约判定的查询必是 handler 正常返回，非空字符串结果即成功），彻底不走文案猜测；`_infer_ok` 全局兜底不变（82 个未登记工具依赖它，翻白名单会大范围回归）。

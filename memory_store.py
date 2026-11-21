@@ -17,6 +17,7 @@ v2（2026-07-23）改进：
 """
 import os
 import re
+import json  # v4.319.0 P3-1：变更日志 jsonl 落盘
 import shutil
 import logging
 import tempfile
@@ -35,6 +36,9 @@ MEMORY_DB_PATH = os.path.join(MEMORY_DIR, "memory.db")  # v4.59 SQLite FTS5 搜�
 PINNED_PATH = os.path.join(MEMORY_DIR, "memory_core.md")
 # v4.196 批⑫：待确认区（记忆准入关落不住的条目暂存于此，等人点头才入库）
 PENDING_PATH = os.path.join(MEMORY_DIR, "memory_pending.md")
+# v4.319.0 P3-1：变更日志（独立 jsonl，不动 memory.md 字节结构，为召回注入缓存前缀留路）
+CHANGELOG_PATH = os.path.join(MEMORY_DIR, "memory_changelog.jsonl")
+CHANGELOG_MAX = 50  # 保留最近 50 条变更
 
 # ---- v4.74：路径可配置（测试隔离用，生产绝不调用） + 自动备份/自愈 ----
 MAX_BACKUPS = 20  # 轮转保留快照份数（每份含 memory/core/db 三文件）
@@ -47,12 +51,13 @@ def _configure(base_dir):
     到临时目录即可彻底隔离，绝不碰真实数据。
     """
     global MEMORY_DIR, MEMORY_PATH, MEMORY_DB_PATH, PINNED_PATH
-    global PENDING_PATH, _DB_READY, _SALT_PATH
+    global PENDING_PATH, CHANGELOG_PATH, _DB_READY, _SALT_PATH
     MEMORY_DIR = os.path.abspath(base_dir)
     MEMORY_PATH = os.path.join(MEMORY_DIR, "memory.md")
     MEMORY_DB_PATH = os.path.join(MEMORY_DIR, "memory.db")
     PINNED_PATH = os.path.join(MEMORY_DIR, "memory_core.md")
     PENDING_PATH = os.path.join(MEMORY_DIR, "memory_pending.md")
+    CHANGELOG_PATH = os.path.join(MEMORY_DIR, "memory_changelog.jsonl")
     _DB_READY = False
     # v4.153 P2-06：重配目录后必须把延迟计算的 salt 路径也清掉，
     # 否则 _salt_path() 仍指向旧目录的 memory.salt（salt 非 secret，但路径错了会读错文件）。
@@ -628,8 +633,65 @@ def _is_duplicate(fact, existing_txt):
     return False
 
 
+# v4.319.0 P2-2：合并代替硬裁。原条目归档不物理删除；合并条目带日期区间 +
+# source/entity_id 溯源（memory.md 里就是 [元数据] 行的「来源/实体」），保证
+# 一个事实一个家、改写保留溯源（对照分析三原则之一）。
+MERGE_ARCHIVE_NAME = "memory_merge_archive.jsonl"
+
+
+def build_merge_entry(old_entries):
+    """把 [(timestamp, content), ...] 合并成一条带日期区间的摘要条目。
+
+    纯函数、无副作用，便于判据直测。保留：
+      · 日期区间（最早 ~ 最晚，取 YYYY-MM 粒度）
+      · 每条的来源/实体（content 里的 [元数据] 行原样摘出）
+      · 事实正文（每条取前 200 字，保证关键信息能被召回命中）
+    """
+    items = [e for e in (old_entries or []) if e]
+    if not items:
+        return ""
+    dates = []
+    meta_segs = []
+    fact_segs = []
+    for ts, content in items:
+        t = str(ts or "")
+        if len(t) >= 7:
+            dates.append(t[:7])
+        c = str(content or "")
+        for line in c.splitlines():
+            s = line.strip()
+            if s.startswith("[元数据]"):
+                if s not in meta_segs:
+                    meta_segs.append(s)
+            elif s and len(fact_segs) < 30:
+                fact_segs.append(s[:200])
+    span = ("%s ~ %s" % (dates[0], dates[-1])) if dates else "未知日期"
+    header = "## %s [合并摘要] %s条历史归档" % (span, len(items))
+    lines = [header]
+    if meta_segs:
+        lines.append(" | ".join(meta_segs))
+    lines.extend(fact_segs)
+    return "\n".join(lines)
+
+
+def _archive_merged(old_entries):
+    """把被合并的原条目追加到归档文件（不物理删除，可找回）。"""
+    try:
+        ensure_dir()
+        path = os.path.join(MEMORY_DIR, MERGE_ARCHIVE_NAME)
+        with open(path, "a", encoding="utf-8") as f:
+            for ts, content in (old_entries or []):
+                f.write(json.dumps({"ts": ts, "content": content,
+                                    "archived_at": datetime.now().isoformat(timespec="seconds")},
+                                   ensure_ascii=False) + "\n")
+        return True
+    except Exception as e:
+        log.warning("合并归档写入失败（不改主库）: %s", e)
+        return False
+
+
 def _trim_oldest(max_entries):
-    """超过 max_entries 条时，删最老的，保留最近 max_entries 条。"""
+    """超过 max_entries 条时，把最旧 N 条合并成一条摘要并归档原条目（不硬删）。"""
     if not os.path.exists(_physical(MEMORY_PATH)):
         return
     try:
@@ -642,16 +704,37 @@ def _trim_oldest(max_entries):
     parts = txt.split("\n## ")
     if len(parts) <= max_entries:
         return
-    # parts[0] 可能是文件头（空或非条目内容），保留；其余取最后 max_entries 条
     head = parts[0]
-    keep = parts[-max_entries:]
+    # 解析 oldest 条目为 (ts, content)；parts[0] 若是文件头则跳过它
+    body = parts[1:] if (head and not head.startswith("## ")) else parts
+    n_merge = len(body) - max_entries + 1  # 合并 N 条 → 加回 1 条摘要 = 净减 N-1
+    if n_merge < 1:
+        return
+    oldest = []
+    for p in body[:n_merge]:
+        p = p.strip()
+        if not p:
+            continue
+        lines = p.split("\n", 1)
+        oldest.append((lines[0].strip(), lines[1].strip() if len(lines) > 1 else ""))
+    if not oldest:
+        return
+    merged = build_merge_entry(oldest)
+    # 先归档原条目（失败则不动主库，防止信息丢失）
+    if not _archive_merged(oldest):
+        log.warning("归档失败，跳过本轮合并（保留全部原条目）")
+        return
+    keep = body[n_merge:]
+    new_parts = ([merged] + keep)
     if head and not head.startswith("## "):
-        new_txt = head.rstrip() + "\n\n## " + "\n## ".join(keep)
+        new_txt = head.rstrip() + "\n\n## " + "\n## ".join(new_parts)
     else:
-        new_txt = "## " + "\n## ".join(keep)
+        new_txt = "## " + "\n## ".join(new_parts)
     try:
-        _write_text_file(MEMORY_PATH, new_txt + "\n")
-        log.info("记忆滚动淘汰：%d 条 -> %d 条", len(parts), max_entries)
+        _write_text_file(MEMORY_PATH, new_txt.rstrip() + "\n")
+        _changelog_append("merge", "merge_%d" % len(oldest),
+                          "合并最旧%d条为摘要，原条目已归档" % len(oldest))
+        log.info("记忆合并归档：%d 条 -> %d 条（含1条合并摘要）", len(parts), len(new_parts) + 1)
     except Exception as e:
         log.warning("淘汰写入失败: %s", e)
 
@@ -715,8 +798,64 @@ def clear_memory():
     return True
 
 
+# ============ v4.319.0 P3-1：变更日志（代码维护，Agent 只读） ============
+# 设计：独立 jsonl 落盘（不进 memory.md，避免改 system prompt 注入字节结构），
+# 每次 add/update/merge/delete 由代码追加一条 {ts, op, target_id, summary}，
+# 保留最近 CHANGELOG_MAX=50 条。只暴露 get_changelog()/changelog_count() 只读接口；
+# 写入走内部 _changelog_append，Agent 侧无任何写 API（工单 P3-1 硬约束）。
+
+def _changelog_append(op, target_id, summary, ts=None):
+    """内部写入：追加一条变更记录，超过上限只留最近 50 条。绝不抛给上层。"""
+    try:
+        ensure_dir()
+        rec = {
+            "ts": ts or datetime.now().isoformat(timespec="seconds"),
+            "op": str(op or "")[:32],
+            "target_id": str(target_id or "")[:200],
+            "summary": str(summary or "")[:300],
+        }
+        entries = get_changelog()
+        entries.append(rec)
+        entries = entries[-CHANGELOG_MAX:]
+        with open(CHANGELOG_PATH, "w", encoding="utf-8") as f:
+            for e in entries:
+                f.write(json.dumps(e, ensure_ascii=False) + "\n")
+        return True
+    except Exception as e:
+        log.warning("changelog 写入失败（不影响记忆主流程）: %s", e)
+        return False
+
+
+def get_changelog():
+    """只读：返回最近变更记录 [{ts, op, target_id, summary}, ...]（旧→新）。"""
+    try:
+        if not os.path.exists(CHANGELOG_PATH):
+            return []
+        out = []
+        with open(CHANGELOG_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    if isinstance(rec, dict):
+                        out.append(rec)
+                except Exception:
+                    continue
+        return out
+    except Exception as e:
+        log.warning("changelog 读取失败: %s", e)
+        return []
+
+
+def changelog_count():
+    """只读：变更日志条数（给 memory_stats 展示用，不改其 2 元组返回）。"""
+    return len(get_changelog())
+
+
 def memory_stats():
-    """返回 (条目数, 字节数)。"""
+    """返回 (条目数, 字节数)。changelog 计数请用 changelog_count()（保持 2 元组兼容）。"""
     ensure_dir()
     txt = _read_text_file(MEMORY_PATH)
     if not txt:
@@ -1007,6 +1146,7 @@ def append_memory(fact, type=None, topic=None, tags=None, pinned=False,
                 log.warning("记忆覆盖写回失败: %s", e)
                 return f"记忆覆盖失败：{e}"
             _db_replace_by_topic(topic, fact)
+            _changelog_append("update", topic, fact)  # v4.319.0 P3-1
             preview = fact if len(fact) <= 60 else fact[:60] + "…"
             return f"已更新长期记忆（覆盖同主题旧条目）：{preview}"
     # 普通追加
@@ -1031,6 +1171,7 @@ def append_memory(fact, type=None, topic=None, tags=None, pinned=False,
     try:
         _write_text_file(MEMORY_PATH, (_prev or "") + block)
         _db_append(fact, ts)
+        _changelog_append("add", ts, fact)  # v4.319.0 P3-1
     except Exception as e:
         log.warning("写入记忆失败: %s", e)
         return f"写入记忆失败：{e}"

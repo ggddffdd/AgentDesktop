@@ -10,6 +10,7 @@ import subprocess  # v4.125 M-14：子进程统一无黑窗
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 import time
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 log = logging.getLogger("rag")
@@ -17,6 +18,34 @@ log = logging.getLogger("rag")
 # 单文件索引上限
 MAX_INDEX_BYTES = 3_000_000    # ~3MB
 MAX_INDEX_CHARS = 1_500_000    # ~1.5MB
+
+
+# v4.319.0 P1-1：chunk 溯源四件套。纯函数，便于判据直测与旧索引归一。
+# 一个事实一个家：entity_id 默认 source 文件名，indexed_at 写入时打 ISO8601，
+# source_mtime 取源文件 mtime（拿不到留空串，不炸）。已带字段的 chunk 原样保留
+# （幂等，不覆盖真实溯源）——旧版 index.json 缺字段时按默认值补齐，向后兼容。
+def normalize_chunk(chunk):
+    """给单个 chunk 补溯源四字段；非 dict 输入也能安全归一，不抛异常。"""
+    if not isinstance(chunk, dict):
+        return {"type": "doc", "entity_id": "", "indexed_at": "",
+                "source_mtime": "", "text": str(chunk) if chunk else ""}
+    out = dict(chunk)
+    src = out.get("source") or ""
+    if not out.get("type"):
+        out["type"] = "doc"
+    if not out.get("entity_id"):
+        out["entity_id"] = os.path.basename(str(src)) if src else ""
+    if not out.get("indexed_at"):
+        out["indexed_at"] = datetime.now().isoformat(timespec="seconds")
+    if "source_mtime" not in out:
+        mtime = ""
+        if src:
+            try:
+                mtime = int(Path(src).stat().st_mtime)
+            except Exception:
+                mtime = ""
+        out["source_mtime"] = mtime
+    return out
 
 
 class RAGStore:
@@ -83,7 +112,8 @@ class RAGStore:
             try:
                 with open(self._index_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                self._chunks = data.get("chunks", [])
+                # v4.319.0 P1-1：旧索引缺溯源四字段 → 加载时补齐（幂等，不覆盖已有）。
+                self._chunks = [normalize_chunk(c) for c in data.get("chunks", [])]
                 self._chunk_counter = data.get("next_id", len(self._chunks))
                 self._files = data.get("files", {})
             except Exception:
@@ -327,6 +357,11 @@ class RAGStore:
                         "source": str(file_path),
                         "text": chunk,
                         "embedding": emb,
+                        # v4.319.0 P1-1：溯源四件套（一个事实一个家）
+                        "type": "doc",
+                        "entity_id": fname,
+                        "indexed_at": datetime.now().isoformat(timespec="seconds"),
+                        "source_mtime": st.st_mtime,
                     })
                     next_counter += 1
 

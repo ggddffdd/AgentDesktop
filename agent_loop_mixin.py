@@ -29,7 +29,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.318.0"
+VERSION = "v4.319.0"
 
 
 class AgentLoopMixin(object):
@@ -116,7 +116,7 @@ class AgentLoopMixin(object):
             return False
 
     # --------------------------------------------------------
-    # 3b) v4.318.0：核验停滞 / 连续未过 早停判定（从 agent.py 外移，守 <2400 红线）
+    # 3b) v4.319.0：核验停滞 / 连续未过 早停判定（从 agent.py 外移，守 <2400 红线）
     # --------------------------------------------------------
     def _verify_stall_check(self, lp, stall_steps, stall_limit):
         """连续核验未过 / 停滞则发停止信号并返回 True（调用方 break）。
