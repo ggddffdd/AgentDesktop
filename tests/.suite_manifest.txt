@@ -55,6 +55,7 @@ test_fail_log_tts_257.py
 test_focus_chrome_264.py
 test_frozen_smoke.py
 test_guardrail_conflicts.py
+test_hang_fix_317.py
 test_hang_watchdog_316.py
 test_hard_confirm_bypass_221.py
 test_high_risk_guard.py

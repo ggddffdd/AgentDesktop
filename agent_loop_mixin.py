@@ -29,7 +29,7 @@ import logging
 
 log = logging.getLogger("dsdesktop")
 
-VERSION = "v4.316.0"
+VERSION = "v4.317.0"
 
 
 class AgentLoopMixin(object):
@@ -114,6 +114,32 @@ class AgentLoopMixin(object):
         except Exception as e:
             log.warning("四阶段循环核验失败（已忽略）: %s", e)
             return False
+
+    # --------------------------------------------------------
+    # 3b) v4.317.0：核验停滞 / 连续未过 早停判定（从 agent.py 外移，守 <2400 红线）
+    # --------------------------------------------------------
+    def _verify_stall_check(self, lp, stall_steps, stall_limit):
+        """连续核验未过 / 停滞则发停止信号并返回 True（调用方 break）。
+
+        lp 当前 LoopState；stall_steps v4.298 原一字不变计数；
+        stall_limit 该计数阈值。判定逻辑来自 agent_text 纯函数，本方法只做副作用。
+        """
+        import agent_text as _at
+        verified = bool(getattr(lp, "verified", False)) if lp is not None else False
+        has_report = bool(getattr(lp, "verification", None)) if lp is not None else False
+        self._verify_fail_streak = _at.verify_fail_streak(
+            getattr(self, "_verify_fail_streak", 0), verified, has_report)
+        _fail_exceeded = self._verify_fail_streak >= _at.MAX_VERIFY_FAIL_STREAK
+        if stall_steps < stall_limit and not _fail_exceeded:
+            return False
+        self._note_exit("verify_stalled")
+        self._emit_status("⏹ 核验一直没有进展，已自动停止空转。")
+        self.stream_commit.emit(
+            "\n\n⏹ 连续多步核验结果一模一样、迟迟达不到目标，已停止空转。"
+            "已完成的部分都保留了，可以点「继续」接着做，"
+            "或把任务拆小、换个更明确的做法。")
+        self._mark_resumable("verify_stalled")
+        return True
 
     # --------------------------------------------------------
     # 4) 收尾：追加机器小结

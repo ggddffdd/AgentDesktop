@@ -1647,7 +1647,13 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
                 tray.showMessage(title, message, QSystemTrayIcon.Information, 6000)
         except Exception as e:
             log.error("托盘通知失败: %s", e)
-        if getattr(self, "_tts_degraded", False):
+        # v4.317.0：自动化收尾不发语音——QMediaPlayer.play() 在主线程同步调，
+        # WER 两次 AppHang 都载入音频/蓝牙栈，是卡死强线索。自动化无人值守，
+        # 托盘 + 状态栏 + toast 已足够通知。普通对话朗读（_speak）不受此限。
+        if not automation.should_speak_on_finish(
+                bool(getattr(self, "speech_enabled", True)),
+                bool(getattr(self, "_tts_degraded", False)),
+                is_automation=True):
             return
         try:
             tts = self.cfg.get("tts", {})

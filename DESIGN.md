@@ -632,6 +632,20 @@ flags 非 int（扰动成 tuple）时判 FAIL 不崩），B 层 3 条钉源码�
 
 **判据 19/0 + 扰动 5/5**：A 层 mock faulthandler 验边界语义/幂等/tick dump/防爆炸；B 层 7 条源码契约。扰动覆盖：边界 `>=`→`>`、`all_threads` 改 False、删心跳接线、daemon 改 False、`faulthandler.enable(file=)` 去掉 file。**踩坑**：B 层字面量探针两度假绿——`daemon=True` / `faulthandler.enable(file=...)` 在模块 docstring 里也出现，全局子串匹配被注释文本满足；改为行首锚定正则 + 改写 docstring 示例后，5 组全部改坏必红。
 
+## 4.22 自动化任务双止损：verify 早停 + 收尾静音 + 会话上限（v4.317.0）
+
+2026-11-21 两次 AppHang（12:26 / 13:07）暴露三条独立问题链，各自止损、互不耦合：
+
+**① verify 空转早停（agent_text.py + agent.py）**。v4.298 的 `MAX_VERIFY_STALL_STEPS=8` 要求「未满足项一字不变」，但现场每步工具回执 `error_code` 不同（UNVERIFIED_OUTCOME / INFERRED）、补做话术不同 → 签名每步都变 → 早停从未触发，任务空转到耗尽预算判失败（`automation_tasks.json` 记「一直卡在核验没进展」）。新增 `verify_fail_streak(prev, verified, has_report)`：`verified=True` 或无核验记录归零，否则 +1；`MAX_VERIFY_FAIL_STREAK=6`。早停条件改为「原判据 OR 新计数器」，旧判据保留（项目铁律：改判据不删判据）。
+
+**② 自动化收尾静音（automation.py + ui.py）**。`_finish_automation_run → _notify_task_done` 原本会起 `_TTSWorker` 并在主线程 `QMediaPlayer.play()`；两次 WER 模块列表都载入音频栈（MMDevAPI / AUDIOSES / wdmaud2 / ResampleDmo）与蓝牙栈（bthprops.cpl / bluetoothapis.dll）。自动化无人值守，语音无听众却把主线程拖进音频设备调用。新增 `should_speak_on_finish(speech_enabled, degraded, is_automation)`，`_notify_task_done` 以 `is_automation=True` 守门恒不发语音；普通对话 `_speak` 走同一纯函数的 `is_automation=False` 分支，行为不变。
+
+**③ auto 会话上限（session.py）**。auto_ 专属会话无上限膨胀（实测 636/678 条），落盘/审计/渲染全量扫，加剧收尾主线程重活。`SessionStore.save()` 落盘前对每个会话调 `trim_auto_session`，只裁 auto_ 前缀：留首条（任务目标）+ 最近 cap-1 条，砍中间旧回执；`MAX_AUTO_SESSION_MSGS=200`。普通会话 `startswith` 不匹配直接原样返回、删除 0，用户历史一条不删。裁剪量写日志可追溯。
+
+**为什么 watchdog（v4.316）这次没自证**：`hang_traceback.log` 0 字节。对照实验证明纯 Python 死循环时 watchdog 能 dump（724 字节）；真实现场 0 字节 → 主线程卡在持 GIL 不释放的 C 层调用，watchdog 线程与 faulthandler 都要 GIL 才能 dump，一起被饿死。faulthandler 系（含 dump_traceback_later）对该场景天然无解，需外部进程（procdump / py-spy）才能抓原生栈。本版不改 watchdog，直接对三条强线索止损。
+
+**判据 25/0 + 扰动 6/6**：A 层 18 条纯函数行为（边界/幂等/只动 auto），B 层 7 条源码契约。**踩坑**：B 层最初用全局子串查 `verify_fail_streak(` / `should_speak_on_finish(` / `trim_auto_session(`，扰动改坏调用行后因「函数定义处仍有该字符串」而假绿（3/6）；改为语义锚定（赋值行 / `if not ...(` / `= trim_auto_session(_sid`）后 6/6 真红，与 v4.316 同类坑。
+
 ## 5. Layout Principles（间距 / 网格 / 留白）
 
 - **v4.200.0：token 已立**（不再是建议）。空白处的荒罢了三年，现在有真身了。

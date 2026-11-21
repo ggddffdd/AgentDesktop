@@ -910,6 +910,32 @@ def tool_result_backend_down(text):
 # ============================================================
 NO_PROGRESS_WINDOW = 3
 MAX_NO_PROGRESS_STEPS = 3
+
+# v4.317.0：连续「核验未过」早停计数。
+# 现场（2026-11-21 两次 AppHang）：verify 连续 8 步核验未过，但 v4.298 的早停
+# 判据要求「未满足项一字不变」——每步签名都在变（工具回执 error_code 不同、
+# 补做话术不同），签名永不相等 → 早停一次都没触发 → 空转到耗尽预算判失败。
+# 新判据不问「未满足项内容变没变」，只问「连续几步没达标」：
+# verified=True（达标）或无核验记录（没东西可核）都归零，否则累计。
+MAX_VERIFY_FAIL_STREAK = 6
+
+
+def verify_fail_streak(prev_streak, verified, has_report):
+    """连续核验未过的步数（纯函数）。达标/无记录归零，未过且有记录则 +1。
+
+    prev_streak 上一步计数；verified 本步账本是否全达标；
+    has_report 本步核验记录是否非空。坏值一律按归零保守处理。
+    """
+    try:
+        n = int(prev_streak)
+    except Exception:
+        n = 0
+    if n < 0:
+        n = 0
+    if verified or not has_report:
+        return 0
+    return n + 1
+
 _EV_TAG = re.compile(r"[\[⟦【]EV#\d+[\]⟧】]")
 _TIMESTAMP = re.compile(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2})?")
 

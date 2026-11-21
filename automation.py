@@ -65,6 +65,23 @@ STARTUP_GRACE_SEC = 90.0
 MAX_RENDERED_AUTOMATION_MSGS = 40
 
 
+# v4.317.0：自动化收尾播报守门。
+# 现场（2026-11-21 两次 AppHang）：收尾 _finish_automation_run → _notify_task_done
+# → QMediaPlayer.play() 在主线程同步调；WER 两次都载入音频/蓝牙栈（MMDevAPI /
+# AUDIOSES / bthprops.cpl），是卡死强线索。自动化是无人值守场景，托盘 + 状态栏
+# + toast 已足够通知，语音播放没有听众却把主线程拖进音频设备调用 —— 收尾一律
+# 不发语音。普通对话朗读（_speak）不受影响。
+def should_speak_on_finish(speech_enabled, degraded=False, is_automation=False):
+    """收尾是否发语音提醒（纯函数）。自动化场景恒 False；普通对话看开关。
+
+    speech_enabled 语音开关；degraded 语音降级标志；is_automation 是否自动化收尾。
+    """
+    if is_automation:
+        return False
+    return bool(speech_enabled) and not bool(degraded)
+
+
+
 def startup_grace_blocks(started_at, now, grace_sec=STARTUP_GRACE_SEC):
     """程序刚启动的宽限期内是否拦住定时「执行任务」。
 

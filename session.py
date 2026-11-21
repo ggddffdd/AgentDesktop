@@ -12,6 +12,33 @@ from config import USER_DATA_DIR
 log = logging.getLogger("dsdesktop")
 
 
+# v4.317.0：auto 专属会话消息上限。现场（2026-11-21）两个自动化会话膨胀到
+# 678/636 条，落盘/审计/渲染全量扫 → 收尾主线程重活加剧 AppHang。普通会话
+# 一条不删（随时可回放）；只对 auto_ 前缀会话裁剪：留首条目标 + 最近 N-1 条，
+# 砍中间旧工具回执（这些是噪声，续跑断点靠尾部 + _seq 对齐）。
+MAX_AUTO_SESSION_MSGS = 200
+AUTO_SID_PREFIX = "auto_"
+
+
+def trim_auto_session(sid, messages, max_msgs=None, prefix=AUTO_SID_PREFIX):
+    """裁 auto 专属会话消息（纯函数），返回 (裁后列表, 删除条数)。
+
+    只裁 startswith(prefix) 的会话；未超限/空列表原样返回；保留头部首条目标
+    与尾部最近消息。传入 messages 不被原地修改（返回新 list，元素是原 dict 引用）。
+    """
+    if not str(sid or "").startswith(prefix):
+        return messages, 0
+    cap = max_msgs if isinstance(max_msgs, int) and max_msgs > 0 else MAX_AUTO_SESSION_MSGS
+    n = len(messages or [])
+    if n <= cap:
+        return messages, 0
+    # cap>=1：头部留 1（目标），尾部留 cap-1；cap==1 时只留头部
+    head = 1 if cap >= 1 else 0
+    tail = cap - head
+    out = list(messages[:head]) + list(messages[n - tail:]) if tail > 0 else list(messages[:head])
+    return out, n - len(out)
+
+
 class Session:
     def __init__(self, sid, title="新会话", messages=None, created=None, skill=None, deliverables=None, goal="", pinned=False, folder=""):
         self.sid = sid
@@ -91,6 +118,14 @@ class SessionStore:
         if getattr(self, "_corrupt_lock", False) and not self.sessions:
             log.error("检测到坏档未备份，本次跳过保存（防止空库覆盖历史）")
             return
+        # v4.317.0：auto 专属会话落盘前裁剪（防 678 条无限膨胀拖垮收尾主线程）。
+        # 普通会话一条不删；裁剪量写日志可追溯。
+        for _sid, _s in list(self.sessions.items()):
+            _msgs, _removed = trim_auto_session(_sid, _s.messages)
+            if _removed:
+                _s.messages = _msgs
+                log.info("auto 会话 %s 已裁剪 %d 条旧消息（上限 %d）",
+                         _sid, _removed, MAX_AUTO_SESSION_MSGS)
         data = {
             "active": self.active_sid,
             "sessions": [s.to_dict() for s in self.sessions.values()],

@@ -282,7 +282,10 @@ def main():
                        "tool_backend_down", "verify_stalled", "tool_fail",
                        "搜索/网页资料源连不上，这次不算完成",
                        "一直卡在核验没进展，这次不算完成",
-                       "工具一直报错，这次不算完成"],
+                       "工具一直报错，这次不算完成",
+                       # v4.317.0：自动化收尾静音守门。已验旧 exe(v4.316.0)
+                       # 常量表缺失 = OLD_MISS（docstring 是字符串字面量进 co_consts）。
+                       "收尾是否发语音提醒（纯函数）"],
         "intent_guard": ["is_non_action_message", "blocks_tool_call",
                          "praise", "negation", "imperative",
                          # v4.168.3：否定判据两道闸（长度 + 位置）
@@ -497,8 +500,10 @@ def main():
                   # `tool_fail` 旧包本来就有，属假绿，勿加进 agent 这组）
                   "MAX_VERIFY_STALL_STEPS", "_verify_stall_steps",
                   "_last_verify_sig", "_last_fail_backend_down",
-                  "verify_stalled", "tool_backend_down",
-                  "⏹ 核验一直没有进展，已自动停止空转。",
+                  # v4.317.0：verify_stalled / ⏹核验文案随早停处置外移到
+                  # agent_loop_mixin，标记归属同步迁移（旧包 agent 有、mixin 无
+                  # = OLD_MISS 双向成立；判据总数不减）。
+                  "tool_backend_down",
                   "⏹ 搜索/网页资料源一直连不上，已停止空转。",
                   # v4.302.0：核验通过但结果不变也计入停滞（旧包缺失）
                   "_np_sig", "_stall_limit"],
@@ -557,7 +562,10 @@ def main():
                   # v4.302.0：结果无进展判据族（全部双向验过旧 exe 缺失）
                   "outcome_no_progress", "verified_no_progress_sig",
                   "normalize_tool_outcome", "MAX_NO_PROGRESS_STEPS",
-                  "NO_PROGRESS_WINDOW"],
+                  "NO_PROGRESS_WINDOW",
+                  # v4.317.0：verify 连续未过早停。已验旧 exe(v4.316.0)
+                  # docstring + 常量名均 OLD_MISS（字符串字面量进 co_consts）。
+                  "连续核验未过的步数（纯函数）", "MAX_VERIFY_FAIL_STREAK"],
         # v4.302.0：护栏接线与回收站计数真进包（旧 exe 常量表均缺失）。
         "agent_exec_mixin": ["_guard_no_progress",
                              # v4.309.0：未执行结构化失败 + 续跑/工作流/结局接线
@@ -598,7 +606,10 @@ def main():
                   "以本段为准"],
         # v4.226.0：四阶段循环接线 mixin（从 agent.py 抽出，守<2400 红线）
         "agent_loop_mixin": ["AgentLoopMixin", "_loop_start", "_loop_step",
-                  "_loop_verify", "_loop_summary", "_loop_state_dict"],
+                  "_loop_verify", "_loop_summary", "_loop_state_dict",
+                  # v4.317.0：verify_stalled 早停处置外移至此（从 agent 迁移标记，
+                  # 已验旧 exe v4.316.0 的 agent_loop_mixin 无这两串 = OLD_MISS）。
+                  "verify_stalled", "⏹ 核验一直没有进展，已自动停止空转。"],
         # v4.226.0：技能元数据分级校验（三档 fail-open + 默认不拒用）
         "skill_meta": ["REQUIRED_FIELDS", "OPTIONAL_FIELDS",
                   "CAPABILITY_FIELDS", "MetaVerdict", "check_skill",

@@ -75,6 +75,10 @@ import automation  # noqa: E402
 import ui_focus  # noqa: E402
 
 AG = read("agent.py")
+# v4.317.0：verify_stalled 早停的处置副作用外移到 agent_loop_mixin（守 agent.py
+# <2400 行红线）。C4/C5 是语义判据，查联合源码（AG 仍单独用于行数/接线类判据）。
+AGM = read("agent_loop_mixin.py")
+AG_ALL = AG + "\n" + AGM
 AT = read("agent_text.py")
 UI = read("ui.py")
 FOCUS = read("ui_focus.py")
@@ -231,9 +235,9 @@ check("C2 阈值不放宽到 20 步以上",
 check("C3 按「未满足项签名原地不动」计数",
       "_verify_stall_steps" in AG and "_last_verify_sig" in AG
       and 'startswith("未满足")' in AG)
-check("C4 早停登记可续真因 verify_stalled", '_mark_resumable("verify_stalled")' in AG)
+check("C4 早停登记可续真因 verify_stalled", '_mark_resumable("verify_stalled")' in AG_ALL)
 check("C5 早停不再只说「检查路径/命令」",
-      "核验一直没有进展" in AG or "一直卡在核验" in AG)
+      "核验一直没有进展" in AG_ALL or "一直卡在核验" in AG_ALL)
 check("C6 工具失败早停按是否后端挂分流登记真因",
       '_mark_resumable("tool_backend_down"' in AG
       and '_mark_resumable("tool_fail"' in AG)
@@ -327,8 +331,8 @@ check("E2 tool_choice 四个分支仍在（只加兜底，不删路由）",
 check("E3 落盘格式与信号签名不动",
       "def history_for_agent(" in AUTO and "board_update" not in FOCUS)
 check("E4 版本已传导到 v4.310.0",
-      'APP_VERSION = "v4.316.0"' in read("config.py")
-      and 'VERSION = "v4.316.0"' in read("agent_loop.py")
+      'APP_VERSION = "v4.317.0"' in read("config.py")
+      and 'VERSION = "v4.317.0"' in read("agent_loop.py")
       and "## v4.310.0" in read("CHANGELOG.md"))
 check("E5 早停不用「跳页」解决（上一波成果不回退）",
       "def page_after_render(" in FOCUS

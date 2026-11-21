@@ -9,6 +9,14 @@
 
 
 
+## v4.317.0 — 2026-11-21
+
+- **自动化任务「没产出 + 卡死」双止损**。现场（2026-11-21 两次 AppHang）：verify 连续 8 步核验未过，但 v4.298 早停要求「未满足项一字不变」——每步签名都在变 → 早停永不触发 → 空转到判失败；随后自动化收尾 `QMediaPlayer.play()` 在主线程同步调（WER 两次都载入音频/蓝牙栈）触发 AppHang；auto 专属会话膨胀到 678/636 条。本版三处止损：
+  - **① verify 连续未过早停**：新增纯函数 `agent_text.verify_fail_streak`，只数「连续几步没达标」（达标/无核验记录归零），不问未满足项内容变没变；连续 `MAX_VERIFY_FAIL_STREAK=6` 步未过即停。与原 v4.298 一字不变判据 **OR** 并存（改判据不删判据）。
+  - **② 自动化收尾不发语音**：新增 `automation.should_speak_on_finish`，收尾守门恒 False（QMediaPlayer.play 主线程同步 = 卡死强线索；无人值守托盘+状态栏+toast 已够通知）。普通对话朗读 `_speak` 不受影响。
+  - **③ auto 会话消息上限**：`session.trim_auto_session` 每次 save 前把 auto_ 会话裁到 `MAX_AUTO_SESSION_MSGS=200`（留首条目标 + 最近消息，砍中间旧工具回执）；普通会话一条不删。实测 636→200 / 678→200。
+  - 验证：判据 25 条（A 层 18 行为 + B 层 7 源码契约）、当前源码先红（PASS=1 FAIL=24，预留守卫 B3 除外）、扰动 6 组改坏必红。
+
 ## v4.316.0 — 2026-11-21
 
 - **程序卡死「下次能自证」能力**。现场（2026-11-21）：一次自动化任务执行中 app 主线程停响应，Windows 事件日志 `Application Hang(1002)` + WER `AppHangB1` 强关；冻结包无符号，WER 抓不到 Python 栈，卡点无法定位（仅能从 debug.log 推测收尾链与 600+ 条自动化会话渲染）。本版新增纯可观测 watchdog：

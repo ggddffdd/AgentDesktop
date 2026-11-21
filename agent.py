@@ -1382,14 +1382,10 @@ class AgentWorker(AgentTaskMixin, AgentLoopMixin, AgentResultMixin,
                 self._last_verify_sig = _v_sig
                 _stall_limit = (agent_text.MAX_NO_PROGRESS_STEPS if _np_sig
                                 else MAX_VERIFY_STALL_STEPS)
-                if self._verify_stall_steps >= _stall_limit:
-                    self._note_exit("verify_stalled")
-                    self._emit_status("⏹ 核验一直没有进展，已自动停止空转。")
-                    self.stream_commit.emit(
-                        "\n\n⏹ 连续多步核验结果一模一样、迟迟达不到目标，已停止空转。"
-                        "已完成的部分都保留了，可以点「继续」接着做，"
-                        "或把任务拆小、换个更明确的做法。")
-                    self._mark_resumable("verify_stalled")
+                # v4.317.0：连续「核验未过」早停判定已外移 agent_loop_mixin
+                # （守 agent.py <2400 行红线）；与原 v4.298 判据 OR。
+                if self._verify_stall_check(
+                        _lp_stall, self._verify_stall_steps, _stall_limit):
                     self._sync_to_session(mw)
                     break
             else:
