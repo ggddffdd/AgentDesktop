@@ -592,6 +592,31 @@ duckduckgo / wikipedia 等 7 个搜索后端被同一句
 （删自愈块 → A3 红；建表变空操作 → A5 红；加密模式绕过 → A17 红；建表挪到
 `return` 之后不可达 → A4 红）。
 
+### 4.20 降级自动拉起 Edge 必须真正脱离父进程（v4.315.0·CDP 调试端口可靠性·硬性）
+
+`browser_control_tools._ensure_cdp` 负责「9222 不通时自动拉起带
+`--remote-debugging-port` 的 Edge 调试实例」（专属 profile
+`%LOCALAPPDATA%\小臭玩AI\cdp_edge_profile`，与用户真实 Edge 不抢锁、互不影响）。
+它原本用 `CREATE_NEW_PROCESS_GROUP` 作为 Popen 的 `creationflags`。
+
+**该标志只建新进程组，不脱离父进程生命周期**。实测（2026-11-21）：
+父进程（一次性子进程，如定时任务脚本）退出后，拉起的 Edge 调试实例跟着死，
+9222 从就绪掉回 `ECONNREFUSED`（`_cdp_ready` False、`debug_instances` 归 0）。
+app 常驻时无碍，但任何子进程调用自动开启调试端口都不可靠。
+
+本版加固：`creationflags` 改为 `CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS(0x8)`。
+对比实验：
+
+- 改前（仅 `CREATE_NEW_PROCESS_GROUP`）：父进程退出 → 9222 `ready=False`。
+- 改后（`| DETACHED_PROCESS`）：父进程退出 → Edge 独立存活、9222 `ready=True`。
+
+判据：A 层 5 条（mock Popen 捕获 `creationflags`：必须含 0x8、必须是合并而非覆盖、
+Popen 异常仍返回 `(False, '自动启动 Edge 失败…')`、9222 已通时短路不调 Popen；
+flags 非 int（扰动成 tuple）时判 FAIL 不崩），B 层 3 条钉源码契约（含 0x8 常量、
+`CREATE_NEW_PROCESS_GROUP | 0x00000008` 合并形式、位于 `if os.name == "nt"` 分支内）。
+旧源码下 5 条先红；扰动 3 组改坏必红（删 DETACHED → A1 红；丢进程组 → A5 红；
+合并改逗号 → B2 红）。
+
 ## 5. Layout Principles（间距 / 网格 / 留白）
 
 - **v4.200.0：token 已立**（不再是建议）。空白处的荒罢了三年，现在有真身了。

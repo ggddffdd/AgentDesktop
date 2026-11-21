@@ -21,6 +21,7 @@ test_browser_control.py
 test_browser_engine_config_290.py
 test_bugfix_2092.py
 test_cancel_token.py
+test_cdp_detach_315.py
 test_cdp_profile_path.py
 test_claim_evidence_195.py
 test_clarify_gate_238.py

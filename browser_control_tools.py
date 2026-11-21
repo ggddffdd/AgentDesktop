@@ -281,7 +281,14 @@ def _ensure_cdp(cdp, app_dir=None):
     try:
         kwargs = {}
         if os.name == "nt":
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            # v4.315.0：加 DETACHED_PROCESS(0x8)。CREATE_NEW_PROCESS_GROUP 只建新进程组，
+            # 不脱离父进程生命周期——实测父进程（一次性子进程如定时任务脚本）退出后，
+            # 拉起的 Edge 调试实例跟着死（9222 ready 掉回 False，debug 实例数归 0）。
+            # 加 DETACHED_PROCESS 后实测父进程退出 Edge 独立存活、9222 保持 ready。
+            # app 常驻时本就无碍，但子进程调用必须真正 detach 才能可靠自动开启调试端口。
+            kwargs["creationflags"] = (
+                subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008
+            )
         subprocess.Popen(
             args,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

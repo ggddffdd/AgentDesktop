@@ -9,6 +9,13 @@
 
 
 
+## v4.315.0 — 2026-11-21
+
+- **「降级后自动开启 Edge 调试端口」的可靠性加固**。实测定性（2026-11-21）：`browser_control_tools._ensure_cdp` 已能在 9222 不通时自动用独立 profile 拉起带 `--remote-debugging-port` 的 Edge，但 Popen 用的是 `CREATE_NEW_PROCESS_GROUP`——它只建新进程组、**不脱离父进程生命周期**。实测：父进程（一次性子进程，如定时任务脚本）一退出，拉起的 Edge 调试实例跟着死，9222 从就绪掉回 `ECONNREFUSED`。本版：
+  - **加固**：Popen 的 `creationflags` 改为 `CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS(0x8)`，让调试实例真正独立于父进程。对比实验：改前父进程退出后 9222 `ready=False`；改后父进程退出 Edge 独立存活、9222 保持 `ready=True`。
+  - **不干扰真实 Edge**：仍用专属 profile（`%LOCALAPPDATA%\小臭玩AI\cdp_edge_profile`），与用户日常 Edge 的默认 profile 不抢锁、互不影响。
+  - 验证：判据 8 条（mock Popen 捕获 creationflags + 源码契约）、对旧源码 5 条先红、扰动 3 组改坏必红（含「改逗号使 flags 变 tuple」判据不崩只红的防御）。
+
 ## v4.314.0 — 2026-11-21
 
 - **长期记忆搜索层「静默失效」的自愈修复**。实测事故（大哥桌面 `debug.log` 2026-11-20 22:46:21）：`~/Documents/小臭玩AI/memory.db` 变成 **0 字节空库**（无 SQLite header、无 `memories` 表），此后每次 `search_memory` 都崩 `no such table: memories`。关键危害在于**不崩给用户看**——异常被 catch 成一行 `WARNING memory_store 同步SQLite失败`，记忆检索直接静默失效，主源 `memory.md` 里 200 条真实记忆完好却再也搜不到。本版：

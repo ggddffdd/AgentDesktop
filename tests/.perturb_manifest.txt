@@ -21,6 +21,7 @@ _perturb_automation_isolation.py
 _perturb_automation_no_browser_280.py
 _perturb_browser_control.py
 _perturb_build_date_tz_263.py
+_perturb_cdp_detach_315.py
 _perturb_clarify_gate_238.py
 _perturb_clean_recycle_bin_217.py
 _perturb_continuation_sticky_255.py
