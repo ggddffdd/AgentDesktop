@@ -617,6 +617,21 @@ flags 非 int（扰动成 tuple）时判 FAIL 不崩），B 层 3 条钉源码�
 旧源码下 5 条先红；扰动 3 组改坏必红（删 DETACHED → A1 红；丢进程组 → A5 红；
 合并改逗号 → B2 红）。
 
+## 4.21 主线程卡死自证 watchdog（v4.316.0·纯可观测·零行为变化）
+
+2026-11-21 现场：自动化任务中 app 主线程停响应，Windows `Application Hang(1002)` / WER `AppHangB1` 强关，最后日志停在四阶段 `_loop_summary` 之后。WER 对冻结包无符号、抓不到 Python 栈，无法定位卡点——**没有栈证据就不猜根因、不盲改核心路径**（项目铁律）。本版只补「下次卡死自证」能力。
+
+**架构**（新增 `hang_watchdog.py`，main.py 两处接线）：
+
+- 主线程：QApplication 建好后装 1s QTimer 接 `hang_watchdog.beat`，刷新单调时钟心跳；定时器挂到 app 上保活防 GC 腰斩。
+- watchdog：daemon 线程每 1s 查心跳年龄；`is_hung` 用 `>=` 边界语义（边界也算卡死）。
+- dump：超阈值（默认 20s）调 `faulthandler.dump_traceback(file=..., all_threads=True)` —— **必须 all_threads=True**，否则只能抓到 watchdog 线程自己的栈；独立日志 `USER_DATA_DIR/logs/hang_traceback.log`，`REPEAT_DUMP_SEC=30` 防日志爆炸。
+- `faulthandler.enable(file=...)` 让致命信号也写同一文件；`uninstall()` 在 `app.exec()` 返回后幂等调用，先 `disable()` 再关句柄。
+
+**为什么不用 `dump_traceback_later`**：它需要主线程喂狗 cancel+re-arm，且 repeat=True 无法随心跳恢复自动静默；自写 watchdog + 单调时钟更可控、判据更好测。
+
+**判据 19/0 + 扰动 5/5**：A 层 mock faulthandler 验边界语义/幂等/tick dump/防爆炸；B 层 7 条源码契约。扰动覆盖：边界 `>=`→`>`、`all_threads` 改 False、删心跳接线、daemon 改 False、`faulthandler.enable(file=)` 去掉 file。**踩坑**：B 层字面量探针两度假绿——`daemon=True` / `faulthandler.enable(file=...)` 在模块 docstring 里也出现，全局子串匹配被注释文本满足；改为行首锚定正则 + 改写 docstring 示例后，5 组全部改坏必红。
+
 ## 5. Layout Principles（间距 / 网格 / 留白）
 
 - **v4.200.0：token 已立**（不再是建议）。空白处的荒罢了三年，现在有真身了。

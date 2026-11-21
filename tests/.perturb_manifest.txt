@@ -34,6 +34,7 @@ _perturb_exec_settle_309.py
 _perturb_exec_tool_gate_219.py
 _perturb_fail_log_tts_257.py
 _perturb_focus_chrome_264.py
+_perturb_hang_watchdog_316.py
 _perturb_hard_confirm_bypass_221.py
 _perturb_hitarea_2103.py
 _perturb_impact_scope_220.py

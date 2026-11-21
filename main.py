@@ -431,6 +431,23 @@ def main():
     except Exception:
         pass
     app = QApplication(sys.argv)
+    # v4.316.0：主线程卡死自证 watchdog（纯可观测，零行为变化）。
+    # 正常运行不写一个字节；主线程事件循环停滞 >20s 才把全线程 Python 栈
+    # dump 到 USER_DATA_DIR/logs/hang_traceback.log，供下次卡死一锤定音。
+    try:
+        import hang_watchdog
+        import config as _hang_cfg
+        _hang_log = os.path.join(_hang_cfg.USER_DATA_DIR, "logs", "hang_traceback.log")
+        hang_watchdog.install(_hang_log, threshold=20.0)
+        from PySide6.QtCore import QTimer as _HangQTimer
+        _hb_timer = _HangQTimer(app)
+        _hb_timer.setInterval(1000)
+        _hb_timer.timeout.connect(hang_watchdog.beat)
+        _hb_timer.start()
+        app._hang_beat_timer = _hb_timer   # 保活，防 GC 腰斩心跳
+    except Exception as _e:
+        log.warning("卡死自证 watchdog 安装失败（不影响启动）: %s", _e)
+
     app.setQuitOnLastWindowClosed(False)
     # v4.210.2：原生 Qt 控件字体族收口（DESIGN.md §3.1「规定收口」）。
     # 全应用唯一落点 —— 此前 9 处 `QFont("Microsoft YaHei", N)` 各写各的、
@@ -806,6 +823,13 @@ def main():
     app.aboutToQuit.connect(_on_quit)
 
     ret = app.exec()
+    # v4.316.0：停止卡死自证 watchdog，刷盘并关闭独立日志句柄
+    try:
+        import hang_watchdog
+        hang_watchdog.uninstall()
+    except Exception:
+        pass
+
 
     # 程序退出前关闭所有 MCP 客户端
     config.shutdown_mcp()

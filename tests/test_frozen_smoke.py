@@ -178,6 +178,9 @@ want = ["intent_guard", "cancel_token", "legion_permissions", "task_graph",
         # v4.309.0：执行结算纯判据模块（agent/exec_mixin/node/task_graph/
         # result_mixin 顶层 import，漏进 want 则 marks 全假红）。
         "execution_settle_309",
+        # v4.316.0：主线程卡死自证 watchdog。不进 want 则其标记全假红
+        # （v4.304/305/306/307/309 同类坑反复踩过）。
+        "hang_watchdog",
         ]
 present = {w: (w in za.toc) for w in want}
 info = {w: mod_consts(w) for w in want}
@@ -361,6 +364,12 @@ def main():
                                  "not_executed_code", "should_register_sig"],
         # 注：main.py 是 PyInstaller 入口脚本，不在 PYZ TOC，故不列入 marks（v4.306 踩过）。
         # main 的后台初始化接线由 tests/test_mcp_guard_306.py 的源码判据（B7）覆盖。
+        "hang_watchdog": [
+                      # v4.316.0 主线程卡死自证 watchdog（全线程栈 dump）
+                      # 已验旧 exe(v4.315.0)：hang_watchdog 模块不在 PYZ TOC = OLD_MISS。
+                      # HANG_MARK 是代码里的字符串字面量（编译进 co_consts），
+                      # 不是注释/标识符 —— 打包后必须能在新包里查到，否则 watchdog 没进包。
+                      "=== HANG DETECTED: main thread event loop stalled ==="],
         "memory_store": ["fail_closed_decrypt", "plain_db_decision",
                       # v4.314.0 memory.db 缺表自愈（2026-11-20 实测事故修复）：
                       # _with_db 单点查 sqlite_master，缺 memories 表即重建。

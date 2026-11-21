@@ -9,6 +9,13 @@
 
 
 
+## v4.316.0 — 2026-11-21
+
+- **程序卡死「下次能自证」能力**。现场（2026-11-21）：一次自动化任务执行中 app 主线程停响应，Windows 事件日志 `Application Hang(1002)` + WER `AppHangB1` 强关；冻结包无符号，WER 抓不到 Python 栈，卡点无法定位（仅能从 debug.log 推测收尾链与 600+ 条自动化会话渲染）。本版新增纯可观测 watchdog：
+  - **机制**：主线程 QTimer 每秒心跳，daemon watchdog 线程监测心跳年龄；停滞超 20s 就把**全线程 Python 栈** dump 到独立日志 `~/Documents/小臭玩AI/logs/hang_traceback.log`，之后每 30s 重复一次防日志爆炸，心跳恢复自动静默。致命信号（segfault 等）也写进同一文件。
+  - **零行为变化**：不 dump 时一个字节都不写；不改任何业务路径。实证：正常心跳 3s 日志 0 字节；停心跳 2.5s 后 dump 出完整线程栈与帧。
+  - 验证：判据 19 条（A 层行为 12 条 + B 层源码契约 7 条）、当前源码全红（PASS=0 FAIL=19）、扰动 5 组改坏必红。
+
 ## v4.315.0 — 2026-11-21
 
 - **「降级后自动开启 Edge 调试端口」的可靠性加固**。实测定性（2026-11-21）：`browser_control_tools._ensure_cdp` 已能在 9222 不通时自动用独立 profile 拉起带 `--remote-debugging-port` 的 Edge，但 Popen 用的是 `CREATE_NEW_PROCESS_GROUP`——它只建新进程组、**不脱离父进程生命周期**。实测：父进程（一次性子进程，如定时任务脚本）一退出，拉起的 Edge 调试实例跟着死，9222 从就绪掉回 `ECONNREFUSED`。本版：
