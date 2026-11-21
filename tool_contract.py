@@ -237,6 +237,24 @@ def _outcome_write_file(msg, args) -> Optional[bool]:
 register_outcome("write_file", _outcome_write_file)
 
 
+# v4.318.0：纯查询工具的结局契约（根治「完整返回却被判失败」）。
+# 真实信号是结构性的，不看文案：exec_tool 中 handler 抛异常会走 _reject
+# （ToolResult.fail），根本进不到 from_legacy 的契约判定；能带 3-tuple 走到
+# 这里的查询必然是 handler 正常执行完成，msg 非空字符串即「结果已产出」。
+# （"（无匹配日志）"这类空结果也是合法成功，不是失败。）
+# 绝不对 msg 做中文子串匹配 —— 查询正文里本就常含「失败/错误」两字
+# （sys_info 能力清单、log_query 日志正文），那正是 _infer_ok 误判的根源。
+# 只覆盖这两个明确无副作用、返回值即结果的查询工具；_infer_ok 全局兜底不动
+# （源码注释警告过：82 个未登记工具依赖它，翻白名单会大范围回归）。
+def _outcome_readonly_query(msg, args) -> Optional[bool]:
+    """纯查询工具：非空字符串结果即成功（结构信号，非中文文案匹配）。"""
+    return True if isinstance(msg, str) and msg.strip() else None
+
+
+register_outcome("sys_info", _outcome_readonly_query)
+register_outcome("log_query", _outcome_readonly_query)
+
+
 # ============================================================
 # v4.224：执行后验证（post-exec verification）
 # ============================================================

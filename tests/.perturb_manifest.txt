@@ -75,6 +75,7 @@ _perturb_probe_graphics.py
 _perturb_probe_real_backend_286.py
 _perturb_prompt_cache_276.py
 _perturb_python_cwd_xxx.py
+_perturb_query_outcome_318.py
 _perturb_resume_api_error_221.py
 _perturb_resume_idempotent_222.py
 _perturb_resume_missing_artifact_232.py
