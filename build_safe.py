@@ -166,8 +166,24 @@ def _run_robocopy(src, dst, extra=None):
                 d = os.path.join(dstd, f)
                 try:
                     shutil.copy2(s, d)
-                except (PermissionError, OSError):
-                    skipped += 1
+                except (PermissionError, OSError) as e:
+                    # v4.320.2：被锁文件若【新旧内容字节一致】则不构成新旧混包——
+                    # 典型是 VC 运行库 msvcp140.dll 被常驻 uvicorn 等进程加载，
+                    # PyInstaller 每次从系统复制同一份，目标本来就已是正确内容。
+                    # 仅在内容确实不同（新代码没进去）时才计失败，保留 fail-closed。
+                    same = False
+                    try:
+                        if os.path.isfile(d) and os.path.isfile(s):
+                            import hashlib
+                            same = (hashlib.sha256(open(s, 'rb').read()).digest()
+                                    == hashlib.sha256(open(d, 'rb').read()).digest())
+                    except OSError:
+                        pass
+                    if same:
+                        print('[build_safe] 内容一致豁免(锁) %s' % os.path.relpath(s, src))
+                    else:
+                        skipped += 1
+                        print('[build_safe] 跳过(锁) %s: %s' % (os.path.relpath(s, src), e))
         if skipped:
             # v4.289.1：旧文件兜底会形成新旧混包，不能把部分同步冒充成功。
             print('[build_safe] ⛔ %d 个文件复制失败，构建同步失败（拒绝新旧混包）' % skipped)
@@ -316,11 +332,16 @@ def _sync_to_dist():
         ok = _run_robocopy(staged_internal, os.path.join(live_dist, '_internal'),
                            ['/E', '/NFL', '/NDL', '/NJH', '/NJS']) and ok
     # 中转目录用完就清（位于 %TEMP%，沙箱豁免，不会触发人工确认）
-    try:
-        shutil.rmtree(stage_dist, ignore_errors=True)
-        shutil.rmtree(stage_work, ignore_errors=True)
-    except OSError:
-        pass
+    # v4.320.1：同步失败时【保留中转】——否则锁文件造成的 1 处失败会让整包白打，
+    # 且无法只补同步那一个文件，被迫 17 分钟冷缓存重打。成功才清，失败留现场。
+    if ok:
+        try:
+            shutil.rmtree(stage_dist, ignore_errors=True)
+            shutil.rmtree(stage_work, ignore_errors=True)
+        except OSError:
+            pass
+    else:
+        print('[build_safe] ⚠️ 同步失败，保留中转目录以便只补失败文件：%s' % stage_dist)
     return ok
 
 

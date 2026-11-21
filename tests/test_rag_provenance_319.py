@@ -105,11 +105,12 @@ else:
 
 print("=== B 层：源码契约（语义锚定）===")
 
-# 写入处必须带四字段（锚 new_chunks.append 构造块内，防别处同名字段假绿）
+# 写入处必须带四字段（锚 chunk append 构造块内，防别处同名字段假绿）
+# v4.320.0 P2-1 增量重构后变量名由 new_chunks 改为 ordered，锚点兼容两者。
 import re as _re
-_m = _re.search(r"new_chunks\.append\(\{(?:(?!\}\))[\s\S])*?\}\)", RAG_SRC)
+_m = _re.search(r"(?:new_chunks|ordered)\.append\(\{(?:(?!\}\))[\s\S])*?\}\)", RAG_SRC)
 _blk = _m.group(0) if _m else ""
-check("B0  定位到 new_chunks.append 构造块", bool(_blk), "block=%r" % _blk[:80])
+check("B0  定位到 chunk append 构造块", bool(_blk), "block=%r" % _blk[:80])
 check("B1  写入 chunk 带 type 字段", '"type":' in _blk)
 check("B2  写入 chunk 带 entity_id 字段且非死空串",
       '"entity_id":' in _blk and '"entity_id": fname' in _blk,

@@ -48,6 +48,143 @@ def normalize_chunk(chunk):
     return out
 
 
+# ===== v4.320.0 P1-2：BM25 关键词通路 + RRF 融合（离线兜底）=====
+# 设计原则：jieba 可用则用真分词，不可用/打包漏词典自动退回单字切分——
+# 检索永远不因分词依赖缺失而整体失效（大哥要求"装不上退回单字兜底"）。
+ENABLE_BM25_FALLBACK = True      # 关掉后仍保留 RRF 融合，只是 embedding 失败不再兜底
+_BM25_K1 = 1.5
+_BM25_B = 0.75
+_RRF_K = 60                      # Reciprocal Rank Fusion 平滑常数
+
+# 中文查询同义/近义变体（多措辞设计：一个概念多种说法一起检索，≤6）。
+# 只做通用同义映射，不依赖模型/网络；未在表内的词原样返回（不臆造）。
+_SYNONYM_MAP = {
+    "电脑": ["电脑", "计算机", "pc"],
+    "计算机": ["计算机", "电脑", "pc"],
+    "手机": ["手机", "移动电话", "电话"],
+    "ai": ["ai", "人工智能", "智能"],
+    "人工智能": ["人工智能", "ai", "智能"],
+    "汽车": ["汽车", "车子", "车辆"],
+    "电影": ["电影", "影片", "片子"],
+    "旅游": ["旅游", "旅行", "游玩"],
+    "路线": ["路线", "线路", "行程"],
+    "价格": ["价格", "价钱", "报价"],
+}
+
+
+def _tokenize_for_bm25(text):
+    """分词：jieba 优先，失败退回单字/英文按词（永不抛异常）。"""
+    text = (text or "").lower()
+    toks = []
+    try:
+        import jieba
+        toks = [t.strip() for t in jieba.cut(text) if t and t.strip()]
+        toks = [t for t in toks if not t.isspace()]
+    except Exception:
+        # 单字兜底：中文逐字，英文/数字按词
+        import re as _re
+        toks = _re.findall(r"[a-z0-9]+|[一-鿿]", text)
+    return [t for t in toks if t]
+
+
+def _synonym_variants(query):
+    """返回查询的同义变体（≤6，原查询永远在第一位）。"""
+    q = (query or "").strip()
+    if not q:
+        return []
+    out = [q]
+    key = q.lower()
+    for extra in _SYNONYM_MAP.get(key, []):
+        if extra not in out:
+            out.append(extra)
+        if len(out) >= 6:
+            break
+    return out[:6]
+
+
+def _bm25_scores(query, docs):
+    """BM25 打分：query 为 token 列表，docs 为 token 列表的列表；返回分数列表。"""
+    if not docs:
+        return []
+    tokenized = [q if isinstance(q, (list, tuple)) else _tokenize_for_bm25(q) for q in ([query] if isinstance(query, str) else query)]
+    q_tokens = tokenized[0] if tokenized else []
+    avgdl = max(1.0, sum(len(d) for d in docs) / len(docs))
+    df = {}
+    for tok in set(q_tokens):
+        df[tok] = sum(1 for d in docs if tok in d)
+    scores = []
+    for d in docs:
+        dl = max(1, len(d))
+        s = 0.0
+        for tok in q_tokens:
+            tf = d.count(tok)
+            if not tf:
+                continue
+            n_q = df.get(tok, 0)
+            idf = _math_log(1.0 + (len(docs) - n_q + 0.5) / (n_q + 0.5))
+            denom = tf + _BM25_K1 * (1 - _BM25_B + _BM25_B * dl / avgdl)
+            s += idf * (tf * (_BM25_K1 + 1)) / denom
+        scores.append(s)
+    return scores
+
+
+def _math_log(x):
+    """避免顶层 import math（保持 rag 零重依赖），惰性用标准库。"""
+    import math
+    return math.log(max(1e-12, x))
+
+
+def _normalize_scores(values):
+    """分数归一化到 [0,1]，全相等/全 0 时返回等分（不炸、不产生 NaN）。"""
+    vals = [float(v) for v in (values or [])]
+    if not vals:
+        return []
+    lo, hi = min(vals), max(vals)
+    if hi - lo < 1e-12:
+        return [1.0] * len(vals)
+    return [(v - lo) / (hi - lo) for v in vals]
+
+
+def _rrf_fuse(rank_lists, k=_RRF_K):
+    """RRF 融合多个排名列表（元素须可哈希），按共识名次降序，稳定去重。"""
+    scores = {}
+    for rank in rank_lists or []:
+        for pos, item in enumerate(rank):
+            scores[item] = scores.get(item, 0.0) + 1.0 / (k + pos + 1)
+    # 分数降序；同分按首次出现顺序（dict 保序）
+    return sorted(scores, key=lambda x: -scores[x])
+
+
+def plan_chunk_delta(old_chunks, new_texts, source):
+    """v4.320.0 P2-1：按文本内容幂等规划增量，返回 {reused, to_embed, removed}。
+
+    - reused   : {new_text 的下标: 旧 chunk} —— 文本逐字相同，原样复用 id+embedding
+    - to_embed : [new_text 的下标] —— 新增/变更段，需重新 embed
+    - removed  : [旧 chunk] —— 新切分里已消失的段，对应 chunk 清理
+
+    只比文本 content，不比位置/ sliding-window 边界——因为固定滑窗下插入一段会让
+    后续窗口全偏移，按文本 hash 幂等是唯一能"未变段 id+embedding 不动"的稳妥法。
+    同文本重复出现时按出现次数一一对应复用，不重复发 id。
+    """
+    old_for_src = [c for c in (old_chunks or [])
+                   if isinstance(c, dict) and c.get("source") == source]
+    # 文本 -> 可复用旧 chunk 队列（保序）
+    pool = {}
+    for c in old_for_src:
+        pool.setdefault(c.get("text", ""), []).append(c)
+    reused = {}
+    to_embed = []
+    for i, t in enumerate(new_texts or []):
+        bucket = pool.get(t, [])
+        if bucket:
+            reused[i] = bucket.pop(0)      # 一次复用一个，防重复 id
+        else:
+            to_embed.append(i)
+    # 剩余未被复用的旧 chunk = 消失的段 → 清理
+    removed = [c for bucket in pool.values() for c in bucket]
+    return {"reused": reused, "to_embed": to_embed, "removed": removed}
+
+
 class RAGStore:
     """本地向量知识库"""
 
@@ -330,33 +467,47 @@ class RAGStore:
                 return f"RAG 不可用: {file_path}"
 
             # v4.289.1：先在局部构建完整新索引；任何 chunk 失败都保留旧数据。
-            new_chunks = []
-            next_counter = self._chunk_counter
+            # v4.320.0 P2-1：按文本 hash 幂等增量——未变段原样复用 id+embedding，
+            # 只给真正新增/变更段重新 embed，消失段清理。杜绝"改一段全库重烧"。
             fname = p.name
+            delta = plan_chunk_delta(self._chunks, chunks, str(file_path))
+            reused = delta["reused"]          # {下标: 旧 chunk}
+            to_embed = delta["to_embed"]      # [下标]
+
+            new_by_index = {}
+            next_counter = self._chunk_counter
             BATCH = 64
-            for i in range(0, len(chunks), BATCH):
-                batch = chunks[i:i + BATCH]
+            for start in range(0, len(to_embed), BATCH):
+                batch_idx = to_embed[start:start + BATCH]
+                batch_texts = [chunks[i] for i in batch_idx]
                 try:
-                    embeddings = self._embed(batch)
+                    embeddings = self._embed(batch_texts)
                 except Exception as e:
                     log.warning("embedding API 批量请求失败: %s", e)
-                    # 逐条重试；任一失败都不能拿残缺结果覆盖旧索引。
                     embeddings = []
-                    for t in batch:
+                    for t in batch_texts:
                         try:
                             embeddings.extend(self._embed([t]))
                         except Exception:
                             embeddings.append(None)
-                if len(embeddings) != len(batch):
+                if len(embeddings) != len(batch_texts):
                     return f"索引失败，旧索引已保留: {fname}（embedding 数量不完整）"
-                for chunk, emb in zip(batch, embeddings):
+                for i, emb in zip(batch_idx, embeddings):
                     if emb is None:
                         return f"索引失败，旧索引已保留: {fname}（embedding 失败）"
-                    new_chunks.append({
+                    new_by_index[i] = emb
+
+            # 按新切分顺序组装：未变段复用旧对象（id+embedding 原样），变更段新建
+            ordered = []
+            for i, chunk_text in enumerate(chunks):
+                if i in reused:
+                    ordered.append(reused[i])
+                else:
+                    ordered.append({
                         "id": f"{fname}_chunk_{next_counter}",
                         "source": str(file_path),
-                        "text": chunk,
-                        "embedding": emb,
+                        "text": chunk_text,
+                        "embedding": new_by_index.get(i),
                         # v4.319.0 P1-1：溯源四件套（一个事实一个家）
                         "type": "doc",
                         "entity_id": fname,
@@ -367,8 +518,9 @@ class RAGStore:
 
             old_state = (self._chunks, self._chunk_counter,
                          self._files, self._src_set)
-            self._chunks = ([c for c in self._chunks if c["source"] != str(file_path)]
-                            + new_chunks)
+            # 保留其它 source 的 chunk；本 source 用增量结果整体替换
+            other_chunks = [c for c in self._chunks if c.get("source") != str(file_path)]
+            self._chunks = other_chunks + ordered
             self._chunk_counter = next_counter
             self._files = dict(self._files)
             self._files[key] = {"mtime_ns": st.st_mtime_ns, "size": st.st_size}
@@ -378,7 +530,7 @@ class RAGStore:
                 (self._chunks, self._chunk_counter,
                  self._files, self._src_set) = old_state
                 return f"索引保存失败，旧索引已保留: {fname}"
-            return f"已索引: {fname} ({len(new_chunks)} chunks)"
+            return f"已索引: {fname} ({len(ordered)} chunks)"
         except MemoryError:
             return f"内存不足，已跳过: {Path(file_path).name}"
         except Exception as e:
@@ -470,7 +622,11 @@ class RAGStore:
     # ---------------------- 检索 ----------------------
 
     def search(self, query, top_k=5):
-        """检索最相关的 chunk，返回 [(source, text, distance), ...]"""
+        """检索最相关的 chunk，返回 [(source, text, distance), ...]
+
+        v4.320.0 P1-2：余弦 + BM25 双通路 RRF 融合。embedding 失败/超时
+        时 BM25 单独兜底（离线可检索），不再裸 `return []`。
+        """
         if not self.available:
             self.init()
         if not self.available or not self._chunks:
@@ -480,36 +636,80 @@ class RAGStore:
             import numpy as np
         except ImportError:
             log.error("numpy 未安装")
-            return []
+            # numpy 都没有也走 BM25 兜底
+            return self._bm25_search(query, top_k)
 
+        # ---- 余弦通路（embedding 失败则跳过，交给 BM25 兜底）----
+        cos_indices = []
+        cos_sim = {}
         try:
-            q_embs = self._embed([query])
-            q_vec = np.array(q_embs[0], dtype=np.float32)
+            # 同义/近义变体一起送 embedding，取各变体余弦最大值（多措辞召回）
+            variants = _synonym_variants(query)
+            q_embs = self._embed(variants)
+            q_mat = np.array(q_embs, dtype=np.float32)
+            vectors = np.array([c["embedding"] for c in self._chunks], dtype=np.float32)
+            norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+            q_norms = np.linalg.norm(q_mat, axis=1, keepdims=True)
+            q_norms[q_norms == 0] = 1
+            norms[norms == 0] = 1
+            vecs_normed = vectors / norms
+            q_normed = q_mat / q_norms
+            sims = np.dot(vecs_normed, q_normed.T)          # (n_chunks, n_variants)
+            best = sims.max(axis=1)                          # 每 chunk 取最佳变体分
+            for i in np.argsort(best)[::-1]:
+                if float(best[i]) >= 0.3:                    # 余弦阈值（保留原逻辑）
+                    cos_indices.append(int(i))
+                    cos_sim[int(i)] = float(best[i])
         except Exception as e:
-            log.warning("查询 embedding 失败: %s", e)
+            log.warning("查询 embedding 失败，转 BM25 兜底: %s", e)
+            cos_indices = []
+
+        # ---- BM25 通路（jieba/单字分词，多措辞变体并集召回）----
+        kw_rank = self._bm25_rank(query)
+
+        if not cos_indices:
+            # embedding 不可用：BM25 单独兜底
+            if ENABLE_BM25_FALLBACK or not kw_rank:
+                return [self._result_tuple(i, 0.5) for i in kw_rank[:top_k]]
             return []
 
-        # 计算余弦相似度
-        vectors = np.array([c["embedding"] for c in self._chunks], dtype=np.float32)
-        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-        q_norm = np.linalg.norm(q_vec)
-        if q_norm == 0:
+        # ---- RRF 融合两条排名 ----
+        fused = _rrf_fuse([cos_indices, kw_rank], k=_RRF_K)
+        out = []
+        for i in fused:
+            if len(out) >= top_k:
+                break
+            # distance 沿用余弦 1-sim；BM25-only 项给中性值（保持三元组契约）
+            dist = (1.0 - cos_sim[i]) if i in cos_sim else 0.5
+            out.append(self._result_tuple(i, dist))
+        return out
+
+    def _bm25_rank(self, query):
+        """BM25 通路：多措辞变体对全库打分，返回 chunk 索引排名。"""
+        docs = [_tokenize_for_bm25(c.get("text", "")) for c in self._chunks]
+        variants = _synonym_variants(query)
+        best = None
+        for v in variants:
+            s = _bm25_scores(v, docs)
+            if best is None:
+                best = list(s)
+            else:
+                best = [max(a, b) for a, b in zip(best, s)]
+        if not best:
             return []
-        q_vec_normed = q_vec / q_norm
-        norms[norms == 0] = 1
-        vecs_normed = vectors / norms
-        similarities = np.dot(vecs_normed, q_vec_normed)
+        norm = _normalize_scores(best)
+        # 分数归一化阈值：低于 0.15 的视为不相关（BM25 通路自己的阈值）
+        ranked = sorted((i for i, x in enumerate(norm) if x >= 0.15),
+                        key=lambda i: -norm[i])
+        return ranked
 
-        top_indices = np.argsort(similarities)[-top_k:][::-1]
+    def _bm25_search(self, query, top_k):
+        """无 numpy 时的纯 BM25 兜底。"""
+        return [self._result_tuple(i, 0.5) for i in self._bm25_rank(query)[:top_k]]
 
-        results = []
-        for idx in top_indices:
-            sim = float(similarities[idx])
-            if sim < 0.3:  # 相似度阈值
-                continue
-            c = self._chunks[idx]
-            results.append((c["source"], c["text"], 1.0 - sim))
-        return results
+    def _result_tuple(self, idx, distance):
+        c = self._chunks[idx]
+        return (c["source"], c["text"], float(distance))
 
     def list_indexed(self):
         """列出已索引的文件"""

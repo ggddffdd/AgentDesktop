@@ -6805,9 +6805,12 @@ class ChatWindow(FocusChromeMixin, ChatAuditMixin, ChatAgentEventsMixin,
                     if isinstance(c, str):
                         qparts.append(c)
             query = "\n".join(qparts[-3:])
-            mem = recall_memory(query, limit=8, max_chars=4000)
+            from memory_store import format_recall_note
+            mem = recall_memory(query, limit=8, max_chars=3000)
             if mem:
-                return "【用户长期记忆】\n" + mem
+                # v4.320.0 P3-2：带来源标注的隐藏注记；本段会作为 dynamic 背景
+                # 经 prompt_cache 的 CONTEXT_MARK 附到历史末尾，不进 system prompt。
+                return format_recall_note(mem, max_chars=3000)
         except Exception:
             pass
         return ""

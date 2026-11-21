@@ -35,6 +35,8 @@ __pycache__/
 *.bak_*
 # 本地手工备份目录（backup_YYYYMMDD_NNN，含源码副本与旧日志，不入库）
 backup_*/
+# exe 版本备份目录（体积大、纯本地回滚用，不入库）
+EXE_BACKUP/
 
 # ===== 本地配置（真实密钥在用户文档目录，此处的 config.json 也不入库） =====
 config.json

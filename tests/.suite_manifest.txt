@@ -98,6 +98,7 @@ test_memory_changelog_319.py
 test_memory_context_296.py
 test_memory_db_heal_314.py
 test_memory_gate_196.py
+test_memory_injection_320.py
 test_memory_merge_319.py
 test_memory_metadata.py
 test_msg_budget_cap_224.py
@@ -127,6 +128,8 @@ test_prompt_cache_276.py
 test_python_cwd_xxx.py
 test_query_outcome_318.py
 test_radius_norm.py
+test_rag_dual_retrieval_320.py
+test_rag_incremental_320.py
 test_rag_provenance_319.py
 test_read_binary_guard_260.py
 test_readability_197.py

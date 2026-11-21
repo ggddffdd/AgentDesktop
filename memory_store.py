@@ -942,7 +942,21 @@ def _tokenize(text):
     return [t for t in toks if t not in _STOPWORDS]
 
 
-def recall_memory(query, limit=8, max_chars=4000):
+def format_recall_note(text, max_chars=3000):
+    """v4.320.0 P3-2：把召回内容包装成带来源标注的隐藏注记（≤max_chars）。
+
+    注入到会话时是「系统附上的背景、不是用户说的话」（由 prompt_cache 的
+    CONTEXT_MARK 结构承载，附在历史末尾不进 system prompt，缓存前缀稳定）。
+    这里只负责内容层：顶部加来源标注 + 硬截断到上限。
+    """
+    body = (text or "").strip()
+    if not body:
+        return ""
+    label = "（来源：长期记忆库 memory.md，系统自动召回，非用户当前指令）\n"
+    return (label + body)[:max_chars]
+
+
+def recall_memory(query, limit=8, max_chars=3000):
     """v4.73：语义（关键词）召回长期记忆，替代旧版尾部平铺注入。
 
     返回：[钉住核心画像] + [相关记忆 top-k]。永远可用（纯 Python，不依赖 FTS5/网络）。
